@@ -1,0 +1,13 @@
+# RemoteBuddy also accepts the Codex-style profile used by the local CLI:
+model_provider = "OpenAI"
+model = "gpt-5.6-luna"
+model_reasoning_effort = "low"
+disable_response_storage = true
+agent_backend = "responses"
+codex_dynamic_tools = false
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+wire_api = "responses"
+requires_openai_auth = true

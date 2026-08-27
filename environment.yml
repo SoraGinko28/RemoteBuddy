@@ -1,0 +1,9 @@
+name: remotebuddy
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - libtmux==0.62.0

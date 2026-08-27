@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RemoteBuddy Workspace</title>
+  <link rel="stylesheet" href="/assets/workspace.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <header class="brand-row">
+        <div>
+          <p class="brand">RemoteBuddy</p>
+          <p class="brand-subtitle">共享终端协作</p>
+        </div>
+        <span id="health-dot" class="health-dot" title="环境状态"></span>
+      </header>
+
+      <button id="new-button" class="primary-command" type="button"><span aria-hidden="true">＋</span> 新会话</button>
+      <p id="health-message" class="health-message" hidden></p>
+      <div class="sidebar-section-title">
+        <span>会话</span>
+        <span id="meeting-count">0</span>
+      </div>
+      <nav id="meeting-list" class="meeting-list" aria-label="会议列表"></nav>
+      <div id="list-empty" class="list-empty">还没有 v2 会话</div>
+      <footer class="sidebar-footer">本机回环服务 · 单人单 Agent</footer>
+    </aside>
+
+    <main class="workspace-main">
+      <section id="welcome" class="welcome">
+        <div class="welcome-mark" aria-hidden="true">RB</div>
+        <h1>打开一个共享工作区</h1>
+        <p>你的消息和终端画面会共同成为 Agent 的工作上下文。</p>
+        <button id="welcome-new-button" class="primary-command compact" type="button">开始会话</button>
+      </section>
+
+      <section id="session-view" class="session-view" hidden>
+        <header class="session-header">
+          <div class="session-identity">
+            <div class="status-line">
+              <span id="status-badge" class="status-badge">等待</span>
+              <span id="owner-badge" class="owner-badge">无人控制</span>
+            </div>
+            <h1 id="meeting-title">—</h1>
+            <p id="session-meta">—</p>
+            <p id="failure-message" class="failure-message" hidden></p>
+          </div>
+          <div class="header-actions">
+            <button id="refresh-button" class="icon-button" type="button" title="刷新" aria-label="刷新">↻</button>
+            <button id="resume-button" class="command-button" type="button" hidden>继续 Agent</button>
+            <button id="complete-button" class="command-button" type="button">结束并保留</button>
+            <button id="cleanup-button" class="command-button" type="button" hidden>清理终端</button>
+            <button id="stop-button" class="danger-button" type="button">中止</button>
+          </div>
+        </header>
+
+        <div class="presence-strip">
+          <div><span>阶段</span><strong id="phase-label">—</strong></div>
+          <div><span>后端</span><strong id="backend-label">—</strong></div>
+          <div><span>模型</span><strong id="model-label">—</strong></div>
+          <div><span>输入</span><strong id="typing-profile-label">平衡</strong></div>
+          <div><span>动作</span><strong id="action-label">0 / 60</strong></div>
+          <div><span>运行</span><strong id="runtime-label">00:00</strong></div>
+          <div><span>事件</span><strong id="event-count">0</strong></div>
+        </div>
+
+        <div class="work-grid">
+          <section class="chat-pane" aria-label="对话">
+            <header class="pane-header">
+              <div>
+                <p class="pane-kicker">CHAT STREAM</p>
+                <h2>协作对话</h2>
+              </div>
+              <div class="segmented" role="group" aria-label="消息筛选">
+                <button class="segment active" data-chat-filter="all" type="button">全部</button>
+                <button class="segment" data-chat-filter="result" type="button">结果</button>
+                <button class="segment" data-chat-filter="progress" type="button">过程</button>
+              </div>
+            </header>
+            <div id="chat-list" class="chat-list" aria-live="polite"></div>
+            <form id="message-form" class="message-form">
+              <label class="sr-only" for="message-input">发送消息</label>
+              <textarea id="message-input" rows="3" maxlength="1048576" placeholder="继续说明、纠正或打断 Agent…"></textarea>
+              <div id="reference-card" class="reference-card" hidden></div>
+              <div class="composer-footer">
+                <span id="message-hint">消息将在下一个动作边界生效</span>
+                <select id="delivery-mode" title="消息生效时机"><option value="next_action">下一步读取</option><option value="interrupt">立即插入</option></select>
+                <button id="send-message-button" class="primary-command compact" type="submit">发送</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="terminal-pane" aria-label="共享终端">
+            <header class="pane-header terminal-header">
+              <div>
+                <p class="pane-kicker">SCREEN STREAM</p>
+                <h2>共享工作区</h2>
+              </div>
+              <div class="terminal-meta">
+                <span id="typing-state" class="typing-state" hidden></span>
+                <span id="terminal-command">shell</span>
+                <span id="terminal-path">workspace</span>
+              </div>
+              <span id="terminal-readonly" class="readonly-badge">只读预览</span>
+                <button id="screen-reference-button" class="command-button compact" type="button" title="拖拽选择终端区域">圈选 Screen</button>
+                <div class="viewport-mode" role="group" aria-label="内容滚动模式">
+                <span class="viewport-mode-label">视野</span>
+                <div class="segmented">
+                  <button id="free-scroll-button" class="segment" type="button" aria-pressed="false" title="聊天和终端都保留你当前的滚动位置">自由浏览</button>
+                  <button id="follow-scroll-button" class="segment active" type="button" aria-pressed="true" title="自动跟随聊天末尾和 Agent 的终端光标">跟随 Agent</button>
+                </div>
+              </div>
+            </header>
+            <pre id="terminal-screen" class="terminal-screen" tabindex="0">等待终端画面…</pre>
+
+            <div class="control-bar">
+              <div class="control-status">
+                <span class="control-dot"></span>
+                <span id="control-label">Agent 控制中</span>
+              </div>
+              <div class="control-actions">
+                <button id="acquire-button" class="command-button" type="button">接管</button>
+                <button id="release-button" class="primary-command compact" type="button" hidden>交还 Agent</button>
+              </div>
+            </div>
+
+            <div id="terminal-controls" class="terminal-controls" hidden>
+              <form id="command-form" class="command-form">
+                <label for="command-select">命令</label>
+                <select id="command-select">
+                  <option value="pwd">pwd</option>
+                  <option value="cd">cd</option>
+                  <option value="vim">vim</option>
+                  <option value="python">python</option>
+                </select>
+                <label class="sr-only" for="command-path">路径</label>
+                <input id="command-path" type="text" maxlength="4096" placeholder="相对路径" disabled>
+                <button class="command-button" type="submit">执行</button>
+              </form>
+
+              <form id="vim-form" class="vim-form">
+                <label id="process-input-label" for="vim-text">进程输入</label>
+                <textarea id="vim-text" rows="2" maxlength="8192" placeholder="输入要发送到当前进程的文字"></textarea>
+                <button class="command-button" type="submit">发送文字</button>
+              </form>
+              <div class="key-row" aria-label="Vim 特殊按键">
+                <button data-key="Escape" type="button" title="Escape">Esc</button>
+                <button data-key="Enter" type="button" title="Enter">↵</button>
+                <button data-key="Tab" type="button" title="Tab">Tab</button>
+                <button data-key="Left" type="button" title="Left">←</button>
+                <button data-key="Down" type="button" title="Down">↓</button>
+                <button data-key="Up" type="button" title="Up">↑</button>
+                <button data-key="Right" type="button" title="Right">→</button>
+                <button data-key="Backspace" type="button" title="Backspace">⌫</button>
+                <button data-key="C-c" type="button" title="Ctrl+C">C-c</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <footer class="playback-bar">
+          <button id="play-button" class="icon-button" type="button" title="播放" aria-label="播放">▶</button>
+          <input id="playback-slider" type="range" min="-1" max="-1" value="-1" aria-label="事件回放位置">
+          <span id="playback-position">实时</span>
+          <button id="live-button" class="command-button" type="button">回到实时</button>
+          <button id="inspect-button" class="icon-button" type="button" title="查看当前事件" aria-label="查看当前事件">i</button>
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="new-dialog" class="new-dialog">
+    <form id="new-form" method="dialog">
+      <header>
+        <div>
+          <p class="pane-kicker">NEW SESSION</p>
+          <h2>开始协作</h2>
+        </div>
+        <button id="close-dialog" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <label for="initial-message">第一条消息</label>
+      <textarea id="initial-message" rows="9" maxlength="1048576" required placeholder="例如：请在共享工作区里用 Vim 创建一份项目说明。"></textarea>
+      <details>
+        <summary>高级设置</summary>
+        <label for="model-input">模型覆盖</label>
+        <input id="model-input" type="text" maxlength="200" placeholder="默认 gpt-5.6-luna">
+        <fieldset class="profile-fieldset">
+          <legend>输入节奏</legend>
+          <div class="profile-segments">
+            <label><input type="radio" name="typing-profile" value="demo"><span>演示</span></label>
+            <label><input type="radio" name="typing-profile" value="balanced" checked><span>平衡</span></label>
+            <label><input type="radio" name="typing-profile" value="fast"><span>快速</span></label>
+          </div>
+        </fieldset>
+      </details>
+      <div id="new-error" class="form-error" hidden></div>
+      <footer>
+        <button id="cancel-new" class="command-button" type="button">取消</button>
+        <button id="start-button" class="primary-command" type="submit">创建并启动</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="event-dialog" class="event-dialog">
+    <header>
+      <div>
+        <p class="pane-kicker">EVENT</p>
+        <h2 id="event-title">事件详情</h2>
+      </div>
+      <button id="close-event" class="icon-button" type="button" aria-label="关闭">×</button>
+    </header>
+    <pre id="event-content"></pre>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/assets/workspace.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+runs/
+
+# Local credentials and machine-specific configuration
+model_api/auth.json
+model_api/config.toml
+.env
+.env.*
+!.env.example
+
+# Local test/tooling output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS and editor metadata
+.DS_Store
