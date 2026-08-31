@@ -8,10 +8,10 @@ const el = Object.fromEntries([
   "welcome", "session-view", "meeting-title", "status-badge", "owner-badge", "session-meta",
   "phase-label", "backend-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
-  "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "terminal-command", "terminal-path",
+  "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button", "terminal-controls",
   "command-form", "command-select", "command-path", "vim-form", "vim-text", "process-input-label", "play-button",
-  "playback-slider", "playback-position", "live-button", "inspect-button", "screen-reference-button", "free-scroll-button", "follow-scroll-button", "new-dialog", "new-form",
+  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "settings-button", "settings-dialog", "settings-form", "judge-name-input", "save-settings", "close-settings", "cancel-settings", "settings-error", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
   "close-dialog", "cancel-new", "initial-message", "model-input", "start-button", "new-error",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
@@ -38,9 +38,19 @@ const state = {
   liveScreenQueue: [],
   chatFilter: "all",
   toastTimer: null,
+  references: [],
+  // Legacy alias kept for extensions that still read the old singular field.
   reference: null,
   highlightReference: null,
-  selectingScreen: false,
+  pendingSelection: null,
+  selectionBusy: false,
+  selectionTimer: null,
+  keyboardSelection: null,
+  evaluationSelection: null,
+  evaluationBusy: false,
+  scoreOverlayIds: new Set(),
+  playbackHoverIndex: null,
+  judgeName: "human",
 };
 
 const labels = {
@@ -49,6 +59,7 @@ const labels = {
   owner: { agent: "Agent 控制", human: "你在控制", none: "无人控制" },
   message: { request: "请求", ack: "回应", progress: "进度", question: "问题", final: "结果" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
+  score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
 };
 
 function eventDelay(event, queueLength = 0) {
@@ -70,14 +81,32 @@ function node(tag, className, text) {
   return value;
 }
 
-async function api(path, options = {}) {
+async function api(path, options = {}, retryCsrf = true) {
+  const method = String(options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers || {});
   if (options.body !== undefined) headers.set("Content-Type", "application/json");
-  if ((options.method || "GET") !== "GET") headers.set(state.csrfHeader, state.csrfToken);
+  if (method !== "GET") headers.set(state.csrfHeader, state.csrfToken);
   const response = await fetch(path, { ...options, headers, cache: "no-store" });
   const text = await response.text();
   let payload = {};
   try { payload = text ? JSON.parse(text) : {}; } catch (_error) { payload = { error: text }; }
+  if (
+    !response.ok
+    && response.status === 403
+    && method !== "GET"
+    && retryCsrf
+    && /csrf/i.test(String(payload.error || ""))
+  ) {
+    const sessionResponse = await fetch("/api/session", { cache: "no-store" });
+    if (sessionResponse.ok) {
+      const session = await sessionResponse.json();
+      if (typeof session.csrf_token === "string" && session.csrf_token) {
+        state.csrfToken = session.csrf_token;
+        state.csrfHeader = session.csrf_header || state.csrfHeader;
+        return api(path, options, false);
+      }
+    }
+  }
   if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
   return payload;
 }
@@ -108,10 +137,36 @@ function eventAt(index) {
   return index >= 0 && index < state.timeline.length ? state.timeline[index] : null;
 }
 
+function playbackSequence() {
+  if (state.followLive) return Number.POSITIVE_INFINITY;
+  const current = eventAt(state.playbackIndex);
+  if (!current) return Number.NEGATIVE_INFINITY;
+  const sequence = Number(current.seq);
+  return Number.isFinite(sequence) ? sequence : state.playbackIndex;
+}
+
 function eventsAtPlayback() {
   if (!state.timeline.length) return [];
-  const end = state.followLive ? state.timeline.length - 1 : state.playbackIndex;
-  return state.timeline.slice(0, end + 1);
+  const sequence = playbackSequence();
+  return state.timeline.filter((event, index) => {
+    const eventSequence = Number(event.seq);
+    const visible = Number.isFinite(eventSequence) ? eventSequence <= sequence : index <= state.playbackIndex;
+    return visible || (event.kind === "score" && state.scoreOverlayIds.has(event.event_id));
+  });
+}
+
+function mergeTimelineEvents(events) {
+  const existing = new Set(state.timeline.map((event) => event.event_id).filter(Boolean));
+  const additions = [];
+  for (const event of events || []) {
+    if (!event || (event.event_id && existing.has(event.event_id))) continue;
+    additions.push(event);
+    if (event.event_id) existing.add(event.event_id);
+  }
+  if (!additions.length) return additions;
+  state.timeline.push(...additions);
+  state.timeline.sort((left, right) => (Number(left.seq) || 0) - (Number(right.seq) || 0));
+  return additions;
 }
 
 function stopLiveScreenQueue({ jumpToLatest = false } = {}) {
@@ -198,8 +253,16 @@ function renderHeader() {
   el.control_label.textContent = meeting.control_requested === "human" ? "等待 Agent 交出控制权" : (labels.owner[meeting.control_owner] || "无人控制");
 
   const terminalState = ["completed", "failed", "interrupted"].includes(meeting.status);
+  const evaluateAction = el.selection_menu?.querySelector('[data-selection-action="evaluate"]');
+  const addAction = el.selection_menu?.querySelector('[data-selection-action="add-to-conversation"]');
+  // Historical sessions remain rateable; only adding a new chat reference is
+  // blocked once the meeting is terminal because the composer is read-only.
+  if (evaluateAction) evaluateAction.disabled = false;
+  if (addAction) addAction.disabled = terminalState;
   el.message_input.disabled = terminalState;
   el.send_message_button.disabled = terminalState;
+  el.delivery_mode?.querySelectorAll("input").forEach((input) => { input.disabled = terminalState; });
+  if (el.evaluation_submit_button) el.evaluation_submit_button.disabled = false;
   el.complete_button.disabled = terminalState || ["created", "starting"].includes(meeting.status) || meeting.phase === "starting";
   el.stop_button.disabled = terminalState;
   el.complete_button.hidden = terminalState;
@@ -228,8 +291,148 @@ function visibleChats() {
   });
 }
 
+function codePoints(value) {
+  return Array.from(String(value ?? ""));
+}
+
+function codePointLength(value) {
+  return codePoints(value).length;
+}
+
+function codePointSlice(value, start, end) {
+  return codePoints(value).slice(start, end).join("");
+}
+
+function sourceEventForRoot(root) {
+  const eventId = root?.dataset?.eventId;
+  if (!eventId) return null;
+  const fromTimeline = state.timeline.find(
+    (event) => event.event_id === eventId && (event.kind === "chat" || event.kind === "screen"),
+  );
+  if (fromTimeline) return fromTimeline;
+  const latest = state.snapshot?.latest_screen;
+  return latest?.event_id === eventId ? latest : null;
+}
+
+function scoreAnnotationsForSource(source, visibleEvents = eventsAtPlayback()) {
+  if (!source) return [];
+  const latestByRegion = new Map();
+  for (const event of visibleEvents) {
+    if (event.kind !== "score") continue;
+    const data = event.data && typeof event.data === "object" ? event.data : {};
+    const reference = data.reference;
+    const region = reference?.region;
+    if (
+      reference?.event_id !== source.event_id
+      || (reference?.kind && reference.kind !== source.kind)
+      || !region
+      || (data.tag !== "competent" && data.tag !== "incompetent")
+    ) continue;
+    const start = Number(region.start);
+    const end = Number(region.end);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) continue;
+    const key = `${start}:${end}`;
+    const sequence = Number(event.seq) || 0;
+    const previous = latestByRegion.get(key);
+    if (previous && previous.seq > sequence) continue;
+    latestByRegion.set(key, {
+      start,
+      end,
+      tag: data.tag,
+      judge_name: typeof data.judge_name === "string" ? data.judge_name : "human",
+      comment: typeof data.comment === "string" ? data.comment : "",
+      seq: sequence,
+      event_id: event.event_id,
+    });
+  }
+  return [...latestByRegion.values()]
+    .filter((item) => item.tag === "competent" || item.tag === "incompetent")
+    .sort((left, right) => left.start - right.start || left.end - right.end || left.seq - right.seq);
+}
+
+function scoreReferenceAtPlayback() {
+  if (state.followLive) return null;
+  const event = eventAt(state.playbackIndex);
+  const reference = event?.kind === "score" ? event.data?.reference : null;
+  if (
+    !reference
+    || (reference.kind !== "chat" && reference.kind !== "screen")
+    || typeof reference.event_id !== "string"
+  ) return null;
+  return reference;
+}
+
+function appendAnnotatedText(root, content, annotations) {
+  const text = String(content ?? "");
+  const chars = codePoints(text);
+  if (!annotations.length) {
+    root.append(document.createTextNode(text));
+    return;
+  }
+  const boundaries = new Set([0, chars.length]);
+  for (const annotation of annotations) {
+    const start = Math.max(0, Math.min(chars.length, annotation.start));
+    const end = Math.max(start, Math.min(chars.length, annotation.end));
+    if (end > start) boundaries.add(start), boundaries.add(end);
+  }
+  const points = [...boundaries].sort((left, right) => left - right);
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    if (end <= start) continue;
+    const active = annotations.filter((item) => item.start <= start && item.end >= end);
+    const segment = chars.slice(start, end).join("");
+    if (!active.length) {
+      root.append(document.createTextNode(segment));
+      continue;
+    }
+    const tags = [...new Set(active.map((item) => item.tag))].sort();
+    const mark = node(
+      "span",
+      `score-annotation ${tags.map((tag) => `score-${tag}`).join(" ")}${active.length > 1 ? " score-overlap" : ""}`,
+      segment,
+    );
+    mark.dataset.scoreTags = tags.join(" ");
+    mark.dataset.scoreCount = String(active.length);
+    mark.title = tags.map((tag) => labels.score[tag] || tag).join(" / ");
+    root.append(mark);
+  }
+}
+
+function scoreSummary(annotations) {
+  if (!annotations.length) return null;
+  const summary = node("div", "score-summary");
+  for (const annotation of annotations) {
+    const judge = annotation.judge_name ? ` · ${annotation.judge_name}` : "";
+    const badge = node("span", `score-badge ${annotation.tag}`, `${labels.score[annotation.tag] || annotation.tag}${judge}`);
+    if (annotation.comment) badge.title = annotation.comment;
+    summary.append(badge);
+  }
+  return summary;
+}
+
+function referencesForEvent(event) {
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  const raw = Array.isArray(data.references)
+    ? data.references
+    : (data.reference ? [data.reference] : []);
+  const references = [];
+  const seen = new Set();
+  for (const reference of raw) {
+    if (!reference || typeof reference !== "object") continue;
+    const region = reference.region && typeof reference.region === "object" ? reference.region : {};
+    const key = `${reference.kind || ""}:${reference.event_id || ""}:${region.start ?? ""}:${region.end ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push(reference);
+  }
+  return references;
+}
+
 function renderChat() {
   const previousScrollTop = el.chat_list.scrollTop;
+  const replayReference = scoreReferenceAtPlayback();
+  let replayTarget = null;
   state.renderingChat = true;
   try {
     el.chat_list.replaceChildren();
@@ -243,15 +446,30 @@ function renderChat() {
         node("span", `message-type ${event.message_type || ""}`, labels.message[event.message_type] || "消息"),
         node("time", "", fmtTime(event.captured_at)),
       );
-      const body = node("p", "message-content", event.content);
+      const annotations = scoreAnnotationsForSource(event);
+      const body = node("p", "message-content");
+      body.dataset.eventId = event.event_id || "";
+      body.tabIndex = 0;
+      body.setAttribute("aria-label", "聊天消息文本");
+      appendAnnotatedText(body, event.content, annotations);
       article.append(head, body);
-      const reference = event.data?.reference;
-      if (reference?.excerpt) {
-        const quote = node("blockquote", "message-reference", `引用 · ${reference.excerpt}`);
+      const summary = scoreSummary(annotations);
+      if (summary) article.append(summary);
+      if (replayReference?.kind === "chat" && replayReference.event_id === event.event_id) {
+        article.classList.add("score-replay-target");
+        replayTarget = article;
+      }
+      const references = referencesForEvent(event);
+      references.forEach((reference, referenceIndex) => {
+        if (!reference?.excerpt) return;
+        const prefix = references.length > 1 ? `引用 ${referenceIndex + 1} · ` : "引用 · ";
+        const quote = node("blockquote", "message-reference", `${prefix}${reference.excerpt}`);
         quote.title = "跳转到引用来源";
         quote.addEventListener("click", () => {
           const index = state.timeline.findIndex((item) => item.event_id === reference.event_id);
           if (index < 0) return;
+          state.scoreOverlayIds.clear();
+          hidePlaybackHover();
           state.followLive = false;
           state.playbackIndex = index;
           state.highlightReference = reference;
@@ -259,17 +477,22 @@ function renderChat() {
           stopPlayback();
           renderAll();
           const activeQuote = [...el.chat_list.querySelectorAll(".message-reference")]
-            .find((item) => item.closest("article")?.dataset.eventId === event.event_id);
+            .find((item) => item.closest("article")?.dataset.eventId === event.event_id && item.textContent?.includes(reference.excerpt));
           activeQuote?.classList.add("highlighted");
           setTimeout(() => activeQuote?.classList.remove("highlighted"), 900);
         });
         if (state.highlightReference?.event_id === reference.event_id) quote.classList.add("highlighted");
         article.append(quote);
-      }
+      });
       el.chat_list.append(article);
     }
     if (!chats.length) el.chat_list.append(node("div", "empty-chat", "这个回放位置还没有聊天消息"));
-    if (state.chatFollow) {
+    if (replayTarget) {
+      const listRect = el.chat_list.getBoundingClientRect();
+      const targetRect = replayTarget.getBoundingClientRect();
+      const targetTop = el.chat_list.scrollTop + targetRect.top - listRect.top;
+      el.chat_list.scrollTop = Math.max(0, targetTop - (el.chat_list.clientHeight - targetRect.height) / 2);
+    } else if (state.chatFollow) {
       el.chat_list.scrollTop = el.chat_list.scrollHeight;
     } else {
       const maxScroll = Math.max(0, el.chat_list.scrollHeight - el.chat_list.clientHeight);
@@ -283,19 +506,38 @@ function renderChat() {
 function renderTerminal() {
   const previousScrollTop = el.terminal_screen.scrollTop;
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
-  const latest = state.followLive && state.liveScreenEvent
-    ? state.liveScreenEvent
-    : screens.at(-1);
-  const terminal = latest?.data || state.snapshot?.latest_screen?.data || {};
+  const replayReference = scoreReferenceAtPlayback();
+  const replaySource = replayReference?.kind === "screen"
+    ? state.timeline.find(
+      (event) => event.kind === "screen" && event.event_id === replayReference.event_id,
+    )
+    : null;
+  const latest = replaySource || (state.followLive && state.liveScreenEvent ? state.liveScreenEvent : screens.at(-1));
+  const fallback = state.followLive ? state.snapshot?.latest_screen : null;
+  const source = latest || fallback;
+  const terminal = source?.data || {};
   el.terminal_command.textContent = terminal.current_command || "shell";
   el.terminal_path.textContent = terminal.current_path
     ? terminal.current_path.split("/").slice(-2).join("/")
     : "workspace";
-  el.terminal_screen.textContent = latest?.content || "等待终端画面…";
+  el.terminal_screen.replaceChildren();
+  const hasScreenContent = Boolean(source && typeof source.content === "string" && source.content.length);
+  el.terminal_screen.dataset.eventId = hasScreenContent ? source.event_id || "" : "";
+  if (hasScreenContent) {
+    appendAnnotatedText(el.terminal_screen, source.content, scoreAnnotationsForSource(source));
+  } else {
+    el.terminal_screen.append(document.createTextNode("等待终端画面…"));
+  }
   el.terminal_screen.classList.toggle(
     "reference-target",
-    Boolean(state.highlightReference?.kind === "screen" && latest?.event_id === state.highlightReference.event_id),
+    Boolean(
+      (state.highlightReference?.kind === "screen" && source?.event_id === state.highlightReference.event_id)
+      || (replayReference?.kind === "screen" && source?.event_id === replayReference.event_id)
+    ),
   );
+  el.terminal_score_status.replaceChildren();
+  const terminalSummary = scoreSummary(scoreAnnotationsForSource(source));
+  if (terminalSummary) el.terminal_score_status.append(...terminalSummary.childNodes);
   const changeKind = terminal.change_kind;
   el.typing_state.textContent = changeKind === "paste" ? "Agent 正在粘贴" : (changeKind === "typing" ? "Agent 输入中" : "");
   el.typing_state.hidden = !["typing", "paste"].includes(changeKind);
@@ -354,14 +596,76 @@ function revealTerminalCursor(terminal) {
   }
 }
 
+function scoreStatusForEvent(event) {
+  if (!event) return "unscored";
+  if (event.kind === "score") {
+    return event.data?.tag === "competent" || event.data?.tag === "incompetent"
+      ? event.data.tag
+      : "unscored";
+  }
+  if (event.kind !== "chat" && event.kind !== "screen") return "unscored";
+  const annotations = scoreAnnotationsForSource(event, state.timeline);
+  if (!annotations.length) return "unscored";
+  return annotations.reduce(
+    (latest, annotation) => (annotation.seq >= latest.seq ? annotation : latest),
+    annotations[0],
+  ).tag;
+}
+
+function hidePlaybackHover() {
+  state.playbackHoverIndex = null;
+  el.playback_hover.hidden = true;
+  el.playback_hover.removeAttribute("data-status");
+  el.playback_slider.title = "移动鼠标查看评分状态";
+}
+
+function showPlaybackHover(event) {
+  const max = state.timeline.length - 1;
+  const clientX = Number(event.clientX);
+  if (max < 0 || !Number.isFinite(clientX)) {
+    hidePlaybackHover();
+    return;
+  }
+  const sliderRect = el.playback_slider.getBoundingClientRect();
+  const trackRect = el.playback_track.getBoundingClientRect();
+  const inset = Math.min(7, sliderRect.width / 2);
+  const usableWidth = Math.max(1, sliderRect.width - inset * 2);
+  const position = Math.max(0, Math.min(usableWidth, clientX - sliderRect.left - inset));
+  const index = Math.max(0, Math.min(max, Math.round((position / usableWidth) * max)));
+  const status = scoreStatusForEvent(eventAt(index));
+  const label = labels.score[status] || labels.score.unscored;
+
+  state.playbackHoverIndex = index;
+  el.playback_hover.textContent = label;
+  el.playback_hover.dataset.status = status;
+  el.playback_hover.hidden = false;
+  const halfWidth = Math.min(el.playback_hover.offsetWidth / 2, trackRect.width / 2);
+  const rawLeft = clientX - trackRect.left;
+  const left = Math.max(halfWidth, Math.min(trackRect.width - halfWidth, rawLeft));
+  el.playback_hover.style.left = `${left}px`;
+  el.playback_slider.title = `${index + 1} / ${state.timeline.length} · ${label}`;
+}
+
 function renderPlayback() {
   const max = state.timeline.length - 1;
-  el.playback_slider.max = String(max);
-  el.playback_slider.min = "-1";
-  el.playback_slider.value = String(state.followLive ? max : state.playbackIndex);
-  el.playback_position.textContent = state.followLive ? `实时 · ${state.timeline.length}` : `${state.playbackIndex + 1} / ${state.timeline.length}`;
+  const hasEvents = max >= 0;
+  const value = hasEvents ? Math.max(0, state.followLive ? max : state.playbackIndex) : 0;
+  el.playback_slider.disabled = !hasEvents;
+  el.playback_slider.max = String(Math.max(0, max));
+  el.playback_slider.min = "0";
+  el.playback_slider.value = String(value);
+  el.playback_position.textContent = !hasEvents
+    ? "无事件"
+    : (state.followLive ? `实时 · ${state.timeline.length}` : `${state.playbackIndex + 1} / ${state.timeline.length}`);
+  el.playback_slider.setAttribute("aria-valuetext", el.playback_position.textContent);
   el.live_button.disabled = state.followLive;
   el.play_button.textContent = state.playing ? "❚❚" : "▶";
+  if (!hasEvents) hidePlaybackHover();
+  if (state.playbackHoverIndex !== null && state.playbackHoverIndex <= max) {
+    const status = scoreStatusForEvent(eventAt(state.playbackHoverIndex));
+    el.playback_hover.textContent = labels.score[status] || labels.score.unscored;
+    el.playback_hover.dataset.status = status;
+  }
 }
 
 function renderAll() {
@@ -380,55 +684,367 @@ function renderAll() {
   renderPlayback();
 }
 
-function setReference(reference) {
-  state.reference = reference;
-  if (!reference) {
-    el.reference_card.hidden = true;
-    el.reference_card.replaceChildren();
-    return;
-  }
-  el.reference_card.hidden = false;
-  el.reference_card.replaceChildren(
-    node("span", "reference-kind", reference.kind === "screen" ? "Screen 引用" : "Chat 引用"),
-    node("span", "reference-excerpt", reference.excerpt || ""),
-  );
-  const remove = node("button", "icon-button", "×");
-  remove.type = "button";
-  remove.title = "移除引用";
-  remove.addEventListener("click", () => setReference(null));
-  el.reference_card.append(remove);
+function referenceKey(reference) {
+  const region = reference?.region && typeof reference.region === "object" ? reference.region : {};
+  return `${reference?.kind || ""}:${reference?.event_id || ""}:${region.start ?? ""}:${region.end ?? ""}`;
 }
 
-function currentScreenEvent() {
-  const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
-  return (state.followLive && state.liveScreenEvent) || screens.at(-1) || null;
+function setReferences(references) {
+  const unique = [];
+  const seen = new Set();
+  for (const reference of Array.isArray(references) ? references : []) {
+    if (!reference || typeof reference !== "object") continue;
+    const key = referenceKey(reference);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(reference);
+  }
+  state.references = unique;
+  state.reference = unique[0] || null;
+  if (!el.reference_card) return;
+  el.reference_card.hidden = unique.length === 0;
+  el.reference_card.replaceChildren();
+  unique.forEach((reference, index) => {
+    const item = node("div", "reference-item");
+    item.append(
+      node("span", "reference-kind", reference.kind === "screen" ? "Screen 引用" : "Chat 引用"),
+      node("span", "reference-excerpt", reference.excerpt || ""),
+    );
+    const remove = node("button", "icon-button", "×");
+    remove.type = "button";
+    remove.title = `移除第 ${index + 1} 个引用`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.addEventListener("click", () => setReferences(state.references.filter((_item, itemIndex) => itemIndex !== index)));
+    item.append(remove);
+    el.reference_card.append(item);
+  });
+}
+
+function addReference(reference) {
+  if (!reference || typeof reference !== "object") return false;
+  const key = referenceKey(reference);
+  if (state.references.some((item) => referenceKey(item) === key)) return false;
+  setReferences([...state.references, reference]);
+  return true;
+}
+
+// Backwards-compatible helper for integrations that used the old singular API.
+function setReference(reference) {
+  setReferences(reference ? [reference] : []);
+}
+
+function sourceRootFromNode(value) {
+  if (!value) return null;
+  const element = value.nodeType === 1 ? value : value.parentElement || value.parentNode;
+  return element?.closest?.(".message-content, #terminal-screen") || null;
+}
+
+function codePointOffsetBefore(root, container, offset) {
+  if (!root || !container || !root.contains(container)) return null;
+  try {
+    const before = document.createRange();
+    before.selectNodeContents(root);
+    before.setEnd(container, offset);
+    return codePointLength(before.toString());
+  } catch (_error) {
+    return null;
+  }
+}
+
+function textBoundary(root, offset) {
+  const total = codePointLength(root?.textContent || "");
+  let remaining = Math.max(0, Math.min(total, Number(offset) || 0));
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let current = walker.nextNode();
+  while (current) {
+    const value = current.nodeValue || "";
+    const length = codePointLength(value);
+    if (remaining <= length) {
+      const utf16Offset = codePointSlice(value, 0, remaining).length;
+      return { node: current, offset: utf16Offset };
+    }
+    remaining -= length;
+    current = walker.nextNode();
+  }
+  return { node: root, offset: root.childNodes.length };
+}
+
+function setKeyboardRange(root, anchor, focus) {
+  if (!root) return;
+  const total = codePointLength(root.textContent || "");
+  const normalizedAnchor = Math.max(0, Math.min(total, Number(anchor) || 0));
+  const normalizedFocus = Math.max(0, Math.min(total, Number(focus) || 0));
+  const anchorBoundary = textBoundary(root, normalizedAnchor);
+  const focusBoundary = textBoundary(root, normalizedFocus);
+  const range = document.createRange();
+  try {
+    if (normalizedAnchor <= normalizedFocus) {
+      range.setStart(anchorBoundary.node, anchorBoundary.offset);
+      range.setEnd(focusBoundary.node, focusBoundary.offset);
+    } else {
+      range.setStart(focusBoundary.node, focusBoundary.offset);
+      range.setEnd(anchorBoundary.node, anchorBoundary.offset);
+    }
+    const selection = window.getSelection();
+    if (!selection || typeof selection.removeAllRanges !== "function" || typeof selection.addRange !== "function") return;
+    state.keyboardSelection = { root, anchor: normalizedAnchor, focus: normalizedFocus };
+    selection.removeAllRanges();
+    selection.addRange(range);
+  } catch (_error) {
+    state.keyboardSelection = null;
+  }
+}
+
+function handleSourceFocus(event) {
+  const root = sourceRootFromNode(event.target);
+  if (!root) return;
+  const selection = window.getSelection();
+  let offset = 0;
+  if (selection?.rangeCount === 1) {
+    const range = selection.getRangeAt(0);
+    if (range.collapsed && root.contains(range.startContainer)) {
+      offset = codePointOffsetBefore(root, range.startContainer, range.startOffset) ?? 0;
+    } else {
+      const selected = selectionOffsets(root, selection);
+      if (selected) {
+        state.keyboardSelection = { root, anchor: selected.start, focus: selected.end };
+        return;
+      }
+    }
+  }
+  state.keyboardSelection = { root, anchor: offset, focus: offset };
+}
+
+function handleKeyboardSelection(event) {
+  const root = sourceRootFromNode(event.target);
+  if (!root || event.isComposing) return;
+  const total = codePointLength(root.textContent || "");
+  const current = state.keyboardSelection?.root === root
+    ? state.keyboardSelection
+    : { root, anchor: 0, focus: 0 };
+  const key = event.key;
+  if ((event.metaKey || event.ctrlKey) && key.toLowerCase() === "a") {
+    event.preventDefault();
+    setKeyboardRange(root, 0, total);
+    return;
+  }
+  const directional = key === "ArrowLeft" || key === "ArrowRight";
+  const boundary = key === "Home" || key === "End";
+  if (!directional && !boundary) return;
+  const minimum = boundary ? (key === "Home" ? 0 : total) : Math.max(0, Math.min(total, current.focus + (key === "ArrowLeft" ? -1 : 1)));
+  if (event.shiftKey) {
+    event.preventDefault();
+    setKeyboardRange(root, current.anchor, minimum);
+    return;
+  }
+  event.preventDefault();
+  if (directional && current.anchor !== current.focus) {
+    const collapsed = key === "ArrowLeft" ? Math.min(current.anchor, current.focus) : Math.max(current.anchor, current.focus);
+    setKeyboardRange(root, collapsed, collapsed);
+  } else {
+    setKeyboardRange(root, minimum, minimum);
+  }
 }
 
 function selectionOffsets(root, selection) {
   if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return null;
-  const range = selection.getRangeAt(0);
-  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
-  const before = range.cloneRange();
-  before.selectNodeContents(root);
-  before.setEnd(range.startContainer, range.startOffset);
-  const start = before.toString().length;
-  const end = start + range.toString().length;
-  const content = root.textContent || "";
-  if (start < 0 || end > content.length || end <= start) return null;
-  return { start, end, excerpt: content.slice(start, end) };
+  try {
+    const range = selection.getRangeAt(0);
+    if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
+    const before = range.cloneRange();
+    before.selectNodeContents(root);
+    before.setEnd(range.startContainer, range.startOffset);
+    const content = root.textContent || "";
+    const start = codePointLength(before.toString());
+    const end = start + codePointLength(range.toString());
+    const length = codePointLength(content);
+    if (start < 0 || end > length || end <= start) return null;
+    const excerpt = codePointSlice(content, start, end);
+    if (!excerpt.trim()) return null;
+    return { start, end, excerpt };
+  } catch (_error) {
+    return null;
+  }
 }
 
-function captureScreenTextSelection() {
-  if (!state.selectingScreen) return;
-  const source = currentScreenEvent();
-  const selected = selectionOffsets(el.terminal_screen, window.getSelection());
-  if (!source || !selected || !selected.excerpt.trim()) return;
-  setReference({
-    kind: "screen",
-    event_id: source.event_id,
-    region: { start: selected.start, end: selected.end },
-    excerpt: selected.excerpt,
+function selectionCandidate() {
+  try {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return null;
+    const range = selection.getRangeAt(0);
+    const startRoot = sourceRootFromNode(range.startContainer);
+    const endRoot = sourceRootFromNode(range.endContainer);
+    if (!startRoot || startRoot !== endRoot) return null;
+    const source = sourceEventForRoot(startRoot);
+    if (!source) return null;
+    const offsets = selectionOffsets(startRoot, selection);
+    if (!offsets) return null;
+    const rect = range.getBoundingClientRect();
+    return { ...offsets, kind: source.kind, event_id: source.event_id, root: startRoot, rect };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function clearBrowserSelection() {
+  const selection = window.getSelection();
+  if (selection && selection.rangeCount && typeof selection.removeAllRanges === "function") {
+    selection.removeAllRanges();
+  }
+  state.keyboardSelection = null;
+}
+
+function hideSelectionMenu(clearPending = true) {
+  if (!el.selection_menu) return;
+  el.selection_menu.hidden = true;
+  if (clearPending && !state.selectionBusy) state.pendingSelection = null;
+}
+
+function positionSelectionMenu(candidate) {
+  if (!candidate || !el.selection_menu) return;
+  const rect = candidate.rect;
+  const menu = el.selection_menu;
+  const menuRect = menu.getBoundingClientRect();
+  const gutter = 8;
+  const left = Math.max(gutter, Math.min(window.innerWidth - menuRect.width - gutter, rect.left + rect.width / 2 - menuRect.width / 2));
+  let top = rect.top - menuRect.height - 10;
+  if (top < gutter) top = Math.min(window.innerHeight - menuRect.height - gutter, rect.bottom + 10);
+  menu.style.left = `${Math.max(gutter, left)}px`;
+  menu.style.top = `${Math.max(gutter, top)}px`;
+}
+
+function showSelectionMenu(candidate) {
+  if (!candidate || !el.selection_menu || state.selectionBusy || state.evaluationSelection) return;
+  state.pendingSelection = candidate;
+  const terminal = ["completed", "failed", "interrupted"].includes(state.snapshot?.meeting?.status);
+  el.selection_menu.querySelectorAll("[data-selection-action]").forEach((button) => {
+    button.disabled = button.dataset.selectionAction === "add-to-conversation" && terminal;
   });
+  el.selection_menu.hidden = false;
+  requestAnimationFrame(() => positionSelectionMenu(candidate));
+}
+
+function scheduleSelectionMenu() {
+  clearTimeout(state.selectionTimer);
+  state.selectionTimer = setTimeout(() => {
+    state.selectionTimer = null;
+    if (state.selectionBusy) return;
+    const candidate = selectionCandidate();
+    if (candidate) showSelectionMenu(candidate);
+    else hideSelectionMenu();
+  }, 45);
+}
+
+function openEvaluationPanel(candidate) {
+  if (!candidate || !el.evaluation_panel) return;
+  state.evaluationSelection = candidate;
+  state.pendingSelection = null;
+  el.evaluation_error.hidden = true;
+  el.evaluation_excerpt.textContent = candidate.excerpt || "";
+  el.evaluation_form.querySelectorAll('input[name="evaluation-tag"]').forEach((input) => {
+    input.checked = false;
+    input.disabled = false;
+  });
+  el.evaluation_comment.value = "";
+  el.message_form.hidden = true;
+  el.evaluation_panel.hidden = false;
+  clearBrowserSelection();
+  hideSelectionMenu(false);
+  requestAnimationFrame(() => el.evaluation_form.querySelector('input[name="evaluation-tag"]')?.focus());
+}
+
+function closeEvaluationPanel() {
+  state.evaluationSelection = null;
+  state.evaluationBusy = false;
+  if (el.evaluation_form) {
+    el.evaluation_form.querySelectorAll('input[name="evaluation-tag"]').forEach((input) => {
+      input.checked = false;
+      input.disabled = false;
+    });
+  }
+  if (el.evaluation_comment) el.evaluation_comment.value = "";
+  if (el.evaluation_error) el.evaluation_error.hidden = true;
+  if (el.evaluation_panel) el.evaluation_panel.hidden = true;
+  if (el.message_form) el.message_form.hidden = false;
+}
+
+function selectedDeliveryMode() {
+  return el.delivery_mode?.querySelector('input[name="delivery-choice"]:checked')?.value || "next_action";
+}
+
+async function submitEvaluation(event) {
+  event?.preventDefault();
+  const selected = state.evaluationSelection;
+  if (!selected || !state.selectedId || state.evaluationBusy) return;
+  const tag = el.evaluation_form.querySelector('input[name="evaluation-tag"]:checked')?.value;
+  if (!tag) {
+    el.evaluation_error.textContent = "请选择胜任或不胜任";
+    el.evaluation_error.hidden = false;
+    return;
+  }
+  const comment = el.evaluation_comment.value.trim();
+  state.evaluationBusy = true;
+  el.evaluation_submit_button.disabled = true;
+  el.evaluation_back_button.disabled = true;
+  el.evaluation_cancel_button.disabled = true;
+  el.evaluation_error.hidden = true;
+  try {
+    const response = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/scores`, {
+      method: "POST",
+      body: JSON.stringify({
+        tag,
+        comment: comment || null,
+        reference: {
+          kind: selected.kind,
+          event_id: selected.event_id,
+          region: { start: selected.start, end: selected.end },
+        },
+      }),
+    });
+    const scoreEvent = response?.event;
+    if (!state.followLive && scoreEvent?.event_id) state.scoreOverlayIds.add(scoreEvent.event_id);
+    if (scoreEvent) mergeTimelineEvents([scoreEvent]);
+    closeEvaluationPanel();
+    clearBrowserSelection();
+    renderAll();
+    try {
+      await refreshSelected();
+      toast(`已记录${labels.score[tag]}评价`);
+    } catch (refreshError) {
+      toast(`评价已保存，页面刷新失败：${refreshError.message}`);
+    }
+  } catch (error) {
+    el.evaluation_error.textContent = error.message;
+    el.evaluation_error.hidden = false;
+  } finally {
+    state.evaluationBusy = false;
+    el.evaluation_submit_button.disabled = false;
+    el.evaluation_back_button.disabled = false;
+    el.evaluation_cancel_button.disabled = false;
+  }
+}
+
+async function handleSelectionAction(action) {
+  const selected = state.pendingSelection;
+  if (!selected || state.selectionBusy || state.evaluationSelection) return;
+  if (action === "evaluate") {
+    openEvaluationPanel(selected);
+    return;
+  }
+  if (action === "add-to-conversation") {
+    if (["completed", "failed", "interrupted"].includes(state.snapshot?.meeting?.status)) return;
+    const added = addReference({
+      kind: selected.kind,
+      event_id: selected.event_id,
+      region: { start: selected.start, end: selected.end },
+      excerpt: selected.excerpt,
+    });
+    hideSelectionMenu();
+    clearBrowserSelection();
+    el.message_input.focus();
+    toast(added ? `已添加引用（共 ${state.references.length} 个）` : "这个引用已经添加");
+    return;
+  }
 }
 
 async function loadHealth() {
@@ -459,6 +1075,12 @@ async function loadMeetings() {
 
 async function selectMeeting(meetingId) {
   stopLiveScreenQueue();
+  hideSelectionMenu();
+  hidePlaybackHover();
+  clearBrowserSelection();
+  closeEvaluationPanel();
+  setReferences([]);
+  state.scoreOverlayIds.clear();
   state.selectedId = meetingId;
   const [snapshot, eventPayload] = await Promise.all([
     api(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`),
@@ -476,16 +1098,19 @@ async function selectMeeting(meetingId) {
 }
 
 async function refreshSelected() {
-  if (!state.selectedId) return;
-  const snapshot = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/snapshot`);
-  const eventPayload = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/events?after=${state.cursor}`);
+  const meetingId = state.selectedId;
+  if (!meetingId) return;
+  const cursor = state.cursor;
+  const [snapshot, eventPayload] = await Promise.all([
+    api(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`),
+    api(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=${cursor}`),
+  ]);
+  if (meetingId !== state.selectedId) return;
   state.snapshot = snapshot;
   const incoming = eventPayload.events || [];
-  if (incoming.length) {
-    state.timeline.push(...incoming);
-    enqueueLiveScreens(incoming);
-  }
-  state.cursor = eventPayload.cursor || state.cursor;
+  const additions = mergeTimelineEvents(incoming);
+  if (additions.length) enqueueLiveScreens(additions);
+  state.cursor = Math.max(Number(eventPayload.cursor) || 0, state.cursor);
   if (state.followLive) state.playbackIndex = state.timeline.length - 1;
   renderAll();
 }
@@ -514,6 +1139,22 @@ function openNewDialog() {
   el.initial_message.focus();
 }
 
+async function loadSettings() {
+  const payload = await api("/api/settings");
+  state.judgeName = typeof payload.judge_name === "string" && payload.judge_name.trim()
+    ? payload.judge_name.trim()
+    : "human";
+  el.judge_name_input.value = state.judgeName;
+}
+
+function openSettingsDialog() {
+  el.settings_error.hidden = true;
+  el.judge_name_input.value = state.judgeName;
+  el.settings_dialog.showModal();
+  el.judge_name_input.focus();
+  el.judge_name_input.select();
+}
+
 function textTokens(value) {
   const lines = value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
   const tokens = [];
@@ -527,8 +1168,33 @@ function textTokens(value) {
 function bind() {
   el.new_button.addEventListener("click", openNewDialog);
   el.welcome_new_button.addEventListener("click", openNewDialog);
+  el.settings_button.addEventListener("click", openSettingsDialog);
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
+  el.evaluation_form.addEventListener("submit", submitEvaluation);
+  el.evaluation_back_button.addEventListener("click", closeEvaluationPanel);
+  el.evaluation_cancel_button.addEventListener("click", closeEvaluationPanel);
+  el.close_settings.addEventListener("click", () => el.settings_dialog.close());
+  el.cancel_settings.addEventListener("click", () => el.settings_dialog.close());
+  el.settings_form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    el.save_settings.disabled = true;
+    el.settings_error.hidden = true;
+    try {
+      const payload = await api("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ judge_name: el.judge_name_input.value }),
+      });
+      state.judgeName = payload.judge_name;
+      el.judge_name_input.value = state.judgeName;
+      el.settings_dialog.close();
+    } catch (error) {
+      el.settings_error.textContent = error.message;
+      el.settings_error.hidden = false;
+    } finally {
+      el.save_settings.disabled = false;
+    }
+  });
   el.new_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     el.start_button.disabled = true;
@@ -551,11 +1217,11 @@ function bind() {
     if (!message) return;
     el.send_message_button.disabled = true;
     try {
-      const payload = { message, delivery: el.delivery_mode.value };
-      if (state.reference) payload.reference = state.reference;
+      const payload = { message, delivery: selectedDeliveryMode() };
+      if (state.references.length) payload.references = state.references;
       await postMeetingAction("messages", payload);
       el.message_input.value = "";
-      setReference(null);
+      setReferences([]);
     }
     catch (error) { toast(error.message); }
     finally { el.send_message_button.disabled = false; }
@@ -592,35 +1258,65 @@ function bind() {
     document.querySelectorAll("[data-chat-filter]").forEach((item) => item.classList.toggle("active", item === button));
     renderChat();
   }));
-  el.chat_list.addEventListener("mouseup", () => {
-    const selection = window.getSelection();
-    const text = selection?.toString() || "";
-    const node = selection?.anchorNode?.parentElement?.closest?.("article[data-event-id]");
-    if (!text || !node) return;
-    const event = state.timeline.find((item) => item.event_id === node.dataset.eventId);
-    if (!event || event.kind !== "chat") return;
-    const start = event.content.indexOf(text);
-    if (start < 0) return;
-    setReference({ kind: "chat", event_id: event.event_id, region: { start, end: start + text.length }, excerpt: text });
-    selection.removeAllRanges();
+  for (const container of [el.chat_list, el.terminal_screen]) {
+    container.addEventListener("pointerup", scheduleSelectionMenu);
+    container.addEventListener("mouseup", scheduleSelectionMenu);
+    container.addEventListener("touchend", () => setTimeout(scheduleSelectionMenu, 70), { passive: true });
+    container.addEventListener("focusin", handleSourceFocus);
+    container.addEventListener("keydown", handleKeyboardSelection);
+  }
+  document.addEventListener("selectionchange", scheduleSelectionMenu);
+  document.addEventListener("pointerdown", (event) => {
+    if (!el.selection_menu.contains(event.target)) {
+      hideSelectionMenu();
+      clearBrowserSelection();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      if (state.evaluationSelection && !state.evaluationBusy) {
+        closeEvaluationPanel();
+      }
+      hideSelectionMenu();
+      clearBrowserSelection();
+      state.keyboardSelection = null;
+    }
+  });
+  el.selection_menu.addEventListener("pointerdown", (event) => event.stopPropagation());
+  el.selection_menu.querySelectorAll("[data-selection-action]").forEach((button) => {
+    button.addEventListener("click", () => handleSelectionAction(button.dataset.selectionAction));
   });
   el.chat_list.addEventListener("scroll", () => {
     if (state.renderingChat) return;
     const remaining = el.chat_list.scrollHeight - el.chat_list.clientHeight - el.chat_list.scrollTop;
     state.chatFollow = remaining <= 12;
   }, { passive: true });
-  el.screen_reference_button.addEventListener("click", () => {
-    state.selectingScreen = !state.selectingScreen;
-    el.screen_reference_button.classList.toggle("active", state.selectingScreen);
-    el.screen_reference_button.textContent = state.selectingScreen ? "拖拽选择中" : "圈选 Screen";
-  });
-  el.terminal_screen.addEventListener("mouseup", () => setTimeout(captureScreenTextSelection, 0));
   el.free_scroll_button.addEventListener("click", () => setViewportMode("free"));
   el.follow_scroll_button.addEventListener("click", () => setViewportMode("follow"));
-  el.playback_slider.addEventListener("input", () => { state.followLive = false; state.playbackIndex = Number(el.playback_slider.value); stopLiveScreenQueue(); stopPlayback(); renderAll(); });
-  el.live_button.addEventListener("click", () => { state.followLive = true; state.playbackIndex = state.timeline.length - 1; stopLiveScreenQueue(); stopPlayback(); renderAll(); });
+  el.playback_slider.addEventListener("mousemove", showPlaybackHover);
+  el.playback_slider.addEventListener("mouseleave", hidePlaybackHover);
+  el.playback_slider.addEventListener("pointercancel", hidePlaybackHover);
+  el.playback_slider.addEventListener("input", () => {
+    state.scoreOverlayIds.clear();
+    state.followLive = false;
+    state.playbackIndex = Number(el.playback_slider.value);
+    stopLiveScreenQueue();
+    stopPlayback();
+    renderAll();
+  });
+  el.live_button.addEventListener("click", () => {
+    state.scoreOverlayIds.clear();
+    hidePlaybackHover();
+    state.followLive = true;
+    state.playbackIndex = state.timeline.length - 1;
+    stopLiveScreenQueue();
+    stopPlayback();
+    renderAll();
+  });
   el.play_button.addEventListener("click", () => {
     if (state.playing) { stopPlayback(); return; }
+    state.scoreOverlayIds.clear();
+    hidePlaybackHover();
     stopLiveScreenQueue();
     state.playing = true;
     state.followLive = false;
@@ -661,7 +1357,7 @@ async function boot() {
     const session = await api("/api/session");
     state.csrfToken = session.csrf_token;
     state.csrfHeader = session.csrf_header || state.csrfHeader;
-    await Promise.all([loadHealth(), loadMeetings()]);
+    await Promise.all([loadHealth(), loadMeetings(), loadSettings()]);
     if (state.meetings.length) await selectMeeting(state.meetings[0].meeting_id);
     else renderAll();
   } catch (error) { toast(error.message); }

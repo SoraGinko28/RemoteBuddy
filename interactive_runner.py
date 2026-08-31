@@ -358,10 +358,12 @@ class InteractiveRunner:
         self._last_action_was_chat = False
         self._last_terminal_evidence: Optional[str] = None
         self._cycle_started_monotonic = time.monotonic()
-        self._current_input_seq = max(
-            (int(event.get("seq", 0)) for event in self.store.events()),
-            default=0,
-        )
+        self._current_input_seq = self._latest_sequence(self.store.events())
+
+    @staticmethod
+    def _latest_sequence(events: Sequence[Dict[str, Any]], default: int = 0) -> int:
+        """Return the durable journal cursor, including annotation events."""
+        return max((int(event.get("seq", 0)) for event in events), default=default)
 
     def start(self) -> None:
         try:
@@ -584,8 +586,14 @@ class InteractiveRunner:
                 if self.store.meeting.control_owner != "agent" or self.store.meeting.status != "running":
                     return
                 capture_workspace(self.store, self.transport)
-                unread = self.store.events_after(self.store.meeting.agent_cursor)
-                latest_sequence = int(self.store.events()[-1]["seq"]) if self.store.events() else 0
+                unread = [
+                    event
+                    for event in self.store.events_after(self.store.meeting.agent_cursor)
+                    if event.get("kind") != "score"
+                ]
+                latest_sequence = self._latest_sequence(
+                    self.store.events(), self.store.meeting.agent_cursor
+                )
                 self._current_input_seq = latest_sequence
                 generation = self.store.meeting.request_generation
                 elapsed = self._cycle_elapsed()
@@ -1032,7 +1040,7 @@ class InteractiveRunner:
     ) -> str:
         relevant = []
         for event in unread:
-            if event.get("kind") == "screen":
+            if event.get("kind") in {"screen", "score"}:
                 continue
             if (
                 event.get("kind") == "chat"
@@ -1054,7 +1062,11 @@ class InteractiveRunner:
         chat_history = self._bounded_history(self.store.chat_messages()) if include_history else []
         action_history = (
             self._bounded_history(
-                [event for event in self.store.events() if event.get("kind") not in {"screen", "chat"}],
+                [
+                    event
+                    for event in self.store.events()
+                    if event.get("kind") not in {"screen", "chat", "score"}
+                ],
                 include_action_details=True,
             )
             if include_history
@@ -1095,6 +1107,10 @@ class InteractiveRunner:
         """Keep stateless Responses prompts useful without unbounded growth."""
         records = []
         for event in events:
+            # Scores are human annotations only; never expose them to Agent
+            # prompts, even when a caller supplies an unfiltered event list.
+            if event.get("kind") == "score":
+                continue
             record: Dict[str, Any] = {
                 "seq": event.get("seq"),
                 "captured_at": event.get("captured_at"),
@@ -1106,7 +1122,14 @@ class InteractiveRunner:
             }
             if event.get("kind") == "chat":
                 data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                raw_references = data.get("references")
+                if isinstance(raw_references, list):
+                    record["references"] = [
+                        item for item in raw_references if isinstance(item, dict)
+                    ]
                 if isinstance(data.get("reference"), dict):
+                    # Keep the old singular field available to clients that
+                    # have not migrated to the V6 list shape yet.
                     record["reference"] = data["reference"]
             if include_action_details and event.get("kind") == "action":
                 data = event.get("data") if isinstance(event.get("data"), dict) else {}

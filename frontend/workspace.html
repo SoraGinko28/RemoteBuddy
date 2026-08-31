@@ -14,7 +14,10 @@
           <p class="brand">RemoteBuddy</p>
           <p class="brand-subtitle">共享终端协作</p>
         </div>
-        <span id="health-dot" class="health-dot" title="环境状态"></span>
+        <div class="brand-actions">
+          <span id="health-dot" class="health-dot" title="环境状态"></span>
+          <button id="settings-button" class="icon-button" type="button" title="页面设置" aria-label="页面设置">⚙</button>
+        </div>
       </header>
 
       <button id="new-button" class="primary-command" type="button"><span aria-hidden="true">＋</span> 新会话</button>
@@ -80,16 +83,63 @@
               </div>
             </header>
             <div id="chat-list" class="chat-list" aria-live="polite"></div>
-            <form id="message-form" class="message-form">
-              <label class="sr-only" for="message-input">发送消息</label>
-              <textarea id="message-input" rows="3" maxlength="1048576" placeholder="继续说明、纠正或打断 Agent…"></textarea>
-              <div id="reference-card" class="reference-card" hidden></div>
-              <div class="composer-footer">
-                <span id="message-hint">消息将在下一个动作边界生效</span>
-                <select id="delivery-mode" title="消息生效时机"><option value="next_action">下一步读取</option><option value="interrupt">立即插入</option></select>
-                <button id="send-message-button" class="primary-command compact" type="submit">发送</button>
-              </div>
-            </form>
+            <div id="composer-shell" class="composer-shell">
+              <form id="message-form" class="message-form">
+                <label class="sr-only" for="message-input">发送消息</label>
+                <textarea id="message-input" rows="3" maxlength="1048576" placeholder="继续说明、纠正或打断 Agent…"></textarea>
+                <div id="reference-card" class="reference-card" hidden></div>
+                <div class="composer-footer">
+                  <span id="message-hint">消息将在下一个动作边界生效</span>
+                  <fieldset id="delivery-mode" class="delivery-options" aria-label="消息生效时机">
+                    <legend class="sr-only">消息生效时机</legend>
+                    <label class="delivery-option">
+                      <input type="radio" name="delivery-choice" value="next_action" checked>
+                      <span class="square-control" aria-hidden="true"></span>
+                      <span>下一步读取</span>
+                    </label>
+                    <label class="delivery-option">
+                      <input type="radio" name="delivery-choice" value="interrupt">
+                      <span class="square-control" aria-hidden="true"></span>
+                      <span>立即插入</span>
+                    </label>
+                  </fieldset>
+                  <button id="send-message-button" class="primary-command compact" type="submit">发送</button>
+                </div>
+              </form>
+
+              <section id="evaluation-panel" class="evaluation-panel" hidden aria-labelledby="evaluation-title">
+                <header class="evaluation-header">
+                  <div>
+                    <p class="pane-kicker">REVIEW</p>
+                    <h3 id="evaluation-title">评价选中内容</h3>
+                  </div>
+                  <button id="evaluation-back-button" class="command-button" type="button">返回对话框</button>
+                </header>
+                <blockquote id="evaluation-excerpt" class="evaluation-excerpt"></blockquote>
+                <form id="evaluation-form" class="evaluation-form">
+                  <fieldset class="evaluation-choices">
+                    <legend>评价</legend>
+                    <label class="evaluation-choice competent">
+                      <input type="radio" name="evaluation-tag" value="competent">
+                      <span class="square-control" aria-hidden="true"></span>
+                      <span>胜任</span>
+                    </label>
+                    <label class="evaluation-choice incompetent">
+                      <input type="radio" name="evaluation-tag" value="incompetent">
+                      <span class="square-control" aria-hidden="true"></span>
+                      <span>不胜任</span>
+                    </label>
+                  </fieldset>
+                  <label class="evaluation-comment-label" for="evaluation-comment">评论（可选）</label>
+                  <textarea id="evaluation-comment" rows="3" maxlength="1048576" placeholder="补充说明"></textarea>
+                  <div id="evaluation-error" class="form-error" hidden></div>
+                  <footer class="evaluation-footer">
+                    <button id="evaluation-cancel-button" class="command-button" type="button">取消</button>
+                    <button id="evaluation-submit-button" class="primary-command" type="submit">保存评价</button>
+                  </footer>
+                </form>
+              </section>
+            </div>
           </section>
 
           <section class="terminal-pane" aria-label="共享终端">
@@ -104,8 +154,8 @@
                 <span id="terminal-path">workspace</span>
               </div>
               <span id="terminal-readonly" class="readonly-badge">只读预览</span>
-                <button id="screen-reference-button" class="command-button compact" type="button" title="拖拽选择终端区域">圈选 Screen</button>
-                <div class="viewport-mode" role="group" aria-label="内容滚动模式">
+              <div id="terminal-score-status" class="score-summary" aria-live="polite"></div>
+              <div class="viewport-mode" role="group" aria-label="内容滚动模式">
                 <span class="viewport-mode-label">视野</span>
                 <div class="segmented">
                   <button id="free-scroll-button" class="segment" type="button" aria-pressed="false" title="聊天和终端都保留你当前的滚动位置">自由浏览</button>
@@ -162,8 +212,13 @@
 
         <footer class="playback-bar">
           <button id="play-button" class="icon-button" type="button" title="播放" aria-label="播放">▶</button>
-          <input id="playback-slider" type="range" min="-1" max="-1" value="-1" aria-label="事件回放位置">
-          <span id="playback-position">实时</span>
+          <div id="playback-track" class="playback-track">
+            <input id="playback-slider" type="range" min="0" max="0" value="0" aria-label="事件回放位置" title="移动鼠标查看评分状态" disabled>
+            <output id="playback-hover" class="playback-hover" aria-live="polite" hidden></output>
+          </div>
+          <div class="playback-info">
+            <span id="playback-position">实时</span>
+          </div>
           <button id="live-button" class="command-button" type="button">回到实时</button>
           <button id="inspect-button" class="icon-button" type="button" title="查看当前事件" aria-label="查看当前事件">i</button>
         </footer>
@@ -202,6 +257,31 @@
       </footer>
     </form>
   </dialog>
+
+  <dialog id="settings-dialog" class="settings-dialog">
+    <form id="settings-form" method="dialog">
+      <header>
+        <div>
+          <p class="pane-kicker">SETTINGS</p>
+          <h2>页面设置</h2>
+        </div>
+        <button id="close-settings" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <label for="judge-name-input">评判人名称</label>
+      <input id="judge-name-input" type="text" maxlength="200" autocomplete="name" required>
+      <p class="settings-note">名称只影响之后新增的评分，已有评分保持原名。</p>
+      <div id="settings-error" class="form-error" hidden></div>
+      <footer>
+        <button id="cancel-settings" class="command-button" type="button">取消</button>
+        <button id="save-settings" class="primary-command" type="submit">保存</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="selection-menu" class="selection-menu" hidden role="toolbar" aria-label="选区操作">
+    <button type="button" data-selection-action="evaluate" class="score-action evaluate">评价</button>
+    <button type="button" data-selection-action="add-to-conversation" class="score-action add-to-conversation">添加到对话</button>
+  </div>
 
   <dialog id="event-dialog" class="event-dialog">
     <header>

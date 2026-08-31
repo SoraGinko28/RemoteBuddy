@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import MISSING, asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from typing_policy import TYPING_POLICY_VERSION, TYPING_PROFILES
 
@@ -37,7 +37,9 @@ VALID_PHASES = {
     "interrupted",
 }
 VALID_OWNERS = {"agent", "human", "none"}
-VALID_EVENT_KINDS = {"chat", "screen", "action", "control", "state", "error"}
+VALID_EVENT_KINDS = {"chat", "screen", "score", "action", "control", "state", "error"}
+VALID_SCORE_TAGS = {"competent", "incompetent"}
+MAX_CHAT_REFERENCES = 32
 
 
 class MeetingError(RuntimeError):
@@ -433,6 +435,7 @@ class MeetingStore:
         content: str,
         message_type: str,
         reference: Optional[Dict[str, Any]] = None,
+        references: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if actor not in {"human", "agent"}:
             raise MeetingError("chat actor must be human or agent")
@@ -440,9 +443,104 @@ class MeetingStore:
             raise MeetingError("invalid chat message type")
         if not isinstance(content, str) or not content.strip():
             raise MeetingError("chat content must be non-empty")
-        data = {"reference": reference} if reference is not None else None
+        # ``reference`` is the v2 single-reference shape.  V6 messages may
+        # carry any number of immutable content references, so persist the
+        # normalized list while retaining the singular alias for readers that
+        # still consume the older journal shape.
+        normalized: List[Dict[str, Any]] = []
+        legacy_single = references is None and reference is not None
+        if reference is not None:
+            if not isinstance(reference, Mapping):
+                raise MeetingError("chat reference must be an object")
+            normalized.append(dict(reference))
+        if references is not None:
+            if isinstance(references, (str, bytes)):
+                raise MeetingError("chat references must be an array")
+            for item in references:
+                if not isinstance(item, Mapping):
+                    raise MeetingError("chat references must contain objects")
+                normalized.append(dict(item))
+        if len(normalized) > MAX_CHAT_REFERENCES:
+            raise MeetingError(f"chat references may contain at most {MAX_CHAT_REFERENCES} items")
+        # Deduplicate repeated selections without changing their order.
+        unique: List[Dict[str, Any]] = []
+        seen = set()
+        for item in normalized:
+            key = (
+                item.get("kind"),
+                item.get("event_id"),
+                (item.get("region") or {}).get("start") if isinstance(item.get("region"), Mapping) else None,
+                (item.get("region") or {}).get("end") if isinstance(item.get("region"), Mapping) else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        data: Optional[Dict[str, Any]] = None
+        if unique:
+            # Keep the exact legacy shape for callers that still pass the
+            # singular argument.  The V6 list shape is emitted only when the
+            # caller explicitly supplies ``references``.
+            data = {"reference": unique[0]} if legacy_single and len(unique) == 1 else {"references": unique}
         return self.append_event(
             "chat", actor, self.meeting.phase, content=content.strip(), message_type=message_type, data=data
+        )
+
+    def append_score(
+        self,
+        tag: str,
+        reference: Any = None,
+        judge_name: Any = "human",
+        score: Optional[float] = None,
+        comment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Append an immutable human score without entering the chat flow."""
+        # The public shape is ``(tag, reference, judge_name)``.  Keep accepting
+        # the earlier ``(tag, judge_name, reference)`` positional order so
+        # existing callers can upgrade without rewriting their call sites.
+        if isinstance(reference, str) and isinstance(judge_name, Mapping):
+            reference, judge_name = judge_name, reference
+        if not isinstance(tag, str) or tag not in VALID_SCORE_TAGS:
+            raise MeetingError("invalid score tag")
+        if not isinstance(judge_name, str) or not judge_name.strip():
+            raise MeetingError("judge name must be non-empty")
+        if comment is not None:
+            if not isinstance(comment, str):
+                raise MeetingError("score comment must be text or null")
+            comment = comment.strip() or None
+            if comment is not None and len(comment.encode("utf-8")) > MAX_MESSAGE_BYTES:
+                raise MeetingError(f"score comment exceeds {MAX_MESSAGE_BYTES} bytes")
+        if not isinstance(reference, Mapping):
+            raise MeetingError("score reference must be an object")
+        reference = dict(reference)
+        source_event = next(
+            (event for event in self.events() if event.get("event_id") == reference.get("event_id")),
+            None,
+        )
+        if source_event is None:
+            raise MeetingError("score reference source event was not found")
+        try:
+            # V6 is the current reference contract; the V5 projection still
+            # remains available for replaying older journals.
+            from meetingV6 import reference_from_event
+
+            reference = reference_from_event(source_event, reference)
+        except (TypeError, ValueError) as exc:
+            raise MeetingError(str(exc)) from exc
+        # V5 scores are categorical annotations.  Keep the field for forward
+        # compatibility, but never trust or persist a caller-provided value.
+        score = None
+        return self.append_event(
+            "score",
+            "human",
+            self.meeting.phase,
+            data={
+                "tag": tag,
+                "score": score,
+                "judge_name": judge_name.strip(),
+                "reference": dict(reference),
+                "comment": comment,
+            },
         )
 
     def append_screen(
@@ -511,6 +609,18 @@ class MeetingStore:
     def chat_messages(self) -> List[Dict[str, Any]]:
         return [event for event in self.events() if event.get("kind") == "chat"]
 
+    def score_messages(self) -> List[Dict[str, Any]]:
+        return [event for event in self.events() if event.get("kind") == "score"]
+
+    # Keep query naming discoverable for callers that use the event-oriented
+    # terminology elsewhere in the store API.
+    def score_events(self) -> List[Dict[str, Any]]:
+        return self.score_messages()
+
+    def scores(self) -> List[Dict[str, Any]]:
+        """Short alias for callers that treat scores as a stream."""
+        return self.score_messages()
+
     def render_conversation(self, events: Optional[List[Dict[str, Any]]] = None) -> None:
         source = events if events is not None else self.events()
         lines = [f"# RemoteBuddy Session: {self.meeting.meeting_id}", ""]
@@ -519,10 +629,27 @@ class MeetingStore:
                 continue
             actor = "You" if event.get("actor") == "human" else "Agent"
             data = event.get("data") if isinstance(event.get("data"), dict) else {}
-            reference = data.get("reference") if isinstance(data.get("reference"), dict) else None
-            reference_lines = []
-            if reference:
-                reference_lines = ["", f"> Reference: {reference.get('kind')} · {reference.get('event_id')}", f"> {reference.get('excerpt', '')}"]
+            references: List[Mapping[str, Any]] = []
+            raw_references = data.get("references")
+            if isinstance(raw_references, list):
+                references.extend(item for item in raw_references if isinstance(item, Mapping))
+            elif isinstance(data.get("reference"), Mapping):
+                references.append(data["reference"])
+            # A journal written by an older client can contain both aliases;
+            # collapse those duplicates when rebuilding the markdown view.
+            if isinstance(data.get("reference"), Mapping) and not any(
+                item == data["reference"] for item in references
+            ):
+                references.append(data["reference"])
+            reference_lines: List[str] = []
+            for reference in references:
+                reference_lines.extend(
+                    [
+                        "",
+                        f"> Reference: {reference.get('kind')} · {reference.get('event_id')}",
+                        f"> {reference.get('excerpt', '')}",
+                    ]
+                )
             lines.extend(
                 [
                     f"## {actor} · {event.get('message_type') or 'message'}",

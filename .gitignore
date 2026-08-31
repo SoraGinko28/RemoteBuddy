@@ -8,6 +8,7 @@ model_api/config.toml
 .env
 .env.*
 !.env.example
+.remotebuddy/
 
 # Local test/tooling output
 .pytest_cache/

@@ -7,15 +7,17 @@ import hmac
 import json
 import math
 import mimetypes
+import os
 import re
 import secrets
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from agent_protocol import AgentBackend
@@ -33,16 +35,18 @@ from interactive_runner import (
 )
 from meeting_v2 import (
     MAX_EVENT_CONTENT_BYTES,
+    MAX_CHAT_REFERENCES,
     MAX_MESSAGE_BYTES,
     MEETING_ID_RE,
     SCHEMA_VERSION,
+    VALID_SCORE_TAGS,
     MeetingError,
     MeetingStore,
     UnsupportedMeetingError,
     sha256_text,
     utc_now,
 )
-from MeetingV3 import reference_from_event
+from meetingV6 import reference_from_event
 from model_api_client import (
     AgentAction,
     MODEL_RE,
@@ -67,6 +71,23 @@ EVENT_TYPES = {"command", "vim_keys"}
 # Human terminal input is intentionally disabled while the shared workspace
 # screen is being validated. Agent actions still use the internal transport.
 HUMAN_TERMINAL_READ_ONLY = True
+DEFAULT_JUDGE_NAME = "human"
+MAX_JUDGE_NAME_BYTES = 200
+LOCAL_SETTINGS_PATH = ".remotebuddy/settings.local.json"
+SCORE_IGNORED_FIELDS = frozenset(
+    {
+        "score",
+        "value",
+        "numeric_score",
+        "rating",
+        "judge_name",
+        "judge",
+        "excerpt",
+        "source_sha256",
+        "source_hash",
+    }
+)
+MAX_SCORE_COMMENT_BYTES = MAX_MESSAGE_BYTES
 
 
 class WebError(RuntimeError):
@@ -74,6 +95,67 @@ class WebError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+def _settings_path(project_root: Path) -> Path:
+    # Check the lexical path before resolving it so a local symlink cannot
+    # redirect settings writes outside the project.
+    lexical = project_root / LOCAL_SETTINGS_PATH
+    root = project_root.resolve()
+    if root not in lexical.resolve().parents:
+        raise WebError(500, "settings path escapes project root")
+    settings_dir = lexical.parent
+    if settings_dir.exists() and settings_dir.is_symlink():
+        raise WebError(500, "local settings directory must not be a symlink")
+    if lexical.exists() and lexical.is_symlink():
+        raise WebError(500, "local settings file must not be a symlink")
+    path = lexical.resolve()
+    if root not in path.parents:
+        raise WebError(500, "settings path escapes project root")
+    return path
+
+
+def _validate_judge_name(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise WebError(400, "judge_name must be a non-empty string")
+    value = value.strip()
+    if len(value.encode("utf-8")) > MAX_JUDGE_NAME_BYTES:
+        raise WebError(413, "judge_name is too large")
+    return value
+
+
+def _read_judge_name(project_root: Path) -> str:
+    path = _settings_path(project_root)
+    if not path.exists():
+        return DEFAULT_JUDGE_NAME
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WebError(500, "local settings are invalid") from exc
+    if not isinstance(payload, dict):
+        raise WebError(500, "local settings are invalid")
+    value = payload.get("judge_name", DEFAULT_JUDGE_NAME)
+    try:
+        return _validate_judge_name(value)
+    except WebError as exc:
+        raise WebError(500, "local settings contain an invalid judge_name") from exc
+
+
+def _write_judge_name(project_root: Path, judge_name: str) -> None:
+    path = _settings_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".settings.local.", dir=str(path.parent))
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump({"judge_name": judge_name}, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(temporary_path), str(path))
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
 
 
 def _finite_positive(value: Any, label: str) -> float:
@@ -187,6 +269,19 @@ class MeetingWebService:
         except ModelConfigError as exc:
             raise WebError(503, str(exc)) from exc
 
+    def settings(self) -> Dict[str, Any]:
+        """Return machine-local page settings that are safe to expose."""
+        with self.lock:
+            return {"judge_name": _read_judge_name(self.project_root)}
+
+    def update_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) != {"judge_name"}:
+            raise WebError(400, "settings request must contain only judge_name")
+        judge_name = _validate_judge_name(payload.get("judge_name"))
+        with self.lock:
+            _write_judge_name(self.project_root, judge_name)
+        return {"judge_name": judge_name}
+
     def _probe_codex_config(self, config: ModelApiConfig) -> Tuple[bool, str]:
         cache_key = f"{config.model}:{config.reasoning_effort}:{config.codex_dynamic_tools}"
         now = time.monotonic()
@@ -233,6 +328,7 @@ class MeetingWebService:
             "meeting": _public_manifest(store),
             "conversation": conversation,
             "chat": [event for event in events if event.get("kind") == "chat"],
+            "scores": [event for event in events if event.get("kind") == "score"],
             "latest_screen": store.latest_screen(),
             "revision": _event_revision(store),
             "cursor": int(events[-1]["seq"]) if events else 0,
@@ -249,8 +345,51 @@ class MeetingWebService:
             raise WebError(422, "reference source event was not found")
         try:
             return reference_from_event(event, payload)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise WebError(422, str(exc)) from exc
+
+    def _validated_references(
+        self,
+        store: MeetingStore,
+        payload: Mapping[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Validate the V6 reference list while accepting the V2 singular alias."""
+        has_list = "references" in payload
+        has_single = "reference" in payload
+        if has_list and payload.get("references") is not None and not isinstance(payload.get("references"), list):
+            raise WebError(400, "references must be an array")
+        candidates: List[Any] = []
+        if has_list and isinstance(payload.get("references"), list):
+            candidates.extend(payload["references"])
+        if has_single and payload.get("reference") is not None:
+            # Some V6 callers kept the old field name while changing its
+            # value to a list.  Accept that spelling alongside ``references``
+            # so the migration does not force a flag-day client update.
+            singular_value = payload.get("reference")
+            if isinstance(singular_value, list):
+                candidates.extend(singular_value)
+            else:
+                candidates.append(singular_value)
+        if len(candidates) > MAX_CHAT_REFERENCES:
+            raise WebError(413, f"at most {MAX_CHAT_REFERENCES} references are allowed")
+        validated: List[Dict[str, Any]] = []
+        seen = set()
+        for candidate in candidates:
+            reference = self._validated_reference(store, candidate)
+            if reference is None:
+                raise WebError(422, "reference must be an object")
+            region = reference.get("region") if isinstance(reference.get("region"), Mapping) else {}
+            key = (
+                reference.get("kind"),
+                reference.get("event_id"),
+                region.get("start"),
+                region.get("end"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            validated.append(reference)
+        return validated
 
     def events(self, meeting_id: str, after: Any = 0) -> Dict[str, Any]:
         store = self.load_store(meeting_id)
@@ -443,7 +582,9 @@ class MeetingWebService:
     def message(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
-            if not isinstance(payload, dict) or not set(payload).issubset({"message", "delivery", "reference"}):
+            if not isinstance(payload, dict) or not set(payload).issubset(
+                {"message", "delivery", "reference", "references"}
+            ):
                 raise WebError(400, "message request contains unsupported fields")
             message = payload.get("message") if isinstance(payload, dict) else None
             if not isinstance(message, str) or not message.strip():
@@ -455,7 +596,7 @@ class MeetingWebService:
                 raise WebError(400, "delivery must be next_action or interrupt")
             if store.meeting.status in TERMINAL_STATUSES:
                 raise WebError(409, "meeting is already finished")
-            reference = self._validated_reference(store, payload.get("reference"))
+            references = self._validated_references(store, payload)
             starting_fresh = store.meeting.phase == "created"
             orphaned_agent = (
                 store.meeting.phase in {"agent_thinking", "agent_acting"}
@@ -470,7 +611,17 @@ class MeetingWebService:
                 or store.meeting.recovery_required
                 or orphaned_agent
             )
-            store.append_chat("human", message, "request", reference=reference)
+            if "references" in payload or isinstance(payload.get("reference"), list):
+                store.append_chat("human", message, "request", references=references)
+            else:
+                # Preserve the legacy singular journal shape when an older
+                # client sends ``reference``; V6 callers use ``references``.
+                store.append_chat(
+                    "human",
+                    message,
+                    "request",
+                    reference=references[0] if references else None,
+                )
             store.update(
                 failure=None,
                 **(
@@ -495,6 +646,34 @@ class MeetingWebService:
                     fresh_conversation=fresh_conversation,
                 )
         return self.load_store(meeting_id)
+
+    def score(self, meeting_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Append a validated score without waking or mutating Agent state."""
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            allowed_fields = {"tag", "reference", "comment"} | set(SCORE_IGNORED_FIELDS)
+            if not isinstance(payload, dict) or not set(payload).issubset(allowed_fields):
+                raise WebError(400, "score request contains unsupported fields")
+            tag = payload.get("tag")
+            if not isinstance(tag, str) or tag not in VALID_SCORE_TAGS:
+                raise WebError(400, "tag must be competent or incompetent")
+            if "reference" not in payload:
+                raise WebError(400, "score reference is required")
+            reference = self._validated_reference(store, payload.get("reference"))
+            if reference is None:
+                raise WebError(422, "score reference is required")
+            comment = payload.get("comment")
+            if comment is not None:
+                if not isinstance(comment, str):
+                    raise WebError(400, "comment must be a string or null")
+                comment = comment.strip() or None
+                if comment is not None and len(comment.encode("utf-8")) > MAX_SCORE_COMMENT_BYTES:
+                    raise WebError(413, "comment is too large")
+            judge_name = _read_judge_name(self.project_root)
+            try:
+                return store.append_score(tag, reference, judge_name, score=None, comment=comment)
+            except MeetingError as exc:
+                raise WebError(422, str(exc)) from exc
 
     def acquire(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -894,6 +1073,9 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/session":
                 self._json({"csrf_token": self.service.csrf_token, "csrf_header": CSRF_HEADER})
                 return
+            if path == "/api/settings":
+                self._json(self.service.settings())
+                return
             if path == "/api/health":
                 self._json(self.service.health())
                 return
@@ -927,6 +1109,15 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/meetings":
                 store = self.service.start(self._read_json())
                 self._json({"meeting_id": store.meeting.meeting_id, "meeting": _public_manifest(store)}, status=201)
+                return
+            if path == "/api/settings":
+                self._json(self.service.update_settings(self._read_json()))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/scores", path)
+            if match:
+                meeting_id = unquote(match.group(1))
+                event = self.service.score(meeting_id, self._read_json())
+                self._json({"event": event, "meeting": _public_manifest(self.service.load_store(meeting_id))})
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/messages", path)
             if match:
