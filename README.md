@@ -6,8 +6,16 @@ The application uses Python 3.12 in the `remotebuddy` Conda environment plus `li
 
 ## Configure
 
-Create the project environment once with conda-forge only, install the pinned
-Python dependency, then activate it:
+The quickest path is the deploy script, which creates the conda env, installs
+pinned dependencies, runs the doctor checks, and starts the Web UI:
+
+```bash
+./deploy.sh          # deploy and launch
+./deploy.sh --check  # deploy and verify only
+```
+
+Or manually: create the project environment once with conda-forge only, install
+the pinned Python dependency, then activate it:
 
 ```bash
 ~/miniconda3/bin/conda create -n remotebuddy --override-channels -c conda-forge python=3.12 pip
