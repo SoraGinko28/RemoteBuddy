@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Protocol, Sequence, runtime_checkable
 
@@ -21,6 +22,51 @@ ACTION_TYPES = {"chat", "command", "vim_keys", "terminal_keys", "observe", "done
 REFERENCE_KINDS = {"chat", "screen"}
 # Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
 MAX_ACTION_REFERENCES = 32
+# Structured commands keep workspace path resolution and safe quoting.
+STRUCTURED_COMMANDS = {"pwd", "cd", "vim", "python"}
+MAX_SHELL_COMMAND_CHARS = 2000
+# The relaxed shell policy allows general bash and restricts only the
+# deletion/destruction family. Tokens are matched against every whitespace-
+# or metacharacter-separated word, so chained commands, pipelines, xargs,
+# and absolute paths such as /bin/rm are all covered.
+FORBIDDEN_SHELL_BASENAMES = {
+    "rm",
+    "rmdir",
+    "unlink",
+    "shred",
+    "srm",
+    "wipe",
+    "truncate",
+    "dd",
+}
+FORBIDDEN_SHELL_FLAGS = {
+    "-delete",
+    "--delete",
+    "--delete-before",
+    "--delete-during",
+    "--delete-after",
+    "--delete-excluded",
+    "--remove-source-files",
+}
+FORBIDDEN_GIT_SUBCOMMANDS = {"clean", "rm"}
+# The Agent must stay inside the shared pane's visible foreground. These
+# commands would detach work from the shared interface (background daemons,
+# new terminal multiplexer sessions, GUI applications, or replacing the
+# pane's shell), so they are rejected together with the deletion class.
+FORBIDDEN_INTERFACE_BASENAMES = {
+    "tmux",
+    "screen",
+    "nohup",
+    "setsid",
+    "disown",
+    "open",
+    "osascript",
+    "exec",
+}
+# A single "&" backgrounds a job outside the shared view; "&&" chaining and
+# "2>&1"/"&>" redirections remain legal.
+_BACKGROUND_JOB_RE = re.compile(r"(?<![&<>])&(?![&<>\d])")
+_SHELL_SPLIT_RE = re.compile(r"[\s;|&()<>`]+")
 
 
 class AgentBackendError(RuntimeError):
@@ -93,12 +139,21 @@ class AgentAction:
         elif references:
             raise AgentProtocolError("only chat and done actions may carry references")
         if action_type == "command":
-            if message_type != "none" or content or command not in {"pwd", "cd", "vim", "python"}:
+            if message_type != "none" or content:
                 raise AgentProtocolError("command action is invalid")
-            if command == "pwd" and path:
-                raise AgentProtocolError("pwd does not accept a path")
-            if command in {"cd", "vim", "python"} and not path:
-                raise AgentProtocolError(f"{command} requires a path")
+            if command in STRUCTURED_COMMANDS:
+                if command == "pwd" and path:
+                    raise AgentProtocolError("pwd does not accept a path")
+                if command in {"cd", "vim", "python"} and not path:
+                    raise AgentProtocolError(f"{command} requires a path")
+            else:
+                # Relaxed policy: any bash command line is accepted except the
+                # deletion-class commands rejected by validate_shell_command.
+                if command == "none":
+                    raise AgentProtocolError("command action requires a command")
+                validate_shell_command(command)
+                if path:
+                    raise AgentProtocolError("a bash command line does not accept a separate path")
             if keys or delay_ms:
                 raise AgentProtocolError("command has unrelated fields")
         elif action_type in {"vim_keys", "terminal_keys"}:
@@ -120,6 +175,48 @@ class AgentAction:
             delay_ms,
             tuple(references),
         )
+
+
+def validate_shell_command(line: str) -> None:
+    """Allow general bash inside the shared pane, with two restricted classes.
+
+    Deletion-class commands are rejected, and so is anything that would leave
+    the shared interface (background jobs, detached sessions, GUI apps). The
+    line is split on whitespace and shell metacharacters so every chained
+    segment (``a && rm b``), pipeline stage, and substitution is scanned.
+    Matching is intentionally conservative: a forbidden basename anywhere in
+    the line rejects it, even as an argument.
+    """
+    if not isinstance(line, str) or not line.strip():
+        raise AgentProtocolError("bash command must be a non-empty string")
+    if len(line) > MAX_SHELL_COMMAND_CHARS:
+        raise AgentProtocolError(f"bash command exceeds {MAX_SHELL_COMMAND_CHARS} characters")
+    if any(ord(character) < 32 or ord(character) == 127 for character in line):
+        raise AgentProtocolError("bash command must not contain control characters")
+    if _BACKGROUND_JOB_RE.search(line):
+        raise AgentProtocolError(
+            "background jobs are not allowed; work must stay in the shared pane's foreground"
+        )
+    words = [word.strip("'\"") for word in _SHELL_SPLIT_RE.split(line) if word.strip("'\"")]
+    for index, word in enumerate(words):
+        base = word.rstrip("/").rsplit("/", 1)[-1].lower()
+        if base in FORBIDDEN_SHELL_BASENAMES or base.startswith("mkfs"):
+            raise AgentProtocolError(f"deletion-class command is not allowed: {base}")
+        if base in FORBIDDEN_INTERFACE_BASENAMES:
+            raise AgentProtocolError(
+                f"command would leave the shared terminal interface: {base}"
+            )
+        if word.lower() in FORBIDDEN_SHELL_FLAGS:
+            raise AgentProtocolError(f"deletion flag is not allowed: {word}")
+        if base == "git":
+            for follower in words[index + 1 :]:
+                # Skip option flags and their key=value payloads to find the
+                # actual git subcommand (e.g. ``git -c core.pager=cat clean``).
+                if follower.startswith("-") or "=" in follower:
+                    continue
+                if follower.lower() in FORBIDDEN_GIT_SUBCOMMANDS:
+                    raise AgentProtocolError(f"deletion-class git subcommand is not allowed: {follower}")
+                break
 
 
 def _require_unused(command: str, path: str, keys: Sequence[Any], delay_ms: int) -> None:
@@ -453,6 +550,7 @@ def action_json_schema(
         keys: bool = False,
         delay: Optional[Dict[str, Any]] = None,
         references: bool = False,
+        command_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return {
             "type": "object",
@@ -462,7 +560,7 @@ def action_json_schema(
                 "type": {"type": "string", "enum": [action_type]},
                 "message_type": {"type": "string", "enum": list(action_messages)},
                 "content": {"type": "string", **({"minLength": 1} if content else {"enum": [""]})},
-                "command": {"type": "string", "enum": list(commands)},
+                "command": command_schema or {"type": "string", "enum": list(commands)},
                 "path": {
                     "type": "string",
                     "description": "A relative path inside the shared workspace." if path else "Unused.",
@@ -503,6 +601,26 @@ def action_json_schema(
         variants.append(branch("command", ("none",), ("pwd",)))
         for command in ("cd", "vim", "python"):
             variants.append(branch("command", ("none",), (command,), path=True))
+        variants.append(
+            branch(
+                "command",
+                ("none",),
+                (),
+                command_schema={
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_SHELL_COMMAND_CHARS,
+                    "pattern": r"^[^\r\n\u0000]+$",
+                    "description": (
+                        "A full bash command line to run in the shared pane's foreground. "
+                        "Deletion-class commands (rm, rmdir, unlink, shred, truncate, dd, "
+                        "mkfs, find -delete, rsync --delete, git clean/rm) and anything "
+                        "leaving the shared interface (background '&' jobs, nohup, setsid, "
+                        "disown, tmux, screen, open, osascript, exec) are rejected."
+                    ),
+                },
+            )
+        )
     if "vim_keys" in action_types and "none" in message_types:
         variants.append(branch("vim_keys", ("none",), ("none",), keys=True))
     if "terminal_keys" in action_types and "none" in message_types:

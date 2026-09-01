@@ -10,6 +10,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from agent_protocol import AgentProtocolError, validate_shell_command
+
 try:
     import libtmux
     from libtmux.pane import PaneDirection
@@ -75,9 +77,21 @@ def _command_in_workspace_environment(arguments: Sequence[str]) -> str:
 
 
 def workspace_command_text(command: str, path: str = "") -> str:
-    """Build the only shell command text the shared workspace may receive."""
+    """Build the shell command text the shared workspace may receive.
+
+    Structured commands (pwd/cd/vim/python) keep safe quoting and a single
+    validated path. Any other value is treated as a full bash command line
+    under the relaxed policy: it passes through verbatim after the
+    deletion-class and shared-interface checks.
+    """
     if command not in WORKSPACE_COMMANDS:
-        raise TmuxError(f"unsupported workspace command: {command}")
+        if path:
+            raise TmuxError("a bash command line does not accept a separate path")
+        try:
+            validate_shell_command(command)
+        except AgentProtocolError as exc:
+            raise TmuxError(str(exc)) from exc
+        return command
     if command == "pwd":
         if path:
             raise TmuxError("pwd does not accept a path")

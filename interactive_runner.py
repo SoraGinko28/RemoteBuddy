@@ -839,6 +839,16 @@ class InteractiveRunner:
                 else ("terminal_keys", "observe")
             )
             return types, message_types if allow_chat else ("none",), False
+        if command:
+            # Any other foreground program launched by a relaxed bash command:
+            # the Agent may type into it (including C-c) or observe, keeping
+            # every interaction inside the shared pane.
+            types = (
+                ("chat", "terminal_keys", "observe")
+                if allow_chat
+                else ("terminal_keys", "observe")
+            )
+            return types, message_types if allow_chat else ("none",), False
         types = ("chat", "observe") if allow_chat else ("observe",)
         return types, message_types if allow_chat else ("none",), False
 
@@ -1327,8 +1337,10 @@ class InteractiveRunner:
                     interrupt_check=interrupt_check,
                 )
             elif action.type == "terminal_keys":
-                if not info["command"].lower().startswith("python"):
-                    raise RunnerError("terminal keys are allowed only while Python is active")
+                if info["command"] in SHELL_COMMANDS or info["command"] in {"vim", "vi"} or not info["command"]:
+                    raise RunnerError(
+                        "terminal keys require an active foreground program (not the shell or Vim)"
+                    )
                 send_tokens_with_captures(
                     self.store,
                     self.transport,
