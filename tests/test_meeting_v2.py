@@ -181,7 +181,34 @@ class MeetingStoreV2Test(unittest.TestCase):
         self.store.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
         loaded = MeetingStore.load(self.root, "workspace-demo")
         self.assertEqual("responses", loaded.meeting.agent_backend)
+        self.assertEqual("openai", loaded.meeting.agent_provider)
         self.assertIsNone(loaded.meeting.agent_session_id)
+
+    def test_claude_deepseek_identity_is_persisted(self):
+        store = MeetingStore.create(
+            self.root,
+            "claude-deepseek",
+            "Use the shared workspace.",
+            self.skill,
+            "remotebuddy-claude-deepseek",
+            "deepseek-v4-pro[1m]",
+            agent_backend="claude-code",
+            agent_provider="deepseek",
+        )
+        loaded = MeetingStore.load(self.root, store.meeting.meeting_id)
+        self.assertEqual("claude-code", loaded.meeting.agent_backend)
+        self.assertEqual("deepseek", loaded.meeting.agent_provider)
+        with self.assertRaisesRegex(MeetingError, "requires deepseek"):
+            MeetingStore.create(
+                self.root,
+                "bad-claude-provider",
+                "Use the shared workspace.",
+                self.skill,
+                "remotebuddy-bad-claude-provider",
+                "test-model",
+                agent_backend="claude-code",
+                agent_provider="openai",
+            )
 
     def test_paths_and_message_limits_are_enforced(self):
         with self.assertRaises(MeetingError):

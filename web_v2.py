@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -25,6 +26,11 @@ from codex_app_server_client import (
     CodexAppServerBackend,
     CodexAppServerError,
     probe_codex_backend,
+)
+from claude_code_client import (
+    ClaudeCodeBackend,
+    ClaudeCodeError,
+    probe_claude_backend,
 )
 from interactive_runner import (
     InteractiveRunner,
@@ -50,10 +56,14 @@ from meetingV6 import reference_from_event
 from model_api_client import (
     AgentAction,
     MODEL_RE,
+    SUPPORTED_PROVIDERS,
     ModelApiConfig,
     ModelApiError,
     ModelConfigError,
     OpenAIResponsesClient,
+    _default_auth_key,
+    _select_auth_key,
+    _validate_base_url,
     validate_key_tokens,
 )
 from tmux_transport import TmuxError, TmuxTransport, libtmux_version
@@ -88,6 +98,14 @@ SCORE_IGNORED_FIELDS = frozenset(
     }
 )
 MAX_SCORE_COMMENT_BYTES = MAX_MESSAGE_BYTES
+BACKEND_COMBINATIONS = {
+    ("responses", "openai"): "Responses API",
+    ("codex-app-server", "openai"): "Codex App Server",
+    ("claude-code", "deepseek"): "Claude Code + DeepSeek",
+}
+OVERRIDES_FILENAME = "overrides.json"
+MAX_API_KEY_CHARS = 4096
+AUTH_FILENAME = "auth.json"
 
 
 class WebError(RuntimeError):
@@ -158,6 +176,23 @@ def _write_judge_name(project_root: Path, judge_name: str) -> None:
             temporary_path.unlink()
 
 
+def _atomic_write_json(path: Path, payload: Dict[str, Any], mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix="." + path.name + ".", dir=str(path.parent))
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(str(temporary_path), str(path))
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def _finite_positive(value: Any, label: str) -> float:
     if isinstance(value, bool):
         raise WebError(400, f"{label} must be a finite positive number")
@@ -216,6 +251,7 @@ class MeetingWebService:
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
+        self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
 
     def _meeting_lock(self, meeting_id: str) -> threading.RLock:
         with self.lock:
@@ -231,6 +267,8 @@ class MeetingWebService:
             return self.client_factory(config)
         if config.agent_backend == "codex-app-server":
             return CodexAppServerBackend(config)
+        if config.agent_backend == "claude-code":
+            return ClaudeCodeBackend(config)
         return OpenAIResponsesClient(config)
 
     def _interrupt_backend(self, meeting_id: str) -> None:
@@ -265,9 +303,159 @@ class MeetingWebService:
 
     def _load_config(self) -> ModelApiConfig:
         try:
-            return ModelApiConfig.load(self.model_api_path)
+            return self._apply_overrides(ModelApiConfig.load(self.model_api_path))
         except ModelConfigError as exc:
             raise WebError(503, str(exc)) from exc
+
+    def _overrides_path(self) -> Path:
+        path = self.model_api_path / OVERRIDES_FILENAME
+        if path.exists() and (path.is_symlink() or not path.is_file()):
+            raise WebError(500, "model_api/overrides.json must be a regular file")
+        return path
+
+    def _read_overrides(self) -> Dict[str, Dict[str, str]]:
+        path = self._overrides_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WebError(500, "model_api/overrides.json is invalid") from exc
+        providers = payload.get("providers") if isinstance(payload, dict) else None
+        if not isinstance(providers, dict):
+            raise WebError(500, "model_api/overrides.json is invalid")
+        result: Dict[str, Dict[str, str]] = {}
+        for provider, fields in providers.items():
+            if provider not in SUPPORTED_PROVIDERS or not isinstance(fields, dict):
+                raise WebError(500, "model_api/overrides.json is invalid")
+            base_url = fields.get("base_url")
+            if base_url is not None and not isinstance(base_url, str):
+                raise WebError(500, "model_api/overrides.json is invalid")
+            entry = {key: value for key, value in fields.items() if key == "base_url" and isinstance(value, str) and value}
+            if entry:
+                result[provider] = entry
+        return result
+
+    def _apply_overrides(self, config: ModelApiConfig) -> ModelApiConfig:
+        overrides = self._read_overrides()
+        if not overrides:
+            return config
+        profiles: Dict[str, Dict[str, Any]] = {
+            name: dict(profile) if isinstance(profile, Mapping) else {}
+            for name, profile in config.provider_profiles.items()
+        }
+        changed = False
+        for provider, fields in overrides.items():
+            base_url = fields.get("base_url")
+            if base_url:
+                profiles.setdefault(provider, {})["base_url"] = base_url
+                changed = True
+                if provider == config.agent_provider:
+                    config = replace(config, base_url=base_url.rstrip("/"))
+        return replace(config, provider_profiles=profiles) if changed else config
+
+    def _auth_key_status(self, config: ModelApiConfig, provider: str) -> Tuple[str, bool]:
+        profile = config.provider_profiles.get(provider, {})
+        auth_name = profile.get("auth_key") if isinstance(profile, Mapping) else None
+        if not isinstance(auth_name, str) or not auth_name:
+            auth_name = _default_auth_key(provider)
+        return auth_name, bool(_select_auth_key(config.auth_keys, auth_name))
+
+    def credentials_status(self) -> Dict[str, Any]:
+        """Describe stored credentials without ever returning secret values."""
+        overrides = self._read_overrides()
+        try:
+            config: Optional[ModelApiConfig] = ModelApiConfig.load(self.model_api_path)
+        except ModelConfigError:
+            config = None
+        providers: Dict[str, Any] = {}
+        for provider in sorted(SUPPORTED_PROVIDERS):
+            if config is not None:
+                auth_name, has_key = self._auth_key_status(config, provider)
+            else:
+                auth_name, has_key = _default_auth_key(provider), False
+            providers[provider] = {
+                "auth_key_name": auth_name,
+                "has_api_key": has_key,
+                "base_url_override": overrides.get(provider, {}).get("base_url"),
+            }
+        return {"providers": providers}
+
+    def update_credentials(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist an API key and optional base URL for one provider."""
+        if not isinstance(payload, dict) or not set(payload).issubset({"provider", "api_key", "base_url"}):
+            raise WebError(400, "credentials request contains unsupported fields")
+        provider = payload.get("provider")
+        if not isinstance(provider, str) or provider not in SUPPORTED_PROVIDERS:
+            raise WebError(400, "provider must be one of: " + ", ".join(sorted(SUPPORTED_PROVIDERS)))
+        api_key = payload.get("api_key")
+        base_url = payload.get("base_url")
+        if api_key is None and base_url is None:
+            raise WebError(400, "credentials request requires api_key or base_url")
+        if api_key is not None:
+            if not isinstance(api_key, str) or not api_key.strip():
+                raise WebError(400, "api_key must be a non-empty string")
+            api_key = api_key.strip()
+            if len(api_key) > MAX_API_KEY_CHARS:
+                raise WebError(413, "api_key is too large")
+            if any(character.isspace() or not character.isprintable() for character in api_key):
+                raise WebError(400, "api_key contains unsupported characters")
+        if base_url is not None:
+            if not isinstance(base_url, str):
+                raise WebError(400, "base_url must be a string")
+            base_url = base_url.strip()
+            if base_url:
+                try:
+                    _validate_base_url(base_url)
+                except ModelConfigError as exc:
+                    raise WebError(400, str(exc)) from exc
+        with self.lock:
+            if api_key is not None:
+                self._write_auth_key(provider, api_key)
+            if base_url is not None:
+                self._write_base_url_override(provider, base_url)
+            self._backend_check_cache = None
+            self._claude_check_cache = None
+        return self.credentials_status()
+
+    def _write_auth_key(self, provider: str, api_key: str) -> None:
+        auth_path = self.model_api_path / AUTH_FILENAME
+        if auth_path.exists() and (auth_path.is_symlink() or not auth_path.is_file()):
+            raise WebError(500, "model_api/auth.json must be a regular file")
+        existing: Dict[str, str] = {}
+        if auth_path.exists():
+            try:
+                payload = json.loads(auth_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise WebError(500, "model_api/auth.json must be valid JSON") from exc
+            if not isinstance(payload, dict):
+                raise WebError(500, "model_api/auth.json must be a JSON object")
+            existing = {
+                key: value
+                for key, value in payload.items()
+                if isinstance(key, str) and isinstance(value, str) and value.strip()
+            }
+        name = _default_auth_key(provider)
+        legacy = existing.pop("api_key", None)
+        if legacy and name != "OPENAI_API_KEY" and "OPENAI_API_KEY" not in existing:
+            # The legacy alias historically carried the OpenAI key; promote it
+            # to the dedicated key so both providers can coexist.
+            existing["OPENAI_API_KEY"] = legacy
+        existing[name] = api_key
+        _atomic_write_json(auth_path, existing, mode=0o600)
+
+    def _write_base_url_override(self, provider: str, base_url: str) -> None:
+        overrides = self._read_overrides()
+        entry = dict(overrides.get(provider, {}))
+        if base_url:
+            entry["base_url"] = base_url.rstrip("/")
+        else:
+            entry.pop("base_url", None)
+        if entry:
+            overrides[provider] = entry
+        else:
+            overrides.pop(provider, None)
+        _atomic_write_json(self._overrides_path(), {"providers": overrides}, mode=0o600)
 
     def settings(self) -> Dict[str, Any]:
         """Return machine-local page settings that are safe to expose."""
@@ -295,6 +483,65 @@ class MeetingWebService:
             ok, detail = False, str(exc)
         self._backend_check_cache = (time.monotonic(), cache_key, ok, detail)
         return ok, detail
+
+    def _probe_claude_config(self, config: ModelApiConfig) -> Tuple[bool, str]:
+        cache_key = f"{config.model}:{config.base_url}:{config.claude_binary}"
+        now = time.monotonic()
+        cached = self._claude_check_cache
+        if cached and cached[1] == cache_key and now - cached[0] < 10.0:
+            return cached[2], cached[3]
+        try:
+            detail = probe_claude_backend(config)
+            ok = True
+        except ClaudeCodeError as exc:
+            ok, detail = False, str(exc)
+        self._claude_check_cache = (time.monotonic(), cache_key, ok, detail)
+        return ok, detail
+
+    @staticmethod
+    def _validate_backend_pair(backend: Any, provider: Any) -> Tuple[str, str]:
+        if not isinstance(backend, str) or not isinstance(provider, str):
+            raise WebError(400, "agent_backend and agent_provider must be strings")
+        if (backend, provider) not in BACKEND_COMBINATIONS:
+            raise WebError(400, "agent backend/provider combination is not supported")
+        return backend, provider
+
+    def _resolve_config(
+        self,
+        config: ModelApiConfig,
+        backend: str,
+        provider: str,
+        model: Optional[str],
+    ) -> ModelApiConfig:
+        self._validate_backend_pair(backend, provider)
+        try:
+            return config.resolve(backend, provider, model)
+        except ModelConfigError as exc:
+            raise WebError(503, str(exc)) from exc
+
+    def _probe_selected_config(self, config: ModelApiConfig) -> None:
+        if self.client_factory is not None:
+            return
+        if config.agent_backend == "codex-app-server":
+            ok, detail = self._probe_codex_config(config)
+        elif config.agent_backend == "claude-code":
+            ok, detail = self._probe_claude_config(config)
+        else:
+            return
+        if not ok:
+            raise WebError(503, detail)
+
+    def _config_for_store(
+        self, store: MeetingStore, config: Optional[ModelApiConfig] = None
+    ) -> ModelApiConfig:
+        resolved = self._resolve_config(
+            config or self._load_config(),
+            store.meeting.agent_backend,
+            store.meeting.agent_provider,
+            store.meeting.model,
+        )
+        self._probe_selected_config(resolved)
+        return resolved
 
     def list_meetings(self) -> Dict[str, Any]:
         summaries: List[Dict[str, Any]] = []
@@ -417,7 +664,14 @@ class MeetingWebService:
     def start(self, payload: Dict[str, Any]) -> MeetingStore:
         if not isinstance(payload, dict):
             raise WebError(400, "request must be a JSON object")
-        unexpected = set(payload) - {"message", "meeting_id", "model", "typing_profile"}
+        unexpected = set(payload) - {
+            "message",
+            "meeting_id",
+            "model",
+            "typing_profile",
+            "agent_backend",
+            "agent_provider",
+        }
         if unexpected:
             raise WebError(400, "unexpected meeting fields: " + ", ".join(sorted(unexpected)))
         message = payload.get("message")
@@ -429,11 +683,15 @@ class MeetingWebService:
         if not isinstance(meeting_id, str) or not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
         config = self._load_config()
-        if config.agent_backend == "codex-app-server":
-            backend_ok, backend_detail = self._probe_codex_config(config)
-            if not backend_ok:
-                raise WebError(503, backend_detail)
-        model = payload.get("model") or config.model
+        backend = payload.get("agent_backend", config.agent_backend)
+        provider = payload.get("agent_provider", config.agent_provider)
+        backend, provider = self._validate_backend_pair(backend, provider)
+        model = payload.get("model") or None
+        if model is not None and (not isinstance(model, str) or not MODEL_RE.fullmatch(model)):
+            raise WebError(400, "model must be a short string")
+        config = self._resolve_config(config, backend, provider, model)
+        self._probe_selected_config(config)
+        model = config.model
         if not isinstance(model, str) or not MODEL_RE.fullmatch(model):
             raise WebError(400, "model must be a short string")
         typing_profile = payload.get("typing_profile", "balanced")
@@ -448,8 +706,9 @@ class MeetingWebService:
                 self.skill_path,
                 session_name,
                 model,
-                config.agent_backend,
-                typing_profile,
+                agent_backend=config.agent_backend,
+                typing_profile=typing_profile,
+                agent_provider=config.agent_provider,
             )
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
@@ -465,6 +724,14 @@ class MeetingWebService:
         fresh_conversation: bool,
     ) -> None:
         meeting_id = store.meeting.meeting_id
+        try:
+            config = config.resolve(
+                store.meeting.agent_backend,
+                store.meeting.agent_provider,
+                store.meeting.model,
+            )
+        except ModelConfigError as exc:
+            raise WebError(503, str(exc)) from exc
         with self.lock:
             current = self.jobs.get(meeting_id)
             if current and current.is_alive():
@@ -637,7 +904,7 @@ class MeetingWebService:
             if delivery == "interrupt":
                 self._interrupt_backend(meeting_id)
             if wake_agent or delivery == "interrupt":
-                config = self._load_config()
+                config = self._config_for_store(store)
                 store.update(status="running", phase="agent_thinking", control_owner="agent")
                 self._ensure_worker(
                     store,
@@ -705,7 +972,7 @@ class MeetingWebService:
             store = self.load_store(meeting_id)
             if store.meeting.control_owner != "human":
                 return store
-            config = self._load_config()
+            config = self._config_for_store(store)
             fresh_conversation = store.meeting.recovery_required
             store.update(
                 phase="agent_thinking",
@@ -893,7 +1160,7 @@ class MeetingWebService:
             )
             if store.meeting.phase not in {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"} and not orphaned_agent:
                 raise WebError(409, "Agent can resume only while waiting or after an API error")
-            config = self._load_config()
+            config = self._config_for_store(store)
             fresh_conversation = (
                 store.meeting.phase in {"api_error", "cycle_timeout", "completion_proposed"}
                 or store.meeting.recovery_required
@@ -931,28 +1198,82 @@ class MeetingWebService:
                 "detail": tmux_library_version or "not installed",
             }
         )
+        backends: Dict[str, Dict[str, Any]] = {}
+        selected_key: Optional[str] = None
         try:
-            config = ModelApiConfig.load(self.model_api_path)
+            config = self._apply_overrides(ModelApiConfig.load(self.model_api_path))
+            selected_key = f"{config.agent_backend}/{config.agent_provider}"
             checks.append(
                 {
                     "name": "model-api",
                     "ok": True,
-                    "detail": f"{config.model} ({config.agent_backend})",
+                    "detail": f"{config.model} ({selected_key})",
                 }
             )
-            if config.agent_backend == "codex-app-server":
-                codex_ok, detail = self._probe_codex_config(config)
+            for (backend, provider), label in BACKEND_COMBINATIONS.items():
+                key = f"{backend}/{provider}"
+                auth_key_name, has_api_key = self._auth_key_status(config, provider)
+                try:
+                    resolved = config.resolve(backend, provider)
+                    ok, detail = True, resolved.model
+                    if backend == "codex-app-server":
+                        ok, detail = self._probe_codex_config(resolved)
+                    elif backend == "claude-code":
+                        ok, detail = self._probe_claude_config(resolved)
+                    backends[key] = {
+                        "ok": ok,
+                        "detail": detail,
+                        "label": label,
+                        "agent_backend": backend,
+                        "agent_provider": provider,
+                        "default_model": resolved.model,
+                        "base_url": resolved.base_url,
+                        "auth_key_name": auth_key_name,
+                        "has_api_key": has_api_key,
+                        "needs_api_key": not has_api_key,
+                        "required": key == selected_key,
+                    }
+                except (ModelConfigError, ClaudeCodeError, CodexAppServerError) as exc:
+                    backends[key] = {
+                        "ok": False,
+                        "detail": str(exc),
+                        "label": label,
+                        "agent_backend": backend,
+                        "agent_provider": provider,
+                        "default_model": (
+                            "deepseek-v4-pro[1m]" if provider == "deepseek" else None
+                        ),
+                        "base_url": (
+                            "https://api.deepseek.com/anthropic" if provider == "deepseek" else None
+                        ),
+                        "auth_key_name": auth_key_name,
+                        "has_api_key": has_api_key,
+                        "needs_api_key": not has_api_key,
+                        "required": key == selected_key,
+                    }
+            selected = backends.get(selected_key)
+            if selected and config.agent_backend != "responses":
                 checks.append(
-                    {"name": "codex-app-server", "ok": codex_ok, "detail": detail}
+                    {
+                        "name": config.agent_backend,
+                        "ok": selected["ok"],
+                        "detail": selected["detail"],
+                    }
                 )
-        except ModelConfigError as exc:
+        except (ModelConfigError, WebError) as exc:
             checks.append({"name": "model-api", "ok": False, "detail": str(exc)})
+        core_names = {"python", "tmux", "vim", "libtmux", "model-api"}
+        core_ok = all(check["ok"] for check in checks if check["name"] in core_names)
+        selected_ok = bool(selected_key and backends.get(selected_key, {}).get("ok"))
         return {
-            "ok": all(check["ok"] for check in checks),
+            "ok": core_ok and selected_ok,
+            "core_ok": core_ok,
             "python": ".".join(map(str, sys.version_info[:3])),
             "checks": checks,
+            "backends": backends,
             "active_jobs": sum(worker.is_alive() for worker in self.jobs.values()),
             "agent_backend": config.agent_backend if "config" in locals() else None,
+            "agent_provider": config.agent_provider if "config" in locals() else None,
             "service": "running",
         }
 
@@ -1076,6 +1397,9 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/settings":
                 self._json(self.service.settings())
                 return
+            if path == "/api/credentials":
+                self._json(self.service.credentials_status())
+                return
             if path == "/api/health":
                 self._json(self.service.health())
                 return
@@ -1112,6 +1436,9 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/settings":
                 self._json(self.service.update_settings(self._read_json()))
+                return
+            if path == "/api/credentials":
+                self._json(self.service.update_credentials(self._read_json()))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/scores", path)
             if match:

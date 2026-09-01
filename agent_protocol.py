@@ -18,6 +18,9 @@ SPECIAL_KEYS = {
     "C-c",
 }
 ACTION_TYPES = {"chat", "command", "vim_keys", "terminal_keys", "observe", "done"}
+REFERENCE_KINDS = {"chat", "screen"}
+# Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
+MAX_ACTION_REFERENCES = 32
 
 
 class AgentBackendError(RuntimeError):
@@ -41,6 +44,7 @@ class AgentAction:
     path: str
     keys: Sequence[Dict[str, str]]
     delay_ms: int
+    references: Sequence[Dict[str, Any]] = ()
 
     @classmethod
     def from_dict(
@@ -50,7 +54,7 @@ class AgentAction:
         allowed_message_types: Optional[Sequence[str]] = None,
     ) -> "AgentAction":
         required = {"type", "message_type", "content", "command", "path", "keys", "delay_ms"}
-        if not isinstance(payload, dict) or set(payload) != required:
+        if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - {"references"}:
             raise AgentProtocolError("model action has unexpected fields")
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
@@ -76,6 +80,7 @@ class AgentAction:
         if not isinstance(keys, list):
             raise AgentProtocolError("keys must be an array")
         keys = normalize_model_key_tokens(keys)
+        references = normalize_reference_tokens(payload.get("references", []))
 
         if action_type == "chat":
             if message_type not in {"ack", "progress", "question"} or not content.strip():
@@ -85,7 +90,9 @@ class AgentAction:
             if message_type != "final" or not content.strip():
                 raise AgentProtocolError("done requires final content")
             _require_unused(command, path, keys, delay_ms)
-        elif action_type == "command":
+        elif references:
+            raise AgentProtocolError("only chat and done actions may carry references")
+        if action_type == "command":
             if message_type != "none" or content or command not in {"pwd", "cd", "vim", "python"}:
                 raise AgentProtocolError("command action is invalid")
             if command == "pwd" and path:
@@ -103,12 +110,71 @@ class AgentAction:
                 raise AgentProtocolError("observe has unrelated fields")
             if delay_ms < 100 or delay_ms > 2000:
                 raise AgentProtocolError("observe delay must be between 100 and 2000 ms")
-        return cls(action_type, message_type, content, command, path, tuple(keys), delay_ms)
+        return cls(
+            action_type,
+            message_type,
+            content,
+            command,
+            path,
+            tuple(keys),
+            delay_ms,
+            tuple(references),
+        )
 
 
 def _require_unused(command: str, path: str, keys: Sequence[Any], delay_ms: int) -> None:
     if command != "none" or path or keys or delay_ms:
         raise AgentProtocolError("chat action has unrelated fields")
+
+
+def normalize_reference_tokens(raw: Any) -> list:
+    """Validate the wire shape of content references on chat/done actions.
+
+    Each reference points at one earlier journal event, mirroring the human
+    reference schema: ``kind`` is ``chat`` or ``screen``, the source event is
+    selected by its ``seq`` (or ``event_id``), and ``region`` is a half-open
+    character range into that event's content — or ``null`` to quote the whole
+    content. Resolution against the actual journal happens in the runner.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
+        raise AgentProtocolError("references must be an array")
+    if len(raw) > MAX_ACTION_REFERENCES:
+        raise AgentProtocolError(f"references may contain at most {MAX_ACTION_REFERENCES} items")
+    normalized = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) - {"kind", "seq", "event_id", "region"}:
+            raise AgentProtocolError("reference has unexpected fields")
+        kind = item.get("kind")
+        if kind not in REFERENCE_KINDS:
+            raise AgentProtocolError("reference kind must be chat or screen")
+        seq = item.get("seq")
+        event_id = item.get("event_id")
+        if seq is None and event_id is None:
+            raise AgentProtocolError("reference requires the seq or event_id of an earlier event")
+        if seq is not None and (isinstance(seq, bool) or not isinstance(seq, int) or seq < 1):
+            raise AgentProtocolError("reference seq must be a positive integer")
+        if event_id is not None and (
+            not isinstance(event_id, str) or not event_id or len(event_id) > 200
+        ):
+            raise AgentProtocolError("reference event_id must be a short string")
+        region = item.get("region")
+        if region is not None:
+            if not isinstance(region, dict) or set(region) != {"start", "end"}:
+                raise AgentProtocolError("reference region must contain start and end")
+            start, end = region.get("start"), region.get("end")
+            if any(isinstance(value, bool) or not isinstance(value, int) for value in (start, end)):
+                raise AgentProtocolError("reference region bounds must be integers")
+            if start < 0 or end <= start or end > 1_000_000:
+                raise AgentProtocolError("reference region must be a bounded half-open range")
+        entry: Dict[str, Any] = {"kind": kind, "region": dict(region) if region else None}
+        if seq is not None:
+            entry["seq"] = seq
+        if event_id is not None:
+            entry["event_id"] = event_id
+        normalized.append(entry)
+    return normalized
 
 
 def validate_key_tokens(tokens: Sequence[Any]) -> None:
@@ -344,7 +410,38 @@ def action_json_schema(
             },
         ]
     }
-    required = ["type", "message_type", "content", "command", "path", "keys", "delay_ms"]
+    reference_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["kind", "seq", "region"],
+        "properties": {
+            "kind": {"type": "string", "enum": ["chat", "screen"]},
+            "seq": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "seq of the earlier chat or screen event being quoted.",
+            },
+            "region": {
+                "anyOf": [
+                    {"type": "null"},
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["start", "end"],
+                        "properties": {
+                            "start": {"type": "integer", "minimum": 0},
+                            "end": {"type": "integer", "minimum": 1},
+                        },
+                    },
+                ],
+                "description": (
+                    "Half-open character range inside the source event content, "
+                    "or null to quote the whole content."
+                ),
+            },
+        },
+    }
+    required = ["type", "message_type", "content", "command", "path", "keys", "delay_ms", "references"]
 
     def branch(
         action_type: str,
@@ -355,6 +452,7 @@ def action_json_schema(
         path: bool = False,
         keys: bool = False,
         delay: Optional[Dict[str, Any]] = None,
+        references: bool = False,
     ) -> Dict[str, Any]:
         return {
             "type": "object",
@@ -376,6 +474,21 @@ def action_json_schema(
                     **({"minItems": 1, "maxItems": 128} if keys else {"maxItems": 0}),
                 },
                 "delay_ms": delay or {"type": "integer", "enum": [0]},
+                "references": {
+                    "type": "array",
+                    "items": reference_item,
+                    **(
+                        {"maxItems": MAX_ACTION_REFERENCES}
+                        if references
+                        else {"maxItems": 0}
+                    ),
+                    "description": (
+                        "Optional quotes of earlier journal events, identical to human chat references. "
+                        "Usually empty."
+                        if references
+                        else "Unused; must stay empty."
+                    ),
+                },
             },
         }
 
@@ -383,9 +496,9 @@ def action_json_schema(
     if "chat" in action_types:
         messages = [value for value in ("ack", "progress", "question") if value in message_types]
         if messages:
-            variants.append(branch("chat", messages, ("none",), content=True))
+            variants.append(branch("chat", messages, ("none",), content=True, references=True))
     if "done" in action_types and "final" in message_types:
-        variants.append(branch("done", ("final",), ("none",), content=True))
+        variants.append(branch("done", ("final",), ("none",), content=True, references=True))
     if "command" in action_types and "none" in message_types:
         variants.append(branch("command", ("none",), ("pwd",)))
         for command in ("cd", "vim", "python"):

@@ -7,3 +7,4 @@ dependencies:
   - pip
   - pip:
       - libtmux==0.62.0
+      - mcp==2.1.1

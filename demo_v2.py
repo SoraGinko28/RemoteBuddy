@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from codex_app_server_client import CodexAppServerError, probe_codex_backend
+from claude_code_client import ClaudeCodeError, probe_claude_backend
 from meeting_v2 import MeetingError, MeetingStore
 from model_api_client import ModelApiConfig, ModelConfigError
 from tmux_transport import TmuxError, TmuxTransport, libtmux_version
@@ -25,7 +26,7 @@ def doctor() -> bool:
     checks.append(("libtmux", version is not None, version or "not installed"))
     try:
         config = ModelApiConfig.load(PROJECT_ROOT / "model_api")
-        checks.append(("model-api", True, f"{config.model} ({config.agent_backend})"))
+        checks.append(("model-api", True, f"{config.model} ({config.agent_backend}/{config.agent_provider})"))
         for warning in config.warnings:
             print(f"[WARN] model-api: {warning}")
         if config.agent_backend == "codex-app-server":
@@ -34,6 +35,12 @@ def doctor() -> bool:
                 checks.append(("codex-app-server", True, version))
             except CodexAppServerError as exc:
                 checks.append(("codex-app-server", False, str(exc)))
+        elif config.agent_backend == "claude-code":
+            try:
+                version = probe_claude_backend(config)
+                checks.append(("claude-code", True, version))
+            except ClaudeCodeError as exc:
+                checks.append(("claude-code", False, str(exc)))
     except ModelConfigError as exc:
         checks.append(("model-api", False, str(exc)))
     for name, ok, detail in checks:
@@ -48,6 +55,7 @@ def command_status(args: argparse.Namespace) -> int:
     print(f"Status: {meeting.status} / {meeting.phase}")
     print(f"Control: {meeting.control_owner}")
     print(f"Agent backend: {meeting.agent_backend}")
+    print(f"Agent provider: {meeting.agent_provider}")
     if meeting.agent_session_id:
         print(f"Agent session: {meeting.agent_session_id}")
     print(f"Session: {meeting.session_name} ({meeting.session_state})")

@@ -39,6 +39,8 @@ VALID_PHASES = {
 VALID_OWNERS = {"agent", "human", "none"}
 VALID_EVENT_KINDS = {"chat", "screen", "score", "action", "control", "state", "error"}
 VALID_SCORE_TAGS = {"competent", "incompetent"}
+VALID_AGENT_BACKENDS = {"responses", "codex-app-server", "claude-code"}
+VALID_AGENT_PROVIDERS = {"openai", "deepseek"}
 MAX_CHAT_REFERENCES = 32
 
 
@@ -133,6 +135,7 @@ class Meeting:
     failure: Optional[str] = None
     session_stopped_at: Optional[str] = None
     agent_backend: str = "responses"
+    agent_provider: str = "openai"
     agent_session_id: Optional[str] = None
     agent_turn_id: Optional[str] = None
     agent_protocol_version: Optional[str] = None
@@ -158,8 +161,12 @@ class Meeting:
                 values[field_name] = definition.default_factory()
             else:
                 raise KeyError(field_name)
-        if values["agent_backend"] not in {"responses", "codex-app-server"}:
+        if values["agent_backend"] not in VALID_AGENT_BACKENDS:
             raise ValueError("invalid agent backend")
+        if values["agent_provider"] not in VALID_AGENT_PROVIDERS:
+            raise ValueError("invalid agent provider")
+        if values["agent_backend"] == "claude-code" and values["agent_provider"] != "deepseek":
+            raise ValueError("claude-code requires deepseek provider")
         if values["typing_profile"] not in TYPING_PROFILES:
             raise ValueError("invalid typing profile")
         return cls(**values)
@@ -203,13 +210,18 @@ class MeetingStore:
         model: str,
         agent_backend: str = "responses",
         typing_profile: str = "balanced",
+        agent_provider: str = "openai",
     ) -> "MeetingStore":
         if not isinstance(initial_message, str) or not initial_message.strip():
             raise MeetingError("initial message must be non-empty")
         if len(initial_message.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise MeetingError(f"initial message exceeds {MAX_MESSAGE_BYTES} bytes")
-        if agent_backend not in {"responses", "codex-app-server"}:
+        if agent_backend not in VALID_AGENT_BACKENDS:
             raise MeetingError("invalid agent backend")
+        if agent_provider not in VALID_AGENT_PROVIDERS:
+            raise MeetingError("invalid agent provider")
+        if agent_backend == "claude-code" and agent_provider != "deepseek":
+            raise MeetingError("claude-code requires deepseek provider")
         if typing_profile not in TYPING_PROFILES:
             raise MeetingError("invalid typing profile")
         skill_source = skill_source.expanduser().resolve()
@@ -242,6 +254,7 @@ class MeetingStore:
             streams={"events": "streams/events.jsonl"},
             model=model,
             agent_backend=agent_backend,
+            agent_provider=agent_provider,
             typing_profile=typing_profile,
             cycle_started_at=now,
         )
@@ -519,6 +532,12 @@ class MeetingStore:
         )
         if source_event is None:
             raise MeetingError("score reference source event was not found")
+        # Scores judge the Agent's observable work. A human-authored chat
+        # message must never be scoreable — neither by the human who wrote it
+        # nor by anyone else — while screen output and Agent chat remain fair
+        # targets.
+        if source_event.get("kind") == "chat" and source_event.get("actor") == "human":
+            raise MeetingError("human chat messages cannot be scored")
         try:
             # V6 is the current reference contract; the V5 projection still
             # remains available for replaying older journals.

@@ -22,13 +22,13 @@ class InteractiveRunnerScoreIsolationTest(unittest.TestCase):
             skill = root / "SKILL.md"
             skill.write_text("skill", encoding="utf-8")
             store = MeetingStore.create(root, "isolation", "hello", skill, "session", "model")
-            source = store.events()[0]
+            agent_chat = store.append_chat("agent", "hello back", "ack")
             score = store.append_score(
                 "competent",
                 "Judge Only",
                 {
                     "kind": "chat",
-                    "event_id": source["event_id"],
+                    "event_id": agent_chat["event_id"],
                     "region": {"start": 0, "end": 1},
                 },
             )
@@ -37,9 +37,11 @@ class InteractiveRunnerScoreIsolationTest(unittest.TestCase):
             self.assertNotIn(score["event_id"], observation)
             self.assertNotIn("Judge Only", observation)
             packet = json.loads(observation.split("\n\n", 1)[1])
+            # Agent chat is excluded from new_events by design; the score must
+            # appear in neither stream.
             self.assertEqual(["chat"], [item["kind"] for item in packet["new_events"]])
             self.assertEqual([], packet["local_context"]["action_history"])
-            self.assertEqual([1], [item["seq"] for item in packet["local_context"]["chat_history"]])
+            self.assertEqual([1, 2], [item["seq"] for item in packet["local_context"]["chat_history"]])
 
 
 if __name__ == "__main__":

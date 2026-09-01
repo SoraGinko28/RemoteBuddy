@@ -171,6 +171,61 @@ class ModelApiConfigTest(unittest.TestCase):
         self.assertEqual("responses", config.agent_backend)
         self.assertFalse(config.codex_dynamic_tools)
 
+    def test_provider_catalog_resolves_claude_code_deepseek(self):
+        (self.root / "config.toml").write_text(
+            'default_backend="responses"\n'
+            'default_provider="openai"\n'
+            'request_timeout_seconds=120\n'
+            'reasoning_effort="max"\n'
+            '[providers.openai]\n'
+            'base_url="https://api.openai.com/v1"\n'
+            'wire_api="responses"\n'
+            'auth_key="OPENAI_API_KEY"\n'
+            'model="gpt-5.6-luna"\n'
+            '[providers.deepseek]\n'
+            'base_url="https://api.deepseek.com/anthropic"\n'
+            'wire_api="anthropic"\n'
+            'auth_key="DEEPSEEK_API_KEY"\n'
+            'model="deepseek-v4-pro[1m]"\n'
+            'fast_model="deepseek-v4-flash"\n'
+            '[harnesses.claude-code]\n'
+            'binary="claude-custom"\n',
+            encoding="utf-8",
+        )
+        auth = self.root / "auth.json"
+        auth.write_text(
+            '{"OPENAI_API_KEY":"openai-secret","DEEPSEEK_API_KEY":"deepseek-secret"}\n',
+            encoding="utf-8",
+        )
+        os.chmod(auth, 0o600)
+        config = ModelApiConfig.load(self.root)
+        deepseek = config.resolve("claude-code", "deepseek")
+        self.assertEqual("responses", config.agent_backend)
+        self.assertEqual("openai", config.agent_provider)
+        self.assertEqual("claude-code", deepseek.agent_backend)
+        self.assertEqual("deepseek", deepseek.agent_provider)
+        self.assertEqual("deepseek-v4-pro[1m]", deepseek.model)
+        self.assertEqual("deepseek-v4-flash", deepseek.fast_model)
+        self.assertEqual("https://api.deepseek.com/anthropic", deepseek.base_url)
+        self.assertEqual("claude-custom", deepseek.claude_binary)
+        self.assertNotIn("openai-secret", repr(config))
+        self.assertNotIn("deepseek-secret", repr(config))
+
+    def test_deepseek_model_suffix_is_allowed_but_shell_syntax_is_not(self):
+        self.write_config()
+        config_path = self.root / "config.toml"
+        config_path.write_text(
+            config_path.read_text("utf-8").replace("gpt-5.6-luna", "deepseek-v4-pro[1m]"),
+            encoding="utf-8",
+        )
+        self.assertEqual("deepseek-v4-pro[1m]", ModelApiConfig.load(self.root).model)
+        config_path.write_text(
+            config_path.read_text("utf-8").replace("deepseek-v4-pro[1m]", "model;touch-x"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ModelConfigError, "model"):
+            ModelApiConfig.load(self.root)
+
 
 class AgentActionTest(unittest.TestCase):
     def test_action_semantics_and_key_allowlist(self):

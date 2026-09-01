@@ -1,3 +1,4 @@
 {
-  "api_key": "replace-with-an-api-key"
+  "OPENAI_API_KEY": "replace-with-an-openai-api-key",
+  "DEEPSEEK_API_KEY": "replace-with-a-deepseek-api-key"
 }

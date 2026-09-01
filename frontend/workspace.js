@@ -6,13 +6,14 @@ const MAX_LIVE_SCREEN_QUEUE = 120;
 const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
   "welcome", "session-view", "meeting-title", "status-badge", "owner-badge", "session-meta",
-  "phase-label", "backend-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
+  "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button", "terminal-controls",
   "command-form", "command-select", "command-path", "vim-form", "vim-text", "process-input-label", "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "settings-button", "settings-dialog", "settings-form", "judge-name-input", "save-settings", "close-settings", "cancel-settings", "settings-error", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
-  "close-dialog", "cancel-new", "initial-message", "model-input", "start-button", "new-error",
+  "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "start-button", "new-error",
+  "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
@@ -51,6 +52,7 @@ const state = {
   scoreOverlayIds: new Set(),
   playbackHoverIndex: null,
   judgeName: "human",
+  health: null,
 };
 
 const labels = {
@@ -60,6 +62,8 @@ const labels = {
   message: { request: "请求", ack: "回应", progress: "进度", question: "问题", final: "结果" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
   score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
+  backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "claude-code": "Claude Code" },
+  provider: { openai: "OpenAI", deepseek: "DeepSeek" },
 };
 
 function eventDelay(event, queueLength = 0) {
@@ -217,7 +221,8 @@ function renderMeetingList() {
     button.type = "button";
     const top = node("span", "meeting-item-top");
     top.append(node("strong", "", meeting.meeting_id), node("span", `mini-status ${meeting.status}`, labels.status[meeting.status] || meeting.status));
-    button.append(top, node("span", "meeting-item-meta", `${labels.phase[meeting.phase] || meeting.phase} · ${fmtTime(meeting.updated_at)}`));
+    const provider = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
+    button.append(top, node("span", "meeting-item-meta", `${labels.phase[meeting.phase] || meeting.phase} · ${provider} · ${fmtTime(meeting.updated_at)}`));
     button.addEventListener("click", () => selectMeeting(meeting.meeting_id));
     el.meeting_list.append(button);
   }
@@ -230,12 +235,13 @@ function renderHeader() {
   el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
   el.status_badge.dataset.status = meeting.status;
   el.owner_badge.textContent = labels.owner[meeting.control_owner] || meeting.control_owner;
-  el.session_meta.textContent = `${meeting.session_name} · ${meeting.session_state}`;
+  el.session_meta.textContent = `${meeting.session_name} · ${meeting.session_state} · ${labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI"}`;
   const failure = typeof meeting.failure === "string" ? meeting.failure.trim() : "";
   el.failure_message.textContent = failure;
   el.failure_message.hidden = !failure || !["api_error", "cycle_timeout", "failed"].includes(meeting.phase);
   el.phase_label.textContent = labels.phase[meeting.phase] || meeting.phase;
-  el.backend_label.textContent = meeting.agent_backend || "responses";
+  el.backend_label.textContent = labels.backend[meeting.agent_backend] || meeting.agent_backend || "Responses API";
+  el.provider_label.textContent = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
   el.model_label.textContent = meeting.model;
   el.typing_profile_label.textContent = labels.typing[meeting.typing_profile] || "平衡";
   el.action_label.textContent = `${meeting.cycle_action_count || 0} / 60`;
@@ -257,7 +263,13 @@ function renderHeader() {
   const addAction = el.selection_menu?.querySelector('[data-selection-action="add-to-conversation"]');
   // Historical sessions remain rateable; only adding a new chat reference is
   // blocked once the meeting is terminal because the composer is read-only.
-  if (evaluateAction) evaluateAction.disabled = false;
+  // Human-authored chat is never rateable, so keep the evaluate button in
+  // sync with the current selection even when the meeting re-renders.
+  if (evaluateAction) {
+    const humanChat = selectionIsHumanChat(state.pendingSelection);
+    evaluateAction.disabled = humanChat;
+    evaluateAction.title = humanChat ? "人类消息不能被评价" : "";
+  }
   if (addAction) addAction.disabled = terminalState;
   el.message_input.disabled = terminalState;
   el.send_message_button.disabled = terminalState;
@@ -913,12 +925,26 @@ function positionSelectionMenu(candidate) {
   menu.style.top = `${Math.max(gutter, top)}px`;
 }
 
+function selectionIsHumanChat(candidate) {
+  if (!candidate || candidate.kind !== "chat") return false;
+  const source = state.timeline.find((event) => event.event_id === candidate.event_id)
+    || state.snapshot?.chat?.find((event) => event.event_id === candidate.event_id);
+  return source?.actor === "human";
+}
+
 function showSelectionMenu(candidate) {
   if (!candidate || !el.selection_menu || state.selectionBusy || state.evaluationSelection) return;
   state.pendingSelection = candidate;
   const terminal = ["completed", "failed", "interrupted"].includes(state.snapshot?.meeting?.status);
+  const humanChat = selectionIsHumanChat(candidate);
   el.selection_menu.querySelectorAll("[data-selection-action]").forEach((button) => {
-    button.disabled = button.dataset.selectionAction === "add-to-conversation" && terminal;
+    if (button.dataset.selectionAction === "add-to-conversation") {
+      button.disabled = terminal;
+      button.title = terminal ? "会话已结束，无法继续发消息" : "";
+    } else if (button.dataset.selectionAction === "evaluate") {
+      button.disabled = humanChat;
+      button.title = humanChat ? "人类消息不能被评价" : "";
+    }
   });
   el.selection_menu.hidden = false;
   requestAnimationFrame(() => positionSelectionMenu(candidate));
@@ -1028,6 +1054,10 @@ async function handleSelectionAction(action) {
   const selected = state.pendingSelection;
   if (!selected || state.selectionBusy || state.evaluationSelection) return;
   if (action === "evaluate") {
+    if (selectionIsHumanChat(selected)) {
+      toast("人类消息不能被评价");
+      return;
+    }
     openEvaluationPanel(selected);
     return;
   }
@@ -1049,8 +1079,10 @@ async function handleSelectionAction(action) {
 
 async function loadHealth() {
   const health = await api("/api/health");
-  state.healthy = Boolean(health.ok);
-  el.health_dot.classList.toggle("ok", state.healthy);
+  state.health = health;
+  const backendEntries = Object.values(health.backends || {});
+  state.healthy = Boolean(health.core_ok && backendEntries.some((item) => item.ok || item.needs_api_key));
+  el.health_dot.classList.toggle("ok", Boolean(health.ok));
   const failedChecks = (health.checks || []).filter((item) => !item.ok);
   const failed = failedChecks.map((item) => item.detail);
   const visibleFailures = failedChecks.map((item) => {
@@ -1058,13 +1090,63 @@ async function loadHealth() {
     if (item.name === "tmux") return "未找到 tmux";
     if (item.name === "vim") return "未找到 Vim";
     if (item.name === "codex-app-server") return `Codex 后端不可用：${item.detail}`;
+    if (item.name === "claude-code") return `Claude Code 后端不可用：${item.detail}`;
     return "当前 Python 版本不受支持";
   });
-  el.health_dot.title = state.healthy ? "运行环境就绪" : failed.join("\n");
+  el.health_dot.title = health.ok ? "默认运行环境就绪" : failed.join("\n");
   el.health_message.textContent = visibleFailures.join("；");
   el.health_message.hidden = state.healthy;
   el.new_button.disabled = !state.healthy;
   el.welcome_new_button.disabled = !state.healthy;
+  syncBackendSelectors();
+}
+
+function backendEntry(backend, provider) {
+  return state.health?.backends?.[`${backend}/${provider}`] || null;
+}
+
+function syncBackendSelectors(preferCurrent = true) {
+  if (!el.backend_select || !el.provider_select) return;
+  const entries = Object.values(state.health?.backends || {});
+  const usable = (item) => item.ok || item.needs_api_key;
+  for (const option of el.backend_select.options) {
+    option.disabled = !entries.some((item) => item.agent_backend === option.value && usable(item));
+  }
+  let backend = preferCurrent ? el.backend_select.value : state.health?.agent_backend;
+  if (!entries.some((item) => item.agent_backend === backend && usable(item))) {
+    backend = (entries.find((item) => item.ok) || entries.find(usable))?.agent_backend || backend;
+    el.backend_select.value = backend;
+  }
+  for (const option of el.provider_select.options) {
+    option.disabled = !entries.some((item) => item.agent_backend === backend && item.agent_provider === option.value && usable(item));
+  }
+  let provider = preferCurrent ? el.provider_select.value : state.health?.agent_provider;
+  const entry = entries.find((item) => item.agent_backend === backend && item.agent_provider === provider && usable(item))
+    || entries.find((item) => item.agent_backend === backend && item.ok)
+    || entries.find((item) => item.agent_backend === backend && usable(item));
+  if (entry) {
+    el.provider_select.value = entry.agent_provider;
+    el.model_input.placeholder = `默认 ${entry.default_model || "由服务端决定"}`;
+  }
+  updateCredentialFields();
+}
+
+function updateCredentialFields() {
+  if (!el.api_key_input) return;
+  const entry = backendEntry(el.backend_select.value, el.provider_select.value);
+  const provider = el.provider_select.value;
+  const authName = entry?.auth_key_name || (provider === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENAI_API_KEY");
+  el.api_key_name.textContent = authName;
+  el.api_key_input.placeholder = entry?.has_api_key ? "已保存，留空沿用" : "尚未配置，请填写";
+  el.base_url_input.placeholder = entry?.base_url ? `默认 ${entry.base_url}` : "留空使用默认地址";
+  if (entry && !entry.ok) {
+    el.api_key_hint.textContent = entry.needs_api_key
+      ? `该组合还需要 ${authName}，填写后会保存到 model_api/auth.json（仅本机）。`
+      : `该组合尚未就绪：${entry.detail || "未知原因"}`;
+    el.api_key_hint.hidden = false;
+  } else {
+    el.api_key_hint.hidden = true;
+  }
 }
 
 async function loadMeetings() {
@@ -1135,6 +1217,9 @@ async function postMeetingAction(suffix, body = {}) {
 
 function openNewDialog() {
   el.new_error.hidden = true;
+  el.api_key_input.value = "";
+  el.base_url_input.value = "";
+  syncBackendSelectors(false);
   el.new_dialog.showModal();
   el.initial_message.focus();
 }
@@ -1171,6 +1256,8 @@ function bind() {
   el.settings_button.addEventListener("click", openSettingsDialog);
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
+  el.backend_select.addEventListener("change", () => syncBackendSelectors(true));
+  el.provider_select.addEventListener("change", () => syncBackendSelectors(true));
   el.evaluation_form.addEventListener("submit", submitEvaluation);
   el.evaluation_back_button.addEventListener("click", closeEvaluationPanel);
   el.evaluation_cancel_button.addEventListener("click", closeEvaluationPanel);
@@ -1200,8 +1287,28 @@ function bind() {
     el.start_button.disabled = true;
     el.new_error.hidden = true;
     try {
+      const apiKey = el.api_key_input.value.trim();
+      const baseUrl = el.base_url_input.value.trim();
+      if (apiKey || baseUrl) {
+        const credentials = { provider: el.provider_select.value };
+        if (apiKey) credentials.api_key = apiKey;
+        if (baseUrl) credentials.base_url = baseUrl;
+        await api("/api/credentials", { method: "POST", body: JSON.stringify(credentials) });
+        el.api_key_input.value = "";
+        el.base_url_input.value = "";
+        await loadHealth();
+      }
       const typingProfile = document.querySelector('input[name="typing-profile"]:checked')?.value || "balanced";
-      const response = await api("/api/meetings", { method: "POST", body: JSON.stringify({ message: el.initial_message.value, model: el.model_input.value.trim() || null, typing_profile: typingProfile }) });
+      const response = await api("/api/meetings", {
+        method: "POST",
+        body: JSON.stringify({
+          message: el.initial_message.value,
+          agent_backend: el.backend_select.value,
+          agent_provider: el.provider_select.value,
+          model: el.model_input.value.trim() || null,
+          typing_profile: typingProfile,
+        }),
+      });
       el.new_dialog.close();
       el.initial_message.value = "";
       await loadMeetings();

@@ -75,7 +75,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .status-badge[data-status="running"] { background: var(--green-soft); color: var(--green); }
 .status-badge[data-status="failed"], .status-badge[data-status="interrupted"] { background: var(--red-soft); color: var(--red); }
 .header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
-.presence-strip { display: grid; grid-template-columns: repeat(7, minmax(82px, 1fr)); border-bottom: 1px solid var(--line); background: #fafbfa; }
+.presence-strip { display: grid; grid-template-columns: repeat(8, minmax(82px, 1fr)); border-bottom: 1px solid var(--line); background: #fafbfa; }
 .presence-strip > div { min-width: 0; padding: 9px 16px; border-right: 1px solid var(--line); }
 .presence-strip > div:last-child { border-right: 0; }
 .presence-strip span, .presence-strip strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -228,7 +228,9 @@ dialog::backdrop { background: rgb(20 24 22 / .45); }
 .new-dialog details { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
 .new-dialog summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .new-dialog details label { display: block; margin: 12px 0 6px; }
-.new-dialog details input { width: 100%; }
+.new-dialog details input, .new-dialog details select { width: 100%; }
+.backend-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.backend-fields select { min-height: 36px; min-width: 0; border: 1px solid var(--line-strong); border-radius: 5px; padding: 0 8px; background: white; }
 .profile-fieldset { margin: 14px 0 0; padding: 0; border: 0; }
 .profile-fieldset legend { margin-bottom: 7px; font-size: 11px; font-weight: 700; }
 .profile-segments { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }

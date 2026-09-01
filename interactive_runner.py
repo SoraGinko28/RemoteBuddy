@@ -17,6 +17,7 @@ from agent_protocol import (
     AgentProtocolError,
 )
 from meeting_v2 import MeetingError, MeetingStore, utc_now
+from meetingV6 import reference_from_event
 from tmux_transport import TmuxError, TmuxTransport, workspace_command_text
 from typing_policy import TypingPlan, plan_input
 
@@ -667,6 +668,8 @@ class InteractiveRunner:
                         self._check_stop()
                         if self._honor_control_request():
                             return
+                        if bool(getattr(self.client, "restart_on_interrupt", False)):
+                            return
                         if self.store.meeting.control_owner == "agent":
                             continue
                         return
@@ -872,12 +875,67 @@ class InteractiveRunner:
             except Exception:
                 pass
 
+    def _resolved_action_references(self, action: AgentAction) -> list:
+        """Resolve model-provided references into stored human-identical shapes.
+
+        The Agent quotes earlier journal events exactly like a person does:
+        each wire reference selects one prior ``chat`` or ``screen`` event by
+        ``seq`` (or ``event_id``) plus an optional character region, and the
+        persisted result is the same serialized V6 reference the Web client
+        produces, including excerpt and source hash.
+        """
+        raw = list(getattr(action, "references", ()) or ())
+        if not raw:
+            return []
+        if action.type not in {"chat", "done"}:
+            raise AgentProtocolError("only chat and done actions may carry references")
+        events = self.store.events()
+        by_seq = {
+            int(event.get("seq", 0)): event
+            for event in events
+            if isinstance(event.get("seq"), int)
+        }
+        by_id = {
+            str(event.get("event_id")): event
+            for event in events
+            if event.get("event_id")
+        }
+        resolved = []
+        for item in raw:
+            event = None
+            if item.get("event_id") is not None:
+                event = by_id.get(str(item["event_id"]))
+            elif item.get("seq") is not None:
+                event = by_seq.get(int(item["seq"]))
+            if event is None:
+                raise AgentProtocolError(
+                    "reference source event was not found; use the seq of an earlier chat or screen event"
+                )
+            region = item.get("region")
+            if region is None:
+                content = str(event.get("content", ""))
+                if not content.strip():
+                    raise AgentProtocolError("referenced event has no quotable content")
+                region = {"start": 0, "end": len(content)}
+            payload = {
+                "kind": item.get("kind"),
+                "event_id": event.get("event_id"),
+                "region": dict(region),
+            }
+            try:
+                resolved.append(reference_from_event(event, payload))
+            except (TypeError, ValueError) as exc:
+                raise AgentProtocolError(f"invalid reference: {exc}") from exc
+        return resolved
+
     def _validate_action_for_current_phase(self, action: AgentAction) -> bool:
         allowed_types, allowed_messages, budget_final = self._phase_constraints()
         payload = asdict(action)
         payload["keys"] = list(action.keys)
+        payload["references"] = [dict(item) for item in action.references]
         try:
             AgentAction.from_dict(payload, allowed_types, allowed_messages)
+            self._resolved_action_references(action)
             if action.type == "chat" and action.message_type == "progress":
                 if self._last_terminal_evidence is None:
                     raise AgentProtocolError(
@@ -1177,7 +1235,13 @@ class InteractiveRunner:
                 },
             )
             if action.type == "chat":
-                self.store.append_chat("agent", action.content, action.message_type)
+                chat_references = self._resolved_action_references(action)
+                self.store.append_chat(
+                    "agent",
+                    action.content,
+                    action.message_type,
+                    references=chat_references or None,
+                )
                 self._complete_action(action_id)
                 if action.message_type == "question" or budget_final:
                     self._wait_for_user(
@@ -1187,7 +1251,10 @@ class InteractiveRunner:
                 self.store.update(phase="agent_thinking")
                 return False
             if action.type == "done":
-                self.store.append_chat("agent", action.content, "final")
+                done_references = self._resolved_action_references(action)
+                self.store.append_chat(
+                    "agent", action.content, "final", references=done_references or None
+                )
                 self._complete_action(action_id)
                 self.store.update(phase="completion_proposed", control_owner="none")
                 self.store.append_event(

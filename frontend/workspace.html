@@ -62,6 +62,7 @@
         <div class="presence-strip">
           <div><span>阶段</span><strong id="phase-label">—</strong></div>
           <div><span>后端</span><strong id="backend-label">—</strong></div>
+          <div><span>Provider</span><strong id="provider-label">—</strong></div>
           <div><span>模型</span><strong id="model-label">—</strong></div>
           <div><span>输入</span><strong id="typing-profile-label">平衡</strong></div>
           <div><span>动作</span><strong id="action-label">0 / 60</strong></div>
@@ -239,8 +240,26 @@
       <textarea id="initial-message" rows="9" maxlength="1048576" required placeholder="例如：请在共享工作区里用 Vim 创建一份项目说明。"></textarea>
       <details>
         <summary>高级设置</summary>
+        <div class="backend-fields">
+          <label for="backend-select">Harness</label>
+          <select id="backend-select">
+            <option value="responses">Responses API</option>
+            <option value="codex-app-server">Codex App Server</option>
+            <option value="claude-code">Claude Code</option>
+          </select>
+          <label for="provider-select">Provider</label>
+          <select id="provider-select">
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+        </div>
         <label for="model-input">模型覆盖</label>
         <input id="model-input" type="text" maxlength="200" placeholder="默认 gpt-5.6-luna">
+        <label for="api-key-input">API Key（<span id="api-key-name">OPENAI_API_KEY</span>）</label>
+        <input id="api-key-input" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="留空使用已保存的密钥">
+        <label for="base-url-input">Base URL（可选）</label>
+        <input id="base-url-input" type="url" maxlength="500" autocomplete="off" spellcheck="false" placeholder="留空使用默认地址">
+        <p id="api-key-hint" class="settings-note" hidden></p>
         <fieldset class="profile-fieldset">
           <legend>输入节奏</legend>
           <div class="profile-segments">
