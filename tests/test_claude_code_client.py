@@ -8,10 +8,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from agent_protocol import AgentInterrupted, AgentProtocolError
-from claude_code_client import ClaudeCodeBackend, TOOL_NAME
+from claude_code_client import ClaudeCodeBackend, TOOL_NAME, resolve_claude_binary
 from model_api_client import ModelApiConfig
 
 
@@ -43,6 +44,7 @@ mcp = json.load(open(mcp_path, encoding="utf-8"))["mcpServers"]["remotebuddy"]
 socket_path = mcp["env"]["REMOTEBUDDY_MCP_SOCKET"]
 token = mcp["env"]["REMOTEBUDDY_MCP_TOKEN"]
 initialized = False
+refuse_forever = [False]
 
 def send(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
@@ -62,7 +64,9 @@ for line in sys.stdin:
         }})
         initialized = True
     text = value["message"]["content"][0]["text"]
-    if "NO_TOOL" in text:
+    if "NO_TOOL_FOREVER" in text:
+        refuse_forever[0] = True
+    if refuse_forever[0] or "NO_TOOL" in text:
         send({{"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}})
         continue
     if "HANG" in text:
@@ -194,13 +198,196 @@ class ClaudeCodeBackendTest(unittest.TestCase):
             with self.assertRaisesRegex(AgentProtocolError, "no RemoteBuddy action"):
                 backend.next_action(
                     session,
-                    "NO_TOOL",
+                    "NO_TOOL_FOREVER",
                     action_handler=lambda _action, _metadata: {
                         "success": True,
                         "content": "unused",
                         "pause": True,
                     },
                 )
+        finally:
+            backend.close()
+        # The stubborn model was nudged twice before the turn failed.
+        inputs = [json.loads(line) for line in self.audit.read_text("utf-8").splitlines()]
+        self.assertEqual(3, len(inputs))
+        self.assertIn("remotebuddy_action", inputs[1]["message"]["content"][0]["text"])
+
+    def test_prose_only_turn_is_nudged_and_recovers(self):
+        backend = self.backend()
+        actions = []
+        try:
+            session = backend.start_cycle(
+                "meeting-nudge", "Skill", "", event_callback=self.telemetry.append
+            )
+            response = backend.next_action(
+                session,
+                "NO_TOOL this once",
+                action_handler=lambda action, metadata: (
+                    actions.append(action)
+                    or {"success": True, "content": "accepted", "pause": True}
+                ),
+            )
+        finally:
+            backend.close()
+        self.assertTrue(response.executed)
+        self.assertEqual(1, len(actions))
+        inputs = [json.loads(line) for line in self.audit.read_text("utf-8").splitlines()]
+        self.assertEqual(2, len(inputs))
+        self.assertTrue(any(item.get("event") == "turn_nudged" for item in self.telemetry))
+
+    def test_result_arriving_during_slow_action_does_not_fail_the_turn(self):
+        backend = self.backend()
+        release = threading.Event()
+        results = []
+        try:
+            backend.start_cycle("meeting-race", "Skill", "HANG")
+
+            def slow_handler(_action, _metadata):
+                release.wait(2)
+                return {"success": True, "content": "typed slowly", "pause": True}
+
+            backend._active_handler = slow_handler
+            backend._turn_id = "turn-race"
+            request = {
+                "token": backend._bridge_token,
+                "request_id": "slow-call",
+                "action": {"action": ACK},
+            }
+            worker = threading.Thread(
+                target=lambda: results.append(backend._handle_bridge_request(request))
+            )
+            worker.start()
+            deadline = time.monotonic() + 2
+            while backend._turn_claimed_action is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertIsNotNone(backend._turn_claimed_action)
+            # Claude's turn result lands while the action is still executing
+            # (the real-world MCP tool-call timeout race).
+            backend._handle_stream_event(
+                {"type": "result", "subtype": "success", "is_error": False}
+            )
+            self.assertIsNone(backend._turn_protocol_error)
+            release.set()
+            worker.join(2)
+            self.assertTrue(results and results[0]["success"])
+            self.assertIsNotNone(backend._turn_action)
+            self.assertTrue(backend._turn_result_seen)
+        finally:
+            release.set()
+            backend.close()
+
+    def test_rejection_reason_survives_an_early_turn_result(self):
+        backend = self.backend()
+        release = threading.Event()
+        try:
+            backend.start_cycle("meeting-reject", "Skill", "HANG")
+
+            def rejecting_handler(_action, _metadata):
+                release.wait(2)
+                return {"success": False, "content": "phase mismatch: use vim", "pause": False}
+
+            backend._active_handler = rejecting_handler
+            backend._turn_id = "turn-reject"
+            request = {
+                "token": backend._bridge_token,
+                "request_id": "rejected-call",
+                "action": {"action": ACK},
+            }
+            worker = threading.Thread(target=lambda: backend._handle_bridge_request(request))
+            worker.start()
+            deadline = time.monotonic() + 2
+            while backend._turn_claimed_action is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            backend._handle_stream_event(
+                {"type": "result", "subtype": "success", "is_error": False}
+            )
+            release.set()
+            worker.join(2)
+            self.assertIn("phase mismatch: use vim", backend._turn_protocol_error or "")
+            self.assertIn("ended the turn", backend._turn_protocol_error or "")
+        finally:
+            release.set()
+            backend.close()
+
+    def test_duplicate_tool_call_is_idempotent_and_first_action_wins(self):
+        backend = self.backend()
+        actions = []
+        try:
+            session = backend.start_cycle("meeting-duplicate", "Skill", "")
+            # The fake CLI sends one call per input; call the bridge directly
+            # twice to model Claude's duplicate same-turn call.
+            request = {
+                "token": backend._bridge_token,
+                "request_id": "first-call",
+                "action": {"action": ACK},
+            }
+            backend._active_handler = lambda action, metadata: actions.append(action) or {
+                "success": True,
+                "content": "accepted",
+                "pause": True,
+            }
+            backend._turn_id = "turn-test"
+            backend._handle_bridge_request(request)
+            duplicate = dict(request, request_id="duplicate-call")
+            result = backend._handle_bridge_request(duplicate)
+            self.assertTrue(result["success"])
+            self.assertTrue(result["pause"])
+            self.assertEqual(1, len(actions))
+        finally:
+            backend.close()
+
+    def test_concurrent_duplicate_tool_calls_execute_handler_once(self):
+        backend = self.backend()
+        actions = []
+        entered = threading.Event()
+        try:
+            backend._bridge_token = "test-token"
+            backend._turn_id = "turn-concurrent"
+
+            def handler(action, metadata):
+                actions.append(metadata["call_id"])
+                entered.set()
+                time.sleep(0.05)
+                return {"success": True, "content": "accepted", "pause": True}
+
+            backend._active_handler = handler
+            request = {
+                "token": "test-token",
+                "request_id": "concurrent-call",
+                "action": {"action": ACK},
+            }
+            results = []
+            workers = [threading.Thread(target=lambda: results.append(backend._handle_bridge_request(request))) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            self.assertTrue(entered.wait(1))
+            for worker in workers:
+                worker.join(1)
+            self.assertEqual(1, len(actions))
+            self.assertEqual(2, len(results))
+            self.assertTrue(all(result["success"] for result in results))
+        finally:
+            backend.close()
+
+    def test_three_consecutive_turns_each_execute_one_action(self):
+        backend = self.backend()
+        actions = []
+        try:
+            session = backend.start_cycle("meeting-three-turns", "Skill", "")
+            for index in range(3):
+                response = backend.next_action(
+                    session,
+                    f"observation-{index}",
+                    allowed_types=("chat",),
+                    allowed_message_types=("ack",),
+                    action_handler=lambda action, metadata: (
+                        actions.append((action, metadata))
+                        or {"success": True, "content": "accepted", "pause": True}
+                    ),
+                )
+                self.assertTrue(response.executed)
+                self.assertEqual("ack", response.action.message_type)
+                self.assertEqual(index + 1, len(actions))
         finally:
             backend.close()
 
@@ -235,6 +422,31 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         self.assertEqual(1, len(outcome))
         self.assertIsInstance(outcome[0], AgentInterrupted)
         self.assertIsNotNone(self.spawned[0][2].poll())
+
+
+class ClaudeBinaryResolutionTest(unittest.TestCase):
+    def test_standard_macos_install_is_discovered_when_path_is_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "Claude" / "claude-code" / "2.1.249" / "claude"
+            candidate.parent.mkdir(parents=True)
+            candidate.write_text("#!/bin/sh\n", encoding="utf-8")
+            candidate.chmod(0o700)
+            with patch("claude_code_client.shutil.which", return_value=None), patch(
+                "claude_code_client._claude_install_candidates", return_value=[candidate]
+            ):
+                self.assertEqual(str(candidate), resolve_claude_binary())
+
+    def test_explicit_path_wins_over_discovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "claude"
+            candidate.write_text("#!/bin/sh\n", encoding="utf-8")
+            candidate.chmod(0o700)
+            with patch("claude_code_client.shutil.which") as which, patch(
+                "claude_code_client._claude_install_candidates"
+            ) as discover:
+                self.assertEqual(str(candidate), resolve_claude_binary(str(candidate)))
+                which.assert_not_called()
+                discover.assert_not_called()
 
 
 class ClaudeMcpServerTest(unittest.TestCase):

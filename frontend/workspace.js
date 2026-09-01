@@ -53,6 +53,7 @@ const state = {
   playbackHoverIndex: null,
   judgeName: "human",
   health: null,
+  pointerSelecting: false,
 };
 
 const labels = {
@@ -952,9 +953,15 @@ function showSelectionMenu(candidate) {
 
 function scheduleSelectionMenu() {
   clearTimeout(state.selectionTimer);
+  // While the primary button is held the user is still dragging a selection;
+  // the menu must only appear after release (pointerup/mouseup/touchend).
+  if (state.pointerSelecting) {
+    hideSelectionMenu();
+    return;
+  }
   state.selectionTimer = setTimeout(() => {
     state.selectionTimer = null;
-    if (state.selectionBusy) return;
+    if (state.selectionBusy || state.pointerSelecting) return;
     const candidate = selectionCandidate();
     if (candidate) showSelectionMenu(candidate);
     else hideSelectionMenu();
@@ -1366,12 +1373,23 @@ function bind() {
     renderChat();
   }));
   for (const container of [el.chat_list, el.terminal_screen]) {
+    container.addEventListener("pointerdown", (event) => {
+      if (event.button === 0) state.pointerSelecting = true;
+    });
     container.addEventListener("pointerup", scheduleSelectionMenu);
     container.addEventListener("mouseup", scheduleSelectionMenu);
     container.addEventListener("touchend", () => setTimeout(scheduleSelectionMenu, 70), { passive: true });
     container.addEventListener("focusin", handleSourceFocus);
     container.addEventListener("keydown", handleKeyboardSelection);
   }
+  // Release anywhere (even outside the containers) ends the drag; re-evaluate
+  // the selection once so the menu appears exactly at mouse release.
+  document.addEventListener("pointerup", () => {
+    if (!state.pointerSelecting) return;
+    state.pointerSelecting = false;
+    scheduleSelectionMenu();
+  });
+  document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
   document.addEventListener("pointerdown", (event) => {
     if (!el.selection_menu.contains(event.target)) {

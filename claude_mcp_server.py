@@ -106,9 +106,15 @@ async def run() -> None:
         payload = arguments.get("action") if isinstance(arguments, dict) else None
         try:
             action = AgentAction.from_dict(payload)
-            normalized = {"action": asdict(action)}
-            normalized["action"]["keys"] = list(action.keys)
-            normalized["action"]["references"] = [dict(item) for item in action.references]
+            normalized_action = asdict(action)
+            normalized_action["keys"] = list(action.keys)
+            if action.references:
+                normalized_action["references"] = [dict(item) for item in action.references]
+            else:
+                # Keep the pre-reference bridge shape for callers that did not
+                # attach quotes; AgentAction treats the field as optional.
+                normalized_action.pop("references", None)
+            normalized = {"action": normalized_action}
             result = await asyncio.to_thread(_bridge_call, normalized)
         except (AgentProtocolError, BridgeError, OSError, ValueError) as exc:
             return types.CallToolResult(

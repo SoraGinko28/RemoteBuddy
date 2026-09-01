@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
+from glob import glob
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -34,6 +35,12 @@ PROTOCOL_NAME = "claude-code"
 TOOL_NAME = "mcp__remotebuddy__remotebuddy_action"
 MAX_WIRE_BYTES = 2 * 1024 * 1024
 MAX_ACTION_REJECTIONS = 3
+MAX_TURN_NUDGES = 2
+NUDGE_TEXT = (
+    "You have not called the remotebuddy_action tool for the current observation. "
+    "Call it exactly once now with your chosen action for the same observation; "
+    "do not answer in prose."
+)
 MIN_RESTRICTED_VERSION = (2, 1, 248)
 REQUIRED_HELP_FLAGS = {
     "--allowedTools",
@@ -43,6 +50,7 @@ REQUIRED_HELP_FLAGS = {
     "--no-session-persistence",
     "--output-format",
     "--permission-mode",
+    "--restricted",
     "--strict-mcp-config",
     "--system-prompt-file",
     "--tools",
@@ -76,6 +84,77 @@ def _parse_version(text: str) -> Optional[Tuple[int, int, int]]:
     return tuple(map(int, match.groups())) if match else None
 
 
+def _claude_install_candidates() -> List[Path]:
+    """Return conventional Claude Code locations for native POSIX installs."""
+    home = Path.home()
+    patterns = [
+        home / ".local/bin/claude",
+        home / ".npm-global/bin/claude",
+    ]
+    if sys.platform == "darwin":
+        patterns.extend(
+            (
+                home / "Library/Application Support/Claude-3p/claude-code/*/claude.app/Contents/MacOS/claude",
+                home / "Library/Application Support/Claude/claude-code/*/claude.app/Contents/MacOS/claude",
+                home / "Library/Application Support/Code/agent-host/sdk-cache/claude/*/*/node_modules/@anthropic-ai/claude-agent-sdk-*/claude",
+                Path("/opt/homebrew/bin/claude"),
+                Path("/usr/local/bin/claude"),
+            )
+        )
+    candidates: List[Path] = []
+    for pattern in patterns:
+        if "*" in str(pattern):
+            candidates.extend(Path(match) for match in glob(str(pattern)))
+        else:
+            candidates.append(pattern)
+    return candidates
+
+
+def resolve_claude_binary(configured: str = "claude") -> Optional[str]:
+    """Resolve a configured CLI name, including Claude Desktop's macOS install."""
+    value = configured.strip()
+    if not value:
+        return None
+
+    explicit = Path(value).expanduser()
+    if os.path.sep in value or value.startswith(".") or value.startswith("~"):
+        return str(explicit) if explicit.is_file() else None
+
+    resolved = shutil.which(value)
+    if resolved:
+        return resolved
+    if value != "claude":
+        return None
+
+    candidates = {
+        candidate
+        for candidate in _claude_install_candidates()
+        if candidate.is_file() and os.access(candidate, os.X_OK)
+    }
+    if not candidates:
+        return None
+
+    def sort_key(candidate: Path) -> Tuple[Tuple[int, int, int], float, str]:
+        target = candidate.resolve(strict=False)
+        version = _parse_version(str(target)) or _parse_version(str(candidate)) or (0, 0, 0)
+        try:
+            modified = candidate.stat().st_mtime
+        except OSError:
+            modified = 0.0
+        return version, modified, str(candidate)
+
+    return str(max(candidates, key=sort_key))
+
+
+def _missing_binary_error(configured: str) -> ClaudeCodeError:
+    if configured == "claude":
+        return ClaudeCodeError(
+            "Claude Code CLI was not found on PATH or in the standard macOS install locations; "
+            "set [harnesses.claude-code].binary to its executable path"
+        )
+    return ClaudeCodeError(f"Claude Code CLI was not found: {configured}")
+
+
 def check_claude_protocol(binary: str, timeout: float = 10.0) -> str:
     if os.name != "posix" or not hasattr(socket, "AF_UNIX"):
         raise ClaudeCodeError("Claude Code backend currently requires macOS or POSIX Linux")
@@ -95,21 +174,33 @@ def check_claude_protocol(binary: str, timeout: float = 10.0) -> str:
             timeout=min(timeout, 5.0),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ClaudeCodeError("could not execute Claude Code CLI") from exc
+        raise ClaudeCodeError(f"could not execute Claude Code CLI at {binary}") from exc
     if version_result.returncode != 0:
-        raise ClaudeCodeError("could not read Claude Code CLI version")
+        raise ClaudeCodeError(f"could not read Claude Code CLI version at {binary}")
     version_line = (version_result.stdout or version_result.stderr or "").strip().splitlines()
     version = version_line[0][:120] if version_line else "unknown"
     parsed = _parse_version(version)
     if parsed is None or parsed < MIN_RESTRICTED_VERSION:
         required = ".".join(map(str, MIN_RESTRICTED_VERSION))
-        raise ClaudeCodeError(f"Claude Code {required} or newer is required for restricted mode")
+        raise ClaudeCodeError(
+            f"Claude Code {required} or newer is required for restricted mode "
+            f"(found {version or 'unknown'} at {binary})"
+        )
     if help_result.returncode != 0:
-        raise ClaudeCodeError("could not inspect Claude Code CLI capabilities")
+        raise ClaudeCodeError(f"could not inspect Claude Code CLI capabilities at {binary}")
     help_text = (help_result.stdout or "") + "\n" + (help_result.stderr or "")
-    missing = sorted(flag for flag in REQUIRED_HELP_FLAGS if flag not in help_text)
+    # Recent Claude releases compact the two system-prompt forms in help as
+    # ``--system-prompt[-file]`` even though both flags remain supported.
+    missing = sorted(
+        flag
+        for flag in REQUIRED_HELP_FLAGS
+        if flag not in help_text
+        and not (flag == "--system-prompt-file" and "--system-prompt[-file]" in help_text)
+    )
     if missing:
-        raise ClaudeCodeError("Claude Code CLI lacks required flags: " + ", ".join(missing))
+        raise ClaudeCodeError(
+            "Claude Code CLI lacks required flags at " + binary + ": " + ", ".join(missing)
+        )
     if importlib.util.find_spec("mcp") is None:
         raise ClaudeCodeError("Python package mcp==2.1.1 is not installed")
     return version
@@ -118,9 +209,9 @@ def check_claude_protocol(binary: str, timeout: float = 10.0) -> str:
 def probe_claude_backend(config: ModelApiConfig, timeout: float = 10.0) -> str:
     if config.agent_provider != "deepseek" or not config.api_key:
         raise ClaudeCodeError("Claude Code DeepSeek provider is not configured")
-    binary = shutil.which(config.claude_binary) if os.path.sep not in config.claude_binary else config.claude_binary
-    if not binary or not Path(binary).is_file():
-        raise ClaudeCodeError("Claude Code CLI is not installed")
+    binary = resolve_claude_binary(config.claude_binary)
+    if not binary:
+        raise _missing_binary_error(config.claude_binary)
     return check_claude_protocol(binary, timeout=timeout)
 
 
@@ -165,10 +256,13 @@ class ClaudeCodeBackend:
         self._allowed_types: Optional[Sequence[str]] = None
         self._allowed_messages: Optional[Sequence[str]] = None
         self._turn_action: Optional[AgentAction] = None
+        self._turn_claimed_action: Optional[AgentAction] = None
         self._turn_response_id: Optional[str] = None
         self._turn_result_seen = False
         self._turn_protocol_error: Optional[str] = None
         self._rejections = 0
+        self._last_rejection = ""
+        self._turn_nudges = 0
         self._bridge_token = ""
         self._socket_path = ""
         self._started_at = 0.0
@@ -200,9 +294,9 @@ class ClaudeCodeBackend:
             raise ClaudeCodeError("Claude Code requires a configured DeepSeek API key")
         binary = self.claude_binary
         if not self._skip_protocol_check:
-            resolved = shutil.which(binary) if os.path.sep not in binary else binary
+            resolved = resolve_claude_binary(binary)
             if not resolved:
-                raise ClaudeCodeError("Claude Code CLI is not installed")
+                raise _missing_binary_error(binary)
             binary = resolved
             self.protocol_version = check_claude_protocol(binary)
         self._callback = event_callback
@@ -311,10 +405,13 @@ class ClaudeCodeBackend:
             self._allowed_types = tuple(allowed_types) if allowed_types else None
             self._allowed_messages = tuple(allowed_message_types) if allowed_message_types else None
             self._turn_action = None
+            self._turn_claimed_action = None
             self._turn_response_id = None
             self._turn_result_seen = False
             self._turn_protocol_error = None
             self._rejections = 0
+            self._last_rejection = ""
+            self._turn_nudges = 0
             self._interrupted = False
             turn_id = self._turn_id
         text = self._initial_context if self._first_turn and self._initial_context else observation
@@ -502,22 +599,38 @@ class ClaudeCodeBackend:
             raise AgentProtocolError("Claude MCP request id is invalid")
         if not hmac.compare_digest(str(request.get("token", "")), self._bridge_token):
             raise AgentProtocolError("Claude MCP authentication failed")
-        with self._condition:
-            handler = self._active_handler
-            turn_id = self._turn_id
-            session_id = self._session_id
-            allowed_types = self._allowed_types
-            allowed_messages = self._allowed_messages
-            if handler is None or turn_id is None:
-                return {"request_id": request_id, "success": False, "content": "no active RemoteBuddy turn", "pause": True}
-            if self._turn_action is not None:
-                self._turn_protocol_error = "Claude Code submitted multiple actions in one turn"
-                self._condition.notify_all()
-                return {"request_id": request_id, "success": False, "content": "one action is allowed per observation", "pause": True}
         arguments = request.get("action")
         payload = arguments.get("action") if isinstance(arguments, dict) else None
+        action: Optional[AgentAction] = None
         try:
+            with self._condition:
+                handler = self._active_handler
+                turn_id = self._turn_id
+                session_id = self._session_id
+                allowed_types = self._allowed_types
+                allowed_messages = self._allowed_messages
+                if handler is None or turn_id is None:
+                    return {"request_id": request_id, "success": False, "content": "no active RemoteBuddy turn", "pause": True}
             action = AgentAction.from_dict(payload, allowed_types, allowed_messages)
+            with self._condition:
+                if self._turn_id != turn_id or self._active_handler is None:
+                    return {"request_id": request_id, "success": False, "content": "no active RemoteBuddy turn", "pause": True}
+                claimed_action = self._turn_action or self._turn_claimed_action
+                if claimed_action is not None:
+                    if action != claimed_action:
+                        return {
+                            "request_id": request_id,
+                            "success": False,
+                            "content": "a different action was already submitted for this observation",
+                            "pause": True,
+                        }
+                    return {
+                        "request_id": request_id,
+                        "success": True,
+                        "content": "action already accepted for this observation; end the turn",
+                        "pause": True,
+                    }
+                self._turn_claimed_action = action
             result = handler(
                 action,
                 {"call_id": request_id, "session_id": session_id, "turn_id": turn_id},
@@ -532,13 +645,25 @@ class ClaudeCodeBackend:
         pause = bool(result.get("pause", False))
         content = self._redact(str(result.get("content", "action completed")))[:64 * 1024]
         with self._condition:
-            if success or pause:
+            if action is not None and self._turn_claimed_action == action:
+                self._turn_claimed_action = None
+            if action is not None and (success or pause):
                 self._turn_action = action
                 self._turn_response_id = request_id
             else:
                 self._rejections += 1
-                if self._rejections >= MAX_ACTION_REJECTIONS:
-                    self._turn_protocol_error = "Claude Code exceeded the rejected-action retry limit"
+                self._last_rejection = content[:500]
+                if self._turn_result_seen and self._turn_action is None:
+                    # Claude already ended its turn (for example after the MCP
+                    # tool call timed out on a slow typed action); it cannot
+                    # correct this rejection anymore, so surface the reason.
+                    self._turn_protocol_error = (
+                        "Claude Code ended the turn before an accepted action: " + self._last_rejection
+                    )
+                elif self._rejections >= MAX_ACTION_REJECTIONS:
+                    self._turn_protocol_error = (
+                        "Claude Code exceeded the rejected-action retry limit: " + self._last_rejection
+                    )
             self._condition.notify_all()
         self._emit(
             "dynamic_tool_completed",
@@ -613,14 +738,51 @@ class ClaudeCodeBackend:
                         self._condition.notify_all()
             return
         if kind == "result":
+            nudge = False
             with self._condition:
+                if self._turn_id is None:
+                    return
                 if message.get("is_error") and self._turn_action is None:
                     error = message.get("subtype") or message.get("result") or "Claude Code turn failed"
                     self._turn_protocol_error = self._redact(str(error))[:500]
-                elif self._turn_action is None:
+                    self._turn_result_seen = True
+                elif self._turn_action is not None:
+                    self._turn_result_seen = True
+                elif self._turn_claimed_action is not None:
+                    # The MCP tool call is still executing: a slowly typed
+                    # terminal action can outlive Claude's tool-call timeout,
+                    # making the turn result arrive first. Let the bridge
+                    # handler finish the turn instead of failing it here.
+                    self._turn_result_seen = True
+                elif self._rejections > 0:
+                    self._turn_protocol_error = (
+                        "Claude Code ended the turn after its action was rejected: "
+                        + (self._last_rejection or "unknown rejection")
+                    )[:500]
+                    self._turn_result_seen = True
+                elif self._turn_nudges < MAX_TURN_NUDGES:
+                    # The model answered without calling the tool at all. Give
+                    # it a bounded number of corrective retries in this turn
+                    # before failing the whole cycle.
+                    self._turn_nudges += 1
+                    nudge = True
+                else:
                     self._turn_protocol_error = "Claude Code returned no RemoteBuddy action"
-                self._turn_result_seen = True
+                    self._turn_result_seen = True
                 self._condition.notify_all()
+            if nudge:
+                self._emit(
+                    "turn_nudged",
+                    session_id=self._session_id,
+                    turn_id=self._turn_id,
+                    status="retrying",
+                )
+                try:
+                    self._send_user_message(NUDGE_TEXT)
+                except ClaudeCodeError as exc:
+                    with self._condition:
+                        self._process_error = self._process_error or self._redact(str(exc))
+                        self._condition.notify_all()
 
     def _validate_init(self, message: Dict[str, Any]) -> None:
         session_id = message.get("session_id")
