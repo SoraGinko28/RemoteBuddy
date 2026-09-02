@@ -1501,21 +1501,6 @@ def build_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, service: Op
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import argparse
 
-    if argv is None:
-        argv = sys.argv[1:]
-    argv = list(argv)
-
-    # Also accept the convenient ``harness=claude`` spelling.
-    normalized: List[str] = []
-    harness_value: Optional[str] = None
-    for arg in argv:
-        if arg.startswith("harness="):
-            if harness_value is not None:
-                raise SystemExit("harness= may be specified only once")
-            harness_value = arg.split("=", 1)[1]
-        else:
-            normalized.append(arg)
-
     parser = argparse.ArgumentParser(description="Run the RemoteBuddy v2 workspace service")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -1524,11 +1509,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="Default harness for new sessions: claude, responses, or codex",
     )
-    args = parser.parse_args(normalized)
-    if harness_value is not None:
-        if args.harness is not None:
-            raise SystemExit("harness= and --harness cannot be used together")
-        args.harness = harness_value
+    args = parser.parse_args(argv)
 
     default_backend: Optional[str] = None
     default_provider: Optional[str] = None
