@@ -1013,7 +1013,8 @@ function scheduleSelectionMenu(clickCount = 1) {
   // selectionchange events do not know the click count. If a pointerup has
   // already scheduled a longer double-click delay, do not let the later
   // selectionchange shorten it and pop the menu before a possible third click.
-  if (state.selectionTimer !== null && delay < state.selectionMenuDelay) return;
+  // A real third click (clickCount >= 3) is authoritative and may override it.
+  if (clickCount < 3 && state.selectionTimer !== null && delay < state.selectionMenuDelay) return;
   clearTimeout(state.selectionTimer);
   state.selectionMenuDelay = delay;
   // While the primary button is held the user is still dragging a selection;
