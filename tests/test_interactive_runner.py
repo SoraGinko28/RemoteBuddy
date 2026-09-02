@@ -662,6 +662,13 @@ class InteractiveRunnerTest(unittest.TestCase):
             ],
             '~\n"notes.md"',
         )
+        validate_agent_vim_keys(
+            [
+                {"kind": "literal", "value": ":81s/addBig/addSigned/"},
+                {"kind": "key", "value": "Enter"},
+            ],
+            '~\n"bigint_add.cpp"',
+        )
         for unsafe in (":%s/x/\\=system('id')/", ":%s/x/y/|q", ":%s/.*/x/"):
             with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
                 validate_agent_vim_keys(
