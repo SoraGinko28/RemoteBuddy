@@ -930,41 +930,16 @@ function selectionCandidate() {
     const endRoot = sourceRootFromNode(range.endContainer);
     const root = startRoot || endRoot;
     if (!root) return null;
-    if (startRoot && endRoot && startRoot !== endRoot) {
-      console.log("[candidate-null] root mismatch", {
-        start: debugSelectionNode(range.startContainer),
-        end: debugSelectionNode(range.endContainer),
-        startRoot: startRoot ? debugSelectionNode(startRoot) : null,
-        endRoot: endRoot ? debugSelectionNode(endRoot) : null,
-      });
-      return null;
-    }
+    if (startRoot && endRoot && startRoot !== endRoot) return null;
     const source = sourceEventForRoot(root);
-    if (!source) {
-      console.log("[candidate-null] no source", { root: debugSelectionNode(root) });
-      return null;
-    }
+    if (!source) return null;
     const content = root.textContent || "";
     const length = codePointLength(content);
     let start;
     let end;
     if (startRoot && endRoot) {
       const offsets = selectionOffsets(root, selection);
-      if (!offsets) {
-        start = textOffsetFromPoint(root, range.startContainer, range.startOffset);
-        end = textOffsetFromPoint(root, range.endContainer, range.endOffset);
-        console.log("[candidate-null] offsets failed", {
-          root: debugSelectionNode(root),
-          startContainer: debugSelectionNode(range.startContainer),
-          startOffset: range.startOffset,
-          endContainer: debugSelectionNode(range.endContainer),
-          endOffset: range.endOffset,
-          contentLength: length,
-          start,
-          end,
-        });
-        return null;
-      }
+      if (!offsets) return null;
       start = offsets.start;
       end = offsets.end;
     } else if (startRoot && !endRoot) {
@@ -978,16 +953,12 @@ function selectionCandidate() {
       start = 0;
       end = textOffsetFromPoint(root, range.endContainer, range.endOffset);
     }
-    if (start === null || end === null || start < 0 || end > length || end <= start) {
-      console.log("[candidate-null] invalid range after clamp", { start, end, length });
-      return null;
-    }
+    if (start === null || end === null || start < 0 || end > length || end <= start) return null;
     const excerpt = codePointSlice(content, start, end);
     if (!excerpt.trim()) return null;
     const rect = range.getBoundingClientRect();
-    return { ...{ start, end, excerpt }, kind: source.kind, event_id: source.event_id, root, rect };
-  } catch (error) {
-    console.log("[candidate-null] exception", error);
+    return { start, end, excerpt, kind: source.kind, event_id: source.event_id, root, rect };
+  } catch (_error) {
     return null;
   }
 }
@@ -1044,24 +1015,11 @@ function showSelectionMenu(candidate) {
   requestAnimationFrame(() => positionSelectionMenu(candidate));
 }
 
-function debugSelectionNode(value) {
-  if (!value) return String(value);
-  const text = (value.textContent || value.nodeValue || "").toString().slice(0, 30).replace(/\s+/g, " ");
-  const element = value.nodeType === 1 ? value : value.parentElement;
-  return JSON.stringify({
-    nodeType: value.nodeType,
-    nodeName: value.nodeName,
-    text: text,
-    className: element?.className || "",
-    eventId: element?.dataset?.eventId || "",
-  });
-}
-
 function scheduleSelectionMenu(clickCount = 1) {
-  // A double-click may be the first two clicks of a triple-click. Wait a bit
+  // A double-click may be the first two clicks of a triple-click. Wait briefly
   // after double-click so the third click can replace the word selection with
   // the paragraph selection instead of being blocked by an early menu.
-  const delay = clickCount >= 3 ? 60 : (clickCount === 2 ? 500 : 45);
+  const delay = clickCount >= 3 ? 60 : (clickCount === 2 ? 250 : 45);
   // selectionchange events do not know the click count. If a pointerup has
   // already scheduled a longer double-click delay, do not let the later
   // selectionchange shorten it and pop the menu before a possible third click.
@@ -1071,39 +1029,6 @@ function scheduleSelectionMenu(clickCount = 1) {
   state.selectionMenuDelay = delay;
   // While the primary button is held the user is still dragging a selection;
   // the menu must only appear after release (pointerup/mouseup/touchend).
-  if (clickCount >= 3) {
-    try {
-      const selection = window.getSelection();
-      const range = selection && selection.rangeCount === 1 ? selection.getRangeAt(0) : null;
-      const startRoot = range ? sourceRootFromNode(range.startContainer) : null;
-      const endRoot = range ? sourceRootFromNode(range.endContainer) : null;
-      let candidateInfo = null;
-      try {
-        const candidate = selectionCandidate();
-        if (candidate) candidateInfo = { kind: candidate.kind, event_id: candidate.event_id, start: candidate.start, end: candidate.end, excerpt: candidate.excerpt };
-        else candidateInfo = null;
-      } catch (error) {
-        candidateInfo = "ERROR: " + error;
-      }
-      console.log("[click-debug]", {
-        detail: clickCount,
-        rangeCount: selection?.rangeCount,
-        collapsed: selection?.isCollapsed,
-        start: range ? debugSelectionNode(range.startContainer) : null,
-        startOffset: range?.startOffset,
-        end: range ? debugSelectionNode(range.endContainer) : null,
-        endOffset: range?.endOffset,
-        startRoot: startRoot ? debugSelectionNode(startRoot) : null,
-        endRoot: endRoot ? debugSelectionNode(endRoot) : null,
-        candidate: candidateInfo,
-        pointerSelecting: state.pointerSelecting,
-        selectionTimer: state.selectionTimer !== null,
-        selectionMenuDelay: state.selectionMenuDelay,
-      });
-    } catch (error) {
-      console.error("[click-debug] error", error);
-    }
-  }
   if (state.pointerSelecting) {
     hideSelectionMenu();
     return;
@@ -1111,10 +1036,8 @@ function scheduleSelectionMenu(clickCount = 1) {
   state.selectionTimer = setTimeout(() => {
     state.selectionTimer = null;
     state.selectionMenuDelay = 0;
-    console.log("[timeout-debug] fire", { delay, selectionBusy: state.selectionBusy, pointerSelecting: state.pointerSelecting });
     if (state.selectionBusy || state.pointerSelecting) return;
     const candidate = selectionCandidate();
-    console.log("[timeout-debug] candidate", candidate ? { kind: candidate.kind, event_id: candidate.event_id, start: candidate.start, end: candidate.end, excerpt: candidate.excerpt } : null);
     if (candidate) showSelectionMenu(candidate);
     else hideSelectionMenu();
   }, delay);
@@ -1538,7 +1461,6 @@ function bind() {
     container.addEventListener("pointerup", (event) => scheduleSelectionMenu(event.detail || 1));
     container.addEventListener("mouseup", (event) => scheduleSelectionMenu(event.detail || 1));
     container.addEventListener("click", (event) => {
-      console.log("[event-debug] click detail=", event.detail, "target=", event.target?.className || event.target?.nodeName);
       scheduleSelectionMenu(event.detail || 1);
     });
     container.addEventListener("touchend", () => setTimeout(scheduleSelectionMenu, 70), { passive: true });
@@ -1548,7 +1470,6 @@ function bind() {
   // Release anywhere (even outside the containers) ends the drag; re-evaluate
   // the selection once so the menu appears exactly at mouse release.
   document.addEventListener("pointerup", (event) => {
-    console.log("[event-debug] pointerup detail=", event.detail, "pointerSelecting=", state.pointerSelecting, "target=", event.target?.className || event.target?.nodeName);
     if (!state.pointerSelecting) return;
     state.pointerSelecting = false;
     scheduleSelectionMenu(event.detail || 1);
