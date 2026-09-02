@@ -316,6 +316,33 @@ function codePointSlice(value, start, end) {
   return codePoints(value).slice(start, end).join("");
 }
 
+function textOffsetFromPoint(root, container, offset) {
+  if (!root || !container || !root.contains(container)) return null;
+  if (container.nodeType === 1) {
+    try {
+      const before = document.createRange();
+      before.selectNodeContents(root);
+      before.setEnd(container, Number(offset) || 0);
+      return codePointLength(before.toString());
+    } catch (_error) {
+      return null;
+    }
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let total = 0;
+  let current = walker.nextNode();
+  while (current) {
+    if (current === container) {
+      const value = current.nodeValue || "";
+      const prefix = codePoints(value).slice(0, Math.max(0, Number(offset) || 0));
+      return total + prefix.length;
+    }
+    total += codePointLength(current.nodeValue || "");
+    current = walker.nextNode();
+  }
+  return null;
+}
+
 function sourceEventForRoot(root) {
   const eventId = root?.dataset?.eventId;
   if (!eventId) return null;
@@ -864,14 +891,10 @@ function selectionOffsets(root, selection) {
   try {
     const range = selection.getRangeAt(0);
     if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
-    const before = range.cloneRange();
-    before.selectNodeContents(root);
-    before.setEnd(range.startContainer, range.startOffset);
     const content = root.textContent || "";
-    const start = codePointLength(before.toString());
-    const end = start + codePointLength(range.toString());
-    const length = codePointLength(content);
-    if (start < 0 || end > length || end <= start) return null;
+    const start = textOffsetFromPoint(root, range.startContainer, range.startOffset);
+    const end = textOffsetFromPoint(root, range.endContainer, range.endOffset);
+    if (start === null || end === null || start < 0 || end > codePointLength(content) || end <= start) return null;
     const excerpt = codePointSlice(content, start, end);
     if (!excerpt.trim()) return null;
     return { start, end, excerpt };
