@@ -996,7 +996,7 @@ function scheduleSelectionMenu(clickCount = 1) {
   // A double-click may be the first two clicks of a triple-click. Wait a bit
   // after double-click so the third click can replace the word selection with
   // the paragraph selection instead of being blocked by an early menu.
-  const delay = clickCount >= 3 ? 60 : (clickCount === 2 ? 350 : 45);
+  const delay = clickCount >= 3 ? 60 : (clickCount === 2 ? 500 : 45);
   // selectionchange events do not know the click count. If a pointerup has
   // already scheduled a longer double-click delay, do not let the later
   // selectionchange shorten it and pop the menu before a possible third click.
