@@ -139,7 +139,7 @@ class WebV2ScoreTest(unittest.TestCase):
             )
         self.assertEqual([], MeetingStore.load(self.root, "score-demo").score_messages())
         # The same human message is still a valid conversation reference.
-        from meetingV6 import reference_from_event
+        from references import reference_from_event
 
         reference = reference_from_event(
             human_source,

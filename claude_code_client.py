@@ -253,8 +253,6 @@ class ClaudeCodeBackend:
         self._closed = False
         self._initialized = False
         self._active_handler: Optional[DynamicActionHandler] = None
-        self._allowed_types: Optional[Sequence[str]] = None
-        self._allowed_messages: Optional[Sequence[str]] = None
         self._turn_action: Optional[AgentAction] = None
         self._turn_claimed_action: Optional[AgentAction] = None
         self._turn_response_id: Optional[str] = None
@@ -308,6 +306,11 @@ class ClaudeCodeBackend:
         self._socket_path = str(private_cwd / "bridge.sock")
         self._bridge_token = secrets.token_urlsafe(32)
         try:
+            if len(self._socket_path.encode("utf-8")) > 100:
+                raise ClaudeCodeError(
+                    "temporary bridge socket path exceeds the AF_UNIX length limit; "
+                    "set TMPDIR to a shorter path"
+                )
             self._start_bridge_listener()
             prompt_path = private_cwd / "system-prompt.txt"
             prompt_path.write_text(self._system_prompt(instructions), encoding="utf-8")
@@ -390,7 +393,7 @@ class ClaudeCodeBackend:
         request_timeout_seconds: Optional[float] = None,
         action_handler: Optional[DynamicActionHandler] = None,
     ) -> AgentResponse:
-        del model
+        del model, allowed_types, allowed_message_types
         if not self._session_id or session_id != self._session_id or self._process is None:
             raise ClaudeCodeError("Claude Code session is not active")
         if action_handler is None:
@@ -402,8 +405,11 @@ class ClaudeCodeBackend:
             self._turn_id = "turn-" + uuid.uuid4().hex
             self._turn_started_at = time.monotonic()
             self._active_handler = action_handler
-            self._allowed_types = tuple(allowed_types) if allowed_types else None
-            self._allowed_messages = tuple(allowed_message_types) if allowed_message_types else None
+            # Phase constraints (allowed_types/allowed_message_types) are
+            # deliberately not pinned here: the runner re-validates every
+            # action against the *current* phase inside the handler and its
+            # rejection message names the allowed sets, which the model needs
+            # to correct itself. Mirrors the Codex dynamic-tool path.
             self._turn_action = None
             self._turn_claimed_action = None
             self._turn_response_id = None
@@ -416,10 +422,10 @@ class ClaudeCodeBackend:
             turn_id = self._turn_id
         text = self._initial_context if self._first_turn and self._initial_context else observation
         self._first_turn = False
-        self._send_user_message(text)
-        self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
         deadline = time.monotonic() + timeout
         try:
+            self._send_user_message(text)
+            self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
             with self._condition:
                 while True:
                     if self._interrupted:
@@ -459,8 +465,6 @@ class ClaudeCodeBackend:
         finally:
             with self._condition:
                 self._active_handler = None
-                self._allowed_types = None
-                self._allowed_messages = None
                 self._turn_id = None
 
     def interrupt(self) -> None:
@@ -507,27 +511,40 @@ class ClaudeCodeBackend:
                         process.wait(timeout=1)
                     except Exception:
                         pass
+        # Join the readers before closing their streams so a reader never
+        # observes a closed file mid-iteration and records a bogus error.
+        for worker in (self._reader, self._stderr_reader, self._listener_thread):
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=1)
+        if process is not None:
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     try:
                         stream.close()
                     except Exception:
                         pass
-        for worker in (self._reader, self._stderr_reader, self._listener_thread):
-            if worker is not None and worker is not threading.current_thread():
-                worker.join(timeout=1)
-        if self._temporary is not None:
-            self._temporary.cleanup()
+        try:
+            if self._temporary is not None:
+                self._temporary.cleanup()
+        except OSError as exc:
+            print(f"[claude-code] temporary directory cleanup failed: {exc}", file=sys.stderr, flush=True)
+        finally:
             self._temporary = None
-        self._session_id = None
-        self._turn_id = None
+            self._session_id = None
+            self._turn_id = None
 
     def _signal_process(self, sig: signal.Signals, *, process: Any = None) -> None:
         target = process or self._process
         if target is None or target.poll() is not None:
             return
         try:
-            os.killpg(target.pid, sig)
+            # Only signal the child's process group when it really is its own
+            # group; an injected process_factory without start_new_session
+            # would otherwise let killpg reach RemoteBuddy's own group.
+            if os.getpgid(target.pid) != os.getpgrp():
+                os.killpg(target.pid, sig)
+            else:
+                target.send_signal(sig)
         except (AttributeError, OSError):
             try:
                 target.send_signal(sig)
@@ -613,11 +630,13 @@ class ClaudeCodeBackend:
                 handler = self._active_handler
                 turn_id = self._turn_id
                 session_id = self._session_id
-                allowed_types = self._allowed_types
-                allowed_messages = self._allowed_messages
                 if handler is None or turn_id is None:
                     return {"request_id": request_id, "success": False, "content": "no active RemoteBuddy turn", "pause": True}
-            action = AgentAction.from_dict(payload, allowed_types, allowed_messages)
+            # Structural validation only. Per-action phase constraints are
+            # checked again by the runner at the execution boundary, whose
+            # rejection message names the currently allowed types so the
+            # model can correct itself.
+            action = AgentAction.from_dict(payload)
             with self._condition:
                 if self._turn_id != turn_id or self._active_handler is None:
                     return {"request_id": request_id, "success": False, "content": "no active RemoteBuddy turn", "pause": True}
@@ -647,6 +666,11 @@ class ClaudeCodeBackend:
             result = {"success": False, "content": "superseded", "pause": True}
         except AgentBackendError as exc:
             result = {"success": False, "content": str(exc), "pause": False}
+        except Exception as exc:  # noqa: BLE001
+            # Storage or transport failures (MeetingError, OSError) raised by
+            # the handler must not leave the claimed action dangling with no
+            # notification, or next_action would block for the full timeout.
+            result = {"success": False, "content": f"action failed: {exc}", "pause": False}
         success = bool(result.get("success", False))
         pause = bool(result.get("pause", False))
         content = self._redact(str(result.get("content", "action completed")))[:64 * 1024]
@@ -656,14 +680,9 @@ class ClaudeCodeBackend:
             if action is not None and (success or pause):
                 self._turn_action = action
                 self._turn_response_id = request_id
-                # Once one action has been accepted, further tool calls in the
-                # same Claude turn cannot be executed by the runner (it consumes
-                # one action per turn). Relax the phase filter so those extra
-                # calls are caught by the claimed-action guard below instead of
-                # being counted as phase rejections and exhausting the retry
-                # budget before the accepted action can be returned.
-                self._allowed_types = None
-                self._allowed_messages = None
+                # Extra tool calls in the same Claude turn are answered by the
+                # claimed-action guard above; with no phase filter pinned at
+                # the bridge, they can no longer burn the retry budget.
             else:
                 self._rejections += 1
                 self._last_rejection = content[:500]

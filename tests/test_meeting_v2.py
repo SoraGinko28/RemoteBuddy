@@ -101,9 +101,13 @@ class MeetingStoreV2Test(unittest.TestCase):
         self.assertEqual(2, screen["seq"])
         self.assertEqual(initial_hash, self.store.meeting.hashes["streams/events.jsonl"])
 
+        # Every non-terminal write defers the O(journal) hash; only a terminal
+        # status transition refreshes the integrity marker.
         self.store.append_event("action", "harness", "agent_acting")
-        self.assertNotEqual(initial_hash, self.store.meeting.hashes["streams/events.jsonl"])
+        self.assertEqual(initial_hash, self.store.meeting.hashes["streams/events.jsonl"])
         self.assertEqual([1, 2, 3], [event["seq"] for event in self.store.events()])
+        self.store.update(status="completed", phase="completed")
+        self.assertNotEqual(initial_hash, self.store.meeting.hashes["streams/events.jsonl"])
 
     def test_cursor_movement_produces_a_screen_event_without_content_change(self):
         first = self.store.append_screen(

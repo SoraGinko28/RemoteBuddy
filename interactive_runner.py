@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 import time
 import uuid
@@ -17,9 +18,32 @@ from agent_protocol import (
     AgentProtocolError,
 )
 from meeting_v2 import MeetingError, MeetingStore, utc_now
-from meetingV6 import reference_from_event
+from references import reference_from_event
 from tmux_transport import TmuxError, TmuxTransport, workspace_command_text
 from typing_policy import TypingPlan, plan_input
+
+from vim_policy import (  # noqa: F401  (re-exported for existing importers)
+    VIM_INSERT_COMMANDS,
+    VIM_INSERT_MARKERS,
+    VIM_SAFE_EX_COMMAND,
+    VIM_SAFE_NORMAL_COMMANDS,
+    VIM_SAFE_NORMAL_COMPOSITES,
+    VIM_SAFE_SEARCH,
+    VIM_SAFE_SUBSTITUTE,
+    validate_agent_vim_keys,
+)
+from typing_executor import (  # noqa: F401
+    send_command_with_captures,
+    send_tokens_with_captures,
+)
+from workspace_capture import (  # noqa: F401
+    RunnerError,
+    RunnerStopped,
+    TypingInterrupted,
+    capture_stable_workspace,
+    capture_workspace,
+    resolve_workspace_path,
+)
 
 
 ACTION_LIMIT = 60
@@ -40,295 +64,6 @@ VIM_SAFE_SUBSTITUTE = re.compile(
 VIM_SAFE_SEARCH = re.compile(r"^/[A-Za-z0-9_ .,;:(){}\[\]_'\"+=<>!@#%&*?/-]{1,120}$")
 TEST_MARKER_RE = re.compile(r"(?:[A-Z][A-Z0-9 _-]{0,80} )?TESTS PASSED")
 
-
-class RunnerError(RuntimeError):
-    pass
-
-
-class RunnerStopped(RunnerError):
-    pass
-
-
-class TypingInterrupted(RunnerError):
-    def __init__(self, sent: int, remaining: int, submitted: bool = False):
-        super().__init__("typing interrupted")
-        self.sent = sent
-        self.remaining = remaining
-        self.submitted = submitted
-
-
-def _inside(root: Path, candidate: Path) -> bool:
-    return candidate == root or root in candidate.parents
-
-
-def resolve_workspace_path(store: MeetingStore, current_path: str, requested: str, command: str) -> Path:
-    if not requested or Path(requested).is_absolute() or "\x00" in requested:
-        raise RunnerError(f"{command} requires a relative workspace path")
-    root = store.workspace_path.resolve()
-    current = Path(current_path).resolve()
-    if not _inside(root, current):
-        raise RunnerError("terminal is outside the shared workspace")
-    candidate = (current / requested).resolve()
-    if not _inside(root, candidate):
-        raise RunnerError("requested path escapes the shared workspace")
-    if command == "cd" and not candidate.is_dir():
-        raise RunnerError("cd target is not a directory")
-    if command == "vim" and not candidate.parent.is_dir():
-        raise RunnerError("vim target parent does not exist")
-    if command == "python" and (candidate.suffix != ".py" or not candidate.is_file()):
-        raise RunnerError("python target must be an existing .py file in the workspace")
-    return candidate
-
-
-def capture_workspace(
-    store: MeetingStore,
-    transport: TmuxTransport,
-    change_kind: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Optional[Dict[str, Any]]:
-    pane_id = store.meeting.pane_id
-    if not pane_id:
-        raise RunnerError("meeting has no workspace pane")
-    info = None
-    content = ""
-    # Metadata and the viewport are separate tmux queries. Retry once when
-    # the pane changes between them so an event never describes a screen with
-    # the wrong process, path, size, or cursor.
-    for _attempt in range(2):
-        before = transport.pane_info(pane_id)
-        if before["dead"] != "0":
-            raise RunnerError("shared workspace pane exited")
-        content = transport.capture_visible(pane_id)
-        after = transport.pane_info(pane_id)
-        signature = ("command", "path", "cursor_x", "cursor_y", "pane_width", "pane_height", "dead")
-        if all(before.get(key) == after.get(key) for key in signature):
-            info = after
-            break
-        info = after
-    if info is None or info["dead"] != "0":
-        raise RunnerError("shared workspace pane exited")
-    screen_metadata = dict(metadata or {})
-    screen_metadata.update(
-        {
-            "cursor_x": int(info["cursor_x"]),
-            "cursor_y": int(info["cursor_y"]),
-            "pane_width": int(info["pane_width"]),
-            "pane_height": int(info["pane_height"]),
-        }
-    )
-    return store.append_screen(
-        content,
-        info["command"],
-        info["path"],
-        change_kind=change_kind,
-        metadata=screen_metadata,
-    )
-
-
-def capture_stable_workspace(
-    store: MeetingStore,
-    transport: TmuxTransport,
-    metadata: Optional[Dict[str, Any]] = None,
-    attempts: int = 3,
-) -> Optional[Dict[str, Any]]:
-    """Capture until two consecutive visible frames agree."""
-    previous: Optional[Dict[str, Any]] = None
-    for index in range(max(2, attempts)):
-        current = capture_workspace(store, transport, metadata=metadata)
-        if previous is not None and current is not None:
-            if current.get("content") == previous.get("content") and current.get("data") == previous.get("data"):
-                return current
-        previous = current
-        if index + 1 < max(2, attempts):
-            time.sleep(0.03)
-    return previous
-
-
-def validate_agent_vim_keys(tokens: Sequence[Dict[str, str]], screen: str) -> None:
-    """Reject text that Vim would interpret as unintended normal-mode commands."""
-    mode = "insert" if any(marker in screen for marker in VIM_INSERT_MARKERS) else "normal"
-    if mode == "insert" and tokens:
-        first = tokens[0]
-        if first.get("kind") == "literal" and first.get("value") in VIM_INSERT_COMMANDS:
-            raise RunnerError(
-                "Vim is already in insert mode; send document text without another i/a/o command"
-            )
-    ex_command = ""
-    for token in tokens:
-        kind = token.get("kind")
-        value = token.get("value")
-        if kind == "key":
-            if value == "Escape":
-                mode = "normal"
-                ex_command = ""
-            elif value == "Enter" and mode in {"command", "search"}:
-                allowed = (
-                    VIM_SAFE_SEARCH.fullmatch(ex_command)
-                    if mode == "search"
-                    else (
-                        VIM_SAFE_EX_COMMAND.fullmatch(ex_command)
-                        or VIM_SAFE_SUBSTITUTE.fullmatch(ex_command)
-                    )
-                )
-                if not allowed:
-                    raise RunnerError("Vim Ex/search command is not in the safe allowlist")
-                mode = "normal"
-                ex_command = ""
-            continue
-        if kind != "literal" or not isinstance(value, str):
-            raise RunnerError("invalid Vim input token")
-        if mode == "insert":
-            continue
-        if mode == "command":
-            ex_command += value
-            if len(ex_command) > 192 or not ex_command.startswith(":"):
-                raise RunnerError("Vim Ex command is not in the safe allowlist")
-            continue
-        if value in VIM_INSERT_COMMANDS:
-            mode = "insert"
-            continue
-        if value in VIM_SAFE_NORMAL_COMMANDS or VIM_SAFE_NORMAL_COMPOSITES.fullmatch(value):
-            continue
-        if VIM_SAFE_SEARCH.fullmatch(value):
-            mode = "search"
-            ex_command = value
-            continue
-        if value == ":":
-            mode = "command"
-            ex_command = value
-            continue
-        if VIM_SAFE_EX_COMMAND.fullmatch(value) or VIM_SAFE_SUBSTITUTE.fullmatch(value):
-            mode = "command"
-            ex_command = value
-            continue
-        raise RunnerError(
-            "unsafe Vim normal-mode literal; enter insert mode with a separate i/a/o token first"
-        )
-    if mode in {"command", "search"}:
-        raise RunnerError("Vim Ex/search command must end with Enter")
-
-
-def typing_chunks(text: str) -> Tuple[str, ...]:
-    """Backward-compatible whitespace chunks used by older callers/tests."""
-    return tuple(re.findall(r"\S+[ \t]*|[ \t]+", text))
-
-
-def send_tokens_with_captures(
-    store: MeetingStore,
-    transport: TmuxTransport,
-    pane_id: str,
-    tokens: Sequence[Dict[str, str]],
-    settle_seconds: float = 0.05,
-    typing_interval_seconds: float = 0.0,
-    *,
-    meeting_id: str = "legacy",
-    action_id: str = "legacy-action",
-    profile: str = "balanced",
-    context: str = "code",
-    interrupt_check: Optional[Any] = None,
-) -> None:
-    """Execute a deterministic burst plan; zero interval preserves old fast callers."""
-    if typing_interval_seconds <= 0:
-        for token in tokens:
-            transport.send_tokens(pane_id, [token])
-            if settle_seconds > 0:
-                time.sleep(settle_seconds)
-            capture_workspace(store, transport)
-        return
-    plan = plan_input(
-        tokens,
-        profile,
-        meeting_id,
-        action_id,
-        context,
-        allow_paste=False,
-    )
-    _send_typing_plan(store, transport, pane_id, plan, action_id, interrupt_check)
-
-
-def send_command_with_captures(
-    store: MeetingStore,
-    transport: TmuxTransport,
-    pane_id: str,
-    command: str,
-    path: str,
-    typing_interval_seconds: float,
-    *,
-    meeting_id: str = "legacy",
-    action_id: str = "legacy-action",
-    profile: str = "balanced",
-    interrupt_check: Optional[Any] = None,
-) -> None:
-    text = workspace_command_text(command, path)
-    if typing_interval_seconds <= 0:
-        transport.send_keys(pane_id, text)
-        return
-    plan = plan_input(
-        [
-            {"kind": "literal", "value": text},
-            {"kind": "key", "value": "Enter"},
-        ],
-        profile,
-        meeting_id,
-        action_id,
-        "shell",
-        allow_paste=False,
-    )
-    _send_typing_plan(store, transport, pane_id, plan, action_id, interrupt_check)
-
-
-def _send_typing_plan(
-    store: MeetingStore,
-    transport: TmuxTransport,
-    pane_id: str,
-    plan: TypingPlan,
-    action_id: str,
-    interrupt_check: Optional[Any],
-) -> None:
-    deadline = time.monotonic()
-    sent = 0
-    submitted = False
-    last_paste_capture = float("-inf")
-    for step_index, step in enumerate(plan.steps):
-        if interrupt_check and interrupt_check():
-            raise TypingInterrupted(sent, plan.total_characters - sent, submitted)
-        if step.kind == "literal":
-            transport.send_literal(pane_id, step.value)
-            sent += len(step.value)
-        else:
-            transport.send_special(pane_id, step.value)
-            submitted = submitted or (step.value == "Enter" and step.input_context == "shell")
-        now = time.monotonic()
-        next_kind = plan.steps[step_index + 1].change_kind if step_index + 1 < len(plan.steps) else None
-        should_capture = (
-            step.change_kind != "paste"
-            or now - last_paste_capture >= 0.1
-            or next_kind != "paste"
-        )
-        if should_capture:
-            capture_workspace(
-                store,
-                transport,
-                change_kind=step.change_kind,
-                metadata={
-                    "typing_profile": store.meeting.typing_profile,
-                    "typing_policy_version": "1",
-                    "action_id": action_id,
-                    "burst_index": step.burst_index,
-                    "planned_delay_ms": step.delay_after_ms,
-                    "input_context": step.input_context,
-                },
-            )
-            if step.change_kind == "paste":
-                last_paste_capture = now
-        deadline += step.delay_after_ms / 1000.0
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(0.05, remaining))
-            if interrupt_check and interrupt_check():
-                raise TypingInterrupted(sent, plan.total_characters - sent, submitted)
 
 
 class InteractiveRunner:
@@ -360,8 +95,31 @@ class InteractiveRunner:
         self._cycle_acknowledged = False
         self._last_action_was_chat = False
         self._last_terminal_evidence: Optional[str] = None
+        self._dynamic_action_active = threading.Event()
+        self._interrupt_checked_monotonic = 0.0
         self._cycle_started_monotonic = time.monotonic()
-        self._current_input_seq = self._latest_sequence(self.store.events())
+        self._current_input_seq = self.store.last_event_sequence()
+
+    def _is_stale(self, generation: int) -> bool:
+        """The request no longer speaks for the current cycle or control state."""
+        return (
+            self.store.stop_requested()
+            or self.store.meeting.request_generation != generation
+            or self.store.meeting.control_requested == "human"
+            or self.store.meeting.control_owner != "agent"
+        )
+
+    def _reset_cycle_state(self) -> None:
+        """Clear all cycle-scoped flags when a new work cycle begins.
+
+        ``_last_terminal_evidence`` in particular gates progress messages on
+        work done "in this cycle"; a reused runner must not inherit it.
+        """
+        self._cycle_acknowledged = False
+        self._last_action_was_chat = False
+        self._last_terminal_evidence = None
+        self._include_agent_chat_once = False
+        self._last_action_success = True
 
     @staticmethod
     def _latest_sequence(events: Sequence[Dict[str, Any]], default: int = 0) -> int:
@@ -370,8 +128,7 @@ class InteractiveRunner:
 
     def start(self) -> None:
         try:
-            self._cycle_acknowledged = False
-            self._last_action_was_chat = False
+            self._reset_cycle_state()
             with self.lock:
                 self.store.refresh()
                 self._check_stop()
@@ -420,8 +177,7 @@ class InteractiveRunner:
 
     def resume(self, fresh_conversation: bool = False) -> None:
         try:
-            self._cycle_acknowledged = False
-            self._last_action_was_chat = False
+            self._reset_cycle_state()
             with self.lock:
                 self.store.refresh()
                 self._check_stop()
@@ -576,8 +332,10 @@ class InteractiveRunner:
                     self.store.meeting.phase,
                     data={"agent_protocol": allowed},
                 )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Protocol events are observational; a storage failure here must
+            # not kill the backend callback thread, but it must leave a trace.
+            print(f"[runner] backend event was not recorded: {exc}", file=sys.stderr, flush=True)
 
     def _agent_loop(self) -> None:
         while True:
@@ -594,8 +352,8 @@ class InteractiveRunner:
                     for event in self.store.events_after(self.store.meeting.agent_cursor)
                     if event.get("kind") != "score"
                 ]
-                latest_sequence = self._latest_sequence(
-                    self.store.events(), self.store.meeting.agent_cursor
+                latest_sequence = max(
+                    self.store.last_event_sequence(), self.store.meeting.agent_cursor
                 )
                 self._current_input_seq = latest_sequence
                 generation = self.store.meeting.request_generation
@@ -653,12 +411,7 @@ class InteractiveRunner:
             except AgentInterrupted as exc:
                 with self.lock:
                     self.store.refresh()
-                    expected = (
-                        self.store.stop_requested()
-                        or self.store.meeting.request_generation != generation
-                        or self.store.meeting.control_requested == "human"
-                        or self.store.meeting.control_owner != "agent"
-                    )
+                    expected = self._is_stale(generation)
                     self.store.update(pending_action_id=None)
                     self.store.append_event(
                         "action",
@@ -689,12 +442,7 @@ class InteractiveRunner:
 
             with self.lock:
                 self.store.refresh()
-                stale = (
-                    self.store.stop_requested()
-                    or self.store.meeting.request_generation != generation
-                    or self.store.meeting.control_requested == "human"
-                    or self.store.meeting.control_owner != "agent"
-                )
+                stale = self._is_stale(generation)
                 self.store.update(
                     last_response_id=response.response_id,
                     agent_cursor=latest_sequence,
@@ -787,7 +535,12 @@ class InteractiveRunner:
 
     def _capture_agent_activity(self, stop: threading.Event) -> None:
         """Capture terminal redraws while a model request is in flight."""
+        failures = 0
         while not stop.wait(self.agent_capture_interval_seconds):
+            if self._dynamic_action_active.is_set():
+                # The typing thread owns the pane during a dynamic action;
+                # concurrent captures would interleave untagged frames.
+                continue
             try:
                 with self.lock:
                     self.store.refresh()
@@ -798,11 +551,19 @@ class InteractiveRunner:
                     ):
                         return
                     capture_workspace(self.store, self.transport)
-            except (MeetingError, RunnerError, TmuxError, OSError):
-                # The main loop owns terminal failure state. Its next capture or
-                # action boundary will persist the failure without racing this
-                # observational worker.
-                return
+                failures = 0
+            except (MeetingError, RunnerError, TmuxError, OSError) as exc:
+                # The main loop owns terminal failure state. Retry through
+                # transient hiccups; give up only after repeated failures so a
+                # single tmux blip does not silently end mid-turn observation.
+                failures += 1
+                if failures >= 5:
+                    print(
+                        f"[runner] mid-turn capture disabled after repeated failures: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
 
     def _phase_constraints(self) -> Tuple[Optional[Sequence[str]], Optional[Sequence[str]], bool]:
         first_action = not self._cycle_acknowledged
@@ -888,8 +649,8 @@ class InteractiveRunner:
         if callable(close):
             try:
                 close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                print(f"[runner] backend close failed: {exc}", file=sys.stderr, flush=True)
 
     def _resolved_action_references(self, action: AgentAction) -> list:
         """Resolve model-provided references into stored human-identical shapes.
@@ -990,14 +751,24 @@ class InteractiveRunner:
         generation: int,
         input_seq: int,
     ) -> Dict[str, Any]:
+        # Pause the mid-turn capture thread for the duration: exactly one
+        # thread may drive the pane and tag frames while keys are being sent.
+        self._dynamic_action_active.set()
+        try:
+            return self._run_dynamic_action(action, metadata, generation, input_seq)
+        finally:
+            self._dynamic_action_active.clear()
+
+    def _run_dynamic_action(
+        self,
+        action: AgentAction,
+        metadata: Dict[str, Any],
+        generation: int,
+        input_seq: int,
+    ) -> Dict[str, Any]:
         with self.lock:
             self.store.refresh()
-            stale = (
-                self.store.stop_requested()
-                or self.store.meeting.request_generation != generation
-                or self.store.meeting.control_requested == "human"
-                or self.store.meeting.control_owner != "agent"
-            )
+            stale = self._is_stale(generation)
             action_id = "tool-action-" + uuid.uuid4().hex
             if stale:
                 self.store.append_event(
@@ -1064,7 +835,7 @@ class InteractiveRunner:
                 budget_final,
                 generation,
             )
-        except (RunnerError, TmuxError) as exc:
+        except (RunnerError, TmuxError, MeetingError, AgentProtocolError) as exc:
             with self.lock:
                 self.store.refresh()
                 self._last_action_success = False
@@ -1076,13 +847,7 @@ class InteractiveRunner:
                     data={"action_id": action_id, "status": "rejected"},
                 )
                 if isinstance(exc, TmuxError):
-                    self.store.update(
-                        status="failed",
-                        phase="failed",
-                        control_owner="none",
-                        pending_action_id=None,
-                        failure=str(exc),
-                    )
+                    self._fail_terminal(str(exc))
                     should_pause = True
                 else:
                     self.store.update(phase="agent_thinking")
@@ -1228,10 +993,17 @@ class InteractiveRunner:
 
         if len(records) > HISTORY_EVENT_LIMIT:
             records = [records[0]] + records[-(HISTORY_EVENT_LIMIT - 1) :]
-        while records and len(json.dumps(records, ensure_ascii=False).encode("utf-8")) > HISTORY_BYTES_LIMIT:
+        # One-pass trim: track each record's encoded size plus JSON list
+        # overhead instead of re-serializing the whole list per pop.
+        sizes = [
+            len(json.dumps(record, ensure_ascii=False).encode("utf-8")) for record in records
+        ]
+        total = sum(sizes) + 2 * len(records)
+        while records and total > HISTORY_BYTES_LIMIT:
             if len(records) == 1:
                 records[0]["content"] = str(records[0].get("content", ""))[-4096:]
                 break
+            total -= sizes.pop(1) + 2
             records.pop(1)
         return records
 
@@ -1430,22 +1202,36 @@ class InteractiveRunner:
                     data={"action_id": action_id, "status": "rejected"},
                 )
                 if isinstance(exc, TmuxError):
-                    self.store.update(
-                        status="failed",
-                        phase="failed",
-                        control_owner="none",
-                        pending_action_id=None,
-                        recovery_required=False,
-                        failure=str(exc),
-                    )
+                    self._fail_terminal(str(exc))
                     return True
                 if self.store.meeting.status == "running":
                     self.store.update(phase="agent_thinking")
             return False
 
+    def _fail_terminal(self, failure: str) -> None:
+        """Mark the meeting failed after a terminal (tmux) fault.
+
+        Both the main-loop and dynamic-action paths must persist the same
+        state, including clearing recovery_required set by earlier errors.
+        """
+        self.store.update(
+            status="failed",
+            phase="failed",
+            control_owner="none",
+            pending_action_id=None,
+            recovery_required=False,
+            failure=failure,
+        )
+
     def _typing_should_interrupt(self, generation: int) -> bool:
         with self.lock:
-            self.store.refresh()
+            # The 50 ms sleep loop calls this 20x/second; rate-limit the
+            # manifest reload to 10 Hz, which keeps the interrupt latency
+            # under the 200 ms responsiveness bound at half the I/O.
+            now = time.monotonic()
+            if now - self._interrupt_checked_monotonic >= 0.1:
+                self.store.refresh()
+                self._interrupt_checked_monotonic = now
             self._check_stop()
             return (
                 self.store.meeting.request_generation != generation
@@ -1535,5 +1321,11 @@ class InteractiveRunner:
                     failure=str(exc),
                     session_state=session_state,
                 )
-        except Exception:
-            pass
+        except Exception as inner:  # noqa: BLE001
+            # If even the failure write fails, the meeting is stranded in a
+            # non-terminal phase; a stderr trace is the only evidence left.
+            print(
+                f"[runner] could not persist failure state ({inner}); original error: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )

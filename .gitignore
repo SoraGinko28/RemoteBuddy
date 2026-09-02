@@ -19,19 +19,7 @@ model_api/config.toml
 .DS_Store
 .vscode/
 
-# Legacy v1 prototype files (kept locally for reference, no longer versioned;
-# the current stack is meeting_v2/meetingV6/web_v2/demo_v2)
-Meeting.py
-MeetingV2.py
-MeetingV3.py
-meetingV5.py
-web.py
-demo.py
-tests/test_meeting.py
-tests/test_meeting_v2_domain.py
-tests/test_meeting_v5.py
-tests/test_demo.py
-tests/test_web.py
+# Legacy v1 prototype skill kept for old runs on disk
 .agents/skills/meeting-participant/
 
 # Local user build/runtime dirs

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -53,6 +55,23 @@ class CodexAppServerError(AgentBackendError):
     pass
 
 
+def _child_environment() -> Dict[str, str]:
+    """Codex authenticates via its own CLI login; strip ambient credentials."""
+    env = dict(os.environ)
+    exact = {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    }
+    for name in list(env):
+        if name in exact or name.startswith("AWS_") or name.startswith("AZURE_"):
+            env.pop(name, None)
+    return env
+
+
 def _default_process_factory(command: Sequence[str], cwd: Path) -> subprocess.Popen:
     return subprocess.Popen(
         list(command),
@@ -64,7 +83,8 @@ def _default_process_factory(command: Sequence[str], cwd: Path) -> subprocess.Po
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        env=dict(os.environ),
+        env=_child_environment(),
+        start_new_session=True,
     )
 
 
@@ -277,6 +297,10 @@ class CodexAppServerBackend:
         except TimeoutError as exc:
             self.interrupt()
             raise CodexAppServerError("Codex App Server turn timed out") from exc
+        finally:
+            # Every exit path must release the turn slot, or the next
+            # next_action call would fail with "already has an active turn".
+            self._turn_id = None
 
     def interrupt(self) -> None:
         with self._condition:
@@ -301,39 +325,70 @@ class CodexAppServerBackend:
         if self._closed:
             return
         self._closed = True
-        try:
-            self.interrupt()
-        except Exception:
-            pass
+        with self._condition:
+            self._interrupted = True
+            self._process_error = self._process_error or "closed"
+            self._condition.notify_all()
         process = self._process
         self._process = None
         if process is not None:
             try:
-                process.terminate()
-                process.wait(timeout=2)
+                if process.stdin is not None:
+                    process.stdin.close()
             except Exception:
+                pass
+            try:
+                process.wait(timeout=1.5)
+            except Exception:
+                self._signal_process(signal.SIGTERM, process=process)
                 try:
-                    process.kill()
-                    process.wait(timeout=1)
+                    process.wait(timeout=1.5)
                 except Exception:
-                    pass
+                    self._signal_process(signal.SIGKILL, process=process)
+                    try:
+                        process.wait(timeout=1)
+                    except Exception:
+                        pass
+            # Join the readers before closing their streams so a reader never
+            # observes a closed file mid-iteration.
             for worker in (self._reader, self._stderr_reader):
                 if worker is not None and worker is not threading.current_thread():
                     worker.join(timeout=1)
-            for stream in (process.stdin, process.stdout, process.stderr):
+            for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     try:
                         stream.close()
                     except Exception:
                         pass
-        with self._condition:
-            self._process_error = self._process_error or "closed"
-            self._condition.notify_all()
-        if self._temporary is not None:
-            self._temporary.cleanup()
+        try:
+            if self._temporary is not None:
+                self._temporary.cleanup()
+        except OSError as exc:
+            print(f"[codex-app-server] temporary directory cleanup failed: {exc}", file=sys.stderr, flush=True)
+        finally:
             self._temporary = None
-        self._thread_id = None
-        self._turn_id = None
+            self._thread_id = None
+            self._turn_id = None
+
+    def _signal_process(self, sig: signal.Signals, *, process: Any = None) -> None:
+        target = process or self._process
+        if target is None or target.poll() is not None:
+            return
+        try:
+            # Signal the child's own process group so grandchildren are not
+            # orphaned; fall back to the direct process if it shares ours.
+            if os.getpgid(target.pid) != os.getpgrp():
+                os.killpg(target.pid, sig)
+                return
+        except (AttributeError, OSError):
+            pass
+        try:
+            if sig == signal.SIGKILL:
+                target.kill()
+            else:
+                target.terminate()
+        except Exception:
+            pass
 
     def _wait_for_turn(
         self,
@@ -476,6 +531,11 @@ class CodexAppServerBackend:
         except AgentBackendError as exc:
             self._send_dynamic_result(request_id, False, "action rejected")
             self._reject_protocol(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            # Storage or transport failures (MeetingError, OSError) must still
+            # answer the JSON-RPC request before failing the cycle.
+            self._send_dynamic_result(request_id, False, "action failed")
+            self._reject_protocol(f"dynamic action handler failed: {exc}")
         content = str(result.get("content", "action completed"))[:64 * 1024]
         success = bool(result.get("success", True))
         self._send_dynamic_result(request_id, success, content)
@@ -609,8 +669,9 @@ class CodexAppServerBackend:
                     elif "method" in message:
                         self._notifications.append(message)
                     self._condition.notify_all()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            if not self._closed:
+                print(f"[codex-app-server] stdout stream failed: {exc}", file=sys.stderr, flush=True)
         finally:
             with self._condition:
                 if not self._closed:

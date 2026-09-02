@@ -301,6 +301,53 @@ class CodexAppServerBackendTest(unittest.TestCase):
         self.assertEqual(2, len(server_results))
         self.assertTrue(all(value["result"]["success"] for value in server_results))
 
+    def test_timeout_clears_the_turn_slot(self):
+        backend = self.backend()
+        try:
+            session = backend.start_cycle("meeting", "Skill", "WAIT_FOR_INTERRUPT")
+            with self.assertRaisesRegex(Exception, "timed out"):
+                backend.next_action(session, "ignored", request_timeout_seconds=0.5)
+            # A wedged turn slot would fail every later call with
+            # "already has an active turn".
+            self.assertIsNone(backend.turn_id)
+        finally:
+            backend.close()
+
+    def test_dynamic_pause_releases_the_turn_for_the_next_request(self):
+        backend = self.backend(dynamic=True)
+
+        def handler(action, metadata):
+            del action, metadata
+            return {"success": True, "content": "executed", "pause": True}
+
+        try:
+            session = backend.start_cycle("meeting", "Skill", "dynamic context")
+            response = backend.next_action(session, "ignored", action_handler=handler)
+            self.assertTrue(response.executed)
+            self.assertEqual("chat", response.action.type)
+            self.assertIsNone(backend.turn_id)
+        finally:
+            backend.close()
+
+    def test_handler_crash_answers_the_rpc_and_fails_the_turn(self):
+        backend = self.backend(dynamic=True)
+
+        def handler(action, metadata):
+            del action, metadata
+            raise OSError("storage failure")
+
+        try:
+            session = backend.start_cycle("meeting", "Skill", "dynamic context")
+            with self.assertRaisesRegex(AgentProtocolError, "handler failed"):
+                backend.next_action(session, "ignored", action_handler=handler)
+        finally:
+            backend.close()
+        # The JSON-RPC request must still be answered so the child is not
+        # left waiting on a dangling call.
+        answered = [value for value in self.wire() if value.get("id") == "server-call-1"]
+        self.assertEqual(1, len(answered))
+        self.assertFalse(answered[0]["result"]["success"])
+
 
 if __name__ == "__main__":
     unittest.main()

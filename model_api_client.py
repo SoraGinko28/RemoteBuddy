@@ -4,9 +4,11 @@ import ast
 import json
 import math
 import os
+import random
 import re
 import socket
 import stat
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
@@ -603,13 +605,51 @@ def _safe_transport_detail(error: Any, api_key: str) -> str:
     return f"{label}: {detail}" if detail else label
 
 
+class _RetryableApiError(ModelApiError):
+    """Internal marker for transient transport failures worth one more try."""
+
+    def __init__(self, message: str, retry_after_seconds: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+def _retry_after_seconds(headers: Any) -> Optional[float]:
+    try:
+        value = headers.get("Retry-After") if headers is not None else None
+        seconds = float(value)
+        return seconds if 0 <= seconds <= 120 else None
+    except (TypeError, ValueError):
+        return None
+
+
+# Reasoning tokens share the output budget, so higher effort needs headroom.
+_EFFORT_OUTPUT_BUDGET = {
+    "none": 4096,
+    "low": 8192,
+    "medium": 16384,
+    "high": 32768,
+    "xhigh": 49152,
+    "max": 65536,
+}
+
+
 class OpenAIResponsesClient:
     backend_name = "responses"
     stateful = False
 
-    def __init__(self, config: ModelApiConfig, opener: Any = urllib.request.urlopen):
+    # HTTP statuses worth a bounded retry: throttling and gateway hiccups.
+    RETRYABLE_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
+    MAX_TRANSPORT_RETRIES = 2
+
+    def __init__(
+        self,
+        config: ModelApiConfig,
+        opener: Any = urllib.request.urlopen,
+        retry_base_seconds: float = 0.5,
+    ):
         self.config = config
         self._opener = opener
+        self._retry_base_seconds = retry_base_seconds
         self._cycle_instructions = ""
 
     def _post(
@@ -618,6 +658,25 @@ class OpenAIResponsesClient:
         payload: Dict[str, Any],
         request_timeout_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
+        timeout = request_timeout_seconds or self.config.request_timeout_seconds
+        deadline = time.monotonic() + timeout
+        attempt = 0
+        while True:
+            attempt += 1
+            attempt_timeout = timeout if attempt == 1 else max(0.1, deadline - time.monotonic())
+            try:
+                return self._post_once(path, payload, attempt_timeout)
+            except _RetryableApiError as exc:
+                remaining = deadline - time.monotonic()
+                if attempt > self.MAX_TRANSPORT_RETRIES or remaining <= 0.5:
+                    raise ModelApiError(str(exc)) from exc
+                delay = exc.retry_after_seconds
+                if delay is None:
+                    delay = self._retry_base_seconds * (2 ** (attempt - 1))
+                    delay += random.uniform(0, self._retry_base_seconds / 2)
+                time.sleep(max(0.0, min(delay, remaining - 0.25)))
+
+    def _post_once(self, path: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         request = urllib.request.Request(
             self.config.base_url + "/" + path.lstrip("/"),
@@ -633,7 +692,6 @@ class OpenAIResponsesClient:
             },
         )
         try:
-            timeout = request_timeout_seconds or self.config.request_timeout_seconds
             response = self._opener(request, timeout=timeout)
             with response:
                 raw = response.read(2 * 1024 * 1024 + 1)
@@ -645,22 +703,27 @@ class OpenAIResponsesClient:
             except Exception:
                 pass
             suffix = f": {detail}" if detail else ""
-            raise ModelApiError(f"Responses API returned HTTP {exc.code}{suffix}") from exc
+            message = f"Responses API returned HTTP {exc.code}{suffix}"
+            if exc.code in self.RETRYABLE_HTTP_STATUSES:
+                raise _RetryableApiError(message, _retry_after_seconds(exc.headers)) from exc
+            raise ModelApiError(message) from exc
         except urllib.error.URLError as exc:
             reason = exc.reason
             if isinstance(reason, (TimeoutError, socket.timeout)):
+                # The timeout consumed the request budget; retrying with the
+                # remaining slice would only produce a second, shorter timeout.
                 raise ModelApiError(
                     f"Responses API request timed out (configured timeout {timeout:g}s)"
                 ) from exc
             detail = _safe_transport_detail(reason, self.config.api_key)
-            raise ModelApiError(f"Responses API connection failed: {detail}") from exc
+            raise _RetryableApiError(f"Responses API connection failed: {detail}") from exc
         except (TimeoutError, socket.timeout) as exc:
             raise ModelApiError(
                 f"Responses API request timed out (configured timeout {timeout:g}s)"
             ) from exc
         except OSError as exc:
             detail = _safe_transport_detail(exc, self.config.api_key)
-            raise ModelApiError(f"Responses API connection failed: {detail}") from exc
+            raise _RetryableApiError(f"Responses API connection failed: {detail}") from exc
         if len(raw) > 2 * 1024 * 1024:
             raise ModelApiError("Responses API response is too large")
         try:
@@ -670,6 +733,7 @@ class OpenAIResponsesClient:
         if not isinstance(value, dict):
             raise ModelApiError("Responses API returned an invalid object")
         return value
+
     def create_conversation(self, meeting_id: str) -> str:
         """Return a local context handle without requiring /conversations.
 
@@ -746,13 +810,14 @@ class OpenAIResponsesClient:
         request_timeout_seconds: Optional[float] = None,
     ) -> AgentResponse:
         schema = action_json_schema(allowed_types, allowed_message_types)
+        effort = self.config.reasoning_effort
         payload = {
             "model": model or self.config.model,
             "instructions": instructions,
             # A plain input string is accepted by both the official Responses
             # API and smaller compatible gateways.
             "input": observation,
-            "max_output_tokens": 4096,
+            "max_output_tokens": _EFFORT_OUTPUT_BUDGET.get(effort, 4096),
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -763,11 +828,20 @@ class OpenAIResponsesClient:
             },
             "store": self.config.store_responses,
         }
+        if effort != "none":
+            payload["reasoning"] = {"effort": effort}
         # Do not send a Conversation field: the configured gateway only
         # implements Responses. The caller supplies durable local context in
         # the observation packet instead.
         value = self._post("responses", payload, request_timeout_seconds)
         response_status = value.get("status")
+        if response_status == "incomplete":
+            details = value.get("incomplete_details")
+            reason = details.get("reason") if isinstance(details, dict) else None
+            raise ModelApiError(
+                "Responses API did not complete the requested action "
+                f"(incomplete: {reason or 'unknown reason'})"
+            )
         if response_status not in {None, "completed"}:
             raise ModelApiError("Responses API did not complete the requested action")
         response_id = value.get("id")

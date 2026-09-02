@@ -1,0 +1,457 @@
+import json
+import os
+import tempfile
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from meeting_v2 import MeetingStore
+from web_v2 import CSRF_HEADER, MeetingWebService, RemoteBuddyHTTPServer, WebError
+
+
+class FakeClient:
+    pass
+
+
+class FakeTransport:
+    def __init__(self):
+        self.exists = False
+        self.pane_id = "%9"
+        self.path = ""
+        self.command = "bash"
+        self.revision = 0
+        self.commands = []
+        self.tokens = []
+        self.kills = 0
+
+    def create_workspace_session(self, session_name, workdir):
+        self.exists = True
+        self.path = str(workdir.resolve())
+        self.commands.append(("create", session_name, self.path))
+        return self.pane_id
+
+    def session_exists(self, _session_name):
+        return self.exists
+
+    def pane_info(self, pane_id):
+        return {
+            "dead": "0" if self.exists and pane_id == self.pane_id else "1",
+            "command": self.command,
+            "path": self.path,
+            "cursor_x": "0",
+            "cursor_y": "0",
+            "pane_width": "120",
+            "pane_height": "36",
+        }
+
+    def capture_visible(self, _pane_id):
+        return f"fake shared terminal {self.revision}\n{self.command} {self.path}"
+
+    def send_workspace_command(self, pane_id, command, path=""):
+        self.commands.append((pane_id, command, path))
+        self.revision += 1
+        if command == "cd":
+            self.path = path
+        elif command == "vim":
+            self.command = "vim"
+
+    def send_tokens(self, pane_id, keys):
+        self.tokens.append((pane_id, list(keys)))
+        self.revision += 1
+
+    def kill_session(self, _session_name):
+        self.kills += 1
+        was_running = self.exists
+        self.exists = False
+        return was_running
+
+
+class RecordingRunner:
+    instances = []
+
+    def __init__(self, store, transport, client, lock=None):
+        self.store = store
+        self.transport = transport
+        self.client = client
+        self.lock = lock
+        self.resume_modes = []
+        RecordingRunner.instances.append(self)
+
+    def start(self):
+        pane = self.transport.create_workspace_session(
+            self.store.meeting.session_name, self.store.workspace_path
+        )
+        self.store.set_session(pane)
+        self.store.append_screen(
+            self.transport.capture_visible(pane),
+            self.transport.command,
+            self.transport.path,
+        )
+        self.store.update(status="running", phase="waiting_for_user", control_owner="none")
+
+    def resume(self, fresh_conversation=False):
+        self.resume_modes.append(fresh_conversation)
+        self.store.update(
+            status="running",
+            phase="waiting_for_user",
+            control_owner="none",
+            recovery_required=False,
+        )
+
+
+def write_model_config(root):
+    directory = root / "model_api"
+    directory.mkdir()
+    (directory / "config.toml").write_text(
+        'model="gpt-5.6-luna"\n'
+        'base_url="https://api.openai.com/v1"\n'
+        'request_timeout_seconds=60\n'
+        'reasoning_effort="low"\n',
+        encoding="utf-8",
+    )
+    auth = directory / "auth.json"
+    auth.write_text('{"api_key":"test-secret"}\n', encoding="utf-8")
+    os.chmod(auth, 0o600)
+    return directory
+
+
+class MeetingWebServiceTest(unittest.TestCase):
+    def setUp(self):
+        RecordingRunner.instances.clear()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.skill = self.root / "SKILL.md"
+        self.skill.write_text(
+            "---\nname: workspace-collaborator\ndescription: Test.\n---\n",
+            encoding="utf-8",
+        )
+        self.model_api = write_model_config(self.root)
+        frontend = self.root / "frontend"
+        frontend.mkdir()
+        (frontend / "workspace.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        (frontend / "workspace.js").write_text("'use strict';", encoding="utf-8")
+        (frontend / "workspace.css").write_text("body{}", encoding="utf-8")
+        self.transport = FakeTransport()
+        self.service = MeetingWebService(
+            project_root=self.root,
+            model_api_path=self.model_api,
+            skill_path=self.skill,
+            runner_factory=RecordingRunner,
+            client_factory=lambda _config: FakeClient(),
+            transport_factory=lambda _binary: self.transport,
+        )
+
+    def tearDown(self):
+        for meeting in self.service.list_meetings()["meetings"]:
+            if meeting["status"] not in {"completed", "failed", "interrupted"}:
+                self.service.stop(meeting["meeting_id"])
+        self.wait_for_workers()
+        self.temporary.cleanup()
+
+    def wait_for_workers(self):
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            with self.service.lock:
+                active = any(worker.is_alive() for worker in self.service.jobs.values())
+                queued = bool(self.service.queued_jobs)
+                capturing = any(
+                    worker.is_alive() for worker in self.service.capture_jobs.values()
+                )
+            if not active and not queued and not capturing:
+                return
+            time.sleep(0.01)
+        self.fail("background worker did not finish")
+
+    def start_meeting(self, meeting_id="web-demo"):
+        store = self.service.start(
+            {"message": "Please create a note.", "meeting_id": meeting_id}
+        )
+        self.wait_for_workers()
+        return MeetingStore.load(self.root, store.meeting.meeting_id)
+
+    def test_start_list_snapshot_and_incremental_events(self):
+        store = self.start_meeting()
+        self.assertEqual(2, store.meeting.schema_version)
+        self.assertEqual("waiting_for_user", store.meeting.phase)
+        self.assertEqual(1, len(RecordingRunner.instances))
+
+        old = self.root / "runs" / "old-v1"
+        old.mkdir()
+        (old / "meeting.json").write_text(
+            '{"schema_version":1,"meeting_id":"old-v1"}', encoding="utf-8"
+        )
+        corrupt = self.root / "runs" / "corrupt-v2"
+        corrupt.mkdir()
+        (corrupt / "meeting.json").write_text(
+            '{"schema_version":2,"meeting_id":"corrupt-v2"}', encoding="utf-8"
+        )
+
+        listing = self.service.list_meetings()
+        self.assertEqual(["web-demo"], [item["meeting_id"] for item in listing["meetings"]])
+        self.assertTrue(listing["warnings"])
+        snapshot = self.service.snapshot("web-demo")
+        # Chat and scores are rebuilt client-side from the event timeline and
+        # are intentionally absent from the per-poll snapshot payload.
+        self.assertNotIn("chat", snapshot)
+        self.assertTrue(snapshot["latest_screen"]["content"])
+        all_events = self.service.events("web-demo", 0)
+        chats = [event for event in all_events["events"] if event["kind"] == "chat"]
+        self.assertEqual("Please create a note.", chats[0]["content"])
+        repeated = self.service.events("web-demo", all_events["cursor"])
+        self.assertEqual([], repeated["events"])
+        self.assertTrue(all_events["revision"])
+        with self.assertRaises(WebError):
+            self.service.snapshot("old-v1")
+
+    def test_start_accepts_and_persists_typing_profile(self):
+        store = self.service.start(
+            {
+                "message": "Please create a note.",
+                "meeting_id": "profile-demo",
+                "typing_profile": "demo",
+            }
+        )
+        self.wait_for_workers()
+        self.assertEqual("demo", store.meeting.typing_profile)
+        self.assertEqual(
+            "demo",
+            self.service.snapshot("profile-demo")["meeting"]["typing_profile"],
+        )
+
+    def test_message_control_terminal_and_release(self):
+        store = self.start_meeting("control-demo")
+        original_generation = store.meeting.request_generation
+        self.service.message("control-demo", {"message": "Use README.md instead."})
+        self.wait_for_workers()
+        loaded = MeetingStore.load(self.root, "control-demo")
+        self.assertGreater(loaded.meeting.request_generation, original_generation)
+        self.assertEqual(0, loaded.meeting.cycle_action_count)
+        self.assertEqual("Use README.md instead.", loaded.chat_messages()[-1]["content"])
+
+        loaded.update(phase="human_control", control_owner="human")
+        with self.assertRaises(WebError) as terminal_error:
+            self.service.terminal_input(
+                "control-demo", {"type": "command", "command": "pwd", "path": ""}
+            )
+        self.assertEqual(403, terminal_error.exception.status)
+        with self.assertRaises(WebError):
+            self.service.terminal_input(
+                "control-demo",
+                {"type": "command", "command": "vim", "path": "../outside"},
+            )
+
+        self.service.release("control-demo")
+        self.wait_for_workers()
+        self.assertFalse(RecordingRunner.instances[-1].resume_modes[-1])
+
+    def test_message_reference_is_derived_from_source_event(self):
+        self.start_meeting("reference-demo")
+        store = MeetingStore.load(self.root, "reference-demo")
+        source = next(event for event in store.events() if event["kind"] == "screen")
+        payload = {
+            "message": "请看终端这一段",
+            "delivery": "next_action",
+            "reference": {
+                "kind": "screen",
+                "event_id": source["event_id"],
+                "region": {"start": 0, "end": 10},
+                "excerpt": "客户端伪造的摘录不应被保存",
+            },
+        }
+        self.service.message("reference-demo", payload)
+        loaded = MeetingStore.load(self.root, "reference-demo")
+        message = loaded.chat_messages()[-1]
+        reference = message["data"]["reference"]
+        self.assertEqual(source["event_id"], reference["event_id"])
+        self.assertNotEqual(payload["reference"]["excerpt"], reference["excerpt"])
+        self.assertEqual(source["content"][:10].rstrip(), reference["excerpt"].rstrip())
+        with self.assertRaisesRegex(WebError, "outside"):
+            self.service.message(
+                "reference-demo",
+                {
+                    "message": "bad",
+                    "reference": {
+                        "kind": "screen",
+                        "event_id": source["event_id"],
+                        "region": {"start": 0, "end": 99999},
+                    },
+                },
+            )
+
+    def test_api_error_resume_uses_fresh_conversation(self):
+        self.start_meeting("recover-demo")
+        store = MeetingStore.load(self.root, "recover-demo")
+        store.update(
+            phase="api_error",
+            control_owner="none",
+            recovery_required=True,
+            failure="timeout",
+        )
+        self.service.resume("recover-demo")
+        self.wait_for_workers()
+        self.assertTrue(RecordingRunner.instances[-1].resume_modes[-1])
+        self.assertEqual(
+            "waiting_for_user",
+            MeetingStore.load(self.root, "recover-demo").meeting.phase,
+        )
+
+    def test_service_restart_recovers_orphaned_agent_with_fresh_conversation(self):
+        self.start_meeting("restart-demo")
+        store = MeetingStore.load(self.root, "restart-demo")
+        store.update(
+            phase="agent_acting",
+            control_owner="agent",
+            pending_action_id="unknown-action",
+            conversation_id="old-conversation",
+        )
+        restarted = MeetingWebService(
+            project_root=self.root,
+            model_api_path=self.model_api,
+            skill_path=self.skill,
+            runner_factory=RecordingRunner,
+            client_factory=lambda _config: FakeClient(),
+            transport_factory=lambda _binary: self.transport,
+        )
+        self.service = restarted
+        restarted.resume("restart-demo")
+        self.wait_for_workers()
+        self.assertTrue(RecordingRunner.instances[-1].resume_modes[-1])
+
+        loaded = MeetingStore.load(self.root, "restart-demo")
+        loaded.update(phase="agent_thinking", control_owner="agent")
+        with self.assertRaises(WebError) as acquire_error:
+            restarted.acquire("restart-demo")
+        self.assertEqual(409, acquire_error.exception.status)
+
+    def test_complete_retains_and_cleanup_or_stop_removes_session(self):
+        self.start_meeting("complete-demo")
+        completed = self.service.complete("complete-demo")
+        self.assertEqual("completed", completed.meeting.status)
+        self.assertEqual("retained", completed.meeting.session_state)
+        self.assertTrue(self.transport.exists)
+        with self.assertRaises(WebError):
+            self.service.stop("complete-demo")
+        cleaned = self.service.cleanup("complete-demo")
+        self.assertEqual("stopped", cleaned.meeting.session_state)
+        self.assertFalse(self.transport.exists)
+
+        self.transport = FakeTransport()
+        self.service.transport_factory = lambda _binary: self.transport
+        self.start_meeting("stop-demo")
+        first = self.service.stop("stop-demo")
+        second = self.service.stop("stop-demo")
+        self.assertEqual("interrupted", first.meeting.status)
+        self.assertEqual("stopped", second.meeting.session_state)
+        self.assertTrue(second.stop_requested())
+        self.assertFalse(self.transport.exists)
+
+    def test_validation_and_missing_model_configuration(self):
+        with self.assertRaises(WebError):
+            self.service.start({"message": ""})
+        with self.assertRaises(WebError):
+            self.service.start({"brief": "legacy input"})
+        with self.assertRaises(WebError):
+            self.service.start({"message": "x", "meeting_id": "../escape"})
+        with self.assertRaises(WebError):
+            self.service.start({"message": "x", "typing_profile": "human"})
+        with self.assertRaises(WebError):
+            self.service.events("missing", "not-an-int")
+
+        (self.model_api / "auth.json").unlink()
+        health = self.service.health()
+        self.assertFalse(health["ok"])
+        self.assertFalse(next(item for item in health["checks"] if item["name"] == "model-api")["ok"])
+        with self.assertRaisesRegex(WebError, "auth.json"):
+            self.service.start({"message": "cannot start"})
+
+
+class HTTPBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        MeetingWebServiceTest.setUp(self)
+        self.server = RemoteBuddyHTTPServer(("127.0.0.1", 0), self.service)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        MeetingWebServiceTest.tearDown(self)
+
+    wait_for_workers = MeetingWebServiceTest.wait_for_workers
+
+    def request(self, path, method="GET", body=None, csrf=False, headers=None):
+        request_headers = dict(headers or {})
+        data = None
+        if body is not None:
+            data = body.encode("utf-8")
+            request_headers["Content-Type"] = "application/json"
+        if csrf:
+            request_headers[CSRF_HEADER] = self.service.csrf_token
+        return urllib.request.urlopen(
+            urllib.request.Request(
+                self.base + path,
+                data=data,
+                headers=request_headers,
+                method=method,
+            ),
+            timeout=3,
+        )
+
+    def error_status(self, *args, **kwargs):
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(*args, **kwargs)
+        body = context.exception.read()
+        payload = json.loads(body) if body else {}
+        return context.exception.code, payload
+
+    def test_session_static_health_and_csrf(self):
+        session = json.load(self.request("/api/session"))
+        self.assertEqual(self.service.csrf_token, session["csrf_token"])
+        self.assertEqual(200, self.request("/").status)
+        self.assertEqual("running", json.load(self.request("/api/health"))["service"])
+        status, _payload = self.error_status(
+            "/api/meetings",
+            method="POST",
+            body=json.dumps({"message": "topic"}),
+        )
+        self.assertEqual(403, status)
+
+    def test_create_events_etag_and_boundaries(self):
+        response = self.request(
+            "/api/meetings",
+            method="POST",
+            body=json.dumps({"message": "Create a note", "meeting_id": "http-demo"}),
+            csrf=True,
+        )
+        self.assertEqual(201, response.status)
+        self.wait_for_workers()
+        snapshot = self.request("/api/meetings/http-demo/snapshot")
+        etag = snapshot.headers["ETag"]
+        self.assertTrue(etag)
+        status, _body = self.error_status(
+            "/api/meetings/http-demo/snapshot", headers={"If-None-Match": etag}
+        )
+        self.assertEqual(304, status)
+
+        status, _payload = self.error_status(
+            "/api/meetings", method="POST", body="{", csrf=True
+        )
+        self.assertEqual(400, status)
+        status, _payload = self.error_status("/assets/%2e%2e%2fweb.py")
+        self.assertEqual(404, status)
+        status, _payload = self.error_status("/api/meetings/..%2Fescape/snapshot")
+        self.assertIn(status, {400, 404})
+        huge = json.dumps({"message": "x" * (1024 * 1024 + 1)})
+        status, _payload = self.error_status(
+            "/api/meetings", method="POST", body=huge, csrf=True
+        )
+        self.assertEqual(413, status)
+
+
+if __name__ == "__main__":
+    unittest.main()

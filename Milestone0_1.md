@@ -1,5 +1,7 @@
 # Milestone 0.1: 双 Agent 会议 Demo
 
+> 历史文档:本节描述的 v1 原型(`demo.py`/`Meeting.py`/`web.py` 等)已随 v2 落地从仓库移除,仅存于 git 历史。当前入口见 README.md。
+
 这个 Demo 用一个 Python Harness 驱动同一 tmux 会话中的两个真实 Codex。会议固定为三轮：提案、质疑、修订。议题不写死，必须在运行时传入 UTF-8 Markdown brief。
 
 ## 使用

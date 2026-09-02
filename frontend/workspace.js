@@ -116,6 +116,18 @@ async function api(path, options = {}, retryCsrf = true) {
   return payload;
 }
 
+async function apiConditional(path, etag) {
+  const headers = new Headers();
+  if (etag) headers.set("If-None-Match", etag);
+  const response = await fetch(path, { headers, cache: "no-store" });
+  if (response.status === 304) return { notModified: true, etag };
+  const text = await response.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch (_error) { payload = { error: text }; }
+  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  return { notModified: false, etag: response.headers.get("ETag") || "", payload };
+}
+
 function toast(message) {
   clearTimeout(state.toastTimer);
   el.toast.textContent = message;
@@ -478,6 +490,8 @@ function renderChat() {
   try {
     el.chat_list.replaceChildren();
     const chats = visibleChats();
+    // One pass over the visible events serves every message's annotations.
+    const visibleScores = eventsAtPlayback().filter((event) => event.kind === "score");
     for (const event of chats) {
       const article = node("article", `message ${event.actor}`);
       article.dataset.eventId = event.event_id || "";
@@ -487,7 +501,7 @@ function renderChat() {
         node("span", `message-type ${event.message_type || ""}`, labels.message[event.message_type] || "消息"),
         node("time", "", fmtTime(event.captured_at)),
       );
-      const annotations = scoreAnnotationsForSource(event);
+      const annotations = scoreAnnotationsForSource(event, visibleScores);
       const body = node("p", "message-content");
       body.dataset.eventId = event.event_id || "";
       body.tabIndex = 0;
@@ -565,8 +579,9 @@ function renderTerminal() {
   el.terminal_screen.replaceChildren();
   const hasScreenContent = Boolean(source && typeof source.content === "string" && source.content.length);
   el.terminal_screen.dataset.eventId = hasScreenContent ? source.event_id || "" : "";
+  const sourceAnnotations = source ? scoreAnnotationsForSource(source) : [];
   if (hasScreenContent) {
-    appendAnnotatedText(el.terminal_screen, source.content, scoreAnnotationsForSource(source));
+    appendAnnotatedText(el.terminal_screen, source.content, sourceAnnotations);
   } else {
     el.terminal_screen.append(document.createTextNode("等待终端画面…"));
   }
@@ -578,7 +593,7 @@ function renderTerminal() {
     ),
   );
   el.terminal_score_status.replaceChildren();
-  const terminalSummary = scoreSummary(scoreAnnotationsForSource(source));
+  const terminalSummary = scoreSummary(sourceAnnotations);
   if (terminalSummary) el.terminal_score_status.append(...terminalSummary.childNodes);
   const changeKind = terminal.change_kind;
   el.typing_state.textContent = changeKind === "paste" ? "Agent 正在粘贴" : (changeKind === "typing" ? "Agent 输入中" : "");
@@ -968,8 +983,7 @@ function positionSelectionMenu(candidate) {
 
 function selectionIsHumanChat(candidate) {
   if (!candidate || candidate.kind !== "chat") return false;
-  const source = state.timeline.find((event) => event.event_id === candidate.event_id)
-    || state.snapshot?.chat?.find((event) => event.event_id === candidate.event_id);
+  const source = state.timeline.find((event) => event.event_id === candidate.event_id);
   return source?.actor === "human";
 }
 
@@ -1201,6 +1215,7 @@ function updateCredentialFields() {
 async function loadMeetings() {
   const payload = await api("/api/meetings");
   state.meetings = payload.meetings || [];
+  state.meetingsRefreshedAt = Date.now();
   renderMeetingList();
 }
 
@@ -1213,6 +1228,9 @@ async function selectMeeting(meetingId) {
   setReferences([]);
   state.scoreOverlayIds.clear();
   state.selectedId = meetingId;
+  state.snapshotEtag = "";
+  state.eventsEtag = "";
+  state.eventsEtagCursor = -1;
   const [snapshot, eventPayload] = await Promise.all([
     api(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`),
     api(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=0`),
@@ -1232,17 +1250,32 @@ async function refreshSelected() {
   const meetingId = state.selectedId;
   if (!meetingId) return;
   const cursor = state.cursor;
-  const [snapshot, eventPayload] = await Promise.all([
-    api(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`),
-    api(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=${cursor}`),
+  const eventsEtag = cursor === state.eventsEtagCursor ? state.eventsEtag : "";
+  const [snapshotResult, eventsResult] = await Promise.all([
+    apiConditional(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`, state.snapshotEtag),
+    apiConditional(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=${cursor}`, eventsEtag),
   ]);
   if (meetingId !== state.selectedId) return;
-  state.snapshot = snapshot;
-  const incoming = eventPayload.events || [];
-  const additions = mergeTimelineEvents(incoming);
-  if (additions.length) enqueueLiveScreens(additions);
-  state.cursor = Math.max(Number(eventPayload.cursor) || 0, state.cursor);
+  let changed = false;
+  let additions = [];
+  if (!snapshotResult.notModified) {
+    state.snapshot = snapshotResult.payload;
+    state.snapshotEtag = snapshotResult.etag;
+    changed = true;
+  }
+  if (!eventsResult.notModified) {
+    state.eventsEtag = eventsResult.etag;
+    state.eventsEtagCursor = cursor;
+    additions = mergeTimelineEvents(eventsResult.payload.events || []);
+    if (additions.length) enqueueLiveScreens(additions);
+    state.cursor = Math.max(Number(eventsResult.payload.cursor) || 0, state.cursor);
+    if (additions.length) changed = true;
+  }
   if (state.followLive) state.playbackIndex = state.timeline.length - 1;
+  if (!changed) return;
+  // Re-rendering replaces the chat/terminal DOM and would collapse an
+  // in-progress text selection — the app's core scoring interaction.
+  if (state.pointerSelecting || state.pendingSelection || state.evaluationSelection) return;
   renderAll();
 }
 
@@ -1252,7 +1285,14 @@ function schedulePoll() {
   const active = state.snapshot && !["completed", "failed", "interrupted"].includes(state.snapshot.meeting.status)
     && !["api_error", "cycle_timeout", "waiting_for_user", "completion_proposed", "human_control"].includes(state.snapshot.meeting.phase);
   state.pollTimer = setTimeout(async () => {
-    try { await refreshSelected(); if (active) await loadMeetings(); } catch (error) { toast(error.message); }
+    try {
+      await refreshSelected();
+      // The sidebar list is expensive server-side; refresh it on its own
+      // slow cadence instead of on every poll tick.
+      if (active && Date.now() - (state.meetingsRefreshedAt || 0) >= 10000) {
+        await loadMeetings();
+      }
+    } catch (error) { toast(error.message); }
     schedulePoll();
   }, active ? 500 : 2000);
 }

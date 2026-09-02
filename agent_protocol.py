@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Protocol, Sequence, runtime_checkable
 
@@ -63,10 +64,40 @@ FORBIDDEN_INTERFACE_BASENAMES = {
     "osascript",
     "exec",
 }
-# A single "&" backgrounds a job outside the shared view; "&&" chaining and
-# "2>&1"/"&>" redirections remain legal.
-_BACKGROUND_JOB_RE = re.compile(r"(?<![&<>])&(?![&<>\d])")
-_SHELL_SPLIT_RE = re.compile(r"[\s;|&()<>`]+")
+# Nested shell interpreters are rejected when they would execute content the
+# policy cannot see: reading a pipeline/stdin (bare, no script argument) or an
+# inline -c command string. Running an existing script file stays allowed.
+SHELL_INTERPRETER_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+# git options before the subcommand that consume the following word.
+_GIT_VALUE_OPTIONS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+# Punctuation tokens produced by the shlex lexer that end a command segment.
+_SEGMENT_BREAKS = {";", "|", "||", "&&", "(", ")", ";;"}
+# Redirections that truncate the target file.
+_TRUNCATING_REDIRECTS = {">", ">|"}
+# Commands that produce no meaningful output, so redirecting them into a file
+# is equivalent to truncating it.
+_EMPTY_OUTPUT_COMMANDS = {":", "true", "false"}
+# Wrappers that forward their trailing argument as a command to execute, so
+# the command-position scan continues through them.
+_COMMAND_WRAPPERS = {
+    "xargs",
+    "sudo",
+    "doas",
+    "env",
+    "nice",
+    "ionice",
+    "stdbuf",
+    "timeout",
+    "watch",
+    "time",
+    "command",
+    "builtin",
+    "parallel",
+}
+# find(1) flags whose following word is executed as a command.
+_FIND_EXEC_FLAGS = {"-exec", "-execdir", "-ok", "-okdir"}
+_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_DURATION_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?[smhd]?")
 
 
 class AgentBackendError(RuntimeError):
@@ -182,10 +213,19 @@ def validate_shell_command(line: str) -> None:
 
     Deletion-class commands are rejected, and so is anything that would leave
     the shared interface (background jobs, detached sessions, GUI apps). The
-    line is split on whitespace and shell metacharacters so every chained
-    segment (``a && rm b``), pipeline stage, and substitution is scanned.
-    Matching is intentionally conservative: a forbidden basename anywhere in
-    the line rejects it, even as an argument.
+    line is tokenized with a POSIX shlex lexer so quoting behaves like bash:
+    quoted arguments are never mistaken for commands, while quote tricks such
+    as ``\\rm`` or ``r""m`` resolve to the command bash would actually run.
+    Command names are matched in command position — the start of every chained
+    segment, pipeline stage, and substitution, plus arguments forwarded by
+    wrappers such as ``xargs``/``sudo``/``timeout`` and ``find -exec``.
+
+    This is a guardrail against accidental destruction, not a sandbox: content
+    executed by interpreters the policy cannot parse (``python -c``, ``awk``
+    programs, script files) and values built from ``$VAR`` expansion are out of
+    scope. Nested shells reading opaque command strings (``bash -c``, piping
+    into ``sh``), ``eval``, and command names containing ``$`` are rejected for
+    the same reason.
     """
     if not isinstance(line, str) or not line.strip():
         raise AgentProtocolError("bash command must be a non-empty string")
@@ -193,30 +233,177 @@ def validate_shell_command(line: str) -> None:
         raise AgentProtocolError(f"bash command exceeds {MAX_SHELL_COMMAND_CHARS} characters")
     if any(ord(character) < 32 or ord(character) == 127 for character in line):
         raise AgentProtocolError("bash command must not contain control characters")
-    if _BACKGROUND_JOB_RE.search(line):
-        raise AgentProtocolError(
-            "background jobs are not allowed; work must stay in the shared pane's foreground"
-        )
-    words = [word.strip("'\"") for word in _SHELL_SPLIT_RE.split(line) if word.strip("'\"")]
+    for body in _substitution_bodies(line):
+        if body.strip():
+            validate_shell_command(body)
+    words = _shell_tokens(line)
+    segment: list = []
+    pending_command = True
+    after_redirect = False
+    find_segment = False
     for index, word in enumerate(words):
-        base = word.rstrip("/").rsplit("/", 1)[-1].lower()
-        if base in FORBIDDEN_SHELL_BASENAMES or base.startswith("mkfs"):
-            raise AgentProtocolError(f"deletion-class command is not allowed: {base}")
-        if base in FORBIDDEN_INTERFACE_BASENAMES:
+        if word == "&":
             raise AgentProtocolError(
-                f"command would leave the shared terminal interface: {base}"
+                "background jobs are not allowed; work must stay in the shared pane's foreground"
             )
+        if word in _SEGMENT_BREAKS:
+            segment = []
+            pending_command = True
+            after_redirect = False
+            find_segment = False
+            continue
+        if _is_shell_punctuation(word):
+            if word in _TRUNCATING_REDIRECTS and _segment_truncates(segment):
+                raise AgentProtocolError(
+                    "redirection would truncate the target file without producing content"
+                )
+            after_redirect = True
+            continue
         if word.lower() in FORBIDDEN_SHELL_FLAGS:
             raise AgentProtocolError(f"deletion flag is not allowed: {word}")
-        if base == "git":
-            for follower in words[index + 1 :]:
-                # Skip option flags and their key=value payloads to find the
-                # actual git subcommand (e.g. ``git -c core.pager=cat clean``).
-                if follower.startswith("-") or "=" in follower:
-                    continue
-                if follower.lower() in FORBIDDEN_GIT_SUBCOMMANDS:
-                    raise AgentProtocolError(f"deletion-class git subcommand is not allowed: {follower}")
+        if after_redirect:
+            # The word right after a redirection is a filename, never a command.
+            after_redirect = False
+            segment.append(word)
+            continue
+        if find_segment and word.lower() in _FIND_EXEC_FLAGS:
+            pending_command = True
+            segment.append(word)
+            continue
+        if pending_command:
+            if _ASSIGNMENT_RE.match(word) or word.startswith("-") or _DURATION_RE.fullmatch(word):
+                # Leading VAR=val assignments, wrapper flags, and timeout-style
+                # durations keep the command slot open for the next word.
+                segment.append(word)
+                continue
+            _validate_command_word(word, words, index)
+            base = _basename(word)
+            if base == "find":
+                find_segment = True
+            if base not in _COMMAND_WRAPPERS:
+                pending_command = False
+        segment.append(word)
+
+
+def _basename(word: str) -> str:
+    return word.rstrip("/").rsplit("/", 1)[-1].lower()
+
+
+def _validate_command_word(word: str, words: Sequence[str], index: int) -> None:
+    """Reject a command-position word that belongs to a restricted class."""
+    if "$" in word:
+        raise AgentProtocolError(
+            "a command name built from shell expansion cannot be validated"
+        )
+    base = _basename(word)
+    if base in FORBIDDEN_SHELL_BASENAMES or base.startswith("mkfs"):
+        raise AgentProtocolError(f"deletion-class command is not allowed: {base}")
+    if base in FORBIDDEN_INTERFACE_BASENAMES:
+        raise AgentProtocolError(f"command would leave the shared terminal interface: {base}")
+    if base == "eval":
+        raise AgentProtocolError("eval would execute content outside the policy's view")
+    if base in SHELL_INTERPRETER_BASENAMES:
+        followers = []
+        for follower in words[index + 1 :]:
+            if follower == "&" or follower in _SEGMENT_BREAKS or _is_shell_punctuation(follower):
                 break
+            followers.append(follower)
+        bare = not any(not follower.startswith("-") for follower in followers)
+        if bare or "-c" in followers:
+            raise AgentProtocolError(
+                f"nested shell would execute content outside the policy's view: {base}"
+            )
+    if base == "git":
+        expect_value = False
+        for follower in words[index + 1 :]:
+            if follower == "&" or follower in _SEGMENT_BREAKS or _is_shell_punctuation(follower):
+                break
+            if expect_value:
+                expect_value = False
+                continue
+            if follower in _GIT_VALUE_OPTIONS:
+                expect_value = True
+                continue
+            if follower.startswith("-"):
+                continue
+            if follower.lower() in FORBIDDEN_GIT_SUBCOMMANDS:
+                raise AgentProtocolError(
+                    f"deletion-class git subcommand is not allowed: {follower}"
+                )
+            break
+
+
+def _is_shell_punctuation(word: str) -> bool:
+    return bool(word) and all(character in "<>|&();" for character in word)
+
+
+def _segment_truncates(segment: Sequence[str]) -> bool:
+    words = [word for word in segment if not _ASSIGNMENT_RE.match(word)]
+    if not words:
+        return True
+    head = _basename(words[0])
+    if head in _EMPTY_OUTPUT_COMMANDS:
+        return True
+    return head == "echo" and len(words) == 1
+
+
+def _shell_tokens(line: str) -> list:
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return [token for token in lexer if token]
+    except ValueError as exc:
+        raise AgentProtocolError(f"bash command could not be parsed: {exc}") from exc
+
+
+def _substitution_bodies(line: str) -> list:
+    """Extract `...` and $(...) command-substitution bodies outside single quotes."""
+    bodies = []
+    quote = ""
+    index = 0
+    length = len(line)
+    while index < length:
+        character = line[index]
+        if quote == "'":
+            if character == "'":
+                quote = ""
+            index += 1
+            continue
+        if character == "\\":
+            index += 2
+            continue
+        if quote == '"':
+            if character == '"':
+                quote = ""
+                index += 1
+                continue
+        elif character in "'\"":
+            quote = character
+            index += 1
+            continue
+        if character == "`":
+            end = line.find("`", index + 1)
+            if end == -1:
+                raise AgentProtocolError("bash command has an unterminated command substitution")
+            bodies.append(line[index + 1 : end])
+            index = end + 1
+            continue
+        if line.startswith("$(", index) and not line.startswith("$((", index):
+            depth = 1
+            cursor = index + 2
+            while cursor < length and depth:
+                if line[cursor] == "(":
+                    depth += 1
+                elif line[cursor] == ")":
+                    depth -= 1
+                cursor += 1
+            if depth:
+                raise AgentProtocolError("bash command has an unterminated command substitution")
+            bodies.append(line[index + 2 : cursor - 1])
+            index = cursor
+            continue
+        index += 1
+    return bodies
 
 
 def _require_unused(command: str, path: str, keys: Sequence[Any], delay_ms: int) -> None:
