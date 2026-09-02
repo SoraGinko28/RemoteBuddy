@@ -22,6 +22,7 @@ MEETING_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 MAX_MESSAGE_BYTES = 1024 * 1024
 MAX_EVENT_CONTENT_BYTES = MAX_MESSAGE_BYTES
 VALID_STATUSES = {"created", "starting", "running", "completed", "failed", "interrupted"}
+TERMINAL_MEETING_STATUSES = {"completed", "failed", "interrupted"}
 VALID_PHASES = {
     "created",
     "starting",
@@ -186,6 +187,9 @@ class MeetingStore:
         self.manifest_path = self.run_dir / "meeting.json"
         self._thread_lock = threading.RLock()
         self._state_depth = 0
+        self._events_cache: List[Dict[str, Any]] = []
+        self._events_cache_signature: Optional[tuple] = None
+        self._events_cache_offset = 0
 
     @staticmethod
     def _safe_run_dir(project_root: Path, meeting_id: str, create_runs: bool = True) -> Path:
@@ -265,7 +269,7 @@ class MeetingStore:
             cycle_started_at=now,
         )
         store = cls(run_dir, meeting)
-        store._write_manifest()
+        store._write_manifest(hash_events=True)
         store.append_event(
             "chat",
             "human",
@@ -328,7 +332,7 @@ class MeetingStore:
     def runtime_skill_path(self) -> Path:
         return self.run_dir / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
 
-    def _write_manifest(self, *, hash_events: bool = True) -> None:
+    def _write_manifest(self, *, hash_events: bool = False) -> None:
         self.meeting.updated_at = utc_now()
         paths = {
             "conversation.md": self.run_dir / "conversation.md",
@@ -399,11 +403,68 @@ class MeetingStore:
                     self._state_depth = 0
 
     def refresh(self) -> None:
-        refreshed = self.load(self.run_dir.parent.parent, self.meeting.meeting_id)
-        self.meeting = refreshed.meeting
+        """Reload the manifest in place without rebuilding the whole store."""
+        with self._thread_lock:
+            self._reload_manifest_unlocked()
 
     def events(self) -> List[Dict[str, Any]]:
-        return read_jsonl(self.events_path)
+        with self._thread_lock:
+            return list(self._cached_events())
+
+    def _cached_events(self) -> List[Dict[str, Any]]:
+        """Parse only appended journal bytes; the journal is append-only.
+
+        The cache is invalidated by (size, mtime_ns), so appends from other
+        processes are picked up. A torn final line (concurrent append in
+        progress) is left unparsed and re-checked on the next call.
+        """
+        path = self.events_path
+        try:
+            status = path.stat()
+        except OSError:
+            self._events_cache = []
+            self._events_cache_signature = None
+            self._events_cache_offset = 0
+            return self._events_cache
+        signature = (status.st_size, status.st_mtime_ns)
+        if signature == self._events_cache_signature:
+            return self._events_cache
+        if status.st_size < self._events_cache_offset:
+            self._events_cache = []
+            self._events_cache_offset = 0
+        with path.open("rb") as handle:
+            handle.seek(self._events_cache_offset)
+            chunk = handle.read()
+        last_newline = chunk.rfind(b"\n")
+        complete = chunk[: last_newline + 1] if last_newline >= 0 else b""
+        for raw_line in complete.splitlines():
+            if not raw_line.strip():
+                continue
+            try:
+                value = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self._events_cache = []
+                self._events_cache_signature = None
+                self._events_cache_offset = 0
+                raise MeetingError(f"invalid JSONL at {path}") from exc
+            if not isinstance(value, dict):
+                self._events_cache = []
+                self._events_cache_signature = None
+                self._events_cache_offset = 0
+                raise MeetingError(f"invalid JSONL object at {path}")
+            self._events_cache.append(value)
+        self._events_cache_offset += len(complete)
+        # Mark the cache clean only when the whole file was consumed; a torn
+        # tail must be re-read once the writer finishes the line.
+        self._events_cache_signature = (
+            signature if self._events_cache_offset == status.st_size else None
+        )
+        return self._events_cache
+
+    def last_event_sequence(self) -> int:
+        """Return the tail sequence with a 4 KB read instead of a full parse."""
+        with self._thread_lock:
+            return self._last_event_sequence_unlocked()
 
     def events_after(self, sequence: int) -> List[Dict[str, Any]]:
         return [event for event in self.events() if int(event.get("seq", 0)) > sequence]
@@ -461,7 +522,9 @@ class MeetingStore:
             os.fsync(handle.fileno())
         if kind == "chat":
             self.render_conversation()
-        self._write_manifest(hash_events=kind != "screen")
+        # Hashing the whole journal per append is O(file size) and grows with
+        # the session; the integrity hash is refreshed on terminal updates.
+        self._write_manifest()
         return event
 
     def append_chat(
@@ -705,7 +768,7 @@ class MeetingStore:
     def update(self, **changes: Any) -> None:
         with self._exclusive_state():
             self._apply_changes_unlocked(changes)
-            self._write_manifest()
+            self._write_manifest(hash_events=changes.get("status") in TERMINAL_MEETING_STATUSES)
 
     def bump_request_generation(self, **changes: Any) -> int:
         """Atomically increment request_generation together with other changes.
@@ -718,7 +781,7 @@ class MeetingStore:
             value = self.meeting.request_generation + 1
             self.meeting.request_generation = value
             self._apply_changes_unlocked(changes)
-            self._write_manifest()
+            self._write_manifest(hash_events=changes.get("status") in TERMINAL_MEETING_STATUSES)
             return value
 
     def _apply_changes_unlocked(self, changes: Mapping[str, Any]) -> None:
@@ -748,4 +811,6 @@ class MeetingStore:
         self.update(session_state="stopped", session_stopped_at=utc_now())
 
     def event_count(self) -> int:
-        return len(self.events())
+        # seq is assigned monotonically from 1, so the tail sequence equals
+        # the count without parsing the journal.
+        return self.last_event_sequence()

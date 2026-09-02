@@ -217,6 +217,14 @@ def _event_revision(store: MeetingStore) -> str:
     return sha256_text("\n".join(signature))[:24]
 
 
+def _events_by_id(store: MeetingStore) -> Dict[str, Dict[str, Any]]:
+    return {
+        str(event.get("event_id")): event
+        for event in store.events()
+        if event.get("event_id")
+    }
+
+
 def _public_manifest(store: MeetingStore) -> Dict[str, Any]:
     payload = store.meeting.to_dict()
     payload["run_path"] = f"runs/{store.meeting.meeting_id}"
@@ -254,6 +262,7 @@ class MeetingWebService:
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
+        self._store_cache: Dict[str, MeetingStore] = {}
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
 
@@ -297,13 +306,36 @@ class MeetingWebService:
     def load_store(self, meeting_id: str) -> MeetingStore:
         if not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
+        with self.lock:
+            cached = self._store_cache.get(meeting_id)
+        if cached is not None:
+            try:
+                cached.refresh()
+                with self.lock:
+                    self._store_cache.pop(meeting_id, None)
+                    self._store_cache[meeting_id] = cached
+                return cached
+            except MeetingError:
+                with self.lock:
+                    self._store_cache.pop(meeting_id, None)
         try:
-            return MeetingStore.load(self.project_root, meeting_id)
+            store = MeetingStore.load(self.project_root, meeting_id)
         except UnsupportedMeetingError as exc:
             raise WebError(404, "meeting not found") from exc
         except MeetingError as exc:
             message = str(exc)
             raise WebError(404 if "not found" in message else 422, message) from exc
+        with self.lock:
+            # A small LRU keeps the actively polled meeting's parsed journal
+            # warm without pinning every meeting's events in memory.
+            self._store_cache[meeting_id] = store
+            while len(self._store_cache) > 2:
+                self._store_cache.pop(next(iter(self._store_cache)))
+        return store
+
+    def revision(self, meeting_id: str) -> str:
+        """Stat-only change marker used to answer conditional GETs early."""
+        return _event_revision(self.load_store(meeting_id))
 
     def _load_config(self) -> ModelApiConfig:
         try:
@@ -572,26 +604,33 @@ class MeetingWebService:
         store = self.load_store(meeting_id)
         if store.meeting.control_owner == "human":
             self._ensure_capture_worker(store)
-        conversation_path = store.run_dir / "conversation.md"
-        conversation = conversation_path.read_text(encoding="utf-8") if conversation_path.is_file() else ""
+        # One parse serves the whole payload. The frontend rebuilds chat and
+        # scores from its own timeline, so they are not shipped per poll.
         events = store.events()
+        latest_screen = next(
+            (event for event in reversed(events) if event.get("kind") == "screen"), None
+        )
         return {
             "meeting": _public_manifest(store),
-            "conversation": conversation,
-            "chat": [event for event in events if event.get("kind") == "chat"],
-            "scores": [event for event in events if event.get("kind") == "score"],
-            "latest_screen": store.latest_screen(),
+            "latest_screen": latest_screen,
             "revision": _event_revision(store),
             "cursor": int(events[-1]["seq"]) if events else 0,
         }
 
-    def _validated_reference(self, store: MeetingStore, payload: Any) -> Optional[Dict[str, Any]]:
+    def _validated_reference(
+        self,
+        store: MeetingStore,
+        payload: Any,
+        events_by_id: Optional[Mapping[str, Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
         if payload is None:
             return None
         if not isinstance(payload, dict):
             raise WebError(400, "reference must be an object")
         event_id = payload.get("event_id")
-        event = next((item for item in store.events() if item.get("event_id") == event_id), None)
+        if events_by_id is None:
+            events_by_id = _events_by_id(store)
+        event = events_by_id.get(event_id) if isinstance(event_id, str) else None
         if event is None:
             raise WebError(422, "reference source event was not found")
         try:
@@ -623,10 +662,12 @@ class MeetingWebService:
                 candidates.append(singular_value)
         if len(candidates) > MAX_CHAT_REFERENCES:
             raise WebError(413, f"at most {MAX_CHAT_REFERENCES} references are allowed")
+        # One journal pass validates every reference in the request.
+        events_by_id = _events_by_id(store) if candidates else {}
         validated: List[Dict[str, Any]] = []
         seen = set()
         for candidate in candidates:
-            reference = self._validated_reference(store, candidate)
+            reference = self._validated_reference(store, candidate, events_by_id)
             if reference is None:
                 raise WebError(422, "reference must be an object")
             region = reference.get("region") if isinstance(reference.get("region"), Mapping) else {}
@@ -650,6 +691,16 @@ class MeetingWebService:
             raise WebError(400, "after must be an integer") from exc
         if sequence < 0:
             raise WebError(400, "after must be at least zero")
+        # The idle poll asks for events after the head; answer it from the
+        # tail sequence without materializing the journal.
+        head = store.last_event_sequence()
+        if head <= sequence:
+            return {
+                "meeting_id": meeting_id,
+                "events": [],
+                "cursor": head if head else sequence,
+                "revision": _event_revision(store),
+            }
         all_events = store.events()
         return {
             "meeting_id": meeting_id,
@@ -1317,9 +1368,9 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         if origin and origin not in {f"http://{name}:{port}" for name in self._LOOPBACK_HOSTNAMES}:
             raise WebError(403, "cross-origin requests are not allowed")
 
-    def _headers(self, content_type: str = "application/json; charset=utf-8") -> None:
+    def _headers(self, content_type: str = "application/json; charset=utf-8", cache: str = "no-store") -> None:
         self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
@@ -1333,7 +1384,9 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             self.send_response(status)
-            self._headers()
+            # ETagged endpoints are meant to be revalidated, not re-shipped;
+            # no-store would forbid the browser from keeping the validator.
+            self._headers(cache="no-cache" if etag else "no-store")
             self.send_header("Content-Length", str(len(body)))
             if etag:
                 self.send_header("ETag", etag)
@@ -1341,6 +1394,18 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             return
+
+    def _not_modified_early(self, etag: str) -> bool:
+        """Answer a conditional GET from stat() alone, before journal work."""
+        if self.headers.get("If-None-Match") != etag:
+            return False
+        try:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        return True
 
     def _error(self, status: int, message: str) -> None:
         self._json({"error": message, "status": status}, status=status)
@@ -1436,14 +1501,21 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/snapshot", path)
             if match:
-                payload = self.service.snapshot(unquote(match.group(1)))
+                meeting_id = unquote(match.group(1))
+                if self._not_modified_early('"' + self.service.revision(meeting_id) + '"'):
+                    return
+                payload = self.service.snapshot(meeting_id)
                 self._json(payload, etag='"' + payload["revision"] + '"')
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/events", path)
             if match:
+                meeting_id = unquote(match.group(1))
                 query = parse_qs(parsed.query, keep_blank_values=False)
                 after = query.get("after", ["0"])[-1]
-                payload = self.service.events(unquote(match.group(1)), after)
+                early_etag = '"' + sha256_text(self.service.revision(meeting_id) + str(after))[:24] + '"'
+                if self._not_modified_early(early_etag):
+                    return
+                payload = self.service.events(meeting_id, after)
                 etag = '"' + sha256_text(payload["revision"] + str(after))[:24] + '"'
                 self._json(payload, etag=etag)
                 return

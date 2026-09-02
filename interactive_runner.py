@@ -376,8 +376,9 @@ class InteractiveRunner:
         self._last_action_was_chat = False
         self._last_terminal_evidence: Optional[str] = None
         self._dynamic_action_active = threading.Event()
+        self._interrupt_checked_monotonic = 0.0
         self._cycle_started_monotonic = time.monotonic()
-        self._current_input_seq = self._latest_sequence(self.store.events())
+        self._current_input_seq = self.store.last_event_sequence()
 
     def _reset_cycle_state(self) -> None:
         """Clear all cycle-scoped flags when a new work cycle begins.
@@ -622,8 +623,8 @@ class InteractiveRunner:
                     for event in self.store.events_after(self.store.meeting.agent_cursor)
                     if event.get("kind") != "score"
                 ]
-                latest_sequence = self._latest_sequence(
-                    self.store.events(), self.store.meeting.agent_cursor
+                latest_sequence = max(
+                    self.store.last_event_sequence(), self.store.meeting.agent_cursor
                 )
                 self._current_input_seq = latest_sequence
                 generation = self.store.meeting.request_generation
@@ -1269,10 +1270,17 @@ class InteractiveRunner:
 
         if len(records) > HISTORY_EVENT_LIMIT:
             records = [records[0]] + records[-(HISTORY_EVENT_LIMIT - 1) :]
-        while records and len(json.dumps(records, ensure_ascii=False).encode("utf-8")) > HISTORY_BYTES_LIMIT:
+        # One-pass trim: track each record's encoded size plus JSON list
+        # overhead instead of re-serializing the whole list per pop.
+        sizes = [
+            len(json.dumps(record, ensure_ascii=False).encode("utf-8")) for record in records
+        ]
+        total = sum(sizes) + 2 * len(records)
+        while records and total > HISTORY_BYTES_LIMIT:
             if len(records) == 1:
                 records[0]["content"] = str(records[0].get("content", ""))[-4096:]
                 break
+            total -= sizes.pop(1) + 2
             records.pop(1)
         return records
 
@@ -1494,7 +1502,13 @@ class InteractiveRunner:
 
     def _typing_should_interrupt(self, generation: int) -> bool:
         with self.lock:
-            self.store.refresh()
+            # The 50 ms sleep loop calls this 20x/second; rate-limit the
+            # manifest reload to 10 Hz, which keeps the interrupt latency
+            # under the 200 ms responsiveness bound at half the I/O.
+            now = time.monotonic()
+            if now - self._interrupt_checked_monotonic >= 0.1:
+                self.store.refresh()
+                self._interrupt_checked_monotonic = now
             self._check_stop()
             return (
                 self.store.meeting.request_generation != generation
