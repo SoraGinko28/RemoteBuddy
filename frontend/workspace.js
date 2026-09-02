@@ -46,6 +46,7 @@ const state = {
   pendingSelection: null,
   selectionBusy: false,
   selectionTimer: null,
+  selectionMenuDelay: 0,
   keyboardSelection: null,
   evaluationSelection: null,
   evaluationBusy: false,
@@ -328,6 +329,33 @@ function codePointSlice(value, start, end) {
   return codePoints(value).slice(start, end).join("");
 }
 
+function textOffsetFromPoint(root, container, offset) {
+  if (!root || !container || !root.contains(container)) return null;
+  if (container.nodeType === 1) {
+    try {
+      const before = document.createRange();
+      before.selectNodeContents(root);
+      before.setEnd(container, Number(offset) || 0);
+      return codePointLength(before.toString());
+    } catch (_error) {
+      return null;
+    }
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let total = 0;
+  let current = walker.nextNode();
+  while (current) {
+    if (current === container) {
+      const value = current.nodeValue || "";
+      const prefix = codePoints(value).slice(0, Math.max(0, Number(offset) || 0));
+      return total + prefix.length;
+    }
+    total += codePointLength(current.nodeValue || "");
+    current = walker.nextNode();
+  }
+  return null;
+}
+
 function sourceEventForRoot(root) {
   const eventId = root?.dataset?.eventId;
   if (!eventId) return null;
@@ -455,6 +483,7 @@ function referencesForEvent(event) {
 }
 
 function renderChat() {
+  if (activeSourceSelection()) return;
   const previousScrollTop = el.chat_list.scrollTop;
   const replayReference = scoreReferenceAtPlayback();
   let replayTarget = null;
@@ -531,6 +560,7 @@ function renderChat() {
 }
 
 function renderTerminal() {
+  if (activeSourceSelection()) return;
   const previousScrollTop = el.terminal_screen.scrollTop;
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
   const replayReference = scoreReferenceAtPlayback();
@@ -697,6 +727,7 @@ function renderPlayback() {
 }
 
 function renderAll() {
+  if (activeSourceSelection()) return;
   renderMeetingList();
   if (!state.snapshot) {
     el.welcome.hidden = false;
@@ -765,6 +796,20 @@ function sourceRootFromNode(value) {
   if (!value) return null;
   const element = value.nodeType === 1 ? value : value.parentElement || value.parentNode;
   return element?.closest?.(".message-content, #terminal-screen") || null;
+}
+
+function activeSourceSelection() {
+  if (state.pointerSelecting || state.selectionTimer !== null || state.pendingSelection !== null) return true;
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return false;
+  try {
+    const range = selection.getRangeAt(0);
+    const startRoot = sourceRootFromNode(range.startContainer);
+    const endRoot = sourceRootFromNode(range.endContainer);
+    return Boolean(startRoot && startRoot === endRoot);
+  } catch (_error) {
+    return false;
+  }
 }
 
 function codePointOffsetBefore(root, container, offset) {
@@ -879,14 +924,10 @@ function selectionOffsets(root, selection) {
   try {
     const range = selection.getRangeAt(0);
     if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
-    const before = range.cloneRange();
-    before.selectNodeContents(root);
-    before.setEnd(range.startContainer, range.startOffset);
     const content = root.textContent || "";
-    const start = codePointLength(before.toString());
-    const end = start + codePointLength(range.toString());
-    const length = codePointLength(content);
-    if (start < 0 || end > length || end <= start) return null;
+    const start = textOffsetFromPoint(root, range.startContainer, range.startOffset);
+    const end = textOffsetFromPoint(root, range.endContainer, range.endOffset);
+    if (start === null || end === null || start < 0 || end > codePointLength(content) || end <= start) return null;
     const excerpt = codePointSlice(content, start, end);
     if (!excerpt.trim()) return null;
     return { start, end, excerpt };
@@ -902,13 +943,36 @@ function selectionCandidate() {
     const range = selection.getRangeAt(0);
     const startRoot = sourceRootFromNode(range.startContainer);
     const endRoot = sourceRootFromNode(range.endContainer);
-    if (!startRoot || startRoot !== endRoot) return null;
-    const source = sourceEventForRoot(startRoot);
+    const root = startRoot || endRoot;
+    if (!root) return null;
+    if (startRoot && endRoot && startRoot !== endRoot) return null;
+    const source = sourceEventForRoot(root);
     if (!source) return null;
-    const offsets = selectionOffsets(startRoot, selection);
-    if (!offsets) return null;
+    const content = root.textContent || "";
+    const length = codePointLength(content);
+    let start;
+    let end;
+    if (startRoot && endRoot) {
+      const offsets = selectionOffsets(root, selection);
+      if (!offsets) return null;
+      start = offsets.start;
+      end = offsets.end;
+    } else if (startRoot && !endRoot) {
+      // Selection starts inside this message and spills past its end; clamp to
+      // the end of the message content.
+      start = textOffsetFromPoint(root, range.startContainer, range.startOffset);
+      end = length;
+    } else {
+      // Selection starts before this message and ends inside it; clamp to the
+      // beginning of the message content.
+      start = 0;
+      end = textOffsetFromPoint(root, range.endContainer, range.endOffset);
+    }
+    if (start === null || end === null || start < 0 || end > length || end <= start) return null;
+    const excerpt = codePointSlice(content, start, end);
+    if (!excerpt.trim()) return null;
     const rect = range.getBoundingClientRect();
-    return { ...offsets, kind: source.kind, event_id: source.event_id, root: startRoot, rect };
+    return { start, end, excerpt, kind: source.kind, event_id: source.event_id, root, rect };
   } catch (_error) {
     return null;
   }
@@ -965,8 +1029,17 @@ function showSelectionMenu(candidate) {
   requestAnimationFrame(() => positionSelectionMenu(candidate));
 }
 
-function scheduleSelectionMenu() {
+function scheduleSelectionMenu(clickCount = 1) {
+  // A double-click may be the first two clicks of a triple-click. Wait a bit
+  // after double-click so the third click can replace the word selection with
+  // the paragraph selection instead of being blocked by an early menu.
+  const delay = clickCount >= 3 ? 60 : (clickCount === 2 ? 350 : 45);
+  // selectionchange events do not know the click count. If a pointerup has
+  // already scheduled a longer double-click delay, do not let the later
+  // selectionchange shorten it and pop the menu before a possible third click.
+  if (state.selectionTimer !== null && delay < state.selectionMenuDelay) return;
   clearTimeout(state.selectionTimer);
+  state.selectionMenuDelay = delay;
   // While the primary button is held the user is still dragging a selection;
   // the menu must only appear after release (pointerup/mouseup/touchend).
   if (state.pointerSelecting) {
@@ -975,11 +1048,12 @@ function scheduleSelectionMenu() {
   }
   state.selectionTimer = setTimeout(() => {
     state.selectionTimer = null;
+    state.selectionMenuDelay = 0;
     if (state.selectionBusy || state.pointerSelecting) return;
     const candidate = selectionCandidate();
     if (candidate) showSelectionMenu(candidate);
     else hideSelectionMenu();
-  }, 45);
+  }, delay);
 }
 
 function openEvaluationPanel(candidate) {
@@ -1372,6 +1446,11 @@ function bind() {
     const message = el.message_input.value.trim();
     if (!message) return;
     el.send_message_button.disabled = true;
+    // Sending a message is a live action: leave playback/free-scroll mode
+    // so the user's own text and the agent's next response are visible.
+    state.followLive = true;
+    state.chatFollow = true;
+    state.playbackIndex = state.timeline.length - 1;
     try {
       const payload = { message, delivery: selectedDeliveryMode() };
       if (state.references.length) payload.references = state.references;
@@ -1418,24 +1497,28 @@ function bind() {
     container.addEventListener("pointerdown", (event) => {
       if (event.button === 0) state.pointerSelecting = true;
     });
-    container.addEventListener("pointerup", scheduleSelectionMenu);
-    container.addEventListener("mouseup", scheduleSelectionMenu);
+    container.addEventListener("pointerup", (event) => scheduleSelectionMenu(event.detail || 1));
+    container.addEventListener("mouseup", (event) => scheduleSelectionMenu(event.detail || 1));
     container.addEventListener("touchend", () => setTimeout(scheduleSelectionMenu, 70), { passive: true });
     container.addEventListener("focusin", handleSourceFocus);
     container.addEventListener("keydown", handleKeyboardSelection);
   }
   // Release anywhere (even outside the containers) ends the drag; re-evaluate
   // the selection once so the menu appears exactly at mouse release.
-  document.addEventListener("pointerup", () => {
+  document.addEventListener("pointerup", (event) => {
     if (!state.pointerSelecting) return;
     state.pointerSelecting = false;
-    scheduleSelectionMenu();
+    scheduleSelectionMenu(event.detail || 1);
   });
   document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
   document.addEventListener("pointerdown", (event) => {
-    if (!el.selection_menu.contains(event.target)) {
-      hideSelectionMenu();
+    if (el.selection_menu.contains(event.target)) return;
+    hideSelectionMenu();
+    // Do not clear the browser selection when the user is clicking inside a
+    // selectable source. Double/triple-click selection depends on the browser
+    // preserving and extending the previous selection across rapid clicks.
+    if (!sourceRootFromNode(event.target)) {
       clearBrowserSelection();
     }
   });

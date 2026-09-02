@@ -445,7 +445,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertTrue(self.transport.tokens)
         self.assertEqual(("chat",), client.calls[0][3]["allowed_types"])
         self.assertEqual(
-            ("command", "done"),
+            ("command", "done", "observe"),
             client.calls[1][3]["allowed_types"],
         )
         self.assertEqual(("none", "final"), client.calls[1][3]["allowed_message_types"])
@@ -652,6 +652,13 @@ class InteractiveRunnerTest(unittest.TestCase):
                 {"kind": "key", "value": "Enter"},
             ],
             '~\n"notes.md"',
+        )
+        validate_agent_vim_keys(
+            [
+                {"kind": "literal", "value": ":81s/addBig/addSigned/"},
+                {"kind": "key", "value": "Enter"},
+            ],
+            '~\n"bigint_add.cpp"',
         )
         for unsafe in (":%s/x/\\=system('id')/", ":%s/x/y/|q", ":%s/.*/x/"):
             with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
@@ -924,7 +931,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         with mock.patch("interactive_runner.time.monotonic", return_value=101.0):
             allowed_types, _, budget_final = runner._phase_constraints()
-        self.assertEqual(("chat", "command", "done"), allowed_types)
+        self.assertEqual(("chat", "command", "done", "observe"), allowed_types)
         self.assertFalse(budget_final)
 
     def test_first_cycle_action_requires_ack_before_questions_or_terminal_actions(self):
