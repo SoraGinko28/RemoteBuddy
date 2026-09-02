@@ -1122,6 +1122,8 @@ function syncBackendSelectors(preferCurrent = true) {
   let backend = preferCurrent ? el.backend_select.value : state.health?.agent_backend;
   if (!entries.some((item) => item.agent_backend === backend && usable(item))) {
     backend = (entries.find((item) => item.ok) || entries.find(usable))?.agent_backend || backend;
+  }
+  if (backend) {
     el.backend_select.value = backend;
   }
   for (const option of el.provider_select.options) {
