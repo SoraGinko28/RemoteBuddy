@@ -253,8 +253,6 @@ class ClaudeCodeBackend:
         self._closed = False
         self._initialized = False
         self._active_handler: Optional[DynamicActionHandler] = None
-        self._allowed_types: Optional[Sequence[str]] = None
-        self._allowed_messages: Optional[Sequence[str]] = None
         self._turn_action: Optional[AgentAction] = None
         self._turn_claimed_action: Optional[AgentAction] = None
         self._turn_response_id: Optional[str] = None
@@ -395,7 +393,7 @@ class ClaudeCodeBackend:
         request_timeout_seconds: Optional[float] = None,
         action_handler: Optional[DynamicActionHandler] = None,
     ) -> AgentResponse:
-        del model
+        del model, allowed_types, allowed_message_types
         if not self._session_id or session_id != self._session_id or self._process is None:
             raise ClaudeCodeError("Claude Code session is not active")
         if action_handler is None:
@@ -407,8 +405,11 @@ class ClaudeCodeBackend:
             self._turn_id = "turn-" + uuid.uuid4().hex
             self._turn_started_at = time.monotonic()
             self._active_handler = action_handler
-            self._allowed_types = tuple(allowed_types) if allowed_types else None
-            self._allowed_messages = tuple(allowed_message_types) if allowed_message_types else None
+            # Phase constraints (allowed_types/allowed_message_types) are
+            # deliberately not pinned here: the runner re-validates every
+            # action against the *current* phase inside the handler and its
+            # rejection message names the allowed sets, which the model needs
+            # to correct itself. Mirrors the Codex dynamic-tool path.
             self._turn_action = None
             self._turn_claimed_action = None
             self._turn_response_id = None
@@ -464,8 +465,6 @@ class ClaudeCodeBackend:
         finally:
             with self._condition:
                 self._active_handler = None
-                self._allowed_types = None
-                self._allowed_messages = None
                 self._turn_id = None
 
     def interrupt(self) -> None:
@@ -631,11 +630,13 @@ class ClaudeCodeBackend:
                 handler = self._active_handler
                 turn_id = self._turn_id
                 session_id = self._session_id
-                allowed_types = self._allowed_types
-                allowed_messages = self._allowed_messages
                 if handler is None or turn_id is None:
                     return {"request_id": request_id, "success": False, "content": "no active RemoteBuddy turn", "pause": True}
-            action = AgentAction.from_dict(payload, allowed_types, allowed_messages)
+            # Structural validation only. Per-action phase constraints are
+            # checked again by the runner at the execution boundary, whose
+            # rejection message names the currently allowed types so the
+            # model can correct itself.
+            action = AgentAction.from_dict(payload)
             with self._condition:
                 if self._turn_id != turn_id or self._active_handler is None:
                     return {"request_id": request_id, "success": False, "content": "no active RemoteBuddy turn", "pause": True}
@@ -679,14 +680,9 @@ class ClaudeCodeBackend:
             if action is not None and (success or pause):
                 self._turn_action = action
                 self._turn_response_id = request_id
-                # Once one action has been accepted, further tool calls in the
-                # same Claude turn cannot be executed by the runner (it consumes
-                # one action per turn). Relax the phase filter so those extra
-                # calls are caught by the claimed-action guard below instead of
-                # being counted as phase rejections and exhausting the retry
-                # budget before the accepted action can be returned.
-                self._allowed_types = None
-                self._allowed_messages = None
+                # Extra tool calls in the same Claude turn are answered by the
+                # claimed-action guard above; with no phase filter pinned at
+                # the bridge, they can no longer burn the retry budget.
             else:
                 self._rejections += 1
                 self._last_rejection = content[:500]
