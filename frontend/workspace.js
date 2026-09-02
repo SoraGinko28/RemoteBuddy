@@ -1018,7 +1018,7 @@ function scheduleSelectionMenu(clickCount = 1) {
   state.selectionMenuDelay = delay;
   // While the primary button is held the user is still dragging a selection;
   // the menu must only appear after release (pointerup/mouseup/touchend).
-  if (clickCount >= 3) {
+  if (clickCount >= 2) {
     try {
       const selection = window.getSelection();
       const range = selection && selection.rangeCount === 1 ? selection.getRangeAt(0) : null;
@@ -1032,7 +1032,7 @@ function scheduleSelectionMenu(clickCount = 1) {
       } catch (error) {
         candidateInfo = "ERROR: " + error;
       }
-      console.log("[triple-debug]", {
+      console.log("[click-debug]", {
         detail: clickCount,
         rangeCount: selection?.rangeCount,
         collapsed: selection?.isCollapsed,
@@ -1048,7 +1048,7 @@ function scheduleSelectionMenu(clickCount = 1) {
         selectionMenuDelay: state.selectionMenuDelay,
       });
     } catch (error) {
-      console.error("[triple-debug] error", error);
+      console.error("[click-debug] error", error);
     }
   }
   if (state.pointerSelecting) {
@@ -1489,7 +1489,7 @@ function bind() {
   // Release anywhere (even outside the containers) ends the drag; re-evaluate
   // the selection once so the menu appears exactly at mouse release.
   document.addEventListener("pointerup", (event) => {
-    if ((event.detail || 0) >= 3) console.log("[triple-event] document pointerup", event.detail, "pointerSelecting=", state.pointerSelecting, "target=", event.target?.className || event.target?.nodeName);
+    if ((event.detail || 0) >= 2) console.log("[click-debug] document pointerup", event.detail, "pointerSelecting=", state.pointerSelecting, "target=", event.target?.className || event.target?.nodeName);
     if (!state.pointerSelecting) return;
     state.pointerSelecting = false;
     scheduleSelectionMenu(event.detail || 1);
