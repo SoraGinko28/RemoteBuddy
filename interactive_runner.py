@@ -51,17 +51,6 @@ CYCLE_LIMIT_SECONDS = 900.0
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
-VIM_INSERT_MARKERS = ("-- INSERT --", "-- REPLACE --")
-VIM_INSERT_COMMANDS = {"i", "a", "o", "I", "A", "O"}
-VIM_SAFE_NORMAL_COMMANDS = {"dd", "dG", "ggdG", "u", "x", "0", "$", "gg", "G"}
-VIM_SAFE_NORMAL_COMPOSITES = re.compile(r"^(?:[0-9]{1,4}G|0dd|[0-9]{1,4}G0dd|[0-9]{1,4}G0D|D)$")
-VIM_SAFE_EX_COMMAND = re.compile(r"^:(?:w|q|wq|x|qa|wqa)!?$")
-VIM_SAFE_SUBSTITUTE = re.compile(
-    r"^:(?:[0-9]{1,6}(?:,[0-9]{1,6})?|%)?s/"
-    r"[A-Za-z0-9_ ,:;(){}\]'\"+=<>!-]{1,80}/"
-    r"[A-Za-z0-9_ ,:;(){}\]'\"+=<>!-]{0,80}/$"
-)
-VIM_SAFE_SEARCH = re.compile(r"^/[A-Za-z0-9_ .,;:(){}\[\]_'\"+=<>!@#%&*?/-]{1,120}$")
 TEST_MARKER_RE = re.compile(r"(?:[A-Z][A-Z0-9 _-]{0,80} )?TESTS PASSED")
 
 
