@@ -992,6 +992,19 @@ function showSelectionMenu(candidate) {
   requestAnimationFrame(() => positionSelectionMenu(candidate));
 }
 
+function debugSelectionNode(value) {
+  if (!value) return String(value);
+  const text = (value.textContent || value.nodeValue || "").toString().slice(0, 30).replace(/\s+/g, " ");
+  const element = value.nodeType === 1 ? value : value.parentElement;
+  return JSON.stringify({
+    nodeType: value.nodeType,
+    nodeName: value.nodeName,
+    text: text,
+    className: element?.className || "",
+    eventId: element?.dataset?.eventId || "",
+  });
+}
+
 function scheduleSelectionMenu(clickCount = 1) {
   // A double-click may be the first two clicks of a triple-click. Wait a bit
   // after double-click so the third click can replace the word selection with
@@ -1008,6 +1021,39 @@ function scheduleSelectionMenu(clickCount = 1) {
   if (state.pointerSelecting) {
     hideSelectionMenu();
     return;
+  }
+  if (clickCount >= 3) {
+    try {
+      const selection = window.getSelection();
+      const range = selection && selection.rangeCount === 1 ? selection.getRangeAt(0) : null;
+      const startRoot = range ? sourceRootFromNode(range.startContainer) : null;
+      const endRoot = range ? sourceRootFromNode(range.endContainer) : null;
+      let candidateInfo = null;
+      try {
+        const candidate = selectionCandidate();
+        if (candidate) candidateInfo = { kind: candidate.kind, event_id: candidate.event_id, start: candidate.start, end: candidate.end, excerpt: candidate.excerpt };
+        else candidateInfo = null;
+      } catch (error) {
+        candidateInfo = "ERROR: " + error;
+      }
+      console.log("[triple-debug]", {
+        detail: clickCount,
+        rangeCount: selection?.rangeCount,
+        collapsed: selection?.isCollapsed,
+        start: range ? debugSelectionNode(range.startContainer) : null,
+        startOffset: range?.startOffset,
+        end: range ? debugSelectionNode(range.endContainer) : null,
+        endOffset: range?.endOffset,
+        startRoot: startRoot ? debugSelectionNode(startRoot) : null,
+        endRoot: endRoot ? debugSelectionNode(endRoot) : null,
+        candidate: candidateInfo,
+        pointerSelecting: state.pointerSelecting,
+        selectionTimer: state.selectionTimer !== null,
+        selectionMenuDelay: state.selectionMenuDelay,
+      });
+    } catch (error) {
+      console.error("[triple-debug] error", error);
+    }
   }
   state.selectionTimer = setTimeout(() => {
     state.selectionTimer = null;
