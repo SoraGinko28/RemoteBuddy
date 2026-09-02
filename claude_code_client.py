@@ -650,6 +650,14 @@ class ClaudeCodeBackend:
             if action is not None and (success or pause):
                 self._turn_action = action
                 self._turn_response_id = request_id
+                # Once one action has been accepted, further tool calls in the
+                # same Claude turn cannot be executed by the runner (it consumes
+                # one action per turn). Relax the phase filter so those extra
+                # calls are caught by the claimed-action guard below instead of
+                # being counted as phase rejections and exhausting the retry
+                # budget before the accepted action can be returned.
+                self._allowed_types = None
+                self._allowed_messages = None
             else:
                 self._rejections += 1
                 self._last_rejection = content[:500]
