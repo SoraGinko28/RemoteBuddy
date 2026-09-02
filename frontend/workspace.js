@@ -470,6 +470,7 @@ function referencesForEvent(event) {
 }
 
 function renderChat() {
+  if (activeSourceSelection()) return;
   const previousScrollTop = el.chat_list.scrollTop;
   const replayReference = scoreReferenceAtPlayback();
   let replayTarget = null;
@@ -544,6 +545,7 @@ function renderChat() {
 }
 
 function renderTerminal() {
+  if (activeSourceSelection()) return;
   const previousScrollTop = el.terminal_screen.scrollTop;
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
   const replayReference = scoreReferenceAtPlayback();
@@ -709,6 +711,7 @@ function renderPlayback() {
 }
 
 function renderAll() {
+  if (activeSourceSelection()) return;
   renderMeetingList();
   if (!state.snapshot) {
     el.welcome.hidden = false;
@@ -777,6 +780,20 @@ function sourceRootFromNode(value) {
   if (!value) return null;
   const element = value.nodeType === 1 ? value : value.parentElement || value.parentNode;
   return element?.closest?.(".message-content, #terminal-screen") || null;
+}
+
+function activeSourceSelection() {
+  if (state.pointerSelecting || state.selectionTimer !== null || state.pendingSelection !== null) return true;
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return false;
+  try {
+    const range = selection.getRangeAt(0);
+    const startRoot = sourceRootFromNode(range.startContainer);
+    const endRoot = sourceRootFromNode(range.endContainer);
+    return Boolean(startRoot && startRoot === endRoot);
+  } catch (_error) {
+    return false;
+  }
 }
 
 function codePointOffsetBefore(root, container, offset) {
