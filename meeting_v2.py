@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from typing_policy import TYPING_POLICY_VERSION, TYPING_PROFILES
+from references import reference_from_event
 
 
 SCHEMA_VERSION = 2
@@ -624,10 +625,6 @@ class MeetingStore:
         if source_event.get("kind") == "chat" and source_event.get("actor") == "human":
             raise MeetingError("human chat messages cannot be scored")
         try:
-            # V6 is the current reference contract; the V5 projection still
-            # remains available for replaying older journals.
-            from meetingV6 import reference_from_event
-
             reference = reference_from_event(source_event, reference)
         except (TypeError, ValueError) as exc:
             raise MeetingError(str(exc)) from exc
@@ -715,15 +712,6 @@ class MeetingStore:
 
     def score_messages(self) -> List[Dict[str, Any]]:
         return [event for event in self.events() if event.get("kind") == "score"]
-
-    # Keep query naming discoverable for callers that use the event-oriented
-    # terminology elsewhere in the store API.
-    def score_events(self) -> List[Dict[str, Any]]:
-        return self.score_messages()
-
-    def scores(self) -> List[Dict[str, Any]]:
-        """Short alias for callers that treat scores as a stream."""
-        return self.score_messages()
 
     def render_conversation(self, events: Optional[List[Dict[str, Any]]] = None) -> None:
         source = events if events is not None else self.events()

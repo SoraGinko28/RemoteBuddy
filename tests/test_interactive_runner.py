@@ -10,13 +10,12 @@ from interactive_runner import (
     InteractiveRunner,
     RunnerError,
     TypingInterrupted,
-    _send_typing_plan,
     resolve_workspace_path,
     send_command_with_captures,
     send_tokens_with_captures,
-    typing_chunks,
     validate_agent_vim_keys,
 )
+from typing_executor import _send_typing_plan
 from meeting_v2 import MeetingStore, utc_now
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
@@ -258,14 +257,6 @@ class InteractiveRunnerTest(unittest.TestCase):
 
     def tearDown(self):
         self.temporary.cleanup()
-
-    def test_typing_chunks_preserve_exact_horizontal_whitespace(self):
-        text = "  print('hello',  name)\t# note"
-        self.assertEqual(text, "".join(typing_chunks(text)))
-        self.assertEqual(
-            ("  ", "print('hello',  ", "name)\t", "# ", "note"),
-            typing_chunks(text),
-        )
 
     def test_literal_and_safe_command_fast_path_preserves_input(self):
         pane_id = self.transport.create_workspace_session(

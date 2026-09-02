@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import math
 import mimetypes
 import os
 import re
@@ -36,11 +35,8 @@ from interactive_runner import (
     InteractiveRunner,
     RunnerError,
     capture_workspace,
-    resolve_workspace_path,
-    send_tokens_with_captures,
 )
 from meeting_v2 import (
-    MAX_EVENT_CONTENT_BYTES,
     MAX_CHAT_REFERENCES,
     MAX_MESSAGE_BYTES,
     MEETING_ID_RE,
@@ -52,9 +48,8 @@ from meeting_v2 import (
     sha256_text,
     utc_now,
 )
-from meetingV6 import reference_from_event
+from references import reference_from_event
 from model_api_client import (
-    AgentAction,
     MODEL_RE,
     SUPPORTED_PROVIDERS,
     ModelApiConfig,
@@ -64,7 +59,6 @@ from model_api_client import (
     _default_auth_key,
     _select_auth_key,
     _validate_base_url,
-    validate_key_tokens,
 )
 from tmux_transport import TmuxError, TmuxTransport, libtmux_version
 
@@ -77,7 +71,9 @@ DEFAULT_PORT = 8765
 CSRF_HEADER = "X-RemoteBuddy-CSRF"
 MAX_REQUEST_BYTES = MAX_MESSAGE_BYTES + 32 * 1024
 TERMINAL_STATUSES = {"completed", "failed", "interrupted"}
-EVENT_TYPES = {"command", "vim_keys"}
+# Phases from which the human can resume or wake the Agent. The frontend
+# mirrors this set for its resume-button predicate.
+RESUMABLE_PHASES = {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"}
 # Human terminal input is intentionally disabled while the shared workspace
 # screen is being validated. Agent actions still use the internal transport.
 HUMAN_TERMINAL_READ_ONLY = True
@@ -160,20 +156,7 @@ def _read_judge_name(project_root: Path) -> str:
 
 
 def _write_judge_name(project_root: Path, judge_name: str) -> None:
-    path = _settings_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".settings.local.", dir=str(path.parent))
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump({"judge_name": judge_name}, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(str(temporary_path), str(path))
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
+    _atomic_write_json(_settings_path(project_root), {"judge_name": judge_name})
 
 
 def _atomic_write_json(path: Path, payload: Dict[str, Any], mode: int = 0o600) -> None:
@@ -191,18 +174,6 @@ def _atomic_write_json(path: Path, payload: Dict[str, Any], mode: int = 0o600) -
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
-
-
-def _finite_positive(value: Any, label: str) -> float:
-    if isinstance(value, bool):
-        raise WebError(400, f"{label} must be a finite positive number")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise WebError(400, f"{label} must be a finite positive number") from exc
-    if not math.isfinite(parsed) or parsed <= 0:
-        raise WebError(400, f"{label} must be a finite positive number")
-    return parsed
 
 
 def _event_revision(store: MeetingStore) -> str:
@@ -269,6 +240,16 @@ class MeetingWebService:
     def _meeting_lock(self, meeting_id: str) -> threading.RLock:
         with self.lock:
             return self.meeting_locks.setdefault(meeting_id, threading.RLock())
+
+    def _transport(self) -> TmuxTransport:
+        return self.transport_factory(shutil.which("tmux") or "tmux")
+
+    def _orphaned_agent(self, store: MeetingStore, meeting_id: str) -> bool:
+        """An agent phase with no live worker thread behind it."""
+        return (
+            store.meeting.phase in {"agent_thinking", "agent_acting"}
+            and not self._job_alive(meeting_id)
+        )
 
     def _job_alive(self, meeting_id: str) -> bool:
         with self.lock:
@@ -796,7 +777,7 @@ class MeetingWebService:
                 self.queued_jobs[meeting_id] = (store, config, resume, fresh_conversation)
                 return
             client = self._make_backend(config)
-            transport = self.transport_factory(shutil.which("tmux") or "tmux")
+            transport = self._transport()
             meeting_lock = self._meeting_lock(meeting_id)
             worker = threading.Thread(
                 target=self._worker,
@@ -863,7 +844,7 @@ class MeetingWebService:
             worker.start()
 
     def _capture_human_control(self, meeting_id: str) -> None:
-        transport = self.transport_factory(shutil.which("tmux") or "tmux")
+        transport = self._transport()
         try:
             while True:
                 with self._meeting_lock(meeting_id):
@@ -920,12 +901,9 @@ class MeetingWebService:
                 raise WebError(409, "meeting is already finished")
             references = self._validated_references(store, payload)
             starting_fresh = store.meeting.phase == "created"
-            orphaned_agent = (
-                store.meeting.phase in {"agent_thinking", "agent_acting"}
-                and not self._job_alive(meeting_id)
-            )
+            orphaned_agent = self._orphaned_agent(store, meeting_id)
             wake_agent = (
-                store.meeting.phase in {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout", "created"}
+                store.meeting.phase == "created" or store.meeting.phase in RESUMABLE_PHASES
                 or orphaned_agent
             )
             fresh_conversation = (
@@ -963,7 +941,7 @@ class MeetingWebService:
                     resume=not starting_fresh,
                     fresh_conversation=fresh_conversation,
                 )
-        return self.load_store(meeting_id)
+        return store
 
     def score(self, meeting_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Append a validated score without waking or mutating Agent state."""
@@ -1002,20 +980,17 @@ class MeetingWebService:
                 raise WebError(409, "terminal is temporarily read-only for human users")
             if store.meeting.control_owner == "human":
                 return store
-            orphaned_agent = (
-                store.meeting.phase in {"agent_thinking", "agent_acting"}
-                and not self._job_alive(meeting_id)
-            )
+            orphaned_agent = self._orphaned_agent(store, meeting_id)
             store.bump_request_generation(
                 control_requested="human",
                 recovery_required=store.meeting.recovery_required or orphaned_agent,
             )
             self._interrupt_backend(meeting_id)
-            if store.meeting.phase in {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"} or orphaned_agent:
+            if store.meeting.phase in RESUMABLE_PHASES or orphaned_agent:
                 store.update(phase="human_control", control_owner="human", control_requested=None)
                 store.append_event("control", "human", "human_control", data={"status": "acquired"})
             self._ensure_capture_worker(store)
-        return self.load_store(meeting_id)
+        return store
 
     def release(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -1039,85 +1014,17 @@ class MeetingWebService:
                 resume=True,
                 fresh_conversation=fresh_conversation,
             )
-        return self.load_store(meeting_id)
+        return store
 
     def terminal_input(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
+        del payload
         with self._meeting_lock(meeting_id):
-            store = self.load_store(meeting_id)
-            if HUMAN_TERMINAL_READ_ONLY:
-                raise WebError(403, "terminal is temporarily read-only for human users")
-            if store.meeting.control_owner != "human":
-                raise WebError(409, "human must acquire terminal control first")
-            pane_id = store.meeting.pane_id
-            if not pane_id:
-                raise WebError(409, "workspace pane is not available")
-            kind = payload.get("type") if isinstance(payload, dict) else None
-            transport = self.transport_factory(shutil.which("tmux") or "tmux")
-            action_id = "human-action-" + secrets.token_hex(6)
-            try:
-                info = transport.pane_info(pane_id)
-                command = ""
-                path = ""
-                keys: Sequence[Dict[str, str]] = []
-                if kind == "command":
-                    if set(payload) != {"type", "command", "path"}:
-                        raise WebError(400, "command input has unexpected fields")
-                    command = payload.get("command")
-                    path = payload.get("path", "")
-                    if command not in {"pwd", "cd", "vim", "python"} or not isinstance(path, str):
-                        raise WebError(400, "invalid workspace command")
-                    if info["command"] not in {"bash", "zsh", "sh"}:
-                        raise WebError(409, "workspace commands require an active shell")
-                    if command in {"cd", "vim", "python"}:
-                        path = str(resolve_workspace_path(store, info["path"], path, command))
-                elif kind in {"vim_keys", "terminal_keys"}:
-                    if set(payload) != {"type", "keys"}:
-                        raise WebError(400, "terminal input has unexpected fields")
-                    keys = payload.get("keys")
-                    vim_active = info["command"] in {"vim", "vi"}
-                    python_active = info["command"].lower().startswith("python")
-                    if kind == "vim_keys" and not vim_active:
-                        raise WebError(409, "vim keys require an active Vim process")
-                    if kind == "terminal_keys" and not python_active:
-                        raise WebError(409, "terminal keys require an active Python process")
-                    if not isinstance(keys, list):
-                        raise WebError(400, "keys must be an array")
-                    validate_key_tokens(keys)
-                else:
-                    raise WebError(400, "terminal input type is not supported")
-
-                store.append_event(
-                    "action",
-                    "human",
-                    "human_control",
-                    data={"action_id": action_id, "status": "received", "input": payload},
-                )
-                store.append_event(
-                    "action", "human", "human_control", data={"action_id": action_id, "status": "started"}
-                )
-                if kind == "command":
-                    transport.send_workspace_command(pane_id, command, path)
-                else:
-                    send_tokens_with_captures(store, transport, pane_id, keys)
-                time.sleep(0.15)
-                capture_workspace(store, transport)
-                store.append_event(
-                    "action", "human", "human_control", data={"action_id": action_id, "status": "completed"}
-                )
-            except WebError:
-                raise
-            except ModelApiError as exc:
-                raise WebError(400, str(exc)) from exc
-            except (RunnerError, TmuxError, OSError) as exc:
-                store.append_event(
-                    "action",
-                    "human",
-                    "human_control",
-                    content=str(exc),
-                    data={"action_id": action_id, "status": "rejected"},
-                )
-                raise WebError(422, str(exc)) from exc
-        return self.load_store(meeting_id)
+            self.load_store(meeting_id)
+            # The human terminal is read-only for now. The execution body was
+            # removed while the feature is disabled; restore it from git
+            # history if HUMAN_TERMINAL_READ_ONLY ever becomes a runtime
+            # setting again.
+            raise WebError(403, "terminal is temporarily read-only for human users")
 
     def complete(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -1139,7 +1046,7 @@ class MeetingWebService:
             store.append_event("state", "human", "completed", data={"status": "completed"})
             with self.lock:
                 self.queued_jobs.pop(meeting_id, None)
-        return self.load_store(meeting_id)
+        return store
 
     def stop(self, meeting_id: str) -> MeetingStore:
         # Publish the durable interrupt before contending on meeting/state
@@ -1166,7 +1073,7 @@ class MeetingWebService:
                 failure="stopped by user",
             )
             try:
-                self.transport_factory(shutil.which("tmux") or "tmux").kill_session(
+                self._transport().kill_session(
                     store.meeting.session_name
                 )
             except (TmuxError, OSError) as exc:
@@ -1176,7 +1083,7 @@ class MeetingWebService:
             store.append_event("state", "human", "interrupted", data={"status": "interrupted"})
             with self.lock:
                 self.queued_jobs.pop(meeting_id, None)
-        return self.load_store(meeting_id)
+        return store
 
     def cleanup(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -1186,7 +1093,7 @@ class MeetingWebService:
             if store.meeting.session_state == "stopped":
                 return store
             try:
-                self.transport_factory(shutil.which("tmux") or "tmux").kill_session(
+                self._transport().kill_session(
                     store.meeting.session_name
                 )
             except (TmuxError, OSError) as exc:
@@ -1194,18 +1101,15 @@ class MeetingWebService:
                 raise WebError(502, "tmux cleanup failed") from exc
             store.mark_session_stopped()
             store.append_event("control", "human", store.meeting.phase, data={"status": "cleaned"})
-        return self.load_store(meeting_id)
+        return store
 
     def resume(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
             if store.meeting.status in TERMINAL_STATUSES:
                 raise WebError(409, "meeting is already finished")
-            orphaned_agent = (
-                store.meeting.phase in {"agent_thinking", "agent_acting"}
-                and not self._job_alive(meeting_id)
-            )
-            if store.meeting.phase not in {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"} and not orphaned_agent:
+            orphaned_agent = self._orphaned_agent(store, meeting_id)
+            if store.meeting.phase not in RESUMABLE_PHASES and not orphaned_agent:
                 raise WebError(409, "Agent can resume only while waiting or after an API error")
             config = self._config_for_store(store)
             fresh_conversation = (
@@ -1227,7 +1131,7 @@ class MeetingWebService:
                 resume=True,
                 fresh_conversation=fresh_conversation,
             )
-        return self.load_store(meeting_id)
+        return store
 
     def health(self) -> Dict[str, Any]:
         checks: List[Dict[str, Any]] = []
@@ -1552,27 +1456,16 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 store = self.service.message(unquote(match.group(1)), self._read_json())
                 self._json({"meeting": _public_manifest(store)})
                 return
-            match = re.fullmatch(r"/api/meetings/([^/]+)/control/(acquire|release)", path)
-            if match:
-                self._read_empty_json()
-                store = getattr(self.service, match.group(2))(unquote(match.group(1)))
-                self._json({"meeting": _public_manifest(store)})
-                return
             match = re.fullmatch(r"/api/meetings/([^/]+)/terminal/input", path)
             if match:
                 store = self.service.terminal_input(unquote(match.group(1)), self._read_json())
                 self._json({"meeting": _public_manifest(store)})
                 return
-            match = re.fullmatch(r"/api/meetings/([^/]+)/agent/resume", path)
+            match = re.fullmatch(r"/api/meetings/([^/]+)/(control/acquire|control/release|agent/resume|complete|stop|cleanup)", path)
             if match:
                 self._read_empty_json()
-                store = self.service.resume(unquote(match.group(1)))
-                self._json({"meeting": _public_manifest(store)})
-                return
-            match = re.fullmatch(r"/api/meetings/([^/]+)/(complete|stop|cleanup)", path)
-            if match:
-                self._read_empty_json()
-                store = getattr(self.service, match.group(2))(unquote(match.group(1)))
+                action = _MEETING_POST_ACTIONS[match.group(2)]
+                store = action(self.service, unquote(match.group(1)))
                 self._json({"meeting": _public_manifest(store)})
                 return
             raise WebError(404, "route not found")
@@ -1580,6 +1473,18 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             self._error(exc.status, exc.message)
         except (OSError, MeetingError, TmuxError, ModelApiError, ValueError) as exc:
             self._internal_error(exc)
+
+
+# Empty-body POST actions on one meeting. The URL surface is defined by this
+# explicit table rather than by whatever method names exist on the service.
+_MEETING_POST_ACTIONS: Dict[str, Callable[[MeetingWebService, str], MeetingStore]] = {
+    "control/acquire": MeetingWebService.acquire,
+    "control/release": MeetingWebService.release,
+    "agent/resume": MeetingWebService.resume,
+    "complete": MeetingWebService.complete,
+    "stop": MeetingWebService.stop,
+    "cleanup": MeetingWebService.cleanup,
+}
 
 
 def build_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, service: Optional[MeetingWebService] = None) -> RemoteBuddyHTTPServer:
