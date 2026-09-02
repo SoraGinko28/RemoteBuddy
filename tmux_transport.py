@@ -10,7 +10,12 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from agent_protocol import AgentProtocolError, validate_shell_command
+from agent_protocol import (
+    SPECIAL_KEYS,
+    STRUCTURED_COMMANDS,
+    AgentProtocolError,
+    validate_shell_command,
+)
 
 try:
     import libtmux
@@ -22,19 +27,9 @@ except ImportError:  # Keep doctor and the read-only Web UI usable before setup.
 
 SESSION_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 PANE_RE = re.compile(r"^%[0-9]+$")
-WORKSPACE_COMMANDS = {"pwd", "cd", "vim", "python"}
-SPECIAL_KEYS = {
-    "Enter",
-    "Escape",
-    "Tab",
-    "Up",
-    "Down",
-    "Left",
-    "Right",
-    "Backspace",
-    "Delete",
-    "C-c",
-}
+# The schema layer owns both sets; the transport must accept exactly what the
+# schema can emit, so they are shared rather than kept in lockstep by hand.
+WORKSPACE_COMMANDS = STRUCTURED_COMMANDS
 TMUX_SPECIAL_KEY_NAMES = {
     "Backspace": "BSpace",
     "Delete": "DC",

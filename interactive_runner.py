@@ -156,22 +156,28 @@ def validate_agent_vim_keys(tokens: Sequence[Dict[str, str]], screen: str) -> No
         kind = token.get("kind")
         value = token.get("value")
         if kind == "key":
-            if value == "Escape":
+            if value in {"Escape", "C-c"}:
+                # C-c leaves insert/command/search mode just like Escape does.
                 mode = "normal"
                 ex_command = ""
-            elif value == "Enter" and mode in {"command", "search"}:
-                allowed = (
-                    VIM_SAFE_SEARCH.fullmatch(ex_command)
-                    if mode == "search"
-                    else (
-                        VIM_SAFE_EX_COMMAND.fullmatch(ex_command)
-                        or VIM_SAFE_SUBSTITUTE.fullmatch(ex_command)
+            elif value == "Enter":
+                if mode in {"command", "search"}:
+                    allowed = (
+                        VIM_SAFE_SEARCH.fullmatch(ex_command)
+                        if mode == "search"
+                        else (
+                            VIM_SAFE_EX_COMMAND.fullmatch(ex_command)
+                            or VIM_SAFE_SUBSTITUTE.fullmatch(ex_command)
+                        )
                     )
-                )
-                if not allowed:
-                    raise RunnerError("Vim Ex/search command is not in the safe allowlist")
-                mode = "normal"
-                ex_command = ""
+                    if not allowed:
+                        raise RunnerError("Vim Ex/search command is not in the safe allowlist")
+                    mode = "normal"
+                    ex_command = ""
+            elif mode in {"command", "search"}:
+                # History recall or completion would change the pending command
+                # in ways this validator cannot track.
+                raise RunnerError("only Enter or Escape may follow a Vim Ex/search command")
             continue
         if kind != "literal" or not isinstance(value, str):
             raise RunnerError("invalid Vim input token")

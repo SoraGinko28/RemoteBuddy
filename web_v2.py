@@ -1298,12 +1298,30 @@ class RemoteBuddyHTTPServer(ThreadingHTTPServer):
 class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
     server_version = "RemoteBuddy/0.2"
 
+    _LOOPBACK_HOSTNAMES = {"127.0.0.1", "localhost", "[::1]"}
+
     @property
     def service(self) -> MeetingWebService:
         return self.server.service  # type: ignore[attr-defined]
 
     def log_message(self, _format: str, *_args: Any) -> None:
         return
+
+    def _guard(self) -> None:
+        """Reject requests that did not originate from this loopback service.
+
+        The loopback bind alone does not stop DNS rebinding: a page on an
+        attacker domain whose DNS re-resolves to 127.0.0.1 becomes same-origin
+        with this service. Pinning the Host header (and any Origin header) to
+        the local addresses closes that path.
+        """
+        port = self.server.server_address[1]
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host not in {f"{name}:{port}" for name in self._LOOPBACK_HOSTNAMES} | self._LOOPBACK_HOSTNAMES:
+            raise WebError(403, "request host is not the local workspace")
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        if origin and origin not in {f"http://{name}:{port}" for name in self._LOOPBACK_HOSTNAMES}:
+            raise WebError(403, "cross-origin requests are not allowed")
 
     def _headers(self, content_type: str = "application/json; charset=utf-8") -> None:
         self.send_header("Content-Type", content_type)
@@ -1332,6 +1350,12 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
 
     def _error(self, status: int, message: str) -> None:
         self._json({"error": message, "status": status}, status=status)
+
+    def _internal_error(self, exc: Exception) -> None:
+        # Exception text can carry absolute filesystem paths; keep it out of
+        # the response and log it server-side instead.
+        print(f"[web_v2] internal error on {self.command} {self.path}: {exc!r}", file=sys.stderr, flush=True)
+        self._error(500, "internal error")
 
     def _read_json(self) -> Dict[str, Any]:
         raw_length = self.headers.get("Content-Length")
@@ -1389,6 +1413,7 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         try:
+            self._guard()
             parsed = urlsplit(self.path)
             path = parsed.path
             if path == "/":
@@ -1432,10 +1457,11 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         except WebError as exc:
             self._error(exc.status, exc.message)
         except (OSError, MeetingError, ValueError) as exc:
-            self._error(500, str(exc))
+            self._internal_error(exc)
 
     def do_POST(self) -> None:  # noqa: N802
         try:
+            self._guard()
             self._csrf()
             parsed = urlsplit(self.path)
             path = parsed.path
@@ -1487,7 +1513,7 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         except WebError as exc:
             self._error(exc.status, exc.message)
         except (OSError, MeetingError, TmuxError, ModelApiError, ValueError) as exc:
-            self._error(500, str(exc))
+            self._internal_error(exc)
 
 
 def build_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, service: Optional[MeetingWebService] = None) -> RemoteBuddyHTTPServer:

@@ -701,6 +701,45 @@ class InteractiveRunnerTest(unittest.TestCase):
                 '~\n"notes.md"',
             )
 
+    def test_vim_ctrl_c_leaves_insert_mode_and_cannot_smuggle_ex_commands(self):
+        # C-c returns Vim to normal mode; the following text must be validated
+        # as normal-mode input, not skipped as insert-mode document text.
+        with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
+            validate_agent_vim_keys(
+                [
+                    {"kind": "literal", "value": "i"},
+                    {"kind": "key", "value": "C-c"},
+                    {"kind": "literal", "value": ":!bash"},
+                    {"kind": "key", "value": "Enter"},
+                ],
+                '~\n"notes.md"',
+            )
+        # C-c cancels a pending Ex command, so a safe sequence still passes.
+        validate_agent_vim_keys(
+            [
+                {"kind": "literal", "value": ":"},
+                {"kind": "key", "value": "C-c"},
+                {"kind": "literal", "value": "i"},
+                {"kind": "literal", "value": "document text"},
+                {"kind": "key", "value": "Escape"},
+                {"kind": "literal", "value": ":wq"},
+                {"kind": "key", "value": "Enter"},
+            ],
+            '~\n"notes.md"',
+        )
+
+    def test_vim_history_recall_keys_are_rejected_inside_ex_commands(self):
+        for key in ("Up", "Tab", "Backspace"):
+            with self.assertRaisesRegex(RunnerError, "only Enter or Escape"):
+                validate_agent_vim_keys(
+                    [
+                        {"kind": "literal", "value": ":w"},
+                        {"kind": "key", "value": key},
+                        {"kind": "key", "value": "Enter"},
+                    ],
+                    '~\n"notes.md"',
+                )
+
     def test_runner_rejects_shell_text_in_vim_normal_mode_without_sending_keys(self):
         client = FakeClient(
             [
