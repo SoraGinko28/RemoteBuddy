@@ -1059,8 +1059,10 @@ function scheduleSelectionMenu(clickCount = 1) {
   state.selectionTimer = setTimeout(() => {
     state.selectionTimer = null;
     state.selectionMenuDelay = 0;
+    console.log("[timeout-debug] fire", { delay, selectionBusy: state.selectionBusy, pointerSelecting: state.pointerSelecting });
     if (state.selectionBusy || state.pointerSelecting) return;
     const candidate = selectionCandidate();
+    console.log("[timeout-debug] candidate", candidate ? { kind: candidate.kind, event_id: candidate.event_id, start: candidate.start, end: candidate.end, excerpt: candidate.excerpt } : null);
     if (candidate) showSelectionMenu(candidate);
     else hideSelectionMenu();
   }, delay);
