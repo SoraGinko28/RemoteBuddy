@@ -428,7 +428,13 @@ class ClaudeCodeBackend:
                         raise AgentProtocolError(self._turn_protocol_error)
                     if self._process_error:
                         raise ClaudeCodeError("Claude Code process exited")
-                    if self._turn_action is not None and self._turn_result_seen:
+                    # Once a RemoteBuddy action has been accepted and executed
+                    # by the bridge handler, do not wait indefinitely for the
+                    # model's final result message. Some providers/models finish
+                    # the turn without emitting a stream-json result, which
+                    # would otherwise cause a spurious "Claude Code turn timed
+                    # out" after the action already succeeded.
+                    if self._turn_action is not None:
                         action = self._turn_action
                         response_id = self._turn_response_id or "claude-action-" + uuid.uuid4().hex
                         elapsed_ms = int(max(0.0, time.monotonic() - self._turn_started_at) * 1000)
