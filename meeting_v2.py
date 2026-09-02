@@ -92,16 +92,21 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
         return []
     events: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise MeetingError(f"invalid JSONL at {path}:{line_number}") from exc
-            if not isinstance(value, dict):
-                raise MeetingError(f"invalid JSONL object at {path}:{line_number}")
-            events.append(value)
+        lines = handle.readlines()
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if line_number == len(lines) and not line.endswith("\n"):
+                # The writer terminates every record with a newline, so a torn
+                # final line is a concurrent append in progress, not corruption.
+                break
+            raise MeetingError(f"invalid JSONL at {path}:{line_number}") from exc
+        if not isinstance(value, dict):
+            raise MeetingError(f"invalid JSONL object at {path}:{line_number}")
+        events.append(value)
     return events
 
 
@@ -180,6 +185,7 @@ class MeetingStore:
         self.meeting = meeting
         self.manifest_path = self.run_dir / "meeting.json"
         self._thread_lock = threading.RLock()
+        self._state_depth = 0
 
     @staticmethod
     def _safe_run_dir(project_root: Path, meeting_id: str, create_runs: bool = True) -> Path:
@@ -370,11 +376,27 @@ class MeetingStore:
 
     @contextmanager
     def _exclusive_state(self):
-        lock_path = self.run_dir / ".state.lock"
-        with self._thread_lock, lock_path.open("a+") as lock_handle:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-            self._reload_manifest_unlocked()
-            yield
+        with self._thread_lock:
+            if self._state_depth:
+                # flock is per open file description, so a nested acquisition
+                # in the same thread would deadlock on a second open. The
+                # outer context already holds the exclusive lock; run nested
+                # blocks inside it without reloading over in-flight changes.
+                self._state_depth += 1
+                try:
+                    yield
+                finally:
+                    self._state_depth -= 1
+                return
+            lock_path = self.run_dir / ".state.lock"
+            with lock_path.open("a+") as lock_handle:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                self._state_depth = 1
+                try:
+                    self._reload_manifest_unlocked()
+                    yield
+                finally:
+                    self._state_depth = 0
 
     def refresh(self) -> None:
         refreshed = self.load(self.run_dir.parent.parent, self.meeting.meeting_id)
@@ -682,19 +704,36 @@ class MeetingStore:
 
     def update(self, **changes: Any) -> None:
         with self._exclusive_state():
-            for key, value in changes.items():
-                if key not in self.meeting.__dataclass_fields__:
-                    raise MeetingError(f"unknown meeting field: {key}")
-                if key == "status" and value not in VALID_STATUSES:
-                    raise MeetingError(f"invalid meeting status: {value}")
-                if key == "phase" and value not in VALID_PHASES:
-                    raise MeetingError(f"invalid meeting phase: {value}")
-                if key == "control_owner" and value not in VALID_OWNERS:
-                    raise MeetingError(f"invalid control owner: {value}")
-                if key == "typing_profile" and value not in TYPING_PROFILES:
-                    raise MeetingError("invalid typing profile")
-                setattr(self.meeting, key, value)
+            self._apply_changes_unlocked(changes)
             self._write_manifest()
+
+    def bump_request_generation(self, **changes: Any) -> int:
+        """Atomically increment request_generation together with other changes.
+
+        The new value is computed after the manifest reload inside the state
+        lock, so a concurrent process can never make an increment vanish —
+        important because request_generation is the interrupt mechanism.
+        """
+        with self._exclusive_state():
+            value = self.meeting.request_generation + 1
+            self.meeting.request_generation = value
+            self._apply_changes_unlocked(changes)
+            self._write_manifest()
+            return value
+
+    def _apply_changes_unlocked(self, changes: Mapping[str, Any]) -> None:
+        for key, value in changes.items():
+            if key not in self.meeting.__dataclass_fields__:
+                raise MeetingError(f"unknown meeting field: {key}")
+            if key == "status" and value not in VALID_STATUSES:
+                raise MeetingError(f"invalid meeting status: {value}")
+            if key == "phase" and value not in VALID_PHASES:
+                raise MeetingError(f"invalid meeting phase: {value}")
+            if key == "control_owner" and value not in VALID_OWNERS:
+                raise MeetingError(f"invalid control owner: {value}")
+            if key == "typing_profile" and value not in TYPING_PROFILES:
+                raise MeetingError("invalid typing profile")
+            setattr(self.meeting, key, value)
 
     def set_session(self, pane_id: str) -> None:
         self.update(pane_id=pane_id, session_state="running")

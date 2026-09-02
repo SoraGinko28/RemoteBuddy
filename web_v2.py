@@ -893,18 +893,14 @@ class MeetingWebService:
                     "request",
                     reference=references[0] if references else None,
                 )
-            store.update(
-                failure=None,
-                **(
-                    {
-                        "request_generation": store.meeting.request_generation + 1,
-                        "cycle_action_count": 0,
-                        "cycle_started_at": utc_now(),
-                    }
-                    if delivery == "interrupt" or wake_agent
-                    else {}
-                ),
-            )
+            if delivery == "interrupt" or wake_agent:
+                store.bump_request_generation(
+                    failure=None,
+                    cycle_action_count=0,
+                    cycle_started_at=utc_now(),
+                )
+            else:
+                store.update(failure=None)
             if delivery == "interrupt":
                 self._interrupt_backend(meeting_id)
             if wake_agent or delivery == "interrupt":
@@ -959,9 +955,8 @@ class MeetingWebService:
                 store.meeting.phase in {"agent_thinking", "agent_acting"}
                 and not self._job_alive(meeting_id)
             )
-            store.update(
+            store.bump_request_generation(
                 control_requested="human",
-                request_generation=store.meeting.request_generation + 1,
                 recovery_required=store.meeting.recovery_required or orphaned_agent,
             )
             self._interrupt_backend(meeting_id)
@@ -978,11 +973,10 @@ class MeetingWebService:
                 return store
             config = self._config_for_store(store)
             fresh_conversation = store.meeting.recovery_required
-            store.update(
+            store.bump_request_generation(
                 phase="agent_thinking",
                 control_owner="agent",
                 control_requested=None,
-                request_generation=store.meeting.request_generation + 1,
                 cycle_action_count=0,
                 cycle_started_at=utc_now(),
                 status="running",
@@ -1083,12 +1077,11 @@ class MeetingWebService:
                 raise WebError(409, "meeting cannot be completed from its current state")
             if not store.meeting.pane_id or store.meeting.session_state not in {"running", "retained"}:
                 raise WebError(409, "workspace session has not started")
-            store.update(
+            store.bump_request_generation(
                 status="completed",
                 phase="completed",
                 control_owner="none",
                 control_requested=None,
-                request_generation=store.meeting.request_generation + 1,
                 session_state="retained",
             )
             self._interrupt_backend(meeting_id)
@@ -1113,13 +1106,12 @@ class MeetingWebService:
                 return store
             if store.meeting.status in {"completed", "failed"}:
                 raise WebError(409, "use cleanup for a finished meeting")
-            store.update(
+            store.bump_request_generation(
                 status="interrupted",
                 phase="interrupted",
                 control_owner="none",
                 control_requested=None,
                 pending_action_id=None,
-                request_generation=store.meeting.request_generation + 1,
                 failure="stopped by user",
             )
             try:
@@ -1170,12 +1162,11 @@ class MeetingWebService:
                 or store.meeting.recovery_required
                 or orphaned_agent
             )
-            store.update(
+            store.bump_request_generation(
                 status="running",
                 phase="agent_thinking",
                 control_owner="agent",
                 failure=None,
-                request_generation=store.meeting.request_generation + 1,
                 cycle_action_count=0,
                 cycle_started_at=utc_now(),
             )
@@ -1204,6 +1195,7 @@ class MeetingWebService:
         )
         backends: Dict[str, Dict[str, Any]] = {}
         selected_key: Optional[str] = None
+        config: Optional[ModelApiConfig] = None
         try:
             config = self._apply_overrides(ModelApiConfig.load(self.model_api_path))
             if self.default_backend:
@@ -1274,15 +1266,17 @@ class MeetingWebService:
         core_names = {"python", "tmux", "vim", "libtmux", "model-api"}
         core_ok = all(check["ok"] for check in checks if check["name"] in core_names)
         selected_ok = bool(selected_key and backends.get(selected_key, {}).get("ok"))
+        with self.lock:
+            workers = list(self.jobs.values())
         return {
             "ok": core_ok and selected_ok,
             "core_ok": core_ok,
             "python": ".".join(map(str, sys.version_info[:3])),
             "checks": checks,
             "backends": backends,
-            "active_jobs": sum(worker.is_alive() for worker in self.jobs.values()),
-            "agent_backend": config.agent_backend if "config" in locals() else None,
-            "agent_provider": config.agent_provider if "config" in locals() else None,
+            "active_jobs": sum(worker.is_alive() for worker in workers),
+            "agent_backend": config.agent_backend if config is not None else None,
+            "agent_provider": config.agent_provider if config is not None else None,
             "service": "running",
         }
 

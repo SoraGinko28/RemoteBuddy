@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 import time
 import uuid
@@ -129,17 +130,24 @@ def capture_stable_workspace(
     metadata: Optional[Dict[str, Any]] = None,
     attempts: int = 3,
 ) -> Optional[Dict[str, Any]]:
-    """Capture until two consecutive visible frames agree."""
-    previous: Optional[Dict[str, Any]] = None
+    """Capture after two consecutive raw frames agree.
+
+    Stability is checked against the transport's raw viewport rather than
+    journal events: ``append_screen`` deduplicates identical frames to
+    ``None``, so comparing its return value can never observe "unchanged".
+    """
+    pane_id = store.meeting.pane_id
+    if not pane_id:
+        raise RunnerError("meeting has no workspace pane")
+    previous: Optional[str] = None
     for index in range(max(2, attempts)):
-        current = capture_workspace(store, transport, metadata=metadata)
-        if previous is not None and current is not None:
-            if current.get("content") == previous.get("content") and current.get("data") == previous.get("data"):
-                return current
+        current = transport.capture_visible(pane_id)
+        if previous is not None and current == previous:
+            break
         previous = current
         if index + 1 < max(2, attempts):
             time.sleep(0.03)
-    return previous
+    return capture_workspace(store, transport, metadata=metadata)
 
 
 def validate_agent_vim_keys(tokens: Sequence[Dict[str, str]], screen: str) -> None:
@@ -325,7 +333,10 @@ def _send_typing_plan(
             )
             if step.change_kind == "paste":
                 last_paste_capture = now
-        deadline += step.delay_after_ms / 1000.0
+        # Captures and journal writes consume real time; without this clamp the
+        # deadline falls permanently behind and every later delay is skipped,
+        # collapsing the human-like pacing into full speed.
+        deadline = max(deadline, time.monotonic()) + step.delay_after_ms / 1000.0
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -364,8 +375,21 @@ class InteractiveRunner:
         self._cycle_acknowledged = False
         self._last_action_was_chat = False
         self._last_terminal_evidence: Optional[str] = None
+        self._dynamic_action_active = threading.Event()
         self._cycle_started_monotonic = time.monotonic()
         self._current_input_seq = self._latest_sequence(self.store.events())
+
+    def _reset_cycle_state(self) -> None:
+        """Clear all cycle-scoped flags when a new work cycle begins.
+
+        ``_last_terminal_evidence`` in particular gates progress messages on
+        work done "in this cycle"; a reused runner must not inherit it.
+        """
+        self._cycle_acknowledged = False
+        self._last_action_was_chat = False
+        self._last_terminal_evidence = None
+        self._include_agent_chat_once = False
+        self._last_action_success = True
 
     @staticmethod
     def _latest_sequence(events: Sequence[Dict[str, Any]], default: int = 0) -> int:
@@ -374,8 +398,7 @@ class InteractiveRunner:
 
     def start(self) -> None:
         try:
-            self._cycle_acknowledged = False
-            self._last_action_was_chat = False
+            self._reset_cycle_state()
             with self.lock:
                 self.store.refresh()
                 self._check_stop()
@@ -424,8 +447,7 @@ class InteractiveRunner:
 
     def resume(self, fresh_conversation: bool = False) -> None:
         try:
-            self._cycle_acknowledged = False
-            self._last_action_was_chat = False
+            self._reset_cycle_state()
             with self.lock:
                 self.store.refresh()
                 self._check_stop()
@@ -580,8 +602,10 @@ class InteractiveRunner:
                     self.store.meeting.phase,
                     data={"agent_protocol": allowed},
                 )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Protocol events are observational; a storage failure here must
+            # not kill the backend callback thread, but it must leave a trace.
+            print(f"[runner] backend event was not recorded: {exc}", file=sys.stderr, flush=True)
 
     def _agent_loop(self) -> None:
         while True:
@@ -791,7 +815,12 @@ class InteractiveRunner:
 
     def _capture_agent_activity(self, stop: threading.Event) -> None:
         """Capture terminal redraws while a model request is in flight."""
+        failures = 0
         while not stop.wait(self.agent_capture_interval_seconds):
+            if self._dynamic_action_active.is_set():
+                # The typing thread owns the pane during a dynamic action;
+                # concurrent captures would interleave untagged frames.
+                continue
             try:
                 with self.lock:
                     self.store.refresh()
@@ -802,11 +831,19 @@ class InteractiveRunner:
                     ):
                         return
                     capture_workspace(self.store, self.transport)
-            except (MeetingError, RunnerError, TmuxError, OSError):
-                # The main loop owns terminal failure state. Its next capture or
-                # action boundary will persist the failure without racing this
-                # observational worker.
-                return
+                failures = 0
+            except (MeetingError, RunnerError, TmuxError, OSError) as exc:
+                # The main loop owns terminal failure state. Retry through
+                # transient hiccups; give up only after repeated failures so a
+                # single tmux blip does not silently end mid-turn observation.
+                failures += 1
+                if failures >= 5:
+                    print(
+                        f"[runner] mid-turn capture disabled after repeated failures: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
 
     def _phase_constraints(self) -> Tuple[Optional[Sequence[str]], Optional[Sequence[str]], bool]:
         first_action = not self._cycle_acknowledged
@@ -888,8 +925,8 @@ class InteractiveRunner:
         if callable(close):
             try:
                 close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                print(f"[runner] backend close failed: {exc}", file=sys.stderr, flush=True)
 
     def _resolved_action_references(self, action: AgentAction) -> list:
         """Resolve model-provided references into stored human-identical shapes.
@@ -990,6 +1027,21 @@ class InteractiveRunner:
         generation: int,
         input_seq: int,
     ) -> Dict[str, Any]:
+        # Pause the mid-turn capture thread for the duration: exactly one
+        # thread may drive the pane and tag frames while keys are being sent.
+        self._dynamic_action_active.set()
+        try:
+            return self._run_dynamic_action(action, metadata, generation, input_seq)
+        finally:
+            self._dynamic_action_active.clear()
+
+    def _run_dynamic_action(
+        self,
+        action: AgentAction,
+        metadata: Dict[str, Any],
+        generation: int,
+        input_seq: int,
+    ) -> Dict[str, Any]:
         with self.lock:
             self.store.refresh()
             stale = (
@@ -1064,7 +1116,7 @@ class InteractiveRunner:
                 budget_final,
                 generation,
             )
-        except (RunnerError, TmuxError) as exc:
+        except (RunnerError, TmuxError, MeetingError, AgentProtocolError) as exc:
             with self.lock:
                 self.store.refresh()
                 self._last_action_success = False
@@ -1076,13 +1128,7 @@ class InteractiveRunner:
                     data={"action_id": action_id, "status": "rejected"},
                 )
                 if isinstance(exc, TmuxError):
-                    self.store.update(
-                        status="failed",
-                        phase="failed",
-                        control_owner="none",
-                        pending_action_id=None,
-                        failure=str(exc),
-                    )
+                    self._fail_terminal(str(exc))
                     should_pause = True
                 else:
                     self.store.update(phase="agent_thinking")
@@ -1425,18 +1471,26 @@ class InteractiveRunner:
                     data={"action_id": action_id, "status": "rejected"},
                 )
                 if isinstance(exc, TmuxError):
-                    self.store.update(
-                        status="failed",
-                        phase="failed",
-                        control_owner="none",
-                        pending_action_id=None,
-                        recovery_required=False,
-                        failure=str(exc),
-                    )
+                    self._fail_terminal(str(exc))
                     return True
                 if self.store.meeting.status == "running":
                     self.store.update(phase="agent_thinking")
             return False
+
+    def _fail_terminal(self, failure: str) -> None:
+        """Mark the meeting failed after a terminal (tmux) fault.
+
+        Both the main-loop and dynamic-action paths must persist the same
+        state, including clearing recovery_required set by earlier errors.
+        """
+        self.store.update(
+            status="failed",
+            phase="failed",
+            control_owner="none",
+            pending_action_id=None,
+            recovery_required=False,
+            failure=failure,
+        )
 
     def _typing_should_interrupt(self, generation: int) -> bool:
         with self.lock:
@@ -1530,5 +1584,11 @@ class InteractiveRunner:
                     failure=str(exc),
                     session_state=session_state,
                 )
-        except Exception:
-            pass
+        except Exception as inner:  # noqa: BLE001
+            # If even the failure write fails, the meeting is stranded in a
+            # non-terminal phase; a stderr trace is the only evidence left.
+            print(
+                f"[runner] could not persist failure state ({inner}); original error: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )

@@ -378,7 +378,8 @@ class ResponsesClientTest(unittest.TestCase):
         self.assertIsInstance(request_payload["input"], str)
         self.assertNotIn("tools", request_payload)
         self.assertNotIn("tool_choice", request_payload)
-        self.assertNotIn("reasoning", request_payload)
+        self.assertEqual({"effort": "low"}, request_payload["reasoning"])
+        self.assertEqual(8192, request_payload["max_output_tokens"])
         self.assertTrue(request_payload["store"])
         self.assertTrue(request_payload["text"]["format"]["strict"])
         self.assertIn("anyOf", request_payload["text"]["format"]["schema"]["properties"]["action"])
@@ -433,17 +434,47 @@ class ResponsesClientTest(unittest.TestCase):
         self.assertIn("[redacted]", str(context.exception))
 
     def test_timeout_and_connection_errors_are_distinguishable(self):
-        outcomes = [TimeoutError("timed out"), urllib.error.URLError(ConnectionResetError("reset"))]
+        timeout_outcomes = [TimeoutError("timed out")]
+        reset_outcomes = [
+            urllib.error.URLError(ConnectionResetError("reset")) for _ in range(3)
+        ]
 
-        def opener(_request, timeout):
+        def timeout_opener(_request, timeout):
             self.assertGreater(timeout, 0)
-            raise outcomes.pop(0)
+            raise timeout_outcomes.pop(0)
 
-        client = OpenAIResponsesClient(self.config, opener=opener)
+        def reset_opener(_request, timeout):
+            self.assertGreater(timeout, 0)
+            raise reset_outcomes.pop(0)
+
+        # A timeout consumed the whole request budget and is not retried.
+        client = OpenAIResponsesClient(self.config, opener=timeout_opener)
         with self.assertRaisesRegex(ModelApiError, r"timed out .*60s"):
             client.create_action("local", "instructions", "observation")
+        self.assertEqual([], timeout_outcomes)
+        # Transient connection failures are retried before surfacing.
+        client = OpenAIResponsesClient(
+            self.config, opener=reset_opener, retry_base_seconds=0.001
+        )
         with self.assertRaisesRegex(ModelApiError, "connection failed: ConnectionResetError: reset"):
             client.create_action("local", "instructions", "observation")
+        self.assertEqual([], reset_outcomes)
+
+    def test_retryable_http_status_is_retried_until_success(self):
+        calls = []
+
+        def opener(request, timeout):
+            calls.append(timeout)
+            if len(calls) < 3:
+                raise urllib.error.HTTPError(
+                    request.full_url, 429, "throttled", {"Retry-After": "0"}, io.BytesIO(b"{}")
+                )
+            return FakeResponse({"id": "resp_retry", "output_text": json.dumps(action_payload())})
+
+        client = OpenAIResponsesClient(self.config, opener=opener, retry_base_seconds=0.001)
+        response = client.create_action("local", "instructions", "observation")
+        self.assertEqual("resp_retry", response.response_id)
+        self.assertEqual(3, len(calls))
 
     def test_gateway_top_level_error_shape_is_reported(self):
         def opener(request, timeout):

@@ -308,6 +308,11 @@ class ClaudeCodeBackend:
         self._socket_path = str(private_cwd / "bridge.sock")
         self._bridge_token = secrets.token_urlsafe(32)
         try:
+            if len(self._socket_path.encode("utf-8")) > 100:
+                raise ClaudeCodeError(
+                    "temporary bridge socket path exceeds the AF_UNIX length limit; "
+                    "set TMPDIR to a shorter path"
+                )
             self._start_bridge_listener()
             prompt_path = private_cwd / "system-prompt.txt"
             prompt_path.write_text(self._system_prompt(instructions), encoding="utf-8")
@@ -416,10 +421,10 @@ class ClaudeCodeBackend:
             turn_id = self._turn_id
         text = self._initial_context if self._first_turn and self._initial_context else observation
         self._first_turn = False
-        self._send_user_message(text)
-        self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
         deadline = time.monotonic() + timeout
         try:
+            self._send_user_message(text)
+            self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
             with self._condition:
                 while True:
                     if self._interrupted:
@@ -507,27 +512,40 @@ class ClaudeCodeBackend:
                         process.wait(timeout=1)
                     except Exception:
                         pass
+        # Join the readers before closing their streams so a reader never
+        # observes a closed file mid-iteration and records a bogus error.
+        for worker in (self._reader, self._stderr_reader, self._listener_thread):
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=1)
+        if process is not None:
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     try:
                         stream.close()
                     except Exception:
                         pass
-        for worker in (self._reader, self._stderr_reader, self._listener_thread):
-            if worker is not None and worker is not threading.current_thread():
-                worker.join(timeout=1)
-        if self._temporary is not None:
-            self._temporary.cleanup()
+        try:
+            if self._temporary is not None:
+                self._temporary.cleanup()
+        except OSError as exc:
+            print(f"[claude-code] temporary directory cleanup failed: {exc}", file=sys.stderr, flush=True)
+        finally:
             self._temporary = None
-        self._session_id = None
-        self._turn_id = None
+            self._session_id = None
+            self._turn_id = None
 
     def _signal_process(self, sig: signal.Signals, *, process: Any = None) -> None:
         target = process or self._process
         if target is None or target.poll() is not None:
             return
         try:
-            os.killpg(target.pid, sig)
+            # Only signal the child's process group when it really is its own
+            # group; an injected process_factory without start_new_session
+            # would otherwise let killpg reach RemoteBuddy's own group.
+            if os.getpgid(target.pid) != os.getpgrp():
+                os.killpg(target.pid, sig)
+            else:
+                target.send_signal(sig)
         except (AttributeError, OSError):
             try:
                 target.send_signal(sig)
@@ -647,6 +665,11 @@ class ClaudeCodeBackend:
             result = {"success": False, "content": "superseded", "pause": True}
         except AgentBackendError as exc:
             result = {"success": False, "content": str(exc), "pause": False}
+        except Exception as exc:  # noqa: BLE001
+            # Storage or transport failures (MeetingError, OSError) raised by
+            # the handler must not leave the claimed action dangling with no
+            # notification, or next_action would block for the full timeout.
+            result = {"success": False, "content": f"action failed: {exc}", "pause": False}
         success = bool(result.get("success", False))
         pause = bool(result.get("pause", False))
         content = self._redact(str(result.get("content", "action completed")))[:64 * 1024]
