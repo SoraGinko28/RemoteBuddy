@@ -33,3 +33,7 @@ tests/test_meeting_v5.py
 tests/test_demo.py
 tests/test_web.py
 .agents/skills/meeting-participant/
+
+# Local user build/runtime dirs
+.venv/
+.local/
