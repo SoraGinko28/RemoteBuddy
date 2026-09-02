@@ -823,7 +823,11 @@ class InteractiveRunner:
         message_types = ("none", "progress", "question", "final")
         allow_chat = not self._last_action_was_chat
         if command in SHELL_COMMANDS:
-            types = ("chat", "command", "done") if allow_chat else ("command", "done")
+            types = (
+                ("chat", "command", "done", "observe")
+                if allow_chat
+                else ("command", "done", "observe")
+            )
             return types, message_types if allow_chat else ("none", "final"), False
         if command in {"vim", "vi"}:
             types = (
