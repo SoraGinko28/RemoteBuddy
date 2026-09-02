@@ -1123,6 +1123,11 @@ class InteractiveRunner:
             ):
                 continue
             relevant.append(event)
+        # Reconstructed initial/resume context can otherwise include every
+        # non-screen event since seq 0. Keep the newest bounded slice so the
+        # prompt does not grow without limit while history is also included.
+        if len(relevant) > HISTORY_EVENT_LIMIT:
+            relevant = relevant[-HISTORY_EVENT_LIMIT:]
         screen = self.store.latest_screen() or {}
         screen_data = screen.get("data", {}) if isinstance(screen, dict) else {}
         # Stateless Responses requests need bounded history every time. A

@@ -1372,6 +1372,11 @@ function bind() {
     const message = el.message_input.value.trim();
     if (!message) return;
     el.send_message_button.disabled = true;
+    // Sending a message is a live action: leave playback/free-scroll mode
+    // so the user's own text and the agent's next response are visible.
+    state.followLive = true;
+    state.chatFollow = true;
+    state.playbackIndex = state.timeline.length - 1;
     try {
       const payload = { message, delivery: selectedDeliveryMode() };
       if (state.references.length) payload.references = state.references;

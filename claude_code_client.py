@@ -756,8 +756,9 @@ class ClaudeCodeBackend:
             with self._condition:
                 if self._turn_id is None:
                     return
-                if message.get("is_error") and self._turn_action is None:
-                    error = message.get("subtype") or message.get("result") or "Claude Code turn failed"
+                is_error = message.get("is_error") is True or str(message.get("is_error")).lower() == "true"
+                if is_error and self._turn_action is None:
+                    error = message.get("result") or message.get("subtype") or "Claude Code turn failed"
                     self._turn_protocol_error = self._redact(str(error))[:500]
                     self._turn_result_seen = True
                 elif self._turn_action is not None:
