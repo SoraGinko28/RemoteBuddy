@@ -1450,8 +1450,12 @@ function bind() {
   document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
   document.addEventListener("pointerdown", (event) => {
-    if (!el.selection_menu.contains(event.target)) {
-      hideSelectionMenu();
+    if (el.selection_menu.contains(event.target)) return;
+    hideSelectionMenu();
+    // Do not clear the browser selection when the user is clicking inside a
+    // selectable source. Double/triple-click selection depends on the browser
+    // preserving and extending the previous selection across rapid clicks.
+    if (!sourceRootFromNode(event.target)) {
       clearBrowserSelection();
     }
   });
