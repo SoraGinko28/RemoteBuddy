@@ -233,6 +233,8 @@ class MeetingWebService:
         runner_factory: Callable[..., InteractiveRunner] = InteractiveRunner,
         client_factory: Optional[Callable[[ModelApiConfig], AgentBackend]] = None,
         transport_factory: Callable[[str], TmuxTransport] = TmuxTransport,
+        default_backend: Optional[str] = None,
+        default_provider: Optional[str] = None,
     ) -> None:
         self.project_root = project_root.expanduser().resolve()
         self.model_api_path = (model_api_path or self.project_root / "model_api").expanduser().resolve()
@@ -243,6 +245,8 @@ class MeetingWebService:
         self.runner_factory = runner_factory
         self.client_factory = client_factory
         self.transport_factory = transport_factory
+        self.default_backend = default_backend
+        self.default_provider = default_provider
         self.csrf_token = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
@@ -683,8 +687,8 @@ class MeetingWebService:
         if not isinstance(meeting_id, str) or not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
         config = self._load_config()
-        backend = payload.get("agent_backend", config.agent_backend)
-        provider = payload.get("agent_provider", config.agent_provider)
+        backend = payload.get("agent_backend", self.default_backend or config.agent_backend)
+        provider = payload.get("agent_provider", self.default_provider or config.agent_provider)
         backend, provider = self._validate_backend_pair(backend, provider)
         model = payload.get("model") or None
         if model is not None and (not isinstance(model, str) or not MODEL_RE.fullmatch(model)):
@@ -1202,6 +1206,11 @@ class MeetingWebService:
         selected_key: Optional[str] = None
         try:
             config = self._apply_overrides(ModelApiConfig.load(self.model_api_path))
+            if self.default_backend:
+                config = config.resolve(
+                    self.default_backend,
+                    self.default_provider or config.agent_provider,
+                )
             selected_key = f"{config.agent_backend}/{config.agent_provider}"
             checks.append(
                 {
@@ -1492,11 +1501,55 @@ def build_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, service: Op
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import argparse
 
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = list(argv)
+
+    # Also accept the convenient ``harness=claude`` spelling.
+    normalized: List[str] = []
+    harness_value: Optional[str] = None
+    for arg in argv:
+        if arg.startswith("harness="):
+            if harness_value is not None:
+                raise SystemExit("harness= may be specified only once")
+            harness_value = arg.split("=", 1)[1]
+        else:
+            normalized.append(arg)
+
     parser = argparse.ArgumentParser(description="Run the RemoteBuddy v2 workspace service")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    args = parser.parse_args(argv)
-    server = build_server(args.host, args.port)
+    parser.add_argument(
+        "--harness",
+        default=None,
+        help="Default harness for new sessions: claude, responses, or codex",
+    )
+    args = parser.parse_args(normalized)
+    if harness_value is not None:
+        if args.harness is not None:
+            raise SystemExit("harness= and --harness cannot be used together")
+        args.harness = harness_value
+
+    default_backend: Optional[str] = None
+    default_provider: Optional[str] = None
+    if args.harness:
+        aliases = {
+            "claude": ("claude-code", "deepseek"),
+            "claude-code": ("claude-code", "deepseek"),
+            "responses": ("responses", "openai"),
+            "codex": ("codex-app-server", "openai"),
+            "codex-app-server": ("codex-app-server", "openai"),
+        }
+        pair = aliases.get(args.harness)
+        if pair is None:
+            parser.error("--harness must be one of: claude, responses, codex")
+        default_backend, default_provider = pair
+
+    service = MeetingWebService(
+        default_backend=default_backend,
+        default_provider=default_provider,
+    )
+    server = build_server(args.host, args.port, service=service)
     print(f"RemoteBuddy workspace: http://{args.host}:{args.port}/", flush=True)
     try:
         server.serve_forever()
