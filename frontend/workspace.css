@@ -97,7 +97,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .chat-list { min-height: 0; overflow-y: auto; padding: 16px; background: #fbfcfb; }
 .message { margin: 0 0 16px; max-width: 92%; }
 .message.human { margin-left: auto; }
-.message-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.message-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; user-select: none; -webkit-user-select: none; }
 .message-head strong { font-size: 11px; }
 .message-head time { margin-left: auto; color: var(--muted); font-size: 9px; }
 .message-type { padding: 2px 5px; border-radius: 3px; background: #e8ebe8; color: var(--muted); font-size: 9px; }
