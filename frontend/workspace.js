@@ -1482,6 +1482,10 @@ function bind() {
     });
     container.addEventListener("pointerup", (event) => scheduleSelectionMenu(event.detail || 1));
     container.addEventListener("mouseup", (event) => scheduleSelectionMenu(event.detail || 1));
+    container.addEventListener("click", (event) => {
+      console.log("[event-debug] click detail=", event.detail, "target=", event.target?.className || event.target?.nodeName);
+      scheduleSelectionMenu(event.detail || 1);
+    });
     container.addEventListener("touchend", () => setTimeout(scheduleSelectionMenu, 70), { passive: true });
     container.addEventListener("focusin", handleSourceFocus);
     container.addEventListener("keydown", handleKeyboardSelection);
