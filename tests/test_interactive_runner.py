@@ -445,12 +445,12 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertTrue(self.transport.tokens)
         self.assertEqual(("chat",), client.calls[0][3]["allowed_types"])
         self.assertEqual(
-            ("command", "done", "observe"),
+            ("command", "done", "observe", "keystrokes"),
             client.calls[1][3]["allowed_types"],
         )
         self.assertEqual(("none", "final"), client.calls[1][3]["allowed_message_types"])
         self.assertEqual(
-            ("chat", "vim_keys", "observe"),
+            ("chat", "vim_keys", "keystrokes", "observe"),
             client.calls[2][3]["allowed_types"],
         )
         self.assertIn("Be specific.", client.calls[0][1])
@@ -509,7 +509,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual("command", rejected[0]["data"]["action"]["type"])
         self.assertEqual(5, len(client.calls))
         self.assertEqual(
-            ("chat", "vim_keys", "observe"),
+            ("chat", "vim_keys", "keystrokes", "observe"),
             client.calls[3][3]["allowed_types"],
         )
 
@@ -540,7 +540,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         ).start()
         self.assertEqual(
-            ("vim_keys", "observe"),
+            ("vim_keys", "keystrokes", "observe"),
             client.calls[4][3]["allowed_types"],
         )
         self.assertEqual(("none",), client.calls[4][3]["allowed_message_types"])
@@ -931,7 +931,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         with mock.patch("interactive_runner.time.monotonic", return_value=101.0):
             allowed_types, _, budget_final = runner._phase_constraints()
-        self.assertEqual(("chat", "command", "done", "observe"), allowed_types)
+        self.assertEqual(("chat", "command", "done", "observe", "keystrokes"), allowed_types)
         self.assertFalse(budget_final)
 
     def test_first_cycle_action_requires_ack_before_questions_or_terminal_actions(self):

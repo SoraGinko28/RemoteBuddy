@@ -576,23 +576,23 @@ class InteractiveRunner:
         allow_chat = not self._last_action_was_chat
         if command in SHELL_COMMANDS:
             types = (
-                ("chat", "command", "done", "observe")
+                ("chat", "command", "done", "observe", "keystrokes")
                 if allow_chat
-                else ("command", "done", "observe")
+                else ("command", "done", "observe", "keystrokes")
             )
             return types, message_types if allow_chat else ("none", "final"), False
         if command in {"vim", "vi"}:
             types = (
-                ("chat", "vim_keys", "observe")
+                ("chat", "vim_keys", "keystrokes", "observe")
                 if allow_chat
-                else ("vim_keys", "observe")
+                else ("vim_keys", "keystrokes", "observe")
             )
             return types, message_types if allow_chat else ("none",), False
         if command.startswith("python"):
             types = (
-                ("chat", "terminal_keys", "observe")
+                ("chat", "terminal_keys", "keystrokes", "observe")
                 if allow_chat
-                else ("terminal_keys", "observe")
+                else ("terminal_keys", "keystrokes", "observe")
             )
             return types, message_types if allow_chat else ("none",), False
         if command:
@@ -600,9 +600,9 @@ class InteractiveRunner:
             # the Agent may type into it (including C-c) or observe, keeping
             # every interaction inside the shared pane.
             types = (
-                ("chat", "terminal_keys", "observe")
+                ("chat", "terminal_keys", "keystrokes", "observe")
                 if allow_chat
-                else ("terminal_keys", "observe")
+                else ("terminal_keys", "keystrokes", "observe")
             )
             return types, message_types if allow_chat else ("none",), False
         types = ("chat", "observe") if allow_chat else ("observe",)
@@ -1124,6 +1124,23 @@ class InteractiveRunner:
                     action_id=action_id,
                     profile=profile,
                     context="python",
+                    interrupt_check=interrupt_check,
+                )
+            elif action.type == "keystrokes":
+                # Unified low-level keystroke DSL. It is allowed in the shell,
+                # Vim, Python, or any foreground program; the model is
+                # responsible for producing safe, human-like input sequences.
+                send_tokens_with_captures(
+                    self.store,
+                    self.transport,
+                    pane_id,
+                    action.keys,
+                    min(self.action_settle_seconds, 0.05),
+                    self.typing_interval_seconds,
+                    meeting_id=self.store.meeting.meeting_id,
+                    action_id=action_id,
+                    profile=profile,
+                    context="keystrokes",
                     interrupt_check=interrupt_check,
                 )
             else:

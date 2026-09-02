@@ -317,6 +317,36 @@ class AgentActionTest(unittest.TestCase):
             actual_newline.keys,
         )
 
+    def test_keystroke_dsl_is_normalized_to_key_tokens(self):
+        action = AgentAction.from_dict(
+            action_payload(
+                type="keystrokes",
+                message_type="none",
+                content="",
+                keys=[
+                    "$text echo ",
+                    "$text '",
+                    "$text 1",
+                    "$text '",
+                    "$ctrl Left",
+                    "$text  ",
+                    "$ctrl Enter",
+                ],
+            )
+        )
+        self.assertEqual(
+            (
+                {"kind": "literal", "value": "echo "},
+                {"kind": "literal", "value": "'"},
+                {"kind": "literal", "value": "1"},
+                {"kind": "literal", "value": "'"},
+                {"kind": "key", "value": "Left"},
+                {"kind": "literal", "value": " "},
+                {"kind": "key", "value": "Enter"},
+            ),
+            action.keys,
+        )
+
     def test_schema_can_force_first_ack_or_question(self):
         schema = action_json_schema(("chat",), ("ack", "question"))
         variants = schema["properties"]["action"]["anyOf"]

@@ -898,6 +898,9 @@ class ClaudeCodeBackend:
             + "- Do not emit prose, call any other tool, create subagents, or inspect files directly.\n"
             + "- After the tool returns successfully, end the current turn and wait for the next observation.\n"
             + "- If the tool rejects an action, correct it using the rejection and retry at most twice.\n"
+            + "- For terminal input, prefer the `keystrokes` action. Its `keys` array accepts the DSL "
+            + "`$text <literal text>` and `$ctrl <named key>`. Send quotes/brackets as explicit paired "
+            + "keystrokes (e.g. `$text \"`, then later `$text \"`) instead of dumping one whole line.\n"
         )
 
     def _redact(self, text: str) -> str:

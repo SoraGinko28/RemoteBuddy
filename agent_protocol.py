@@ -19,7 +19,7 @@ SPECIAL_KEYS = {
     "Delete",
     "C-c",
 }
-ACTION_TYPES = {"chat", "command", "vim_keys", "terminal_keys", "observe", "done"}
+ACTION_TYPES = {"chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done"}
 REFERENCE_KINDS = {"chat", "screen"}
 # Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
 MAX_ACTION_REFERENCES = 32
@@ -187,7 +187,7 @@ class AgentAction:
                     raise AgentProtocolError("a bash command line does not accept a separate path")
             if keys or delay_ms:
                 raise AgentProtocolError("command has unrelated fields")
-        elif action_type in {"vim_keys", "terminal_keys"}:
+        elif action_type in {"vim_keys", "terminal_keys", "keystrokes"}:
             if message_type != "none" or content or command != "none" or path or delay_ms:
                 raise AgentProtocolError(f"{action_type} has unrelated fields")
             validate_key_tokens(keys)
@@ -487,15 +487,31 @@ def validate_key_tokens(tokens: Sequence[Any]) -> None:
 
 
 def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
-    """Recover a common schema mistake without widening the key allowlist.
+    """Normalize key tokens and the ``$text`` / ``$ctrl`` keystroke DSL.
 
-    Some compatible Responses gateways occasionally label a printable Vim
-    character (for example ``i``) as a named key. A single printable character
-    is always safe to send literally; multi-character or control-like key names
-    remain subject to the strict special-key allowlist.
+    The DSL has two forms:
+
+    - ``"$text hello"``  -> send the literal text ``hello``
+    - ``"$ctrl Left"``   -> send the control/named key ``Left``
+
+    Printable single-character keys are also accepted as ordinary key tokens.
     """
     normalized = []
     for token in tokens:
+        if isinstance(token, str):
+            if token.startswith("$text "):
+                text = token[len("$text "):]
+                if text:
+                    normalized.append({"kind": "literal", "value": text})
+                continue
+            if token.startswith("$ctrl "):
+                key = token[len("$ctrl "):]
+                normalized.append({"kind": "key", "value": key})
+                continue
+            # A bare string is still convenient for plain text.
+            if token:
+                normalized.append({"kind": "literal", "value": token})
+            continue
         if not isinstance(token, dict):
             normalized.append(token)
             continue
@@ -660,7 +676,7 @@ def action_json_schema(
     allowed_message_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     action_types = list(
-        allowed_types or ("chat", "command", "vim_keys", "terminal_keys", "observe", "done")
+        allowed_types or ("chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done")
     )
     message_types = set(
         allowed_message_types or ("none", "ack", "progress", "question", "final")
@@ -691,6 +707,11 @@ def action_json_schema(
                     "kind": {"type": "string", "enum": ["key"]},
                     "value": {"type": "string", "enum": sorted(SPECIAL_KEYS)},
                 },
+            },
+            {
+                "type": "string",
+                "pattern": r"^\$text [^\r\n\u0000]+$|^\$ctrl (?:Enter|Escape|Tab|Up|Down|Left|Right|Backspace|Delete|C-c)$",
+                "description": "Keystroke DSL: $text sends literal text, $ctrl sends a named key.",
             },
         ]
     }
@@ -812,6 +833,8 @@ def action_json_schema(
         variants.append(branch("vim_keys", ("none",), ("none",), keys=True))
     if "terminal_keys" in action_types and "none" in message_types:
         variants.append(branch("terminal_keys", ("none",), ("none",), keys=True))
+    if "keystrokes" in action_types and "none" in message_types:
+        variants.append(branch("keystrokes", ("none",), ("none",), keys=True))
     if "observe" in action_types and "none" in message_types:
         variants.append(
             branch(
