@@ -943,13 +943,36 @@ function selectionCandidate() {
     const range = selection.getRangeAt(0);
     const startRoot = sourceRootFromNode(range.startContainer);
     const endRoot = sourceRootFromNode(range.endContainer);
-    if (!startRoot || startRoot !== endRoot) return null;
-    const source = sourceEventForRoot(startRoot);
+    const root = startRoot || endRoot;
+    if (!root) return null;
+    if (startRoot && endRoot && startRoot !== endRoot) return null;
+    const source = sourceEventForRoot(root);
     if (!source) return null;
-    const offsets = selectionOffsets(startRoot, selection);
-    if (!offsets) return null;
+    const content = root.textContent || "";
+    const length = codePointLength(content);
+    let start;
+    let end;
+    if (startRoot && endRoot) {
+      const offsets = selectionOffsets(root, selection);
+      if (!offsets) return null;
+      start = offsets.start;
+      end = offsets.end;
+    } else if (startRoot && !endRoot) {
+      // Selection starts inside this message and spills past its end; clamp to
+      // the end of the message content.
+      start = textOffsetFromPoint(root, range.startContainer, range.startOffset);
+      end = length;
+    } else {
+      // Selection starts before this message and ends inside it; clamp to the
+      // beginning of the message content.
+      start = 0;
+      end = textOffsetFromPoint(root, range.endContainer, range.endOffset);
+    }
+    if (start === null || end === null || start < 0 || end > length || end <= start) return null;
+    const excerpt = codePointSlice(content, start, end);
+    if (!excerpt.trim()) return null;
     const rect = range.getBoundingClientRect();
-    return { ...offsets, kind: source.kind, event_id: source.event_id, root: startRoot, rect };
+    return { start, end, excerpt, kind: source.kind, event_id: source.event_id, root, rect };
   } catch (_error) {
     return null;
   }
@@ -1490,8 +1513,12 @@ function bind() {
   document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
   document.addEventListener("pointerdown", (event) => {
-    if (!el.selection_menu.contains(event.target)) {
-      hideSelectionMenu();
+    if (el.selection_menu.contains(event.target)) return;
+    hideSelectionMenu();
+    // Do not clear the browser selection when the user is clicking inside a
+    // selectable source. Double/triple-click selection depends on the browser
+    // preserving and extending the previous selection across rapid clicks.
+    if (!sourceRootFromNode(event.target)) {
       clearBrowserSelection();
     }
   });
