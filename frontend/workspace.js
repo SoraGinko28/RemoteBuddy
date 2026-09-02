@@ -46,6 +46,7 @@ const state = {
   pendingSelection: null,
   selectionBusy: false,
   selectionTimer: null,
+  selectionMenuDelay: 0,
   keyboardSelection: null,
   evaluationSelection: null,
   evaluationBusy: false,
@@ -991,8 +992,17 @@ function showSelectionMenu(candidate) {
   requestAnimationFrame(() => positionSelectionMenu(candidate));
 }
 
-function scheduleSelectionMenu() {
+function scheduleSelectionMenu(clickCount = 1) {
+  // A double-click may be the first two clicks of a triple-click. Wait a bit
+  // after double-click so the third click can replace the word selection with
+  // the paragraph selection instead of being blocked by an early menu.
+  const delay = clickCount >= 3 ? 60 : (clickCount === 2 ? 350 : 45);
+  // selectionchange events do not know the click count. If a pointerup has
+  // already scheduled a longer double-click delay, do not let the later
+  // selectionchange shorten it and pop the menu before a possible third click.
+  if (state.selectionTimer !== null && delay < state.selectionMenuDelay) return;
   clearTimeout(state.selectionTimer);
+  state.selectionMenuDelay = delay;
   // While the primary button is held the user is still dragging a selection;
   // the menu must only appear after release (pointerup/mouseup/touchend).
   if (state.pointerSelecting) {
@@ -1001,11 +1011,12 @@ function scheduleSelectionMenu() {
   }
   state.selectionTimer = setTimeout(() => {
     state.selectionTimer = null;
+    state.selectionMenuDelay = 0;
     if (state.selectionBusy || state.pointerSelecting) return;
     const candidate = selectionCandidate();
     if (candidate) showSelectionMenu(candidate);
     else hideSelectionMenu();
-  }, 45);
+  }, delay);
 }
 
 function openEvaluationPanel(candidate) {
@@ -1423,18 +1434,18 @@ function bind() {
     container.addEventListener("pointerdown", (event) => {
       if (event.button === 0) state.pointerSelecting = true;
     });
-    container.addEventListener("pointerup", scheduleSelectionMenu);
-    container.addEventListener("mouseup", scheduleSelectionMenu);
+    container.addEventListener("pointerup", (event) => scheduleSelectionMenu(event.detail || 1));
+    container.addEventListener("mouseup", (event) => scheduleSelectionMenu(event.detail || 1));
     container.addEventListener("touchend", () => setTimeout(scheduleSelectionMenu, 70), { passive: true });
     container.addEventListener("focusin", handleSourceFocus);
     container.addEventListener("keydown", handleKeyboardSelection);
   }
   // Release anywhere (even outside the containers) ends the drag; re-evaluate
   // the selection once so the menu appears exactly at mouse release.
-  document.addEventListener("pointerup", () => {
+  document.addEventListener("pointerup", (event) => {
     if (!state.pointerSelecting) return;
     state.pointerSelecting = false;
-    scheduleSelectionMenu();
+    scheduleSelectionMenu(event.detail || 1);
   });
   document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
