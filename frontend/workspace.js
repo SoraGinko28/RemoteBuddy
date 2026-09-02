@@ -928,14 +928,41 @@ function selectionCandidate() {
     const range = selection.getRangeAt(0);
     const startRoot = sourceRootFromNode(range.startContainer);
     const endRoot = sourceRootFromNode(range.endContainer);
-    if (!startRoot || startRoot !== endRoot) return null;
+    if (!startRoot || startRoot !== endRoot) {
+      console.log("[candidate-null] root mismatch", {
+        start: debugSelectionNode(range.startContainer),
+        end: debugSelectionNode(range.endContainer),
+        startRoot: startRoot ? debugSelectionNode(startRoot) : null,
+        endRoot: endRoot ? debugSelectionNode(endRoot) : null,
+      });
+      return null;
+    }
     const source = sourceEventForRoot(startRoot);
-    if (!source) return null;
+    if (!source) {
+      console.log("[candidate-null] no source", { root: debugSelectionNode(startRoot) });
+      return null;
+    }
     const offsets = selectionOffsets(startRoot, selection);
-    if (!offsets) return null;
+    if (!offsets) {
+      const content = startRoot.textContent || "";
+      const start = textOffsetFromPoint(startRoot, range.startContainer, range.startOffset);
+      const end = textOffsetFromPoint(startRoot, range.endContainer, range.endOffset);
+      console.log("[candidate-null] offsets failed", {
+        root: debugSelectionNode(startRoot),
+        startContainer: debugSelectionNode(range.startContainer),
+        startOffset: range.startOffset,
+        endContainer: debugSelectionNode(range.endContainer),
+        endOffset: range.endOffset,
+        contentLength: codePointLength(content),
+        start,
+        end,
+      });
+      return null;
+    }
     const rect = range.getBoundingClientRect();
     return { ...offsets, kind: source.kind, event_id: source.event_id, root: startRoot, rect };
-  } catch (_error) {
+  } catch (error) {
+    console.log("[candidate-null] exception", error);
     return null;
   }
 }
