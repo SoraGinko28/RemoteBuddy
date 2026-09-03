@@ -325,7 +325,10 @@ function renderHeader() {
 }
 
 function visibleChats() {
-  return eventsAtPlayback().filter((event) => {
+  // The chat transcript is never clipped by the terminal playback cursor:
+  // the scrubber replays screens, while the conversation stays fully
+  // readable both before and after the current point.
+  return state.timeline.filter((event) => {
     if (event.kind !== "chat") return false;
     if (state.chatFilter === "result") return ["request", "question", "final"].includes(event.message_type);
     if (state.chatFilter === "progress") return ["ack", "progress"].includes(event.message_type);
@@ -537,12 +540,21 @@ function renderChat() {
   const previousScrollTop = el.chat_list.scrollTop;
   const replayReference = scoreReferenceAtPlayback();
   let replayTarget = null;
+  let cursorArticle = null;
+  // Playback chat cursor: the transcript is never clipped, but during
+  // playback the last message at or before the current replay point is
+  // marked so the reader (and follow-scroll) always know where the replay
+  // stands inside the full conversation.
+  const chatCursorSeq = state.followLive ? Number.POSITIVE_INFINITY : playbackSequence();
   state.renderingChat = true;
   try {
     el.chat_list.replaceChildren();
     const chats = visibleChats();
-    // One pass over the visible events serves every message's annotations.
-    const visibleScores = eventsAtPlayback().filter((event) => event.kind === "score");
+    // Score overlays annotate the transcript wherever the evaluation marker
+    // lives; chat text stays annotated regardless of the playback cursor.
+    const visibleScores = state.timeline.filter(
+      (event) => event.kind === "score" && state.scoreOverlayIds.has(event.event_id),
+    );
     for (const event of chats) {
       const article = node("article", `message ${event.actor}`);
       article.dataset.eventId = event.event_id || "";
@@ -594,15 +606,41 @@ function renderChat() {
         article.append(quote);
       });
       el.chat_list.append(article);
+      const eventSequence = Number(event.seq);
+      if (
+        !state.followLive
+        && Number.isFinite(eventSequence)
+        && eventSequence <= chatCursorSeq
+      ) {
+        cursorArticle = article;
+      }
     }
-    if (!chats.length) el.chat_list.append(node("div", "empty-chat", "这个回放位置还没有聊天消息"));
+    let cursorDivider = null;
+    if (!state.followLive && cursorArticle) {
+      cursorDivider = node("div", "chat-playback-cursor");
+      cursorDivider.append(node("span", "", "▶ 播放到此处"));
+      cursorArticle.insertAdjacentElement("afterend", cursorDivider);
+    }
+    if (!chats.length) el.chat_list.append(node("div", "empty-chat", "还没有聊天消息"));
     if (replayTarget) {
       const listRect = el.chat_list.getBoundingClientRect();
       const targetRect = replayTarget.getBoundingClientRect();
       const targetTop = el.chat_list.scrollTop + targetRect.top - listRect.top;
       el.chat_list.scrollTop = Math.max(0, targetTop - (el.chat_list.clientHeight - targetRect.height) / 2);
     } else if (state.chatFollow) {
-      el.chat_list.scrollTop = el.chat_list.scrollHeight;
+      if (state.followLive || !cursorDivider) {
+        el.chat_list.scrollTop = el.chat_list.scrollHeight;
+      } else {
+        // Keep the playback cursor line pinned near the bottom while the
+        // transcript keeps scrolling above it as the replay advances.
+        const listRect = el.chat_list.getBoundingClientRect();
+        const dividerRect = cursorDivider.getBoundingClientRect();
+        const dividerTop = el.chat_list.scrollTop + dividerRect.top - listRect.top;
+        el.chat_list.scrollTop = Math.max(
+          0,
+          dividerTop + dividerRect.height + 16 - el.chat_list.clientHeight,
+        );
+      }
     } else {
       const maxScroll = Math.max(0, el.chat_list.scrollHeight - el.chat_list.clientHeight);
       el.chat_list.scrollTop = Math.min(previousScrollTop, maxScroll);
@@ -1621,8 +1659,15 @@ function bind() {
   });
   el.chat_list.addEventListener("scroll", () => {
     if (state.renderingChat) return;
-    const remaining = el.chat_list.scrollHeight - el.chat_list.clientHeight - el.chat_list.scrollTop;
-    state.chatFollow = remaining <= 12;
+    if (state.followLive) {
+      // Live transcript: pinned means near the newest message at the bottom.
+      const remaining = el.chat_list.scrollHeight - el.chat_list.clientHeight - el.chat_list.scrollTop;
+      state.chatFollow = remaining <= 12;
+    } else {
+      // Playback: any manual scroll pauses following the playback cursor;
+      // pressing play, scrubbing the timeline, or the follow button re-pins.
+      state.chatFollow = false;
+    }
   }, { passive: true });
   el.free_scroll_button.addEventListener("click", () => setViewportMode("free"));
   el.follow_scroll_button.addEventListener("click", () => setViewportMode("follow"));
@@ -1631,7 +1676,9 @@ function bind() {
   el.playback_slider.addEventListener("pointercancel", hidePlaybackHover);
   el.playback_slider.addEventListener("input", () => {
     state.scoreOverlayIds.clear();
+    hidePlaybackHover();
     state.followLive = false;
+    state.chatFollow = true;
     state.playbackIndex = Number(el.playback_slider.value);
     stopLiveScreenQueue();
     stopPlayback();
@@ -1641,6 +1688,7 @@ function bind() {
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
     state.followLive = true;
+    state.chatFollow = true;
     state.playbackIndex = state.timeline.length - 1;
     stopLiveScreenQueue();
     stopPlayback();
@@ -1650,6 +1698,7 @@ function bind() {
     if (state.playing) { stopPlayback(); return; }
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
+    state.chatFollow = true;
     stopLiveScreenQueue();
     state.playing = true;
     state.followLive = false;
