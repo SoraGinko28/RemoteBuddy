@@ -1376,6 +1376,16 @@ function textTokens(value) {
 function bind() {
   el.new_button.addEventListener("click", openNewDialog);
   el.welcome_new_button.addEventListener("click", openNewDialog);
+  const railNew = document.getElementById("rail-new-button");
+  const railMore = document.getElementById("rail-more-button");
+  const appShell = document.querySelector(".app-shell");
+  if (railNew) railNew.addEventListener("click", openNewDialog);
+  if (railMore && appShell) {
+    railMore.addEventListener("click", () => appShell.classList.toggle("sidebar-open"));
+  }
+  document.querySelector(".workspace-main")?.addEventListener("pointerdown", () => {
+    appShell?.classList.remove("sidebar-open");
+  });
   el.settings_button.addEventListener("click", openSettingsDialog);
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
