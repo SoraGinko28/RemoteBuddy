@@ -249,7 +249,11 @@ function renderHeader() {
   el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
   el.status_badge.dataset.status = meeting.status;
   el.owner_badge.textContent = labels.owner[meeting.control_owner] || meeting.control_owner;
-  el.session_meta.textContent = `${labels.status[meeting.status] || meeting.status} · ${labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI"}`;
+  const errorPhases = ["api_error", "cycle_timeout", "failed"];
+  const topStatus = errorPhases.includes(meeting.phase)
+    ? (labels.phase[meeting.phase] || meeting.phase)
+    : (labels.status[meeting.status] || meeting.status);
+  el.session_meta.textContent = `${topStatus} · ${labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI"}`;
   const failure = typeof meeting.failure === "string" ? meeting.failure.trim() : "";
   el.failure_message.textContent = failure;
   el.failure_message.hidden = !failure || !["api_error", "cycle_timeout", "failed"].includes(meeting.phase);
