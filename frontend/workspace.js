@@ -923,7 +923,9 @@ const takeoverStream = {
   flushTimer: null,
   flushing: false,
   lastFlushErrorAt: 0,
-  onDataHandler: null,
+  keyHandler: null,
+  compositionHandler: null,
+  pasteHandler: null,
 };
 
 function decodeBase64(text) {
@@ -988,6 +990,101 @@ function takeoverGrid(engine) {
   return { cols, rows };
 }
 
+const takeoverKeymap = {
+  Enter: "\r",
+  Backspace: "\x7f",
+  Tab: "\t",
+  Escape: "\x1b",
+  ArrowUp: "\x1b[A",
+  ArrowDown: "\x1b[B",
+  ArrowRight: "\x1b[C",
+  ArrowLeft: "\x1b[D",
+  Home: "\x1b[H",
+  End: "\x1b[F",
+  Insert: "\x1b[2~",
+  Delete: "\x1b[3~",
+  PageUp: "\x1b[5~",
+  PageDown: "\x1b[6~",
+};
+
+// Keys we own while takeover is live. xterm's own keyboard path is disabled
+// (disableStdin) because several of its handlers can each emit the same key;
+// every physical key must reach the pane exactly once. Returns bytes or null
+// when the browser should keep the event (meta shortcuts, IME, modifiers).
+function takeoverKeyBytes(event) {
+  if (event.metaKey || event.altKey) return null;
+  if (event.ctrlKey) {
+    const key = event.key.toLowerCase();
+    if (key.length === 1 && key >= "a" && key <= "z") {
+      return String.fromCharCode(key.charCodeAt(0) - 96);
+    }
+    const extras = {
+      " ": "\x00", "[": "\x1b", "\\": "\x1c", "]": "\x1d",
+      "^": "\x1e", "_": "\x1f", "2": "\x00", "6": "\x1e",
+      "-": "\x1f", "/": "\x1f", "@": "\x00",
+    };
+    return Object.prototype.hasOwnProperty.call(extras, event.key) ? extras[event.key] : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(takeoverKeymap, event.key)) return takeoverKeymap[event.key];
+  if (event.key.length === 1) return event.key;
+  return null;
+}
+
+function takeoverInputInScreen(target) {
+  return Boolean(el.terminal_screen && target instanceof Node && el.terminal_screen.contains(target));
+}
+
+function bindTakeoverInput(engine) {
+  takeoverStream.keyHandler = (event) => {
+    if (!takeoverStream.active || !takeoverInputInScreen(event.target)) return;
+    if (event.isComposing || event.keyCode === 229) return; // IME composing
+    if (event.metaKey) return; // leave ⌘ shortcuts (copy/paste) alone
+    if (event.ctrlKey && event.shiftKey && ["c", "v"].includes(event.key.toLowerCase())) return;
+    if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "c") {
+      const term = activeTerm();
+      if (term && typeof term.hasSelection === "function" && term.hasSelection()) return; // copy, not SIGINT
+    }
+    const bytes = takeoverKeyBytes(event);
+    if (bytes === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    queueTakeoverInput(bytes);
+  };
+  takeoverStream.compositionHandler = (event) => {
+    if (!takeoverStream.active || !takeoverInputInScreen(event.target)) return;
+    if (event.type === "compositionend" && event.data) queueTakeoverInput(event.data);
+  };
+  takeoverStream.pasteHandler = (event) => {
+    if (!takeoverStream.active || !takeoverInputInScreen(event.target)) return;
+    const text = event.clipboardData ? event.clipboardData.getData("text/plain") : "";
+    if (!text) return;
+    event.preventDefault();
+    queueTakeoverInput(text);
+  };
+  for (const [type, handler] of [
+    ["keydown", takeoverStream.keyHandler],
+    ["compositionend", takeoverStream.compositionHandler],
+    ["paste", takeoverStream.pasteHandler],
+  ]) {
+    document.addEventListener(type, handler, true);
+  }
+  try { engine.focus(); } catch (_error) { /* no-op */ }
+}
+
+function unbindTakeoverInput() {
+  for (const [type, key] of [
+    ["keydown", "keyHandler"],
+    ["compositionend", "compositionHandler"],
+    ["paste", "pasteHandler"],
+  ]) {
+    const handler = takeoverStream[key];
+    if (handler) {
+      document.removeEventListener(type, handler, true);
+      takeoverStream[key] = null;
+    }
+  }
+}
+
 function startTerminalTakeover() {
   if (takeoverStream.active) return;
   // Measure the viewport grid on the CURRENT engine (its cell metrics are
@@ -999,7 +1096,10 @@ function startTerminalTakeover() {
   if (!engine) return;
   takeoverStream.active = true;
   stopLiveScreenQueue();
-  engine.options.disableStdin = false;
+  // xterm's own keyboard path stays OFF (disableStdin): multiple internal
+  // handlers could each emit the same key, doubling every character. We
+  // translate keys ourselves in document capture and send exactly once.
+  engine.options.disableStdin = true;
   engine.options.convertEol = false;
   // No browser-side scrollback during takeover: the viewport equals the
   // pane's own screen (which scrolls internally), and a vertical scrollbar
@@ -1008,10 +1108,7 @@ function startTerminalTakeover() {
   if (engine.cols !== grid.cols || engine.rows !== grid.rows) engine.resize(grid.cols, grid.rows);
   termRowsState = null;
   engine.reset();
-
-  const onData = (text) => { if (takeoverStream.active) queueTakeoverInput(text); };
-  takeoverStream.onDataHandler = onData;
-  try { engine.onData(onData); } catch (_error) { /* older xterm */ }
+  bindTakeoverInput(engine);
 
   const streamUrl = `/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/stream?cols=${grid.cols}&rows=${grid.rows}`;
   const source = new EventSource(streamUrl);
@@ -1074,7 +1171,7 @@ function stopTerminalTakeover(flushPending) {
   const source = takeoverStream.source;
   takeoverStream.source = null;
   if (source) source.close();
-  takeoverStream.onDataHandler = null;
+  unbindTakeoverInput();
   takeoverStream.inputHex = "";
   // Hand the terminal back to frame painting from a fresh instance so no
   // byte-stream cells can linger under the painted frames.
