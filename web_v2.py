@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from agent_protocol import AgentBackend
+from agent_protocol import (
+    AgentBackend,
+    AgentProtocolError,
+    normalize_model_key_tokens,
+    validate_key_tokens,
+)
 from codex_app_server_client import (
     CodexAppServerBackend,
     CodexAppServerError,
@@ -74,9 +79,6 @@ TERMINAL_STATUSES = {"completed", "failed", "interrupted"}
 # Phases from which the human can resume or wake the Agent. The frontend
 # mirrors this set for its resume-button predicate.
 RESUMABLE_PHASES = {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"}
-# Human terminal input is intentionally disabled while the shared workspace
-# screen is being validated. Agent actions still use the internal transport.
-HUMAN_TERMINAL_READ_ONLY = True
 DEFAULT_JUDGE_NAME = "human"
 MAX_JUDGE_NAME_BYTES = 200
 LOCAL_SETTINGS_PATH = ".remotebuddy/settings.local.json"
@@ -922,6 +924,11 @@ class MeetingWebService:
                     "request",
                     reference=references[0] if references else None,
                 )
+            if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
+                # A message sent while the human holds the terminal hands
+                # control back to the Agent with that instruction, exactly as
+                # if the human had clicked 交还 Agent and then chatted.
+                return self.release(meeting_id)
             if delivery == "interrupt" or wake_agent:
                 store.bump_request_generation(
                     failure=None,
@@ -976,8 +983,6 @@ class MeetingWebService:
             store = self.load_store(meeting_id)
             if store.meeting.status in TERMINAL_STATUSES:
                 raise WebError(409, "meeting is already finished")
-            if HUMAN_TERMINAL_READ_ONLY:
-                raise WebError(409, "terminal is temporarily read-only for human users")
             if store.meeting.control_owner == "human":
                 return store
             orphaned_agent = self._orphaned_agent(store, meeting_id)
@@ -1017,14 +1022,129 @@ class MeetingWebService:
         return store
 
     def terminal_input(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
-        del payload
+        """Deliver human keystrokes into the shared pane while the human owns it.
+
+        The keys array speaks the same keystroke DSL as the Agent
+        (``$text`` / ``$ctrl`` / ``$rest`` plus bare literal strings). The
+        human is deliberately free to type anywhere -- shell, Vim, a REPL, or
+        any foreground program -- so no process whitelist is enforced here.
+
+        Every keystroke re-checks ownership under the meeting lock, so the
+        burst is abandoned the moment the human releases, sends a chat
+        message, or stops the meeting -- a ``$rest`` pause never blocks those
+        control operations.
+        """
         with self._meeting_lock(meeting_id):
-            self.load_store(meeting_id)
-            # The human terminal is read-only for now. The execution body was
-            # removed while the feature is disabled; restore it from git
-            # history if HUMAN_TERMINAL_READ_ONLY ever becomes a runtime
-            # setting again.
-            raise WebError(403, "terminal is temporarily read-only for human users")
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                raise WebError(409, "meeting is already finished")
+            if (
+                store.meeting.control_owner != "human"
+                or store.meeting.phase != "human_control"
+            ):
+                raise WebError(409, "acquire terminal control before sending keys")
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"keys"}
+                or not isinstance(payload.get("keys"), list)
+                or not payload["keys"]
+            ):
+                raise WebError(400, "terminal input requires a non-empty keys array")
+            pane_id = store.meeting.pane_id
+            if not pane_id:
+                raise WebError(409, "workspace pane is not available")
+            try:
+                keys = normalize_model_key_tokens(payload["keys"])
+                validate_key_tokens(keys)
+            except (AgentProtocolError, TypeError, ValueError) as exc:
+                raise WebError(400, str(exc)) from exc
+            transport = self._transport()
+            action_id = "human-action-" + secrets.token_hex(6)
+            profile = store.meeting.typing_profile or "balanced"
+            store.append_event(
+                "action",
+                "human",
+                "human_control",
+                data={"action_id": action_id, "status": "received", "input": payload["keys"]},
+            )
+            store.append_event(
+                "action", "human", "human_control", data={"action_id": action_id, "status": "started"}
+            )
+
+        def owns_terminal(current: MeetingStore) -> bool:
+            return (
+                current.meeting.status not in TERMINAL_STATUSES
+                and current.meeting.control_owner == "human"
+                and current.meeting.phase == "human_control"
+            )
+
+        cancelled = False
+        try:
+            for index, token in enumerate(keys):
+                is_rest = token.get("kind") == "rest"
+                with self._meeting_lock(meeting_id):
+                    store = self.load_store(meeting_id)
+                    if not owns_terminal(store):
+                        cancelled = True
+                        break
+                    if not is_rest:
+                        transport.send_tokens(pane_id, [token])
+                if is_rest:
+                    time.sleep(int(token["value"]) / 1000.0)
+                    continue
+                time.sleep(0.05)
+                with self._meeting_lock(meeting_id):
+                    store = self.load_store(meeting_id)
+                    if not owns_terminal(store):
+                        cancelled = True
+                        break
+                    # Journal one typed frame per keystroke so the live view
+                    # paces human keys like Agent typing instead of treating
+                    # them as unknown slow frames.
+                    capture_workspace(
+                        store,
+                        transport,
+                        change_kind="typing",
+                        metadata={
+                            "typing_profile": profile,
+                            "typing_policy_version": "1",
+                            "action_id": action_id,
+                            "burst_index": index,
+                            "planned_delay_ms": 50,
+                            "input_context": "keystrokes",
+                        },
+                    )
+            if not cancelled:
+                with self._meeting_lock(meeting_id):
+                    store = self.load_store(meeting_id)
+                    if not owns_terminal(store):
+                        cancelled = True
+                    else:
+                        capture_workspace(store, transport)
+            with self._meeting_lock(meeting_id):
+                store = self.load_store(meeting_id)
+                store.append_event(
+                    "action",
+                    "human",
+                    "human_control",
+                    data={
+                        "action_id": action_id,
+                        "status": "cancelled" if cancelled else "completed",
+                        "remaining_characters": 0,
+                    },
+                )
+        except (RunnerError, TmuxError, OSError) as exc:
+            with self._meeting_lock(meeting_id):
+                store = self.load_store(meeting_id)
+                store.append_event(
+                    "action",
+                    "human",
+                    "human_control",
+                    content=str(exc),
+                    data={"action_id": action_id, "status": "rejected"},
+                )
+            raise WebError(422, str(exc)) from exc
+        return store
 
     def complete(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):

@@ -221,31 +221,76 @@ class MeetingWebServiceTest(unittest.TestCase):
             self.service.snapshot("profile-demo")["meeting"]["typing_profile"],
         )
 
-    def test_message_control_terminal_and_release(self):
-        store = self.start_meeting("control-demo")
-        original_generation = store.meeting.request_generation
-        self.service.message("control-demo", {"message": "Use README.md instead."})
-        self.wait_for_workers()
-        loaded = MeetingStore.load(self.root, "control-demo")
-        self.assertGreater(loaded.meeting.request_generation, original_generation)
-        self.assertEqual(0, loaded.meeting.cycle_action_count)
-        self.assertEqual("Use README.md instead.", loaded.chat_messages()[-1]["content"])
+    def test_acquire_terminal_keys_and_release_human_control(self):
+        self.start_meeting("control-demo")
+        acquired = self.service.acquire("control-demo")
+        self.assertEqual("human", acquired.meeting.control_owner)
+        self.assertEqual("human_control", acquired.meeting.phase)
 
-        loaded.update(phase="human_control", control_owner="human")
-        with self.assertRaises(WebError) as terminal_error:
-            self.service.terminal_input(
-                "control-demo", {"type": "command", "command": "pwd", "path": ""}
-            )
-        self.assertEqual(403, terminal_error.exception.status)
+        store = self.service.terminal_input(
+            "control-demo",
+            {"keys": ["$text git status", "$ctrl Enter", "$rest 20"]},
+        )
+        self.assertTrue(self.transport.tokens)
+        flattened = [token for (_pane, keys) in self.transport.tokens for token in keys]
+        self.assertEqual(
+            [{"kind": "literal", "value": "git status"}, {"kind": "key", "value": "Enter"}],
+            flattened,
+        )
+        events = store.events()
+        human_actions = [
+            event
+            for event in events
+            if event["kind"] == "action" and event["actor"] == "human"
+        ]
+        self.assertTrue(
+            any(event["data"].get("status") == "completed" for event in human_actions),
+            "human key actions must be journaled to completion",
+        )
+        # The pane was a plain bash shell, yet keys were allowed: human
+        # takeover is free-form, unlike the Agent's process-gated actions.
+        self.assertEqual("bash", self.transport.command)
+
+        released = self.service.release("control-demo")
+        self.assertEqual("agent", released.meeting.control_owner)
+        self.assertEqual("agent_thinking", released.meeting.phase)
+        self.wait_for_workers()
+        self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
+
+    def test_terminal_input_requires_human_control(self):
+        self.start_meeting("control-gate")
+        with self.assertRaises(WebError) as gate:
+            self.service.terminal_input("control-gate", {"keys": ["$text ls"]})
+        self.assertEqual(409, gate.exception.status)
+
+    def test_terminal_input_validates_keystroke_dsl(self):
+        self.start_meeting("control-validate")
+        self.service.acquire("control-validate")
+        with self.assertRaises(WebError) as short_rest:
+            self.service.terminal_input("control-validate", {"keys": ["$rest 5"]})
+        self.assertEqual(400, short_rest.exception.status)
         with self.assertRaises(WebError):
-            self.service.terminal_input(
-                "control-demo",
-                {"type": "command", "command": "vim", "path": "../outside"},
-            )
-
-        self.service.release("control-demo")
+            self.service.terminal_input("control-validate", {"keys": ["$ctrl Bogus"]})
+        with self.assertRaises(WebError):
+            self.service.terminal_input("control-validate", {"keys": []})
+        with self.assertRaises(WebError):
+            self.service.terminal_input("control-validate", {"kind": "keys", "keys": ["$text x"]})
+        self.service.release("control-validate")
         self.wait_for_workers()
-        self.assertFalse(RecordingRunner.instances[-1].resume_modes[-1])
+
+    def test_message_during_human_control_hands_back_and_resumes(self):
+        self.start_meeting("control-message")
+        self.service.acquire("control-message")
+        self.assertEqual(
+            "human",
+            MeetingStore.load(self.root, "control-message").meeting.control_owner,
+        )
+        store = self.service.message("control-message", {"message": "接管结束，继续改 README"})
+        self.assertEqual("agent", store.meeting.control_owner)
+        self.wait_for_workers()
+        self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
+        chats = MeetingStore.load(self.root, "control-message").chat_messages()
+        self.assertEqual("接管结束，继续改 README", chats[-1]["content"])
 
     def test_message_reference_is_derived_from_source_event(self):
         self.start_meeting("reference-demo")
@@ -322,9 +367,13 @@ class MeetingWebServiceTest(unittest.TestCase):
 
         loaded = MeetingStore.load(self.root, "restart-demo")
         loaded.update(phase="agent_thinking", control_owner="agent")
-        with self.assertRaises(WebError) as acquire_error:
-            restarted.acquire("restart-demo")
-        self.assertEqual(409, acquire_error.exception.status)
+        # A mid-turn meeting with no live worker is an orphaned Agent, so
+        # acquire hands the terminal over immediately instead of waiting.
+        store = restarted.acquire("restart-demo")
+        self.assertEqual("human", store.meeting.control_owner)
+        self.assertEqual("human_control", store.meeting.phase)
+        restarted.release("restart-demo")
+        self.wait_for_workers()
 
     def test_complete_retains_and_cleanup_or_stop_removes_session(self):
         self.start_meeting("complete-demo")

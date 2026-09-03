@@ -11,7 +11,7 @@ const el = Object.fromEntries([
   "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button", "terminal-controls",
   "terminal-copy-button", "terminal-copy-ansi-button",
-  "command-form", "command-select", "command-path", "vim-form", "vim-text", "process-input-label", "play-button",
+  "takeover-form", "takeover-input", "takeover-send-button", "takeover-hint", "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "settings-button", "settings-dialog", "settings-form", "judge-name-input", "save-settings", "close-settings", "cancel-settings", "settings-error", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
   "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
@@ -326,16 +326,38 @@ function renderHeader() {
   el.cleanup_button.hidden = !terminalState || meeting.session_state === "stopped";
   el.resume_button.hidden = !["api_error", "cycle_timeout", "waiting_for_user", "completion_proposed"].includes(meeting.phase) || terminalState;
   el.resume_button.textContent = meeting.phase === "completion_proposed" ? "继续工作" : "继续 Agent";
-  el.acquire_button.hidden = true;
-  el.release_button.hidden = meeting.control_owner !== "human";
-  el.terminal_controls.hidden = true;
-  const vimActive = ["vim", "vi"].includes(terminal.current_command);
-  const pythonActive = String(terminal.current_command || "").toLowerCase().startsWith("python");
-  const shellActive = ["bash", "zsh", "sh"].includes(terminal.current_command);
-  el.command_form.hidden = !shellActive;
-  el.vim_form.hidden = !(vimActive || pythonActive);
-  el.process_input_label.textContent = vimActive ? "Vim 输入" : "Python 输入";
-  document.querySelector(".key-row").hidden = !(vimActive || pythonActive);
+  const takeoverLive = meeting.control_owner === "human" && meeting.phase === "human_control";
+  const waitingHandoff = meeting.control_requested === "human" && meeting.control_owner !== "human";
+  const canAcquire = !terminalState && meeting.status === "running"
+    && ["agent_thinking", "agent_acting", "waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"].includes(meeting.phase);
+  el.acquire_button.hidden = terminalState || takeoverLive;
+  el.acquire_button.disabled = !canAcquire;
+  el.acquire_button.textContent = waitingHandoff ? "等待交权…" : "接管";
+  el.acquire_button.title = canAcquire ? "打断 Agent 并接管共享终端" : "";
+  el.release_button.hidden = !takeoverLive;
+  el.terminal_controls.hidden = !takeoverLive;
+  const terminalReadonly = el.terminal_readonly;
+  if (terminalReadonly) {
+    terminalReadonly.textContent = takeoverLive ? "已接管 · 可发按键" : "只读预览";
+    terminalReadonly.classList.toggle("takeover-live", takeoverLive);
+  }
+  const takeoverBlocked = !takeoverLive;
+  el.takeover_input.disabled = takeoverBlocked;
+  el.takeover_send_button.disabled = takeoverBlocked;
+  document.querySelectorAll("#terminal-controls .key-row button").forEach((button) => { button.disabled = takeoverBlocked; });
+  el.message_hint.textContent = takeoverLive
+    ? "接管中：发消息 = 交还控制权并让 Agent 继续"
+    : "Enter 发送 · Shift/⌘+Enter 换行 · 消息在下一个动作边界生效";
+  el.message_input.placeholder = takeoverLive
+    ? "接管中：输入消息会结束接管并交给 Agent…"
+    : "继续说明、纠正或打断 Agent…";
+  const takeoverVisible = !el.terminal_controls.hidden;
+  if (takeoverVisible !== takeoverPanelVisible) {
+    takeoverPanelVisible = takeoverVisible;
+    // The takeover panel changes the terminal's container height; let the
+    // layout settle, then re-measure so no bottom rows are clipped.
+    setTimeout(refitTerminal, 0);
+  }
 }
 
 function visibleChats() {
@@ -839,6 +861,23 @@ function ensureTerminalEngine() {
   }, 350);
   return term;
 }
+
+// Re-measure the real cell box and repaint when the terminal's container size
+// changes (window resize, or the takeover panel appearing/disappearing under
+// it). Row count is derived from the measured height, never hard-coded.
+function refitTerminal() {
+  if (!terminalEngine) return;
+  terminalEngine.term._cellHeight = null;
+  termRowsState = null;
+  state.terminalFrameKey = null;
+  renderTerminal();
+}
+
+// Tracks takeover-panel visibility between renders so the terminal refits
+// exactly when the panel appears or disappears (not on every poll).
+let takeoverPanelVisible = false;
+// Guards the takeover send path: one keystroke burst in flight at a time.
+let takeoverBusy = false;
 
 const TERMINAL_FONT_SIZE = 12;
 const TERMINAL_LINE_HEIGHT = 1.42;
@@ -1931,14 +1970,21 @@ function openSettingsDialog() {
   el.judge_name_input.select();
 }
 
-function textTokens(value) {
-  const lines = value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-  const tokens = [];
-  lines.forEach((line, index) => {
-    if (line) tokens.push({ kind: "literal", value: line });
-    if (index < lines.length - 1) tokens.push({ kind: "key", value: "Enter" });
-  });
-  return tokens;
+function takeoverLineItems(value) {
+  // One line = one keystroke item, exactly like the Agent keystroke DSL.
+  // Bare lines are literal text; nothing is auto-entered or auto-run. Blank
+  // lines are separators only and send nothing.
+  const items = [];
+  for (const raw of String(value).replace(/\r\n?/g, "\n").split("\n")) {
+    const line = raw.trim() ? raw : "";
+    if (!line) continue;
+    if (line.startsWith("$text ") || line.startsWith("$ctrl ") || line.startsWith("$rest ")) {
+      items.push(line);
+    } else {
+      items.push({ kind: "literal", value: line });
+    }
+  }
+  return items;
 }
 
 function bind() {
@@ -2064,36 +2110,44 @@ function bind() {
   el.terminal_copy_ansi_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalAnsiText || lastTerminalPlainText));
   // Refit the terminal when the window/panel size changes (DevTools dock,
   // pane resize), so rows are never clipped and the cursor stays visible.
-  window.addEventListener("resize", () => {
-    if (!terminalEngine) return;
-    terminalEngine.term._cellHeight = null;
-    termRowsState = null;
-    state.terminalFrameKey = null;
-    renderTerminal();
-  });
+  window.addEventListener("resize", () => refitTerminal());
   el.resume_button.addEventListener("click", () => postMeetingAction("agent/resume").catch((error) => toast(error.message)));
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
   el.cleanup_button.addEventListener("click", () => postMeetingAction("cleanup").catch((error) => toast(error.message)));
-  el.command_select.addEventListener("change", () => { el.command_path.disabled = el.command_select.value === "pwd"; });
-  el.command_form.addEventListener("submit", async (event) => {
+  el.takeover_form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    try { await postMeetingAction("terminal/input", { type: "command", command: el.command_select.value, path: el.command_select.value === "pwd" ? "" : el.command_path.value }); }
-    catch (error) { toast(error.message); }
-  });
-  el.vim_form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const keys = textTokens(el.vim_text.value);
+    if (takeoverBusy) return;
+    const keys = takeoverLineItems(el.takeover_input.value);
     if (!keys.length) return;
-    const current = state.snapshot?.latest_screen?.data?.current_command || "";
-    const inputType = String(current).toLowerCase().startsWith("python") ? "terminal_keys" : "vim_keys";
-    try { await postMeetingAction("terminal/input", { type: inputType, keys }); el.vim_text.value = ""; }
+    takeoverBusy = true;
+    el.takeover_send_button.disabled = true;
+    try {
+      await postMeetingAction("terminal/input", { keys });
+      el.takeover_input.value = "";
+    }
     catch (error) { toast(error.message); }
+    finally {
+      takeoverBusy = false;
+      el.takeover_send_button.disabled = false;
+    }
   });
-  document.querySelectorAll("[data-key]").forEach((button) => button.addEventListener("click", () => {
-    const current = state.snapshot?.latest_screen?.data?.current_command || "";
-    const inputType = String(current).toLowerCase().startsWith("python") ? "terminal_keys" : "vim_keys";
-    postMeetingAction("terminal/input", { type: inputType, keys: [{ kind: "key", value: button.dataset.key }] }).catch((error) => toast(error.message));
+  // Enter sends the keystroke line immediately; Shift+Enter / ⌘+Enter insert a
+  // real newline. An Enter during IME composition must never send.
+  el.takeover_input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    event.preventDefault();
+    el.takeover_form.requestSubmit();
+  });
+  // Special-key chips append their key to whatever is already drafted and
+  // submit the whole burst, so ``git status`` + [↵] sends text then Enter.
+  document.querySelectorAll("#terminal-controls .key-row button").forEach((button) => button.addEventListener("click", () => {
+    if (takeoverBusy) return;
+    const token = `$ctrl ${button.dataset.key}`;
+    const buffer = el.takeover_input.value.trimEnd();
+    el.takeover_input.value = buffer ? `${buffer}\n${token}` : token;
+    el.takeover_form.requestSubmit();
   }));
   document.querySelectorAll("[data-chat-filter]").forEach((button) => button.addEventListener("click", () => {
     state.chatFilter = button.dataset.chatFilter;
