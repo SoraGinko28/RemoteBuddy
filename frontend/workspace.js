@@ -744,19 +744,8 @@ function renderPlayback() {
   el.playback_slider.setAttribute("aria-valuetext", el.playback_position.textContent);
   el.live_button.disabled = state.followLive;
   el.play_button.textContent = state.playing ? "❚❚" : "▶";
-  if (!hasEvents || state.followLive) {
-    el.playback_hover.hidden = true;
-    hidePlaybackHover();
-  } else {
-    const currentIndex = Math.max(0, Math.min(max, state.playbackIndex));
-    const currentEvent = eventAt(currentIndex);
-    const timeText = currentEvent ? fmtTime(currentEvent.captured_at) : "实时";
-    el.playback_hover.textContent = timeText;
-    el.playback_hover.hidden = false;
-    const percent = max > 0 ? (currentIndex / max) * 100 : 0;
-    el.playback_hover.style.left = `${percent}%`;
-    el.playback_slider.title = `${currentIndex + 1} / ${state.timeline.length} · ${timeText}`;
-  }
+  el.playback_hover.hidden = true;
+  hidePlaybackHover();
 }
 
 function renderAll() {
