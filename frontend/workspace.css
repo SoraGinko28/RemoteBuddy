@@ -174,7 +174,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .terminal-playback { min-height: 0; border: 0; background: transparent; padding: 0; flex: 1 1 320px; grid-template-columns: auto minmax(60px, 1fr) auto auto auto; }
 .control-status { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 .control-dot { width: 7px; height: 7px; border-radius: 50%; background: #78c69f; }
-.control-actions { display: flex; gap: 7px; }
+.control-actions { display: none !important; }
 .terminal-controls { padding: 10px 12px; border-top: 1px solid var(--line); background: #f4f5f3; }
 .command-form { display: grid; grid-template-columns: auto 86px minmax(100px, 1fr) auto; align-items: center; gap: 8px; }
 .command-form label, .vim-form label, .new-dialog label { font-size: 11px; font-weight: 700; }
