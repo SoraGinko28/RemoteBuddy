@@ -1544,6 +1544,15 @@ function bind() {
     catch (error) { toast(error.message); }
     finally { el.send_message_button.disabled = false; }
   });
+  // Enter sends the message immediately; Shift+Enter / ⌘+Enter insert a real
+  // newline. A confirming Enter while an IME composition is active must not
+  // send.
+  el.message_input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    event.preventDefault();
+    el.message_form.requestSubmit();
+  });
   el.refresh_button.addEventListener("click", () => refreshSelected().catch((error) => toast(error.message)));
   el.acquire_button.addEventListener("click", () => postMeetingAction("control/acquire").catch((error) => toast(error.message)));
   el.release_button.addEventListener("click", () => postMeetingAction("control/release").catch((error) => toast(error.message)));
