@@ -70,7 +70,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .welcome p { color: var(--muted); margin: 0 0 22px; }
 .session-view { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .session-header { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
-.session-details { display: none; }
+.session-view .session-details { display: none; }
 .session-view.details-open .session-details { display: grid; }
 .session-identity { min-width: 0; }
 .session-identity h1 { margin: 4px 0 3px; font: 700 17px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; }
