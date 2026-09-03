@@ -962,7 +962,10 @@ function startTerminalTakeover() {
   const grid = takeoverGrid(engine);
   engine.options.disableStdin = false;
   engine.options.convertEol = false;
-  engine.options.scrollback = 2000;
+  // No browser-side scrollback during takeover: the viewport equals the
+  // pane's own screen (which scrolls internally), and a vertical scrollbar
+  // would steal gutter width and push the rightmost columns underneath it.
+  engine.options.scrollback = 0;
   if (engine.cols !== grid.cols || engine.rows !== grid.rows) engine.resize(grid.cols, grid.rows);
   termRowsState = null;
   engine.reset();
@@ -974,6 +977,21 @@ function startTerminalTakeover() {
   const streamUrl = `/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/stream?cols=${grid.cols}&rows=${grid.rows}`;
   const source = new EventSource(streamUrl);
   takeoverStream.source = source;
+  source.addEventListener("size", (event) => {
+    if (!takeoverStream.active) return;
+    const match = /^(\d+)x(\d+)$/.exec(event.data || "");
+    if (!match) return;
+    const paneWidth = Number(match[1]);
+    const paneHeight = Number(match[2]);
+    // The pane's actual size after tmux processing is the single truth; the
+    // emulator must match it exactly or erases/wraps drift.
+    if (paneWidth >= 40 && paneHeight >= 12 && (engine.cols !== paneWidth || engine.rows !== paneHeight)) {
+      engine.resize(paneWidth, paneHeight);
+    }
+    if (el.takeover_live_hint) {
+      el.takeover_live_hint.textContent = `已接管 · Pane ${paneWidth}×${paneHeight}（画面与 pane 同尺寸）· 直接敲键盘即可；「交还 Agent」或发消息结束`;
+    }
+  });
   source.addEventListener("seed", (event) => {
     if (!takeoverStream.active) return;
     engine.reset();

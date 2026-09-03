@@ -436,6 +436,10 @@ class MeetingWebService:
             seed_bytes = seed_ansi.encode("utf-8") + (
                 f"\x1b[{cursor_y + 1};{cursor_x + 1}H".encode("ascii")
             )
+            # The pane's ACTUAL size after any resize is the one truth; the
+            # emulator must match it exactly (tmux can clamp/clip requests).
+            pane_width = int(info["pane_width"])
+            pane_height = int(info["pane_height"])
             path = self._human_pipe_path(store)
             # Serve strictly newer bytes than the seed frame shows.
             offset = path.stat().st_size if path.exists() else 0
@@ -444,6 +448,8 @@ class MeetingWebService:
             "path": str(path),
             "seed": base64.b64encode(seed_bytes).decode("ascii"),
             "seed_offset": offset,
+            "pane_width": pane_width,
+            "pane_height": pane_height,
         }
 
     def _runs_root(self) -> Path:
@@ -1744,9 +1750,14 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 offset = resume
             else:
                 # First connect (or the pipe file was rotated/reopened): send
-                # a fresh seed and continue strictly after it.
+                # the pane's authoritative size first, then a fresh seed, and
+                # continue strictly after the seed.
                 if resume >= 0:
                     emit("control", "reset")
+                emit(
+                    "size",
+                    f'{prepared["pane_width"]}x{prepared["pane_height"]}',
+                )
                 emit("seed", seed, event_id=seed_offset)
                 offset = seed_offset
             handle = path.open("rb")
