@@ -725,36 +725,9 @@ function scoreStatusForEvent(event) {
 
 function hidePlaybackHover() {
   state.playbackHoverIndex = null;
-  el.playback_hover.hidden = true;
+  if (!state.timeline.length) el.playback_hover.hidden = true;
   el.playback_hover.removeAttribute("data-status");
-  el.playback_slider.title = "移动鼠标查看评分状态";
-}
-
-function showPlaybackHover(event) {
-  const max = state.timeline.length - 1;
-  const clientX = Number(event.clientX);
-  if (max < 0 || !Number.isFinite(clientX)) {
-    hidePlaybackHover();
-    return;
-  }
-  const sliderRect = el.playback_slider.getBoundingClientRect();
-  const trackRect = el.playback_track.getBoundingClientRect();
-  const inset = Math.min(7, sliderRect.width / 2);
-  const usableWidth = Math.max(1, sliderRect.width - inset * 2);
-  const position = Math.max(0, Math.min(usableWidth, clientX - sliderRect.left - inset));
-  const index = Math.max(0, Math.min(max, Math.round((position / usableWidth) * max)));
-  const status = scoreStatusForEvent(eventAt(index));
-  const label = labels.score[status] || labels.score.unscored;
-
-  state.playbackHoverIndex = index;
-  el.playback_hover.textContent = label;
-  el.playback_hover.dataset.status = status;
-  el.playback_hover.hidden = false;
-  const halfWidth = Math.min(el.playback_hover.offsetWidth / 2, trackRect.width / 2);
-  const rawLeft = clientX - trackRect.left;
-  const left = Math.max(halfWidth, Math.min(trackRect.width - halfWidth, rawLeft));
-  el.playback_hover.style.left = `${left}px`;
-  el.playback_slider.title = `${index + 1} / ${state.timeline.length} · ${label}`;
+  el.playback_slider.title = "拖动查看事件时间";
 }
 
 function renderPlayback() {
@@ -771,11 +744,17 @@ function renderPlayback() {
   el.playback_slider.setAttribute("aria-valuetext", el.playback_position.textContent);
   el.live_button.disabled = state.followLive;
   el.play_button.textContent = state.playing ? "❚❚" : "▶";
-  if (!hasEvents) hidePlaybackHover();
-  if (state.playbackHoverIndex !== null && state.playbackHoverIndex <= max) {
-    const status = scoreStatusForEvent(eventAt(state.playbackHoverIndex));
-    el.playback_hover.textContent = labels.score[status] || labels.score.unscored;
-    el.playback_hover.dataset.status = status;
+  if (!hasEvents) {
+    hidePlaybackHover();
+  } else {
+    const currentIndex = state.followLive ? max : Math.max(0, Math.min(max, state.playbackIndex));
+    const currentEvent = eventAt(currentIndex);
+    const timeText = currentEvent ? fmtTime(currentEvent.captured_at) : "实时";
+    el.playback_hover.textContent = timeText;
+    el.playback_hover.hidden = false;
+    const percent = max > 0 ? (currentIndex / max) * 100 : 0;
+    el.playback_hover.style.left = `${percent}%`;
+    el.playback_slider.title = `${currentIndex + 1} / ${state.timeline.length} · ${timeText}`;
   }
 }
 
@@ -1630,7 +1609,6 @@ function bind() {
   }, { passive: true });
   el.free_scroll_button.addEventListener("click", () => setViewportMode("free"));
   el.follow_scroll_button.addEventListener("click", () => setViewportMode("follow"));
-  el.playback_slider.addEventListener("mousemove", showPlaybackHover);
   el.playback_slider.addEventListener("mouseleave", hidePlaybackHover);
   el.playback_slider.addEventListener("pointercancel", hidePlaybackHover);
   el.playback_slider.addEventListener("input", () => {
