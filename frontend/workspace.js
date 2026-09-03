@@ -499,7 +499,6 @@ function referencesForEvent(event) {
 }
 
 function jumpToChatTime(chatEvent) {
-  console.log("[time-jump] clicked", chatEvent.seq, chatEvent.captured_at);
   const targetTime = Date.parse(chatEvent.captured_at || "");
   let screenIndex = -1;
   state.timeline.forEach((item, index) => {
@@ -513,7 +512,6 @@ function jumpToChatTime(chatEvent) {
     screenIndex = state.timeline.findIndex((item) => item.kind === "screen");
   }
   if (screenIndex < 0) return;
-  console.log("[time-jump] target screen index", screenIndex);
   state.scoreOverlayIds.clear();
   hidePlaybackHover();
   state.followLive = false;
@@ -522,10 +520,16 @@ function jumpToChatTime(chatEvent) {
   state.viewportMode = "free";
   stopLiveScreenQueue();
   stopPlayback();
+  // Clear any lingering selection/menu state so renderAll is not suppressed.
+  state.pendingSelection = null;
+  state.selectionTimer = null;
+  state.selectionMenuDelay = 0;
+  state.pointerSelecting = false;
+  state.keyboardSelection = null;
+  clearBrowserSelection();
+  hideSelectionMenu(false);
   renderViewportMode();
-  console.log("[time-jump] before render activeSourceSelection", activeSourceSelection());
   renderAll();
-  console.log("[time-jump] after render playbackIndex", state.playbackIndex, "followLive", state.followLive);
 }
 
 function renderChat() {
