@@ -168,7 +168,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .viewport-mode { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .viewport-mode-label { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .viewport-mode .segment { min-height: 26px; padding: 0 7px; font-size: 10px; }
-.terminal-screen { min-height: 0; margin: 0; overflow: auto; padding: 14px 16px; background: var(--terminal); color: var(--terminal-ink); white-space: pre; tab-size: 4; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.terminal-screen { min-height: 0; margin: 0; overflow: auto; padding: 14px 16px; background: var(--terminal); color: var(--terminal-ink); white-space: pre; tab-size: 4; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; scrollbar-color: #3a403c #151817; }
+.terminal-screen::-webkit-scrollbar { width: 10px; }
+.terminal-screen::-webkit-scrollbar-track { background: #151817; }
+.terminal-screen::-webkit-scrollbar-thumb { background: #3a403c; border-radius: 5px; }
+.terminal-screen::-webkit-scrollbar-thumb:hover { background: #525a55; }
 .terminal-screen.reference-target { outline: 2px solid #c59a43; outline-offset: -2px; }
 #terminal-score-status { justify-content: flex-end; max-width: 34%; }
 .control-bar { min-height: 50px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; padding: 8px 13px; border-top: 1px solid #303533; background: #222624; color: white; }
