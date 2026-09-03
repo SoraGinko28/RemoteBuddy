@@ -94,11 +94,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .presence-strip span { color: var(--muted); font-size: 9px; text-transform: uppercase; }
 .presence-strip strong { margin-top: 3px; font-size: 12px; }
 
-.work-grid { min-height: 0; display: grid; grid-template-columns: minmax(330px, 38%) minmax(0, 1fr); }
+.work-grid { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 38%); }
+.chat-pane { order: 2; border-left: 1px solid var(--line); border-right: 0; }
+.terminal-pane { order: 1; }
 .chat-pane, .terminal-pane { min-height: 0; display: grid; background: var(--surface); }
 .chat-pane > .pane-header,
 .terminal-pane > .pane-header { display: none; }
-.chat-pane { grid-template-rows: minmax(0, 1fr) auto; border-right: 1px solid var(--line); }
+.chat-pane { grid-template-rows: minmax(0, 1fr) auto; border-left: 1px solid var(--line); border-right: 0; }
 .composer-shell { min-width: 0; border-top: 1px solid var(--line); background: white; }
 .terminal-pane { grid-template-rows: minmax(0, 1fr) auto auto; }
 .pane-header { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
