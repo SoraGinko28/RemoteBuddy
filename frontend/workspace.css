@@ -226,6 +226,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .settings-note { margin: 9px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .settings-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .playback-bar span { min-width: 70px; color: var(--muted); text-align: center; font: 10px/1.2 ui-monospace, monospace; }
+.playback-bar #inspect-button { display: none; }
 .playback-info { min-width: 90px; display: flex; align-items: center; justify-content: center; }
 .playback-info > span { min-width: 0; }
 
