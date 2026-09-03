@@ -744,10 +744,11 @@ function renderPlayback() {
   el.playback_slider.setAttribute("aria-valuetext", el.playback_position.textContent);
   el.live_button.disabled = state.followLive;
   el.play_button.textContent = state.playing ? "❚❚" : "▶";
-  if (!hasEvents) {
+  if (!hasEvents || state.followLive) {
+    el.playback_hover.hidden = true;
     hidePlaybackHover();
   } else {
-    const currentIndex = state.followLive ? max : Math.max(0, Math.min(max, state.playbackIndex));
+    const currentIndex = Math.max(0, Math.min(max, state.playbackIndex));
     const currentEvent = eventAt(currentIndex);
     const timeText = currentEvent ? fmtTime(currentEvent.captured_at) : "实时";
     el.playback_hover.textContent = timeText;
