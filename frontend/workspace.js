@@ -246,9 +246,13 @@ function renderHeader() {
   if (!state.snapshot) return;
   const meeting = state.snapshot.meeting;
   el.meeting_title.textContent = meeting.meeting_id;
-  el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
-  el.status_badge.dataset.status = meeting.status;
-  el.owner_badge.textContent = labels.owner[meeting.control_owner] || meeting.control_owner;
+  if (el.status_badge) {
+    el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
+    el.status_badge.dataset.status = meeting.status;
+  }
+  if (el.owner_badge) {
+    el.owner_badge.textContent = labels.owner[meeting.control_owner] || meeting.control_owner;
+  }
   const errorPhases = ["api_error", "cycle_timeout", "failed"];
   const failure = typeof meeting.failure === "string" ? meeting.failure.trim() : "";
   const inErrorPhase = errorPhases.includes(meeting.phase);
@@ -280,7 +284,9 @@ function renderHeader() {
   el.terminal_path.textContent = displayedTerminal.current_path
     ? displayedTerminal.current_path.split("/").slice(-2).join("/")
     : "workspace";
-  el.control_label.textContent = meeting.control_requested === "human" ? "等待 Agent 交出控制权" : (labels.owner[meeting.control_owner] || "无人控制");
+  if (el.control_label) {
+    el.control_label.textContent = meeting.control_requested === "human" ? "等待 Agent 交出控制权" : (labels.owner[meeting.control_owner] || "无人控制");
+  }
 
   const terminalState = ["completed", "failed", "interrupted"].includes(meeting.status);
   const evaluateAction = el.selection_menu?.querySelector('[data-selection-action="evaluate"]');
