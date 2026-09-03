@@ -9,7 +9,7 @@ const el = Object.fromEntries([
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
-  "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button", "terminal-controls", "takeover-live-hint",
+  "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "settings-button", "settings-dialog", "settings-form", "judge-name-input", "save-settings", "close-settings", "cancel-settings", "settings-error", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
@@ -338,7 +338,6 @@ function renderHeader() {
   el.acquire_button.textContent = waitingHandoff ? "等待交权…" : "接管";
   el.acquire_button.title = canAcquire ? "打断 Agent 并接管共享终端" : "";
   el.release_button.hidden = !takeoverLive;
-  el.terminal_controls.hidden = !takeoverLive;
   const terminalReadonly = el.terminal_readonly;
   if (terminalReadonly) {
     terminalReadonly.textContent = takeoverLive ? "已接管 · 实时终端" : "只读预览";
@@ -350,13 +349,6 @@ function renderHeader() {
   el.message_input.placeholder = takeoverLive
     ? "接管中：输入消息会结束接管并交给 Agent…"
     : "继续说明、纠正或打断 Agent…";
-  const takeoverVisible = !el.terminal_controls.hidden;
-  if (takeoverVisible !== takeoverPanelVisible) {
-    takeoverPanelVisible = takeoverVisible;
-    // The takeover hint bar changes the terminal's container height; let the
-    // layout settle, then re-measure so no bottom rows are clipped.
-    setTimeout(refitTerminal, 0);
-  }
   syncTerminalTakeover(takeoverLive);
 }
 
@@ -910,8 +902,6 @@ function refitTerminal() {
 
 // Tracks takeover-panel visibility between renders so the terminal refits
 // exactly when the panel appears or disappears (not on every poll).
-let takeoverPanelVisible = false;
-
 // ---- True-terminal takeover (byte stream) ----
 // While the human owns the pane, the xterm screen becomes a real terminal:
 // server output (tmux pipe-pane) streams in over SSE and keystrokes are sent
@@ -1129,9 +1119,6 @@ function startTerminalTakeover() {
     // emulator must match it exactly or erases/wraps drift.
     if (paneWidth >= 40 && paneHeight >= 12 && (engine.cols !== paneWidth || engine.rows !== paneHeight)) {
       engine.resize(paneWidth, paneHeight);
-    }
-    if (el.takeover_live_hint) {
-      el.takeover_live_hint.textContent = `已接管 · Pane ${paneWidth}×${paneHeight}（画面与 pane 同尺寸）· 直接敲键盘即可；「交还 Agent」或发消息结束`;
     }
   });
   source.addEventListener("seed", (event) => {
