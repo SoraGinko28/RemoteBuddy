@@ -423,15 +423,26 @@ class MeetingWebService:
             self._sync_human_pipe(store)
             try:
                 seed_ansi = transport.capture_visible_ansi(pane_id)
-            except (TmuxError, OSError) as exc:
+                info = transport.pane_info(pane_id)
+                cursor_x = int(info["cursor_x"])
+                cursor_y = int(info["cursor_y"])
+            except (TmuxError, OSError, ValueError) as exc:
                 raise WebError(502, f"cannot seed terminal stream: {exc}") from exc
+            # Park the emulator's cursor exactly where the pane's cursor is.
+            # New output usually does NOT carry a cursor-move before its first
+            # character (a typed key is echoed as just the character), so a
+            # seed ending at the wrong cell makes every echo land misplaced
+            # and later erases only partially repair it -- the visible mess.
+            seed_bytes = seed_ansi.encode("utf-8") + (
+                f"\x1b[{cursor_y + 1};{cursor_x + 1}H".encode("ascii")
+            )
             path = self._human_pipe_path(store)
             # Serve strictly newer bytes than the seed frame shows.
             offset = path.stat().st_size if path.exists() else 0
         return {
             "meeting_id": meeting_id,
             "path": str(path),
-            "seed": base64.b64encode(seed_ansi.encode("utf-8")).decode("ascii"),
+            "seed": base64.b64encode(seed_bytes).decode("ascii"),
             "seed_offset": offset,
         }
 
