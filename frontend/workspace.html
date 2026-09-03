@@ -170,6 +170,18 @@
                 <span class="control-dot"></span>
                 <span id="control-label">Agent 控制中</span>
               </div>
+              <div class="playback-bar terminal-playback">
+                <button id="play-button" class="icon-button" type="button" title="播放" aria-label="播放">▶</button>
+                <div id="playback-track" class="playback-track">
+                  <input id="playback-slider" type="range" min="0" max="0" value="0" aria-label="事件回放位置" title="移动鼠标查看评分状态" disabled>
+                  <output id="playback-hover" class="playback-hover" aria-live="polite" hidden></output>
+                </div>
+                <div class="playback-info">
+                  <span id="playback-position">实时</span>
+                </div>
+                <button id="live-button" class="command-button" type="button">回到实时</button>
+                <button id="inspect-button" class="icon-button" type="button" title="查看当前事件" aria-label="查看当前事件">i</button>
+              </div>
               <div class="control-actions">
                 <button id="acquire-button" class="command-button" type="button">接管</button>
                 <button id="release-button" class="primary-command compact" type="button" hidden>交还 Agent</button>
@@ -209,19 +221,6 @@
             </div>
           </section>
         </div>
-
-        <footer class="playback-bar">
-          <button id="play-button" class="icon-button" type="button" title="播放" aria-label="播放">▶</button>
-          <div id="playback-track" class="playback-track">
-            <input id="playback-slider" type="range" min="0" max="0" value="0" aria-label="事件回放位置" title="移动鼠标查看评分状态" disabled>
-            <output id="playback-hover" class="playback-hover" aria-live="polite" hidden></output>
-          </div>
-          <div class="playback-info">
-            <span id="playback-position">实时</span>
-          </div>
-          <button id="live-button" class="command-button" type="button">回到实时</button>
-          <button id="inspect-button" class="icon-button" type="button" title="查看当前事件" aria-label="查看当前事件">i</button>
-        </footer>
       </section>
     </main>
   </div>
