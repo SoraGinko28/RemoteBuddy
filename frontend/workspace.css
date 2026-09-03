@@ -115,7 +115,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .message.human { margin-left: auto; }
 .message-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; user-select: none; -webkit-user-select: none; }
 .message-head strong { font-size: 11px; }
-.message-head time { margin-left: auto; color: var(--muted); font-size: 9px; }
+.message-head time { margin-left: 0; color: var(--muted); font-size: 9px; cursor: pointer; }
+.message-head time:hover { color: var(--ink); text-decoration: underline; }
 .message-type { padding: 2px 5px; border-radius: 3px; background: #e8ebe8; color: var(--muted); font-size: 9px; }
 .message-type.ack, .message-type.progress { color: var(--blue); background: #e8f0f8; }
 .message-type.question { color: var(--amber); background: var(--amber-soft); }
@@ -201,7 +202,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .playback-track input::-moz-range-track { height: 4px; border: 0; border-radius: 2px; background: #c8ceca; }
 .playback-track input::-moz-range-thumb { width: 14px; height: 14px; border: 2px solid white; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 1px rgb(23 25 24 / .24); }
 .playback-track input:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 1px rgb(23 25 24 / .24), 0 0 0 4px #8fb8a6; }
-.playback-hover { position: absolute; z-index: 8; bottom: calc(100% + 7px); left: 0; min-width: 58px; transform: translateX(-50%); padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: #202422; color: white; box-shadow: 0 5px 18px rgb(20 24 22 / .18); pointer-events: none; text-align: center; white-space: nowrap; font: 700 10px/1.2 ui-sans-serif, sans-serif; }
+.playback-hover { position: absolute; z-index: 8; bottom: calc(100% + 6px); left: 0; min-width: 58px; transform: translateX(-50%); padding: 4px 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: #202422; color: white; box-shadow: 0 4px 12px rgb(20 24 22 / .16); pointer-events: none; text-align: center; white-space: nowrap; font: 700 10px/1.2 ui-sans-serif, sans-serif; }
 .playback-hover[data-status="competent"] { background: var(--green); border-color: var(--green); }
 .playback-hover[data-status="incompetent"] { background: var(--red); border-color: var(--red); }
 
