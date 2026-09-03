@@ -28,7 +28,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 56px minmax(0, 1fr); }
 .rail { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 10px; border-right: 1px solid var(--line); background: #eef0ed; z-index: 20; }
-.rail-button { width: 38px; min-height: 38px; padding: 0; display: grid; place-items: center; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 8px; font-size: 18px; }
+.rail-button { width: 38px; min-height: 38px; padding: 0; display: flex; align-items: center; justify-content: center; line-height: 1; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 8px; font-size: 18px; text-align: center; }
 .rail-button.primary-command { border-color: var(--green); background: var(--green); color: white; }
 .sidebar { position: fixed; top: 0; left: 56px; bottom: 0; width: 252px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: #eef0ed; padding: 20px 16px 14px; transform: translateX(calc(-100% - 56px)); transition: transform .18s ease; z-index: 30; box-shadow: 8px 0 24px rgb(0 0 0 / .08); }
 .app-shell.sidebar-open .sidebar { transform: translateX(0); }
