@@ -1174,11 +1174,18 @@ function stopTerminalTakeover(flushPending) {
   unbindTakeoverInput();
   takeoverStream.inputHex = "";
   // Hand the terminal back to frame painting from a fresh instance so no
-  // byte-stream cells can linger under the painted frames.
+  // byte-stream cells can linger under the painted frames. Then let the
+  // layout settle and repaint exactly once from the freshest snapshot;
+  // painting immediately here can race other queued renders and stack two
+  // copies of the frame (page refresh "fixes" it because it repaints once).
+  stopLiveScreenQueue();
   rebuildTerminalEngine();
   termRowsState = null;
   state.terminalFrameKey = null;
-  renderTerminal();
+  takeoverJustEnded = true;
+  setTimeout(() => {
+    if (!takeoverStream.active) renderTerminal();
+  }, 60);
 }
 
 function syncTerminalTakeover(live) {
@@ -1188,6 +1195,11 @@ function syncTerminalTakeover(live) {
     stopTerminalTakeover(true);
   }
 }
+
+// When takeover ends, the very next terminal paint must start from a fully
+// cleared screen; several renders can race right after the mode switch and a
+// normal diff paint can stack onto stream leftovers.
+let takeoverJustEnded = false;
 
 const TERMINAL_FONT_SIZE = 12;
 const TERMINAL_LINE_HEIGHT = 1.42;
@@ -1341,6 +1353,11 @@ function renderTerminal() {
   // While the human owns the pane, the screen is a live byte-streamed
   // terminal; captured-frame painting would fight the stream, so skip it.
   if (takeoverStream.active) return;
+  if (takeoverJustEnded) {
+    takeoverJustEnded = false;
+    termRowsState = null;
+    state.terminalFrameKey = null;
+  }
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
   const replayReference = scoreReferenceAtPlayback();
   const replaySource = replayReference?.kind === "screen"
