@@ -45,6 +45,7 @@ socket_path = mcp["env"]["REMOTEBUDDY_MCP_SOCKET"]
 token = mcp["env"]["REMOTEBUDDY_MCP_TOKEN"]
 initialized = False
 refuse_forever = [False]
+prose_forever = [False]
 
 def send(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
@@ -67,6 +68,16 @@ for line in sys.stdin:
     if "NO_TOOL_FOREVER" in text:
         refuse_forever[0] = True
     if refuse_forever[0] or "NO_TOOL" in text:
+        send({{"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}})
+        continue
+    if "PROSE_ONLY_FOREVER" in text:
+        prose_forever[0] = True
+    if prose_forever[0] or "PROSE_ONLY" in text:
+        send({{
+            "type": "assistant",
+            "session_id": session_id,
+            "message": {{"content": [{{"type": "text", "text": "just prose answer"}}]}},
+        }})
         send({{"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}})
         continue
     if "HANG" in text:
@@ -234,6 +245,33 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         inputs = [json.loads(line) for line in self.audit.read_text("utf-8").splitlines()]
         self.assertEqual(2, len(inputs))
         self.assertTrue(any(item.get("event") == "turn_nudged" for item in self.telemetry))
+
+    def test_prose_only_after_nudges_becomes_a_question_not_a_failure(self):
+        backend = self.backend()
+        actions = []
+        try:
+            session = backend.start_cycle(
+                "meeting-prose-forever", "Skill", "", event_callback=self.telemetry.append
+            )
+            response = backend.next_action(
+                session,
+                "PROSE_ONLY_FOREVER",
+                action_handler=lambda action, metadata: (
+                    actions.append(action)
+                    or {"success": True, "content": "accepted", "pause": True}
+                ),
+            )
+        finally:
+            backend.close()
+        self.assertTrue(response.executed)
+        self.assertEqual(1, len(actions))
+        action = actions[0]
+        self.assertEqual("chat", action.type)
+        self.assertEqual("question", action.message_type)
+        self.assertEqual("just prose answer", action.content)
+        inputs = [json.loads(line) for line in self.audit.read_text("utf-8").splitlines()]
+        self.assertEqual(3, len(inputs))  # initial + two nudges, then salvaged
+        self.assertEqual(2, len([item for item in self.telemetry if item.get("event") == "turn_nudged"]))
 
     def test_result_arriving_during_slow_action_does_not_fail_the_turn(self):
         backend = self.backend()

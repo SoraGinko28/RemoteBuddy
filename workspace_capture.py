@@ -1,11 +1,13 @@
 """Shared-pane capture, workspace path resolution, and runner errors."""
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from meeting_v2 import MeetingStore
+from terminal_text import parse_segments, plain_of
 from tmux_transport import TmuxTransport
 
 
@@ -23,6 +25,24 @@ class TypingInterrupted(RunnerError):
         self.sent = sent
         self.remaining = remaining
         self.submitted = submitted
+
+
+# Covers the escape families a tmux ``capture-pane -e`` frame can contain:
+# CSI (colors, cursor, SGR styles), OSC (title, hyperlinks), DCS/PM/APC/SOS,
+# charset selection, keypad, and single-character escapes.
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b\[[0-9;:?]*[ -/]*[@-~]"           # CSI
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"    # OSC (ST may be BEL or ESC \)
+    r"|\x1b[PX^_][^\x1b]*(?:\x1b\\)?"        # DCS / PM / APC / SOS
+    r"|\x1b[()][0-9A-B]"                     # charset selection
+    r"|\x1b[=>]"                             # keypad modes
+    r"|\x1b[@-Z\\-_]"                        # remaining single-char escapes
+)
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences, keeping the visible plain text."""
+    return _ANSI_ESCAPE_RE.sub("", text)
 
 
 def _inside(root: Path, candidate: Path) -> bool:
@@ -66,7 +86,15 @@ def capture_workspace(
         before = transport.pane_info(pane_id)
         if before["dead"] != "0":
             raise RunnerError("shared workspace pane exited")
-        content = transport.capture_visible(pane_id)
+        ansi_text = None
+        ansi_capture = getattr(transport, "capture_visible_ansi", None)
+        if callable(ansi_capture):
+            ansi_text = ansi_capture(pane_id)
+            segments = parse_segments(ansi_text)
+            content = plain_of(segments)
+        else:
+            segments = None
+            content = transport.capture_visible(pane_id)
         after = transport.pane_info(pane_id)
         signature = ("command", "path", "cursor_x", "cursor_y", "pane_width", "pane_height", "dead")
         if all(before.get(key) == after.get(key) for key in signature):
@@ -90,6 +118,7 @@ def capture_workspace(
         info["path"],
         change_kind=change_kind,
         metadata=screen_metadata,
+        segments=segments,
     )
 
 

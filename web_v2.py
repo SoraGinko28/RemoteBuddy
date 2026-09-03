@@ -1277,7 +1277,10 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        # style-src needs 'unsafe-inline': xterm.js paints its DOM renderer and
+        # selection overlay through runtime inline styles, which strict CSP
+        # would otherwise block (breaking colors and text selection).
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
     def _json(self, payload: Dict[str, Any], status: int = 200, etag: Optional[str] = None) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -1384,7 +1387,8 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/assets/"):
                 relative = unquote(path[len("/assets/"):])
-                if "/" in relative or relative.startswith("."):
+                parts = relative.split("/")
+                if any(part in {"", ".", ".."} for part in parts):
                     raise WebError(404, "static file not found")
                 self._static(relative)
                 return

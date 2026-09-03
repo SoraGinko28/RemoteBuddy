@@ -356,6 +356,19 @@ class TmuxTransport:
         result = self._checked_cmd(pane, "capture-pane", "-p", "-N")
         return self._output_text(result.stdout)
 
+    def capture_visible_ansi(self, pane_id: str) -> str:
+        """Capture the visible viewport with escape sequences preserved.
+
+        The ``-e`` flag re-serializes every cell's attributes (SGR colors,
+        bold, underline, ...) back into ANSI, which is what a color-capable
+        frontend needs to reproduce the frame. Plain text is derived by
+        stripping the escapes at the storage boundary, so the model keeps
+        seeing the same plain content as before.
+        """
+        pane = self._pane(pane_id)
+        result = self._checked_cmd(pane, "capture-pane", "-p", "-N", "-e")
+        return self._output_text(result.stdout)
+
     def pane_info(self, pane_id: str) -> Dict[str, str]:
         pane = self._pane(pane_id)
         result = self._invoke(
