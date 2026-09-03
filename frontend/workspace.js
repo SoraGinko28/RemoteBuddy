@@ -524,6 +524,7 @@ function jumpToChatTime(chatEvent) {
   stopPlayback();
   renderViewportMode();
   renderAll();
+  console.log("[time-jump] after render playbackIndex", state.playbackIndex, "followLive", state.followLive);
 }
 
 function renderChat() {
