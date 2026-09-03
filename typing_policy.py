@@ -219,6 +219,11 @@ def plan_input(
             steps.append(
                 _key_step(value, profile, meeting_id, action_id, token_index, literal_context)
             )
+        elif kind == "rest":
+            # A musical rest: nothing is sent, the pacing simply holds for the
+            # requested milliseconds before the next step goes out.
+            rest_ms = int(value)
+            steps.append(TypingStep("rest", "", rest_ms, "rest", context, 0))
         elif threshold_paste and literal_context == "code":
             steps.extend(
                 _paste_literal_steps(

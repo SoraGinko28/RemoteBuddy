@@ -684,8 +684,12 @@ class ClaudeCodeBackend:
                 # claimed-action guard above; with no phase filter pinned at
                 # the bridge, they can no longer burn the retry budget.
             else:
-                self._rejections += 1
                 self._last_rejection = content[:500]
+                # A rejected chat message is a correctable message-type or
+                # evidence mistake whose reason names the allowed options, so
+                # it must not burn the retry budget on its own; only rejected
+                # terminal actions mean the agent is genuinely stuck.
+                chat_only = action is not None and action.type == "chat"
                 if self._turn_result_seen and self._turn_action is None:
                     # Claude already ended its turn (for example after the MCP
                     # tool call timed out on a slow typed action); it cannot
@@ -693,10 +697,12 @@ class ClaudeCodeBackend:
                     self._turn_protocol_error = (
                         "Claude Code ended the turn before an accepted action: " + self._last_rejection
                     )
-                elif self._rejections >= MAX_ACTION_REJECTIONS:
-                    self._turn_protocol_error = (
-                        "Claude Code exceeded the rejected-action retry limit: " + self._last_rejection
-                    )
+                elif not chat_only:
+                    self._rejections += 1
+                    if self._rejections >= MAX_ACTION_REJECTIONS:
+                        self._turn_protocol_error = (
+                            "Claude Code exceeded the rejected-action retry limit: " + self._last_rejection
+                        )
             self._condition.notify_all()
         self._emit(
             "dynamic_tool_completed",
@@ -903,8 +909,12 @@ class ClaudeCodeBackend:
             + "- After the tool returns successfully, end the current turn and wait for the next observation.\n"
             + "- If the tool rejects an action, correct it using the rejection and retry at most twice.\n"
             + "- For terminal input, prefer the `keystrokes` action. Its `keys` array accepts the DSL "
-            + "`$text <literal text>` and `$ctrl <named key>`. Send quotes/brackets as explicit paired "
-            + "keystrokes (e.g. `$text \"`, then later `$text \"`) instead of dumping one whole line.\n"
+            + "`$text <literal text>`, `$ctrl <named key>`, and `$rest <milliseconds>` (a pause that "
+            + "sends nothing). Send quotes/brackets as explicit paired keystrokes (e.g. `$text \"`, "
+            + "then later `$text \"`) instead of dumping one whole line. Use `$rest` only where a "
+            + "human would naturally hesitate: right before the Enter that submits a command line, "
+            + "pause about `$rest 400`. Do not add rests elsewhere — not while typing text, moving "
+            + "the cursor, or pressing other keys.\n"
         )
 
     def _redact(self, text: str) -> str:

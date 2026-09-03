@@ -328,6 +328,85 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         self.assertTrue(all(event["data"].get("planned_delay_ms") for event in screens))
 
+    def test_rest_step_holds_pacing_without_sending_keys(self):
+        pane_id = self.transport.create_workspace_session(
+            self.store.meeting.session_name,
+            self.store.workspace_path,
+        )
+        self.store.set_session(pane_id)
+        plan = plan_input(
+            [
+                {"kind": "literal", "value": "echo hi"},
+                {"kind": "rest", "value": 200},
+                {"kind": "key", "value": "Enter"},
+            ],
+            "balanced",
+            "runner-demo",
+            "rest-action",
+            "shell",
+            allow_paste=False,
+        )
+        clock = [100.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with mock.patch("interactive_runner.time.monotonic", side_effect=lambda: clock[0]), mock.patch(
+            "interactive_runner.time.sleep", side_effect=sleep
+        ):
+            _send_typing_plan(
+                self.store,
+                self.transport,
+                pane_id,
+                plan,
+                "rest-action",
+                None,
+            )
+        # The rest sends nothing: only the literal text reaches the pane, and
+        # the full human-paced duration (including the 200 ms hold) elapsed.
+        self.assertEqual(
+            "echo hi",
+            "".join(value for _pane, value in self.transport.literal_sends),
+        )
+        self.assertAlmostEqual(plan.planned_duration_ms / 1000.0, clock[0] - 100.0, places=6)
+
+    def test_keystrokes_rest_dsl_pauses_before_enter_in_shell(self):
+        client = FakeClient(
+            [
+                make_action(),
+                make_action(
+                    "keystrokes",
+                    keys=["$text echo hi", "$rest 200", "$ctrl Enter"],
+                ),
+                make_action("done", message_type="final", content="Finished: PROJECT TESTS PASSED"),
+            ]
+        )
+        sleeps = []
+        with mock.patch(
+            "interactive_runner.time.sleep", side_effect=lambda seconds: sleeps.append(seconds)
+        ):
+            InteractiveRunner(
+                self.store, self.transport, client, action_settle_seconds=0,
+                typing_interval_seconds=0,
+            ).start()
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        rejected = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "rejected"
+        ]
+        self.assertEqual([], rejected)
+        self.assertTrue(any(abs(value - 0.2) < 1e-9 for value in sleeps))
+        typed = [
+            item[1]
+            for item in self.transport.tokens
+            if any(
+                token.get("kind") == "literal" and token.get("value") == "echo hi"
+                for token in item[1]
+            )
+        ]
+        self.assertTrue(typed)
+
     def test_rule_plan_can_interrupt_between_bursts(self):
         pane_id = self.transport.create_workspace_session(
             self.store.meeting.session_name,
@@ -544,6 +623,52 @@ class InteractiveRunnerTest(unittest.TestCase):
             client.calls[4][3]["allowed_types"],
         )
         self.assertEqual(("none",), client.calls[4][3]["allowed_message_types"])
+
+    def test_progress_allowed_after_completed_keystrokes_in_shell(self):
+        # Regression: an echo demo typed with the keystrokes DSL (the channel
+        # the human asked for) must count as terminal evidence, so the follow-up
+        # progress message is accepted instead of killing the session.
+        client = FakeClient(
+            [
+                make_action(),
+                make_action(
+                    "keystrokes",
+                    keys=[
+                        {"kind": "literal", "value": 'echo "hi"'},
+                        {"kind": "key", "value": "Enter"},
+                    ],
+                ),
+                make_action(
+                    "chat", message_type="progress", content='echo "hi" is visible on screen.'
+                ),
+                make_action("done", message_type="final", content="Finished: PROJECT TESTS PASSED"),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        rejected = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "rejected"
+        ]
+        self.assertEqual([], rejected)
+        progress = [
+            event for event in loaded.chat_messages() if event["message_type"] == "progress"
+        ]
+        self.assertEqual(1, len(progress))
+
+    def test_progress_rejection_suggests_question_without_terminal_evidence(self):
+        runner = InteractiveRunner(
+            self.store, self.transport, FakeClient([]), action_settle_seconds=0,
+            typing_interval_seconds=0,
+        )
+        runner._cycle_acknowledged = True
+        self.store.append_screen("bash-3.2$", "bash", str(self.store.workspace_path))
+        claimed = make_action("chat", message_type="progress", content="still checking")
+        with self.assertRaisesRegex(AgentProtocolError, "message_type=question"):
+            runner._validate_action_for_current_phase(claimed)
 
     def test_agent_capture_pump_records_delayed_vim_redraw(self):
         self.transport = DelayedVimTransport()

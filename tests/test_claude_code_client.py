@@ -12,7 +12,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from agent_protocol import AgentInterrupted, AgentProtocolError
-from claude_code_client import ClaudeCodeBackend, TOOL_NAME, resolve_claude_binary
+from claude_code_client import ClaudeCodeBackend, MAX_ACTION_REJECTIONS, TOOL_NAME, resolve_claude_binary
 from model_api_client import ModelApiConfig
 
 
@@ -307,6 +307,68 @@ class ClaudeCodeBackendTest(unittest.TestCase):
             self.assertIn("ended the turn", backend._turn_protocol_error or "")
         finally:
             release.set()
+            backend.close()
+
+    def test_chat_only_rejections_do_not_trip_the_retry_limit(self):
+        # A wrong chat message_type is a correctable mistake whose rejection
+        # names the allowed options; it must not burn the retry budget that
+        # guards genuinely stuck terminal actions.
+        backend = self.backend()
+        try:
+            backend._bridge_token = "test-token"
+            backend._turn_id = "turn-chat-rejects"
+            backend._active_handler = lambda _action, _metadata: {
+                "success": False,
+                "content": "model message type is not allowed in the current phase; "
+                "allowed_message_types=none,progress,question,final",
+                "pause": False,
+            }
+            request = {
+                "token": "test-token",
+                "request_id": "chat-reject",
+                "action": {"action": ACK},
+            }
+            for index in range(MAX_ACTION_REJECTIONS + 2):
+                result = backend._handle_bridge_request(dict(request, request_id=f"chat-reject-{index}"))
+                self.assertFalse(result["success"])
+            self.assertIsNone(backend._turn_protocol_error)
+            self.assertEqual(0, backend._rejections)
+        finally:
+            backend.close()
+
+    def test_terminal_action_rejections_still_trip_the_retry_limit(self):
+        backend = self.backend()
+        try:
+            backend._bridge_token = "test-token"
+            backend._turn_id = "turn-terminal-rejects"
+            backend._active_handler = lambda _action, _metadata: {
+                "success": False,
+                "content": "current_command=vim; command is not allowed in this phase",
+                "pause": False,
+            }
+            request = {
+                "token": "test-token",
+                "request_id": "terminal-reject",
+                "action": {
+                    "action": {
+                        "type": "command",
+                        "message_type": "none",
+                        "content": "",
+                        "command": "pwd",
+                        "path": "",
+                        "keys": [],
+                        "delay_ms": 0,
+                    }
+                },
+            }
+            for index in range(MAX_ACTION_REJECTIONS):
+                backend._handle_bridge_request(dict(request, request_id=f"terminal-reject-{index}"))
+            self.assertIsNotNone(backend._turn_protocol_error)
+            self.assertIn(
+                "exceeded the rejected-action retry limit", backend._turn_protocol_error or ""
+            )
+            self.assertIn("current_command=vim", backend._turn_protocol_error or "")
+        finally:
             backend.close()
 
     def test_duplicate_tool_call_is_idempotent_and_first_action_wins(self):
