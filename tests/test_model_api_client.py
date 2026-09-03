@@ -8,6 +8,7 @@ from pathlib import Path
 
 from model_api_client import (
     AgentAction,
+    AgentProtocolError,
     ModelApiConfig,
     ModelApiError,
     ModelConfigError,
@@ -347,6 +348,57 @@ class AgentActionTest(unittest.TestCase):
             action.keys,
         )
 
+    def test_keystroke_rest_dsl_is_normalized_and_bounds_checked(self):
+        action = AgentAction.from_dict(
+            action_payload(
+                type="keystrokes",
+                message_type="none",
+                content="",
+                keys=[
+                    "$text echo hi",
+                    "$rest 200",
+                    {"kind": "rest", "value": 350},
+                    "$ctrl Enter",
+                ],
+            )
+        )
+        self.assertEqual(
+            [
+                {"kind": "literal", "value": "echo hi"},
+                {"kind": "rest", "value": 200},
+                {"kind": "rest", "value": 350},
+                {"kind": "key", "value": "Enter"},
+            ],
+            list(action.keys),
+        )
+        with self.assertRaisesRegex(AgentProtocolError, "millisecond integer"):
+            AgentAction.from_dict(
+                action_payload(
+                    type="keystrokes",
+                    message_type="none",
+                    content="",
+                    keys=["$rest soon"],
+                )
+            )
+        with self.assertRaisesRegex(AgentProtocolError, "between 20 and 2000"):
+            AgentAction.from_dict(
+                action_payload(
+                    type="keystrokes",
+                    message_type="none",
+                    content="",
+                    keys=[{"kind": "rest", "value": 30000}],
+                )
+            )
+        with self.assertRaisesRegex(AgentProtocolError, "between 20 and 2000"):
+            AgentAction.from_dict(
+                action_payload(
+                    type="keystrokes",
+                    message_type="none",
+                    content="",
+                    keys=["$rest 5"],
+                )
+            )
+
     def test_schema_can_force_first_ack_or_question(self):
         schema = action_json_schema(("chat",), ("ack", "question"))
         variants = schema["properties"]["action"]["anyOf"]
@@ -366,6 +418,14 @@ class AgentActionTest(unittest.TestCase):
         self.assertEqual(["literal"], key_variants[0]["properties"]["kind"]["enum"])
         self.assertIn("pattern", key_variants[0]["properties"]["value"])
         self.assertIn("Escape", key_variants[1]["properties"]["value"]["enum"])
+        rest_variant = [
+            variant
+            for variant in key_variants
+            if variant.get("properties", {}).get("kind", {}).get("enum") == ["rest"]
+        ][0]
+        self.assertEqual(20, rest_variant["properties"]["value"]["minimum"])
+        self.assertEqual(2000, rest_variant["properties"]["value"]["maximum"])
+        self.assertIn(r"^\$rest [0-9]+$", key_variants[-1]["pattern"])
 
 
 class ResponsesClientTest(unittest.TestCase):

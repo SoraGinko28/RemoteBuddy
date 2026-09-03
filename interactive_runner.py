@@ -705,7 +705,9 @@ class InteractiveRunner:
             if action.type == "chat" and action.message_type == "progress":
                 if self._last_terminal_evidence is None:
                     raise AgentProtocolError(
-                        "progress requires a completed Vim edit or Python action in this cycle"
+                        "progress requires a completed Vim edit, Python run, or "
+                        "keystrokes/terminal-input action in this cycle; if you only "
+                        "need to hand control back, use chat message_type=question"
                     )
             if action.type == "done":
                 pending_human = [
@@ -722,7 +724,9 @@ class InteractiveRunner:
                 ]
                 if not marker_lines:
                     raise AgentProtocolError(
-                        "TESTS PASSED marker not present as an independent line in the latest terminal Screen"
+                        "TESTS PASSED marker not present as an independent line in the latest "
+                        "terminal Screen; without such a marker, hand control back with chat "
+                        "message_type=question instead of done"
                     )
         except AgentProtocolError as exc:
             current_command = (self.store.meeting.current_command or "unknown").lower()
@@ -1152,7 +1156,7 @@ class InteractiveRunner:
                 self._check_stop()
                 capture_workspace(self.store, self.transport)
                 self._complete_action(action_id)
-                if action.type in {"vim_keys", "terminal_keys"} or (
+                if action.type in {"vim_keys", "terminal_keys", "keystrokes"} or (
                     action.type == "command" and action.command == "python"
                 ):
                     self._last_terminal_evidence = action.type

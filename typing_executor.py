@@ -27,6 +27,9 @@ def send_tokens_with_captures(
     """Execute a deterministic burst plan; zero interval preserves old fast callers."""
     if typing_interval_seconds <= 0:
         for token in tokens:
+            if token.get("kind") == "rest":
+                time.sleep(int(token["value"]) / 1000.0)
+                continue
             transport.send_tokens(pane_id, [token])
             if settle_seconds > 0:
                 time.sleep(settle_seconds)
@@ -92,9 +95,10 @@ def _send_typing_plan(
         if step.kind == "literal":
             transport.send_literal(pane_id, step.value)
             sent += len(step.value)
-        else:
+        elif step.kind == "key":
             transport.send_special(pane_id, step.value)
             submitted = submitted or (step.value == "Enter" and step.input_context == "shell")
+        # A rest step sends nothing; its delay_after_ms holds the pacing below.
         now = time.monotonic()
         next_kind = plan.steps[step_index + 1].change_kind if step_index + 1 < len(plan.steps) else None
         should_capture = (

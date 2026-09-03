@@ -19,6 +19,10 @@ SPECIAL_KEYS = {
     "Delete",
     "C-c",
 }
+# ``$rest`` pauses the typing plan without sending any keys, like a musical
+# rest; the bounds keep a model from stalling the shared pane indefinitely.
+REST_MIN_MS = 20
+REST_MAX_MS = 2000
 ACTION_TYPES = {"chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done"}
 REFERENCE_KINDS = {"chat", "screen"}
 # Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
@@ -469,17 +473,24 @@ def validate_key_tokens(tokens: Sequence[Any]) -> None:
         if not isinstance(token, dict) or set(token) != {"kind", "value"}:
             raise AgentProtocolError("invalid key token")
         kind, value = token["kind"], token["value"]
-        if not isinstance(value, str):
-            raise AgentProtocolError("key token value must be text")
         if kind == "literal":
-            if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+            if not isinstance(value, str) or not value or any(
+                ord(character) < 32 or ord(character) == 127 for character in value
+            ):
                 raise AgentProtocolError(
                     "literal key text must be one non-empty line without control characters"
                 )
             total += len(value.encode("utf-8"))
         elif kind == "key":
-            if value not in SPECIAL_KEYS:
+            if not isinstance(value, str) or value not in SPECIAL_KEYS:
                 raise AgentProtocolError(f"special key is not allowed: {value}")
+        elif kind == "rest":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise AgentProtocolError("rest token value must be a millisecond integer")
+            if value < REST_MIN_MS or value > REST_MAX_MS:
+                raise AgentProtocolError(
+                    f"rest must be between {REST_MIN_MS} and {REST_MAX_MS} ms"
+                )
         else:
             raise AgentProtocolError("key token kind is invalid")
     if total > 8192:
@@ -487,12 +498,13 @@ def validate_key_tokens(tokens: Sequence[Any]) -> None:
 
 
 def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
-    """Normalize key tokens and the ``$text`` / ``$ctrl`` keystroke DSL.
+    """Normalize key tokens and the ``$text`` / ``$ctrl`` / ``$rest`` keystroke DSL.
 
-    The DSL has two forms:
+    The DSL has three forms:
 
-    - ``"$text hello"``  -> send the literal text ``hello``
-    - ``"$ctrl Left"``   -> send the control/named key ``Left``
+    - ``"$text hello"``       -> send the literal text ``hello``
+    - ``"$ctrl Left"``        -> send the control/named key ``Left``
+    - ``"$rest 200"``         -> pause 200 ms without sending any keys
 
     Printable single-character keys are also accepted as ordinary key tokens.
     """
@@ -507,6 +519,14 @@ def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
             if token.startswith("$ctrl "):
                 key = token[len("$ctrl "):]
                 normalized.append({"kind": "key", "value": key})
+                continue
+            if token.startswith("$rest "):
+                rest_text = token[len("$rest "):]
+                if not rest_text.isdigit():
+                    raise AgentProtocolError(
+                        "$rest requires a millisecond integer, e.g. $rest 200"
+                    )
+                normalized.append({"kind": "rest", "value": int(rest_text)})
                 continue
             # A bare string is still convenient for plain text.
             if token:
@@ -709,9 +729,29 @@ def action_json_schema(
                 },
             },
             {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["kind", "value"],
+                "properties": {
+                    "kind": {"type": "string", "enum": ["rest"]},
+                    "value": {
+                        "type": "integer",
+                        "minimum": REST_MIN_MS,
+                        "maximum": REST_MAX_MS,
+                    },
+                },
+            },
+            {
                 "type": "string",
-                "pattern": r"^\$text [^\r\n\u0000]+$|^\$ctrl (?:Enter|Escape|Tab|Up|Down|Left|Right|Backspace|Delete|C-c)$",
-                "description": "Keystroke DSL: $text sends literal text, $ctrl sends a named key.",
+                "pattern": (
+                    r"^\$text [^\r\n\u0000]+$|^\$ctrl "
+                    r"(?:Enter|Escape|Tab|Up|Down|Left|Right|Backspace|Delete|C-c)$"
+                    rf"|^\$rest [0-9]+$"
+                ),
+                "description": (
+                    "Keystroke DSL: $text sends literal text, $ctrl sends a named key, "
+                    "$rest pauses N milliseconds without typing."
+                ),
             },
         ]
     }

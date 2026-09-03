@@ -82,6 +82,37 @@ class TypingPolicyTest(unittest.TestCase):
         self.assertEqual(["Escape", "Enter"], [step.value for step in plan.steps if step.kind == "key"])
         self.assertIn(":wq", "".join(step.value for step in plan.steps))
 
+    def test_rest_pauses_before_enter_without_sending_keys(self):
+        plan = plan_input(
+            [
+                {"kind": "literal", "value": "echo hi"},
+                {"kind": "rest", "value": 200},
+                {"kind": "key", "value": "Enter"},
+            ],
+            "balanced",
+            "meeting",
+            "action",
+            "shell",
+            allow_paste=False,
+        )
+        kinds = [step.kind for step in plan.steps]
+        self.assertIn("rest", kinds)
+        rest_index = kinds.index("rest")
+        rest_step = plan.steps[rest_index]
+        self.assertEqual("rest", rest_step.change_kind)
+        self.assertEqual("", rest_step.value)
+        self.assertEqual(200, rest_step.delay_after_ms)
+        self.assertEqual("key", kinds[rest_index + 1])
+        self.assertEqual("Enter", plan.steps[rest_index + 1].value)
+        # Rests never add characters or count as paste.
+        self.assertEqual(
+            "echo hi",
+            "".join(step.value for step in plan.steps if step.kind == "literal"),
+        )
+        self.assertEqual(7, plan.total_characters)
+        self.assertFalse(plan.uses_paste)
+        self.assertGreaterEqual(plan.planned_duration_ms, 200)
+
     def test_command_never_uses_paste(self):
         text = "vim -- " + "very-long-path/" * 30 + "notes.md"
         plan = plan_input(
