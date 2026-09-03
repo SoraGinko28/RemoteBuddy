@@ -84,6 +84,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .status-badge[data-status="running"] { background: var(--green-soft); color: var(--green); }
 .status-badge[data-status="failed"], .status-badge[data-status="interrupted"] { background: var(--red-soft); color: var(--red); }
 .header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.header-actions > button:not(#session-more-button) { display: none; }
+.session-view.details-open .header-actions > button:not(#session-more-button) { display: inline-flex; }
 .presence-strip { display: grid; grid-template-columns: repeat(8, minmax(82px, 1fr)); border-bottom: 1px solid var(--line); background: #fafbfa; }
 .presence-strip > div { min-width: 0; padding: 9px 16px; border-right: 1px solid var(--line); }
 .presence-strip > div:last-child { border-right: 0; }
