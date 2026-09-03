@@ -250,13 +250,19 @@ function renderHeader() {
   el.status_badge.dataset.status = meeting.status;
   el.owner_badge.textContent = labels.owner[meeting.control_owner] || meeting.control_owner;
   const errorPhases = ["api_error", "cycle_timeout", "failed"];
-  const topStatus = errorPhases.includes(meeting.phase)
-    ? (labels.phase[meeting.phase] || meeting.phase)
-    : (labels.status[meeting.status] || meeting.status);
-  el.session_meta.textContent = `${topStatus} · ${labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI"}`;
   const failure = typeof meeting.failure === "string" ? meeting.failure.trim() : "";
-  el.failure_message.textContent = failure;
-  el.failure_message.hidden = !failure || !["api_error", "cycle_timeout", "failed"].includes(meeting.phase);
+  const inErrorPhase = errorPhases.includes(meeting.phase);
+  if (failure && inErrorPhase) {
+    el.session_meta.textContent = failure;
+    el.session_meta.classList.add("error");
+  } else {
+    const topStatus = inErrorPhase
+      ? (labels.phase[meeting.phase] || meeting.phase)
+      : (labels.status[meeting.status] || meeting.status);
+    el.session_meta.textContent = `${topStatus} · ${labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI"}`;
+    el.session_meta.classList.remove("error");
+  }
+  el.failure_message.hidden = true;
   el.phase_label.textContent = labels.phase[meeting.phase] || meeting.phase;
   el.backend_label.textContent = labels.backend[meeting.agent_backend] || meeting.agent_backend || "Responses API";
   el.provider_label.textContent = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
