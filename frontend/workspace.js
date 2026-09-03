@@ -499,6 +499,7 @@ function referencesForEvent(event) {
 }
 
 function jumpToChatTime(chatEvent) {
+  console.log("[time-jump] clicked", chatEvent.seq, chatEvent.captured_at);
   const targetTime = Date.parse(chatEvent.captured_at || "");
   let screenIndex = -1;
   state.timeline.forEach((item, index) => {
@@ -512,6 +513,7 @@ function jumpToChatTime(chatEvent) {
     screenIndex = state.timeline.findIndex((item) => item.kind === "screen");
   }
   if (screenIndex < 0) return;
+  console.log("[time-jump] target screen index", screenIndex);
   state.scoreOverlayIds.clear();
   hidePlaybackHover();
   state.followLive = false;
