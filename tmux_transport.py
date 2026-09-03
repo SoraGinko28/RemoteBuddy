@@ -339,6 +339,29 @@ class TmuxTransport:
         pane = self._pane(pane_id)
         self._checked_cmd(pane, "pipe-pane")
 
+    def resize_workspace_session(self, session_name: str, cols: int, rows: int) -> None:
+        """Resize the workspace window to an exact grid (takeover viewport fit).
+
+        The workspace window keeps ``window-size manual``, so it never follows
+        an attached client; an explicit ``resize-window`` is the only thing
+        that moves it. Bounds mirror ``create_workspace_session``.
+        """
+        self._validate_session(session_name)
+        if not isinstance(cols, int) or not isinstance(rows, int):
+            raise TmuxError("resize requires integer columns and rows")
+        if cols < 40 or cols > 300 or rows < 12 or rows > 120:
+            raise TmuxError("resize dimensions are outside supported bounds")
+        self._checked_cmd(
+            self._server,
+            "resize-window",
+            "-t",
+            session_name,
+            "-x",
+            str(cols),
+            "-y",
+            str(rows),
+        )
+
     def send_keys(self, pane_id: str, text: str) -> None:
         self.send_literal(pane_id, text)
         self.send_enter(pane_id)

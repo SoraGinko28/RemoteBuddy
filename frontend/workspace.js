@@ -930,29 +930,40 @@ function queueTakeoverInput(text) {
   }
 }
 
+// The live terminal must match the pane exactly, so the pane is resized to
+// this grid before the stream opens (real clients resize the pty to the
+// client). Rows/cols are derived from the measured panel and cell box, never
+// guessed.
+function takeoverGrid(engine) {
+  const panelWidth = el.terminal_screen.clientWidth || 0;
+  const panelHeight = el.terminal_screen.clientHeight || 0;
+  let charWidth = Number.NaN;
+  try {
+    charWidth = Number(engine?._core?._renderService?.dimensions?.css?.cell?.width);
+  } catch (_error) {
+    // fall through to the estimate
+  }
+  if (!Number.isFinite(charWidth) || charWidth <= 0) charWidth = TERMINAL_FONT_SIZE * 0.6;
+  const cellHeight = terminalCellHeight(engine);
+  let cols = 80;
+  if (panelWidth > 0 && charWidth > 0) cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth)));
+  let rows = 24;
+  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
+  rows = Math.max(12, Math.min(120, rows));
+  return { cols, rows };
+}
+
 function startTerminalTakeover() {
   const engine = ensureTerminalEngine();
   if (!engine) return;
   if (takeoverStream.active) return;
   takeoverStream.active = true;
   stopLiveScreenQueue();
-  // Align the emulator to the pane geometry, then show the live stream.
-  const data = state.snapshot?.latest_screen?.data || {};
-  const width = Math.max(1, Number(data.pane_width) || 80);
-  const fullRows = Math.max(1, Number(data.pane_height) || 24);
-  const panelHeight = el.terminal_screen.clientHeight || 0;
-  const cellHeight = terminalCellHeight(engine);
-  let viewRows = fullRows;
-  if (panelHeight > 0) {
-    const fitting = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
-    if ((fitting + 1) * cellHeight - panelHeight <= 2) viewRows = fitting + 1;
-    else viewRows = fitting;
-    viewRows = Math.max(4, Math.min(fullRows, viewRows));
-  }
+  const grid = takeoverGrid(engine);
   engine.options.disableStdin = false;
   engine.options.convertEol = false;
   engine.options.scrollback = 2000;
-  if (engine.cols !== width || engine.rows !== viewRows) engine.resize(width, viewRows);
+  if (engine.cols !== grid.cols || engine.rows !== grid.rows) engine.resize(grid.cols, grid.rows);
   termRowsState = null;
   engine.reset();
 
@@ -960,7 +971,8 @@ function startTerminalTakeover() {
   takeoverStream.onDataHandler = onData;
   try { engine.onData(onData); } catch (_error) { /* older xterm */ }
 
-  const source = new EventSource(`/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/stream`);
+  const streamUrl = `/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/stream?cols=${grid.cols}&rows=${grid.rows}`;
+  const source = new EventSource(streamUrl);
   takeoverStream.source = source;
   source.addEventListener("seed", (event) => {
     if (!takeoverStream.active) return;

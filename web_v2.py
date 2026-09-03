@@ -241,6 +241,7 @@ class MeetingWebService:
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
         self.human_pipes: Dict[str, bool] = {}
+        self.human_geometry: Dict[str, Dict[str, int]] = {}
         self._store_cache: Dict[str, MeetingStore] = {}
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
@@ -341,6 +342,24 @@ class MeetingWebService:
                 pass  # the pane may already be gone, or the transport has no pipe
             with self.lock:
                 self.human_pipes[meeting_id] = False
+            # Handing the terminal back restores the pane to the size the
+            # Agent's earlier frames were captured at.
+            self._restore_human_geometry(store)
+
+    def _restore_human_geometry(self, store: MeetingStore) -> None:
+        meeting_id = store.meeting.meeting_id
+        with self.lock:
+            original = self.human_geometry.get(meeting_id)
+            if not original:
+                return
+            self.human_geometry.pop(meeting_id, None)
+        try:
+            transport = self._transport()
+            transport.resize_workspace_session(
+                store.meeting.session_name, original["cols"], original["rows"]
+            )
+        except (TmuxError, OSError, RunnerError, AttributeError):
+            pass  # the session may be gone; nothing to restore
 
     def meeting_live_state(self, meeting_id: str) -> Dict[str, Any]:
         with self._meeting_lock(meeting_id):
@@ -351,12 +370,20 @@ class MeetingWebService:
                 "status": store.meeting.status,
             }
 
-    def human_stream_start(self, meeting_id: str) -> Dict[str, Any]:
+    def human_stream_start(
+        self,
+        meeting_id: str,
+        cols: Optional[int] = None,
+        rows: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Prepare the takeover byte stream: pipe open + a fresh screen seed.
 
-        Returns the output file path, the byte offset from which new output
-        should be served, and a base64-encoded ANSI seed of the current
-        screen so the browser terminal can render state before streaming.
+        When the browser supplies ``cols``/``rows`` the workspace window is
+        resized to that exact grid first (a real interactive terminal matches
+        the pane to the client); the pre-takeover size is remembered and
+        restored when control is handed back. Returns the output file path,
+        the byte offset from which new output should be served, and a
+        base64-encoded ANSI seed of the current screen.
         """
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
@@ -370,8 +397,30 @@ class MeetingWebService:
             pane_id = store.meeting.pane_id
             if not pane_id:
                 raise WebError(409, "workspace pane is not available")
-            self._sync_human_pipe(store)
             transport = self._transport()
+            if cols is not None or rows is not None:
+                if not isinstance(cols, int) or not isinstance(rows, int):
+                    raise WebError(400, "terminal stream size must be integers")
+                if cols < 40 or cols > 300 or rows < 12 or rows > 120:
+                    raise WebError(400, "terminal stream size is outside supported bounds")
+                try:
+                    info = transport.pane_info(pane_id)
+                    current_cols = int(info["pane_width"])
+                    current_rows = int(info["pane_height"])
+                except (TmuxError, OSError, ValueError) as exc:
+                    raise WebError(502, f"cannot read pane size: {exc}") from exc
+                if current_cols != cols or current_rows != rows:
+                    with self.lock:
+                        self.human_geometry.setdefault(
+                            meeting_id, {"cols": current_cols, "rows": current_rows}
+                        )
+                    try:
+                        transport.resize_workspace_session(
+                            store.meeting.session_name, cols, rows
+                        )
+                    except (TmuxError, OSError) as exc:
+                        raise WebError(502, f"cannot resize workspace: {exc}") from exc
+            self._sync_human_pipe(store)
             try:
                 seed_ansi = transport.capture_visible_ansi(pane_id)
             except (TmuxError, OSError) as exc:
@@ -1635,7 +1684,7 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
-    def _stream_terminal(self, meeting_id: str) -> None:
+    def _stream_terminal(self, meeting_id: str, cols: Optional[int] = None, rows: Optional[int] = None) -> None:
         """Serve the takeover byte stream as Server-Sent Events.
 
         The first event is ``seed`` (base64 ANSI of the current screen, from
@@ -1646,7 +1695,7 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         and closes.
         """
         try:
-            prepared = self.service.human_stream_start(meeting_id)
+            prepared = self.service.human_stream_start(meeting_id, cols, rows)
         except WebError as exc:
             self._error(exc.status, exc.message)
             return
@@ -1785,11 +1834,25 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/terminal/stream", path)
             if match:
+                query = parse_qs(parsed.query, keep_blank_values=False)
+
+                def grid_value(name: str) -> Optional[int]:
+                    values = query.get(name)
+                    if not values:
+                        return None
+                    if not values[-1].isdigit():
+                        raise WebError(400, f"{name} must be an integer")
+                    return int(values[-1])
+
                 # SSE errors are handled inside _stream_terminal (client
                 # aborts, release); never write a second response after the
                 # stream headers are already on the wire.
                 try:
-                    self._stream_terminal(unquote(match.group(1)))
+                    self._stream_terminal(
+                        unquote(match.group(1)),
+                        grid_value("cols"),
+                        grid_value("rows"),
+                    )
                 except Exception:
                     pass
                 return

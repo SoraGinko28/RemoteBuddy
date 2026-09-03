@@ -59,6 +59,9 @@ class FakeTransport:
     def stop_output_pipe(self, pane_id):
         self.commands.append((pane_id, "unpipe", None))
 
+    def resize_workspace_session(self, session_name, cols, rows):
+        self.commands.append((session_name, "resize", cols, rows))
+
     def send_hex(self, pane_id, hex_text):
         self.tokens.append((pane_id, [{"kind": "hex", "value": hex_text}]))
         self.revision += 1
@@ -325,17 +328,24 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(409, gate.exception.status)
 
         self.service.acquire("stream-gate")
-        prepared = self.service.human_stream_start("stream-gate")
+        # The browser reports its own viewport; the pane is resized to fit it.
+        prepared = self.service.human_stream_start("stream-gate", cols=100, rows=28)
         self.assertTrue(prepared["seed"])
         self.assertEqual(0, prepared["seed_offset"])
         self.assertTrue(prepared["path"])
         self.assertEqual("human", self.service.meeting_live_state("stream-gate")["owner"])
-        # The output pipe was opened while human owned the terminal and is
-        # closed again by release.
+        self.assertTrue(
+            any(item[1] == "resize" and item[2:] == (100, 28) for item in self.transport.commands)
+        )
+        # The output pipe was opened while human owned the terminal and the
+        # pre-takeover size is restored by release.
         self.assertTrue(any(item[1] == "pipe" for item in self.transport.commands))
         self.service.release("stream-gate")
         self.wait_for_workers()
         self.assertTrue(any(item[1] == "unpipe" for item in self.transport.commands))
+        self.assertTrue(
+            any(item[1] == "resize" and item[2:] == (120, 36) for item in self.transport.commands)
+        )
 
     def test_message_during_human_control_hands_back_and_resumes(self):
         self.start_meeting("control-message")
