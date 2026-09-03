@@ -217,13 +217,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .control-status { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 .control-dot { width: 7px; height: 7px; border-radius: 50%; background: #78c69f; }
 .control-actions { display: flex; align-items: center; gap: 8px; }
-.terminal-controls { padding: 10px 12px; border-top: 1px solid var(--line); background: #f4f5f3; }
-.key-row { display: flex; flex-wrap: wrap; gap: 5px; }
-.key-row button { min-width: 38px; min-height: 31px; padding: 0 8px; font: 650 11px/1 ui-monospace, monospace; }
-.takeover-form { display: grid; gap: 8px; max-height: 220px; }
-.takeover-form textarea { width: 100%; max-height: 110px; min-height: 54px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 5px; padding: 9px; color: var(--ink); background: white; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }
-.takeover-footer { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.takeover-hint { flex: 1 1 150px; min-width: 0; color: var(--muted); font-size: 9px; }
+.terminal-controls { padding: 7px 12px; border-top: 1px solid var(--line); background: #eef3f0; }
+.takeover-live-hint { margin: 0; color: #0b6b3a; font-size: 11px; line-height: 1.4; }
 .readonly-badge.takeover-live { color: #0b6b3a; background: #e2f3e8; border-color: #9cc9ad; font-weight: 700; }
 
 .playback-bar { min-height: 52px; display: grid; grid-template-columns: 36px minmax(100px, 1fr) auto auto 36px; align-items: center; gap: 10px; padding: 8px 16px; border-top: 1px solid var(--line); background: white; }
@@ -342,8 +337,6 @@ dialog::backdrop { background: rgb(20 24 22 / .45); }
   .chat-pane { border-right: 0; border-bottom: 1px solid var(--line); }
   .chat-list { height: 330px; }
   .terminal-screen { height: 360px; }
-  .takeover-footer { align-items: flex-start; }
-  .takeover-hint { flex-basis: 100%; }
   .composer-footer { align-items: flex-start; }
   .composer-footer > span { flex-basis: 100%; }
   .delivery-options { flex: 1 1 auto; }

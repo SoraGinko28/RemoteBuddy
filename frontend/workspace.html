@@ -184,26 +184,7 @@
             </div>
 
             <div id="terminal-controls" class="terminal-controls" hidden>
-              <form id="takeover-form" class="message-form takeover-form" autocomplete="off">
-                <label class="sr-only" for="takeover-input">终端按键 DSL</label>
-                <textarea id="takeover-input" rows="2" maxlength="8192" spellcheck="false"
-                  placeholder='普通行=原文键入；$text 文本 / $ctrl 键名 / $rest 毫秒；回车键写 $ctrl Enter'></textarea>
-                <div class="takeover-footer">
-                  <span id="takeover-hint" class="takeover-hint">Enter 发送 · Shift/⌘+Enter 换行 · 不加回车不自动执行，一切按键都是显式的 · 下方特殊键会追加到待发内容</span>
-                  <div class="key-row" role="group" aria-label="特殊按键">
-                    <button type="button" data-key="Enter" title="回车">↵</button>
-                    <button type="button" data-key="Escape" title="Esc">Esc</button>
-                    <button type="button" data-key="Tab" title="Tab">Tab</button>
-                    <button type="button" data-key="Up" title="↑">↑</button>
-                    <button type="button" data-key="Down" title="↓">↓</button>
-                    <button type="button" data-key="Left" title="←">←</button>
-                    <button type="button" data-key="Right" title="→">→</button>
-                    <button type="button" data-key="Backspace" title="退格">⌫</button>
-                    <button type="button" data-key="C-c" title="Ctrl+C">C-c</button>
-                  </div>
-                  <button id="takeover-send-button" class="primary-command compact" type="submit">发送按键</button>
-                </div>
-              </form>
+              <p class="takeover-live-hint" id="takeover-live-hint">已接管：现在这个画面就是真终端，直接敲键盘即可。点「交还 Agent」或发消息结束接管。</p>
             </div>
           </section>
         </div>

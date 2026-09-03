@@ -50,6 +50,19 @@ class FakeTransport:
     def capture_visible(self, _pane_id):
         return f"fake shared terminal {self.revision}\n{self.command} {self.path}"
 
+    def capture_visible_ansi(self, pane_id):
+        return self.capture_visible(pane_id)
+
+    def start_output_pipe(self, pane_id, target_path):
+        self.commands.append((pane_id, "pipe", target_path))
+
+    def stop_output_pipe(self, pane_id):
+        self.commands.append((pane_id, "unpipe", None))
+
+    def send_hex(self, pane_id, hex_text):
+        self.tokens.append((pane_id, [{"kind": "hex", "value": hex_text}]))
+        self.revision += 1
+
     def send_workspace_command(self, pane_id, command, path=""):
         self.commands.append((pane_id, command, path))
         self.revision += 1
@@ -277,6 +290,52 @@ class MeetingWebServiceTest(unittest.TestCase):
             self.service.terminal_input("control-validate", {"kind": "keys", "keys": ["$text x"]})
         self.service.release("control-validate")
         self.wait_for_workers()
+
+    def test_terminal_input_accepts_raw_bytes(self):
+        self.start_meeting("control-bytes")
+        self.service.acquire("control-bytes")
+        store = self.service.terminal_input("control-bytes", {"bytes": "67697420737461747573"})
+        sent = [
+            token
+            for (_pane, keys) in self.transport.tokens
+            for token in keys
+            if token.get("kind") == "hex"
+        ]
+        self.assertEqual([{"kind": "hex", "value": "67697420737461747573"}], sent)
+        events = store.events()
+        human_actions = [
+            event for event in events if event["kind"] == "action" and event["actor"] == "human"
+        ]
+        self.assertTrue(
+            any(event["data"].get("status") == "completed" for event in human_actions)
+        )
+        with self.assertRaises(WebError):
+            self.service.terminal_input("control-bytes", {"bytes": "zz"})
+        with self.assertRaises(WebError):
+            self.service.terminal_input("control-bytes", {"bytes": ""})
+        with self.assertRaises(WebError):
+            self.service.terminal_input("control-bytes", {"keys": ["$text x"], "bytes": "6769"})
+        self.service.release("control-bytes")
+        self.wait_for_workers()
+
+    def test_terminal_stream_preparation(self):
+        self.start_meeting("stream-gate")
+        with self.assertRaises(WebError) as gate:
+            self.service.human_stream_start("stream-gate")
+        self.assertEqual(409, gate.exception.status)
+
+        self.service.acquire("stream-gate")
+        prepared = self.service.human_stream_start("stream-gate")
+        self.assertTrue(prepared["seed"])
+        self.assertEqual(0, prepared["seed_offset"])
+        self.assertTrue(prepared["path"])
+        self.assertEqual("human", self.service.meeting_live_state("stream-gate")["owner"])
+        # The output pipe was opened while human owned the terminal and is
+        # closed again by release.
+        self.assertTrue(any(item[1] == "pipe" for item in self.transport.commands))
+        self.service.release("stream-gate")
+        self.wait_for_workers()
+        self.assertTrue(any(item[1] == "unpipe" for item in self.transport.commands))
 
     def test_message_during_human_control_hands_back_and_resumes(self):
         self.start_meeting("control-message")
