@@ -1324,14 +1324,11 @@ class MeetingWebService:
                         cancelled = True
                     else:
                         transport.send_hex(pane_id, hex_text)
-                if not cancelled:
-                    time.sleep(0.05)
-                    with self._meeting_lock(meeting_id):
-                        store = self.load_store(meeting_id)
-                        if not owns_terminal(store):
-                            cancelled = True
-                        else:
-                            capture_workspace(store, transport)
+                # No settle sleep and no per-batch screen capture here: the
+                # pane echo returns through the byte stream immediately and
+                # the 4Hz capture worker journals frames while takeover is
+                # live. Waiting 50ms plus a capture made every keystroke
+                # batch feel ~150ms late, worst for Enter/Backspace.
             else:
                 for index, token in enumerate(keys):  # type: ignore[union-attr]
                     is_rest = token.get("kind") == "rest"
@@ -1827,7 +1824,7 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                         heartbeat = now
                         wfile.write(b": heartbeat\n\n")
                         wfile.flush()
-                    time.sleep(0.04)
+                    time.sleep(0.02)
             finally:
                 handle.close()
         except StreamClosed:

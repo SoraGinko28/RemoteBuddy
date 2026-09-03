@@ -946,15 +946,35 @@ function flushTakeoverInput(silent = false) {
     }
   }).finally(() => {
     takeoverStream.flushing = false;
+    // Anything queued while the request was in flight must still go out.
+    if (takeoverStream.inputHex && takeoverStream.flushTimer === null) {
+      takeoverStream.flushTimer = setTimeout(() => flushTakeoverInput(false), 15);
+    }
   });
 }
 
-function queueTakeoverInput(text) {
+// Control keys (Enter, Backspace, arrows, Ctrl+letter) must feel instant:
+// they flush immediately instead of waiting for the typing batch window.
+function takeoverBytesUrgent(text) {
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function queueTakeoverInput(text, urgent = false) {
   const bytes = new TextEncoder().encode(text);
   for (const byte of bytes) takeoverStream.inputHex += byte.toString(16).padStart(2, "0");
-  if (takeoverStream.flushTimer === null) {
-    takeoverStream.flushTimer = setTimeout(() => flushTakeoverInput(false), 30);
+  if (takeoverStream.flushTimer !== null) {
+    if (!urgent) return;
+    clearTimeout(takeoverStream.flushTimer);
+    takeoverStream.flushTimer = null;
   }
+  takeoverStream.flushTimer = setTimeout(
+    () => flushTakeoverInput(false),
+    urgent ? 0 : 30,
+  );
 }
 
 // The live terminal must match the pane exactly, so the pane is resized to
@@ -1038,18 +1058,18 @@ function bindTakeoverInput(engine) {
     if (bytes === null) return;
     event.preventDefault();
     event.stopPropagation();
-    queueTakeoverInput(bytes);
+    queueTakeoverInput(bytes, takeoverBytesUrgent(bytes));
   };
   takeoverStream.compositionHandler = (event) => {
     if (!takeoverStream.active || !takeoverInputInScreen(event.target)) return;
-    if (event.type === "compositionend" && event.data) queueTakeoverInput(event.data);
+    if (event.type === "compositionend" && event.data) queueTakeoverInput(event.data, takeoverBytesUrgent(event.data));
   };
   takeoverStream.pasteHandler = (event) => {
     if (!takeoverStream.active || !takeoverInputInScreen(event.target)) return;
     const text = event.clipboardData ? event.clipboardData.getData("text/plain") : "";
     if (!text) return;
     event.preventDefault();
-    queueTakeoverInput(text);
+    queueTakeoverInput(text, takeoverBytesUrgent(text));
   };
   for (const [type, handler] of [
     ["keydown", takeoverStream.keyHandler],
