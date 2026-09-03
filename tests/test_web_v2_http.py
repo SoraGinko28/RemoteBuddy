@@ -267,11 +267,14 @@ class MeetingWebServiceTest(unittest.TestCase):
         # takeover is free-form, unlike the Agent's process-gated actions.
         self.assertEqual("bash", self.transport.command)
 
+        runners_before = len(RecordingRunner.instances)
         released = self.service.release("control-demo")
-        self.assertEqual("agent", released.meeting.control_owner)
-        self.assertEqual("agent_thinking", released.meeting.phase)
+        self.assertEqual("none", released.meeting.control_owner)
+        self.assertEqual("waiting_for_user", released.meeting.phase)
         self.wait_for_workers()
-        self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
+        # Takeover started from an idle meeting, so a plain 交还 must NOT wake
+        # the Agent into another autonomous run.
+        self.assertEqual(runners_before, len(RecordingRunner.instances))
 
     def test_terminal_input_requires_human_control(self):
         self.start_meeting("control-gate")
@@ -441,8 +444,13 @@ class MeetingWebServiceTest(unittest.TestCase):
         store = restarted.acquire("restart-demo")
         self.assertEqual("human", store.meeting.control_owner)
         self.assertEqual("human_control", store.meeting.phase)
+        # Takeover interrupted an Agent that was mid-work: a plain 交还
+        # resumes the Agent where it stopped.
+        runners_before = len(RecordingRunner.instances)
         restarted.release("restart-demo")
         self.wait_for_workers()
+        self.assertEqual(runners_before + 1, len(RecordingRunner.instances))
+        self.assertTrue(RecordingRunner.instances[-1].resume_modes[-1])
 
     def test_complete_retains_and_cleanup_or_stop_removes_session(self):
         self.start_meeting("complete-demo")

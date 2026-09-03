@@ -242,6 +242,10 @@ class MeetingWebService:
         self.active_backends: Dict[str, AgentBackend] = {}
         self.human_pipes: Dict[str, bool] = {}
         self.human_geometry: Dict[str, Dict[str, int]] = {}
+        # Whether the Agent was mid-work when the human took over; only then
+        # does a plain 交还 resume it. Takeover from an idle/waiting state
+        # returns to waiting instead of letting the Agent run on its own.
+        self.human_resume: Dict[str, bool] = {}
         self._store_cache: Dict[str, MeetingStore] = {}
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
@@ -1100,10 +1104,10 @@ class MeetingWebService:
                     reference=references[0] if references else None,
                 )
             if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
-                # A message sent while the human holds the terminal hands
-                # control back to the Agent with that instruction, exactly as
-                # if the human had clicked 交还 Agent and then chatted.
-                return self.release(meeting_id)
+                # A chat while the human holds the terminal is an explicit
+                # instruction: hand control back AND resume the Agent with it.
+                self._sync_human_pipe(store)
+                return self._resume_agent_from_human(meeting_id)
             if delivery == "interrupt" or wake_agent:
                 store.bump_request_generation(
                     failure=None,
@@ -1161,6 +1165,10 @@ class MeetingWebService:
             if store.meeting.control_owner == "human":
                 return store
             orphaned_agent = self._orphaned_agent(store, meeting_id)
+            with self.lock:
+                self.human_resume[meeting_id] = (
+                    store.meeting.phase in {"agent_thinking", "agent_acting"} or orphaned_agent
+                )
             store.bump_request_generation(
                 control_requested="human",
                 recovery_required=store.meeting.recovery_required or orphaned_agent,
@@ -1178,24 +1186,49 @@ class MeetingWebService:
             store = self.load_store(meeting_id)
             if store.meeting.control_owner != "human":
                 return store
-            config = self._config_for_store(store)
-            fresh_conversation = store.meeting.recovery_required
-            store.bump_request_generation(
-                phase="agent_thinking",
-                control_owner="agent",
+            with self.lock:
+                resume_agent = self.human_resume.pop(meeting_id, False)
+            if resume_agent:
+                # The Agent was mid-work when the human took over: a plain 交还
+                # resumes it where it stopped.
+                return self._resume_agent_from_human(meeting_id)
+            # The Agent was idle (waiting) when the human took over: hand back
+            # to waiting instead of letting the Agent run on its own.
+            store.update(
+                phase="waiting_for_user",
+                control_owner="none",
                 control_requested=None,
-                cycle_action_count=0,
-                cycle_started_at=utc_now(),
-                status="running",
+                pending_action_id=None,
             )
-            store.append_event("control", "human", "agent_thinking", data={"status": "released"})
+            store.append_event("control", "human", "waiting_for_user", data={"status": "released"})
             self._sync_human_pipe(store)
-            self._ensure_worker(
-                store,
-                config,
-                resume=True,
-                fresh_conversation=fresh_conversation,
-            )
+            return self.load_store(meeting_id)
+
+    def _resume_agent_from_human(self, meeting_id: str) -> MeetingStore:
+        """Hand control to the Agent and start a resume cycle.
+
+        Called with the meeting lock held, from release (Agent was mid-work)
+        or from a chat sent during takeover (which always carries a task).
+        """
+        store = self.load_store(meeting_id)
+        config = self._config_for_store(store)
+        fresh_conversation = store.meeting.recovery_required
+        store.bump_request_generation(
+            phase="agent_thinking",
+            control_owner="agent",
+            control_requested=None,
+            cycle_action_count=0,
+            cycle_started_at=utc_now(),
+            status="running",
+        )
+        store.append_event("control", "human", "agent_thinking", data={"status": "released"})
+        self._sync_human_pipe(store)
+        self._ensure_worker(
+            store,
+            config,
+            resume=True,
+            fresh_conversation=fresh_conversation,
+        )
         return store
 
     def terminal_input(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
