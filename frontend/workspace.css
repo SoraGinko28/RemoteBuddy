@@ -68,7 +68,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .welcome-mark { width: 72px; height: 72px; display: grid; place-items: center; background: var(--terminal); color: white; border-radius: 7px; font: 700 24px/1 ui-monospace, monospace; }
 .welcome h1 { margin: 24px 0 8px; font-size: 28px; }
 .welcome p { color: var(--muted); margin: 0 0 22px; }
-.session-view { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.session-view { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.session-view.details-open { grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .session-header { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .session-view .session-details { display: none; }
 .session-view.details-open .session-details { display: grid; }
