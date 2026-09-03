@@ -170,6 +170,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .terminal-screen.reference-target { outline: 2px solid #c59a43; outline-offset: -2px; }
 #terminal-score-status { justify-content: flex-end; max-width: 34%; }
 .control-bar { min-height: 50px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; padding: 8px 13px; border-top: 1px solid #303533; background: #222624; color: white; }
+.control-status { display: none; }
 .terminal-playback { min-height: 0; border: 0; background: transparent; padding: 0; flex: 1 1 320px; grid-template-columns: auto minmax(60px, 1fr) auto auto auto; }
 .control-status { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 .control-dot { width: 7px; height: 7px; border-radius: 50%; background: #78c69f; }
