@@ -959,28 +959,43 @@ function selectionCandidate() {
     const range = selection.getRangeAt(0);
     const startRoot = sourceRootFromNode(range.startContainer);
     const endRoot = sourceRootFromNode(range.endContainer);
-    const root = startRoot || endRoot;
+    let root = startRoot || endRoot;
     if (!root) return null;
-    if (startRoot && endRoot && startRoot !== endRoot) return null;
+
+    let clampToStart = false;
+    let clampToEnd = false;
+    if (startRoot && endRoot && startRoot !== endRoot) {
+      // Triple-click can spill from one message into the next message or into
+      // the composer. If the selection starts in an earlier source element and
+      // ends outside it, clamp to that source element's end. If it starts
+      // before the source and ends inside it, clamp to that source's start.
+      const startBeforeEnd = Boolean(
+        startRoot.compareDocumentPosition(endRoot) & Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      root = startBeforeEnd ? startRoot : endRoot;
+      clampToEnd = startBeforeEnd;
+      clampToStart = !startBeforeEnd;
+    } else if (startRoot && !endRoot) {
+      clampToEnd = true;
+    } else if (!startRoot && endRoot) {
+      clampToStart = true;
+    }
+
     const source = sourceEventForRoot(root);
     if (!source) return null;
     const content = root.textContent || "";
     const length = codePointLength(content);
     let start;
     let end;
-    if (startRoot && endRoot) {
+    if (!clampToStart && !clampToEnd && startRoot && endRoot) {
       const offsets = selectionOffsets(root, selection);
       if (!offsets) return null;
       start = offsets.start;
       end = offsets.end;
-    } else if (startRoot && !endRoot) {
-      // Selection starts inside this message and spills past its end; clamp to
-      // the end of the message content.
+    } else if (clampToEnd) {
       start = textOffsetFromPoint(root, range.startContainer, range.startOffset);
       end = length;
     } else {
-      // Selection starts before this message and ends inside it; clamp to the
-      // beginning of the message content.
       start = 0;
       end = textOffsetFromPoint(root, range.endContainer, range.endOffset);
     }
