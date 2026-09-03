@@ -498,6 +498,32 @@ function referencesForEvent(event) {
   return references;
 }
 
+function jumpToChatTime(chatEvent) {
+  const targetTime = Date.parse(chatEvent.captured_at || "");
+  let screenIndex = -1;
+  state.timeline.forEach((item, index) => {
+    if (item.kind !== "screen") return;
+    const itemTime = Date.parse(item.captured_at || "");
+    if (Number.isFinite(targetTime) && Number.isFinite(itemTime) && itemTime <= targetTime) {
+      screenIndex = index;
+    }
+  });
+  if (screenIndex < 0) {
+    screenIndex = state.timeline.findIndex((item) => item.kind === "screen");
+  }
+  if (screenIndex < 0) return;
+  state.scoreOverlayIds.clear();
+  hidePlaybackHover();
+  state.followLive = false;
+  state.chatFollow = false;
+  state.playbackIndex = screenIndex;
+  state.viewportMode = "free";
+  stopLiveScreenQueue();
+  stopPlayback();
+  renderViewportMode();
+  renderAll();
+}
+
 function renderChat() {
   if (activeSourceSelection()) return;
   const previousScrollTop = el.chat_list.scrollTop;
@@ -513,10 +539,13 @@ function renderChat() {
       const article = node("article", `message ${event.actor}`);
       article.dataset.eventId = event.event_id || "";
       const head = node("header", "message-head");
+      const timeEl = node("time", "", fmtTime(event.captured_at));
+      timeEl.title = "跳转到相近终端画面";
+      timeEl.addEventListener("click", () => jumpToChatTime(event));
       head.append(
         node("strong", "", event.actor === "human" ? "你" : "Agent"),
         node("span", `message-type ${event.message_type || ""}`, labels.message[event.message_type] || "消息"),
-        node("time", "", fmtTime(event.captured_at)),
+        timeEl,
       );
       const annotations = scoreAnnotationsForSource(event, visibleScores);
       const body = node("p", "message-content");
