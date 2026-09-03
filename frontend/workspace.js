@@ -246,13 +246,27 @@ function renderHeader() {
   if (!state.snapshot) return;
   const meeting = state.snapshot.meeting;
   el.meeting_title.textContent = meeting.meeting_id;
-  el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
-  el.status_badge.dataset.status = meeting.status;
-  el.owner_badge.textContent = labels.owner[meeting.control_owner] || meeting.control_owner;
-  el.session_meta.textContent = `${meeting.session_name} · ${meeting.session_state} · ${labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI"}`;
+  if (el.status_badge) {
+    el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
+    el.status_badge.dataset.status = meeting.status;
+  }
+  if (el.owner_badge) {
+    el.owner_badge.textContent = labels.owner[meeting.control_owner] || meeting.control_owner;
+  }
+  const errorPhases = ["api_error", "cycle_timeout", "failed"];
   const failure = typeof meeting.failure === "string" ? meeting.failure.trim() : "";
-  el.failure_message.textContent = failure;
-  el.failure_message.hidden = !failure || !["api_error", "cycle_timeout", "failed"].includes(meeting.phase);
+  const inErrorPhase = errorPhases.includes(meeting.phase);
+  if (failure && inErrorPhase) {
+    el.session_meta.textContent = failure;
+    el.session_meta.classList.add("error");
+  } else {
+    const topStatus = inErrorPhase
+      ? (labels.phase[meeting.phase] || meeting.phase)
+      : (labels.status[meeting.status] || meeting.status);
+    el.session_meta.textContent = `${topStatus} · ${labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI"}`;
+    el.session_meta.classList.remove("error");
+  }
+  el.failure_message.hidden = true;
   el.phase_label.textContent = labels.phase[meeting.phase] || meeting.phase;
   el.backend_label.textContent = labels.backend[meeting.agent_backend] || meeting.agent_backend || "Responses API";
   el.provider_label.textContent = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
@@ -270,7 +284,9 @@ function renderHeader() {
   el.terminal_path.textContent = displayedTerminal.current_path
     ? displayedTerminal.current_path.split("/").slice(-2).join("/")
     : "workspace";
-  el.control_label.textContent = meeting.control_requested === "human" ? "等待 Agent 交出控制权" : (labels.owner[meeting.control_owner] || "无人控制");
+  if (el.control_label) {
+    el.control_label.textContent = meeting.control_requested === "human" ? "等待 Agent 交出控制权" : (labels.owner[meeting.control_owner] || "无人控制");
+  }
 
   const terminalState = ["completed", "failed", "interrupted"].includes(meeting.status);
   const evaluateAction = el.selection_menu?.querySelector('[data-selection-action="evaluate"]');
@@ -1376,6 +1392,25 @@ function textTokens(value) {
 function bind() {
   el.new_button.addEventListener("click", openNewDialog);
   el.welcome_new_button.addEventListener("click", openNewDialog);
+  const railNew = document.getElementById("rail-new-button");
+  const railMore = document.getElementById("rail-more-button");
+  const appShell = document.querySelector(".app-shell");
+  if (railNew) railNew.addEventListener("click", openNewDialog);
+  if (railMore && appShell) {
+    railMore.addEventListener("click", () => appShell.classList.toggle("sidebar-open"));
+  }
+  document.querySelector(".workspace-main")?.addEventListener("pointerdown", () => {
+    appShell?.classList.remove("sidebar-open");
+  });
+  const sessionMore = document.getElementById("session-more-button");
+  const sessionView = document.getElementById("session-view");
+  if (sessionMore && sessionView) {
+    sessionMore.addEventListener("click", () => {
+      const open = sessionView.classList.toggle("details-open");
+      sessionMore.setAttribute("aria-expanded", String(open));
+      sessionMore.title = open ? "收起会话详情" : "展开会话详情";
+    });
+  }
   el.settings_button.addEventListener("click", openSettingsDialog);
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
