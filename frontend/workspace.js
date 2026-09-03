@@ -761,10 +761,23 @@ function copyTextToClipboard(text) {
   return false;
 }
 
-function installTerminalClipboard(term) {
+// Clipboard/selection helpers talk to whichever Terminal instance is live so
+// they can be bound once while the terminal itself is rebuilt on mode
+// switches (takeover stream <-> captured-frame painting).
+let terminalClipboardBound = false;
+
+function activeTerm() {
+  return terminalEngine ? terminalEngine.term : null;
+}
+
+function installTerminalClipboard() {
+  if (terminalClipboardBound) return;
+  terminalClipboardBound = true;
   // Entering the terminal with a click gives xterm focus so its own
   // selection machinery (drag, double/triple click) is active.
   el.terminal_screen.addEventListener("pointerdown", () => {
+    const term = activeTerm();
+    if (!term) return;
     try {
       term.focus();
     } catch (_error) {
@@ -777,8 +790,9 @@ function installTerminalClipboard(term) {
   // gesture.
   let multiClickTimer = null;
   el.terminal_screen.addEventListener("pointerup", (event) => {
+    const term = activeTerm();
     lastTerminalSelectionPoint = { x: event.clientX, y: event.clientY };
-    if (!event.detail || event.detail < 2) return;
+    if (!term || !event.detail || event.detail < 2) return;
     clearTimeout(multiClickTimer);
     multiClickTimer = setTimeout(() => {
       const position = typeof term.getSelectionPosition === "function" ? term.getSelectionPosition() : null;
@@ -794,6 +808,8 @@ function installTerminalClipboard(term) {
     if (!(event.metaKey || event.ctrlKey)) return;
     const key = event.key.toLowerCase();
     if (key !== "c") return;
+    const term = activeTerm();
+    if (!term) return;
     const selected = term.getSelection();
     if (!selected) return;
     event.preventDefault();
@@ -808,7 +824,8 @@ function installTerminalClipboard(term) {
       copyTextToClipboard(lastTerminalAnsiText || lastTerminalPlainText);
       return;
     }
-    const selected = term.getSelection();
+    const term = activeTerm();
+    const selected = term ? term.getSelection() : "";
     copyTextToClipboard(selected || lastTerminalPlainText);
   });
 }
@@ -845,7 +862,7 @@ function ensureTerminalEngine() {
     });
     el.terminal_screen.replaceChildren();
     term.open(el.terminal_screen);
-    installTerminalClipboard(term);
+    installTerminalClipboard();
   } catch (_error) {
     return null;
   }
@@ -860,6 +877,24 @@ function ensureTerminalEngine() {
     renderTerminal();
   }, 350);
   return term;
+}
+
+// Rebuild the xterm from scratch. The two rendering modes -- captured-frame
+// painting (normal/Agent) and the byte-stream takeover -- must never share a
+// lingering screen buffer: painting over stream leftovers or seeding over
+// painted leftovers is exactly what produced duplicated rows and scrambled
+// columns on release/re-acquire. A fresh Terminal instance makes every mode
+// switch start from a physically empty screen.
+function rebuildTerminalEngine() {
+  if (terminalEngine) {
+    try {
+      terminalEngine.term.dispose();
+    } catch (_error) {
+      // dispose may throw if the terminal is mid-render; ignore.
+    }
+    terminalEngine = null;
+  }
+  return ensureTerminalEngine();
 }
 
 // Re-measure the real cell box and repaint when the terminal's container size
@@ -954,12 +989,16 @@ function takeoverGrid(engine) {
 }
 
 function startTerminalTakeover() {
-  const engine = ensureTerminalEngine();
-  if (!engine) return;
   if (takeoverStream.active) return;
+  // Measure the viewport grid on the CURRENT engine (its cell metrics are
+  // already real from frame painting), then hand the stream a brand-new
+  // Terminal so no painted cells survive into the byte-stream mode.
+  const previous = ensureTerminalEngine();
+  const grid = previous ? takeoverGrid(previous) : { cols: 80, rows: 24 };
+  const engine = rebuildTerminalEngine();
+  if (!engine) return;
   takeoverStream.active = true;
   stopLiveScreenQueue();
-  const grid = takeoverGrid(engine);
   engine.options.disableStdin = false;
   engine.options.convertEol = false;
   // No browser-side scrollback during takeover: the viewport equals the
@@ -1035,17 +1074,11 @@ function stopTerminalTakeover(flushPending) {
   const source = takeoverStream.source;
   takeoverStream.source = null;
   if (source) source.close();
-  const engine = terminalEngine?.term;
-  if (engine) {
-    engine.options.disableStdin = true;
-    engine.options.convertEol = true;
-    if (takeoverStream.onDataHandler) {
-      try { engine.offData(takeoverStream.onDataHandler); } catch (_error) { /* no-op */ }
-    }
-    engine.reset();
-  }
   takeoverStream.onDataHandler = null;
   takeoverStream.inputHex = "";
+  // Hand the terminal back to frame painting from a fresh instance so no
+  // byte-stream cells can linger under the painted frames.
+  rebuildTerminalEngine();
   termRowsState = null;
   state.terminalFrameKey = null;
   renderTerminal();
