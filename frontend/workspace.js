@@ -1102,7 +1102,11 @@ function startTerminalTakeover() {
   // handlers could each emit the same key, doubling every character. We
   // translate keys ourselves in document capture and send exactly once.
   engine.options.disableStdin = true;
-  engine.options.convertEol = false;
+  // convertEol stays TRUE: the seed frame separates rows with bare LF and
+  // the emulator must turn LF into CRLF or every new row starts where the
+  // previous row ended (lines drift right). A real CRLF in the stream only
+  // adds a harmless extra carriage return.
+  engine.options.convertEol = true;
   // No browser-side scrollback during takeover: the viewport equals the
   // pane's own screen (which scrolls internally), and a vertical scrollbar
   // would steal gutter width and push the rightmost columns underneath it.
