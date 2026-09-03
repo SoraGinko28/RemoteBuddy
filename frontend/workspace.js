@@ -10,6 +10,7 @@ const el = Object.fromEntries([
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button", "terminal-controls",
+  "terminal-copy-button", "terminal-copy-ansi-button",
   "command-form", "command-select", "command-path", "vim-form", "vim-text", "process-input-label", "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "settings-button", "settings-dialog", "settings-form", "judge-name-input", "save-settings", "close-settings", "cancel-settings", "settings-error", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
   "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "start-button", "new-error",
@@ -27,6 +28,7 @@ const state = {
   timeline: [],
   cursor: 0,
   playbackIndex: -1,
+  playbackFreezeAt: 0,
   followLive: true,
   viewportMode: "follow",
   chatFollow: true,
@@ -187,6 +189,10 @@ function mergeTimelineEvents(events) {
   return additions;
 }
 
+function markPlaybackFrozen() {
+  state.playbackFreezeAt = Date.now();
+}
+
 function stopLiveScreenQueue({ jumpToLatest = false } = {}) {
   clearTimeout(state.liveScreenTimer);
   state.liveScreenTimer = null;
@@ -216,6 +222,16 @@ function enqueueLiveScreens(events) {
   if (!state.followLive) return;
   const screens = events.filter((event) => event.kind === "screen");
   if (!screens.length) return;
+  if (screens.length > MAX_LIVE_SCREEN_QUEUE) {
+    // A burst of backlog after a quiet stretch: pacing the whole batch would
+    // replay it slowly and look like seconds of latency. Snap straight to the
+    // newest captured frame instead.
+    stopLiveScreenQueue();
+    state.liveScreenEvent = screens.at(-1);
+    state.liveScreenQueue = [];
+    renderTerminal();
+    return;
+  }
   state.liveScreenQueue.push(...screens);
   if (state.liveScreenQueue.length > MAX_LIVE_SCREEN_QUEUE) {
     const source = state.liveScreenQueue;
@@ -277,9 +293,7 @@ function renderHeader() {
   el.event_count.textContent = String(meeting.event_count || state.timeline.length);
 
   const terminal = state.snapshot.latest_screen?.data || {};
-  const displayedTerminal = state.followLive && state.liveScreenEvent?.data
-    ? state.liveScreenEvent.data
-    : terminal;
+  const displayedTerminal = terminal;
   el.terminal_command.textContent = displayedTerminal.current_command || "shell";
   el.terminal_path.textContent = displayedTerminal.current_path
     ? displayedTerminal.current_path.split("/").slice(-2).join("/")
@@ -517,6 +531,7 @@ function jumpToChatTime(chatEvent) {
   if (screenIndex < 0) return;
   state.scoreOverlayIds.clear();
   hidePlaybackHover();
+  markPlaybackFrozen();
   state.followLive = false;
   state.chatFollow = false;
   state.playbackIndex = screenIndex;
@@ -591,6 +606,7 @@ function renderChat() {
           if (index < 0) return;
           state.scoreOverlayIds.clear();
           hidePlaybackHover();
+          markPlaybackFrozen();
           state.followLive = false;
           state.playbackIndex = index;
           state.highlightReference = reference;
@@ -650,9 +666,329 @@ function renderChat() {
   }
 }
 
+let terminalEngine = null;
+let lastTerminalPlainText = "";
+let lastTerminalAnsiText = "";
+let lastTerminalFrame = null; // { event_id, content } of the painted frame
+let lastTerminalSelectionPoint = null; // { x, y } client coords
+
+function copyFallbackDialog(text) {
+  // Last-resort copy: a small modal with the text already selected, so a
+  // plain Cmd/Ctrl+C always works even when the clipboard API is denied.
+  const overlay = node("div", "copy-fallback-overlay");
+  const panel = node("div", "copy-fallback-panel");
+  panel.append(node("p", "", "浏览器阻止了自动复制，请直接按 ⌘/Ctrl+C（文本已全选）"));
+  const area = node("textarea", "copy-fallback-area");
+  area.readOnly = true;
+  area.value = text;
+  area.addEventListener("focus", () => area.select());
+  const closeButton = node("button", "primary-command compact", "关闭");
+  closeButton.type = "button";
+  closeButton.addEventListener("click", () => overlay.remove());
+  panel.append(area, closeButton);
+  overlay.append(panel);
+  overlay.addEventListener("pointerdown", (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  document.body.appendChild(overlay);
+  area.focus();
+  area.select();
+}
+
+function legacyCopy(text) {
+  const helper = document.createElement("textarea");
+  helper.value = text;
+  helper.style.position = "fixed";
+  helper.style.opacity = "0";
+  document.body.appendChild(helper);
+  helper.focus();
+  helper.select();
+  helper.setSelectionRange(0, text.length);
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch (_error) {
+    copied = false;
+  } finally {
+    helper.remove();
+  }
+  return copied;
+}
+
+function copyTextToClipboard(text) {
+  if (!text) {
+    toast("没有可复制的内容");
+    return false;
+  }
+  const notify = () => toast(`已复制 ${codePointLength(text)} 字符`);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(
+      notify,
+      () => {
+        if (legacyCopy(text)) notify();
+        else copyFallbackDialog(text);
+      },
+    );
+    return true;
+  }
+  if (legacyCopy(text)) {
+    notify();
+    return true;
+  }
+  copyFallbackDialog(text);
+  return false;
+}
+
+function installTerminalClipboard(term) {
+  // Entering the terminal with a click gives xterm focus so its own
+  // selection machinery (drag, double/triple click) is active.
+  el.terminal_screen.addEventListener("pointerdown", () => {
+    try {
+      term.focus();
+    } catch (_error) {
+      // focus may be no-op before the terminal is fully open.
+    }
+  });
+
+  // Double-click / triple-click: xterm selects word / line internally. Confirm
+  // it actually happened so a missing highlight is not mistaken for a dead
+  // gesture.
+  let multiClickTimer = null;
+  el.terminal_screen.addEventListener("pointerup", (event) => {
+    lastTerminalSelectionPoint = { x: event.clientX, y: event.clientY };
+    if (!event.detail || event.detail < 2) return;
+    clearTimeout(multiClickTimer);
+    multiClickTimer = setTimeout(() => {
+      const position = typeof term.getSelectionPosition === "function" ? term.getSelectionPosition() : null;
+      const selected = term.getSelection();
+      if (position && selected) {
+        toast(`已选中 ${selected.length} 字符 · ⌘/Ctrl+C 复制`);
+      }
+    }, 30);
+  });
+
+  // Selected text copies with Cmd/Ctrl+C (and Cmd/Ctrl+Shift+C).
+  el.terminal_screen.addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    if (key !== "c") return;
+    const selected = term.getSelection();
+    if (!selected) return;
+    event.preventDefault();
+    copyTextToClipboard(selected);
+  });
+  // Right-click copies the selection, or the whole current frame when nothing
+  // is selected. Shift+right-click copies the raw ANSI of the current frame
+  // so the color layer can be inspected or pasted for debugging.
+  el.terminal_screen.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    if (event.shiftKey) {
+      copyTextToClipboard(lastTerminalAnsiText || lastTerminalPlainText);
+      return;
+    }
+    const selected = term.getSelection();
+    copyTextToClipboard(selected || lastTerminalPlainText);
+  });
+}
+
+function ensureTerminalEngine() {
+  // Lazily mount a single xterm.js terminal into #terminal-screen. Returns
+  // null when xterm.js is unavailable so the legacy DOM text path is used.
+  if (terminalEngine) return terminalEngine.term;
+  if (!el.terminal_screen || typeof window.Terminal !== "function") return null;
+  let term;
+  try {
+    term = new window.Terminal({
+      allowProposedApi: true,
+      disableStdin: true,
+      convertEol: true,
+      cursorBlink: false,
+      cursorStyle: "block",
+      fontSize: TERMINAL_FONT_SIZE,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      lineHeight: TERMINAL_LINE_HEIGHT,
+      scrollback: 0,
+      theme: {
+        background: "#151817",
+        foreground: "#d5dbd6",
+        cursor: "#c5cdc8",
+        selectionBackground: "#5b7fd4",
+        selectionForeground: "#ffffff",
+        black: "#1c1f1e", red: "#e06c75", green: "#98c379", yellow: "#d19a66",
+        blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#abb2bf",
+        brightBlack: "#5c6370", brightRed: "#e06c75", brightGreen: "#98c379",
+        brightYellow: "#d19a66", brightBlue: "#61afef", brightMagenta: "#c678dd",
+        brightCyan: "#56b6c2", brightWhite: "#ffffff",
+      },
+    });
+    el.terminal_screen.replaceChildren();
+    term.open(el.terminal_screen);
+    installTerminalClipboard(term);
+  } catch (_error) {
+    return null;
+  }
+  terminalEngine = { term };
+  // xterm needs a paint before its real cell metrics exist; measure again a
+  // moment after mount so the very first layout already uses real metrics
+  // instead of the nominal estimate (which clips rows on some displays).
+  setTimeout(() => {
+    if (!terminalEngine) return;
+    terminalEngine.term._cellHeight = null;
+    state.terminalFrameKey = null;
+    renderTerminal();
+  }, 350);
+  return term;
+}
+
+const TERMINAL_FONT_SIZE = 12;
+const TERMINAL_LINE_HEIGHT = 1.42;
+const TERMINAL_ROW_PX = TERMINAL_FONT_SIZE * TERMINAL_LINE_HEIGHT;
+// Real xterm row height is slightly larger than the nominal product, so an
+// exact floor() can clip the last row below the panel edge. Reserve a few
+// pixels so the bottom line (and the prompt/cursor) is always fully visible.
+const TERMINAL_BOTTOM_RESERVE_PX = 14;
+let termRowsState = null; // { width, height, plain: string[] } of last painted frame
+
+const TERMINAL_STYLE_CODES = { bold: "1", dim: "2", italic: "3", underline: "4", blink: "5", reverse: "7" };
+
+function terminalColorCodes(color, foreground) {
+  if (!color || typeof color !== "object") return [];
+  const palette = color.palette;
+  if (typeof palette === "number" && palette >= 0 && palette <= 255) {
+    if (palette < 8) return [String((foreground ? 30 : 40) + palette)];
+    if (palette < 16) return [String((foreground ? 90 : 100) + palette - 8)];
+    return [foreground ? "38" : "48", "5", String(palette)];
+  }
+  const rgb = color.truecolor;
+  if (rgb && typeof rgb === "object") {
+    const { r, g, b } = rgb;
+    if ([r, g, b].every((v) => typeof v === "number" && v >= 0 && v <= 255)) {
+      return [foreground ? "38" : "48", "2", String(r), String(g), String(b)];
+    }
+  }
+  return [];
+}
+
+function encodeRunSgr(fg, bg, styles) {
+  const codes = [];
+  for (const name of ["bold", "dim", "italic", "underline", "blink", "reverse"]) {
+    if (Array.isArray(styles) && styles.includes(name)) codes.push(TERMINAL_STYLE_CODES[name]);
+  }
+  codes.push(...terminalColorCodes(fg, true), ...terminalColorCodes(bg, false));
+  return codes.length ? "\x1b[" + codes.join(";") + "m" : "";
+}
+
+function buildTerminalRows(segments, plainText, height) {
+  const rows = [];
+  let rowPlain = "";
+  let rowRuns = [];
+  const pushLine = () => {
+    rows.push({ plain: rowPlain, ansi: "\x1b[0m" + rowRuns.map((r) => encodeRunSgr(r.fg, r.bg, r.styles) + r.text).join("") });
+    rowPlain = "";
+    rowRuns = [];
+  };
+  const emit = (text, fg, bg, styles) => {
+    if (!text) return;
+    rowPlain += text;
+    rowRuns.push({ text, fg, bg, styles });
+  };
+  if (Array.isArray(segments) && segments.length) {
+    for (const segment of segments) {
+      const { fg, bg, styles } = segment;
+      const pieces = String(segment.text ?? "").split("\n");
+      for (let index = 0; index < pieces.length; index += 1) {
+        if (index > 0) pushLine();
+        emit(pieces[index], fg, bg, styles);
+      }
+    }
+  } else {
+    for (const line of String(plainText ?? "").split("\n")) {
+      if (rowPlain) pushLine();
+      emit(line, null, null, []);
+    }
+  }
+  pushLine();
+  while (rows.length < height) {
+    rows.push({ plain: "", ansi: "\x1b[0m" });
+  }
+  if (rows.length > height) return rows.slice(rows.length - height);
+  return rows;
+}
+
+function paintTerminalFrame(term, rows, width, height, fullAnsi, hasWaiting) {
+  if (
+    hasWaiting
+    || !termRowsState
+    || termRowsState.width !== width
+    || termRowsState.height !== height
+    || termRowsState.plain.length !== rows.length
+  ) {
+    term.reset();
+    if (fullAnsi) {
+      term.write(fullAnsi);
+    } else {
+      for (let index = 0; index < rows.length; index += 1) {
+        term.write(rows[index].plain + (index < rows.length - 1 ? "\n" : ""));
+      }
+    }
+  } else {
+    const changed = [];
+    for (let index = 0; index < rows.length; index += 1) {
+      if (termRowsState.plain[index] !== rows[index].plain) changed.push(index);
+    }
+    if (changed.length && changed.length * 2 < rows.length) {
+      for (const index of changed) {
+        term.write(`\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K");
+      }
+    } else if (changed.length) {
+      // Too many rows changed: a full repaint is cheaper than many moves.
+      term.reset();
+      if (fullAnsi) term.write(fullAnsi);
+      else for (let index = 0; index < rows.length; index += 1) {
+        term.write(rows[index].plain + (index < rows.length - 1 ? "\n" : ""));
+      }
+    }
+  }
+  termRowsState = { width, height, plain: rows.map((row) => row.plain) };
+}
+
+// Real xterm cell height depends on the installed font and the display, so it
+// is measured at runtime (cache per engine) instead of hard-coded; static
+// guesses clip the bottom row on some machines/screens.
+function terminalCellHeight(term) {
+  if (term && term._cellHeight) return term._cellHeight;
+  const fromDims = (() => {
+    try {
+      const cell = term?._core?._renderService?.dimensions?.css?.cell;
+      const value = cell ? Number(cell.height) : NaN;
+      return Number.isFinite(value) && value > 0 ? value : NaN;
+    } catch (_error) {
+      return NaN;
+    }
+  })();
+  if (Number.isFinite(fromDims)) {
+    term._cellHeight = fromDims;
+    return fromDims;
+  }
+  try {
+    const rows = term?.element?.querySelector(".xterm-rows");
+    if (rows && term.rows > 0) {
+      const fromDom = rows.getBoundingClientRect().height / term.rows;
+      if (Number.isFinite(fromDom) && fromDom > 0) {
+        term._cellHeight = fromDom;
+        return fromDom;
+      }
+    }
+  } catch (_error) {
+    // fall through
+  }
+  // Not measurable yet (e.g. first paint): return the nominal estimate but do
+  // NOT cache it, so a later render re-measures with the real cell height.
+  return TERMINAL_ROW_PX;
+}
+
 function renderTerminal() {
   if (activeSourceSelection()) return;
-  const previousScrollTop = el.terminal_screen.scrollTop;
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
   const replayReference = scoreReferenceAtPlayback();
   const replaySource = replayReference?.kind === "screen"
@@ -660,7 +996,10 @@ function renderTerminal() {
       (event) => event.kind === "screen" && event.event_id === replayReference.event_id,
     )
     : null;
-  const latest = replaySource || (state.followLive && state.liveScreenEvent ? state.liveScreenEvent : screens.at(-1));
+  // Live mode always shows the newest captured frame: replaying the backlog
+  // frame-by-frame made the terminal lag seconds behind the chat, which had
+  // already rendered the agent's finished reply.
+  const latest = replaySource || screens.at(-1);
   const fallback = state.followLive ? state.snapshot?.latest_screen : null;
   const source = latest || fallback;
   const terminal = source?.data || {};
@@ -668,15 +1007,76 @@ function renderTerminal() {
   el.terminal_path.textContent = terminal.current_path
     ? terminal.current_path.split("/").slice(-2).join("/")
     : "workspace";
-  el.terminal_screen.replaceChildren();
   const hasScreenContent = Boolean(source && typeof source.content === "string" && source.content.length);
-  el.terminal_screen.dataset.eventId = hasScreenContent ? source.event_id || "" : "";
   const sourceAnnotations = source ? scoreAnnotationsForSource(source) : [];
-  if (hasScreenContent) {
-    appendAnnotatedText(el.terminal_screen, source.content, sourceAnnotations);
+  const engine = ensureTerminalEngine();
+  if (engine) {
+    // Color-capable rendering through xterm.js. Frames are painted
+    // incrementally: only rows that changed between two frames are rewritten,
+    // so live typing no longer flashes the whole screen on every burst.
+    const frameKey = hasScreenContent ? (source.event_id || `${source.seq ?? ""}`) : "";
+    const width = Math.max(1, Number(terminal.pane_width) || 80);
+    const fullRows = Math.max(1, Number(terminal.pane_height) || 24);
+    // Fixed font size: when the panel is shorter than the captured frame,
+    // show the bottom window of the frame (like a terminal scrolled to the
+    // bottom) instead of shrinking the font. The cursor line stays visible.
+    const panelHeight = el.terminal_screen.clientHeight || 0;
+    const cellHeight = terminalCellHeight(engine);
+    let fittingRows = fullRows;
+    if (panelHeight > 0) {
+      fittingRows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
+      // Squeeze one extra row when it overflows by at most 2px, so the panel
+      // is filled without an awkward empty strip under the prompt.
+      if ((fittingRows + 1) * cellHeight - panelHeight <= 2) fittingRows += 1;
+      fittingRows = Math.max(4, Math.min(fullRows, fittingRows));
+    }
+    const viewRows = Math.min(fullRows, fittingRows);
+    const geometryChanged = engine.cols !== width || engine.rows !== viewRows;
+    if (frameKey !== state.terminalFrameKey || geometryChanged) {
+      state.terminalFrameKey = frameKey;
+      lastTerminalPlainText = hasScreenContent ? source.content : "";
+      lastTerminalAnsiText = typeof terminal.ansi === "string" ? terminal.ansi : "";
+      lastTerminalFrame = hasScreenContent
+        ? { event_id: source.event_id || "", content: source.content }
+        : null;
+      const rowOffset = fullRows - viewRows;
+      if (geometryChanged) engine.resize(width, viewRows);
+      const ansi = typeof terminal.ansi === "string" ? terminal.ansi : "";
+      const waiting = !ansi && !hasScreenContent;
+      if (waiting) {
+        termRowsState = null;
+        engine.reset();
+        engine.write("等待终端画面…");
+      } else {
+        let rows = buildTerminalRows(terminal.segments, source.content, fullRows);
+        if (rowOffset > 0) rows = rows.slice(rowOffset);
+        paintTerminalFrame(engine, rows, width, viewRows, ansi || null, false);
+      }
+      const cursorX = Number(terminal.cursor_x);
+      const cursorY = Number(terminal.cursor_y);
+      if (Number.isFinite(cursorX) && Number.isFinite(cursorY)) {
+        const visibleRow = Math.min(viewRows, Math.max(1, cursorY - rowOffset + 1));
+        engine.write(`\x1b[${visibleRow};${Math.min(cursorX + 1, width)}H`);
+      }
+    }
+    if (state.viewportMode === "follow") engine.scrollToBottom();
   } else {
-    el.terminal_screen.append(document.createTextNode("等待终端画面…"));
+    // Legacy DOM text rendering (used when xterm.js did not load).
+    const previousScrollTop = el.terminal_screen.scrollTop;
+    el.terminal_screen.replaceChildren();
+    if (hasScreenContent) {
+      appendAnnotatedText(el.terminal_screen, source.content, sourceAnnotations);
+    } else {
+      el.terminal_screen.append(document.createTextNode("等待终端画面…"));
+    }
+    if (state.viewportMode === "follow") {
+      revealTerminalCursor(terminal);
+    } else {
+      const maxScroll = Math.max(0, el.terminal_screen.scrollHeight - el.terminal_screen.clientHeight);
+      el.terminal_screen.scrollTop = Math.min(previousScrollTop, maxScroll);
+    }
   }
+  el.terminal_screen.dataset.eventId = hasScreenContent ? source.event_id || "" : "";
   el.terminal_screen.classList.toggle(
     "reference-target",
     Boolean(
@@ -690,12 +1090,6 @@ function renderTerminal() {
   const changeKind = terminal.change_kind;
   el.typing_state.textContent = changeKind === "paste" ? "Agent 正在粘贴" : (changeKind === "typing" ? "Agent 输入中" : "");
   el.typing_state.hidden = !["typing", "paste"].includes(changeKind);
-  if (state.viewportMode === "follow") {
-    revealTerminalCursor(terminal);
-  } else {
-    const maxScroll = Math.max(0, el.terminal_screen.scrollHeight - el.terminal_screen.clientHeight);
-    el.terminal_screen.scrollTop = Math.min(previousScrollTop, maxScroll);
-  }
 }
 
 function renderViewportMode() {
@@ -882,6 +1276,13 @@ function setReference(reference) {
 function sourceRootFromNode(value) {
   if (!value) return null;
   const element = value.nodeType === 1 ? value : value.parentElement || value.parentNode;
+  if (!element) return null;
+  if (terminalEngine) {
+    // Under xterm.js the terminal has no text DOM to select or annotate;
+    // evaluation of terminal text is re-added on top of xterm selection
+    // later. Chat message text stays selectable.
+    return element.closest?.(".message-content") || null;
+  }
   return element?.closest?.(".message-content, #terminal-screen") || null;
 }
 
@@ -1023,6 +1424,44 @@ function selectionOffsets(root, selection) {
   }
 }
 
+function terminalSelectionCandidate() {
+  try {
+    const term = terminalEngine ? terminalEngine.term : null;
+    if (!term || !lastTerminalFrame || !lastTerminalFrame.event_id) return null;
+    const text = term.getSelection();
+    if (!text || !text.trim()) return null;
+    const position = typeof term.getSelectionPosition === "function" ? term.getSelectionPosition() : null;
+    if (!position || !position.start || !position.end) return null;
+    const rows = String(lastTerminalFrame.content ?? "").split("\n");
+    const rowOffset = Math.max(0, rows.length - term.rows);
+    const charOffsetAt = (row, col) => {
+      const safeRow = Math.max(0, Math.min(rows.length - 1, row + rowOffset));
+      const prefixLength = rows.slice(0, safeRow).reduce((total, line) => total + line.length + 1, 0);
+      const column = Math.max(0, Math.min(col, rows[safeRow].length));
+      return prefixLength + column;
+    };
+    const rawStart = charOffsetAt(position.start.y, position.start.x);
+    const rawEnd = charOffsetAt(position.end.y, position.end.x);
+    const start = Math.max(0, Math.min(rawStart, rawEnd, lastTerminalFrame.content.length));
+    const end = Math.max(0, Math.min(Math.max(rawStart, rawEnd), lastTerminalFrame.content.length));
+    if (end <= start) return null;
+    const excerpt = lastTerminalFrame.content.slice(start, end);
+    if (!excerpt.trim()) return null;
+    const point = lastTerminalSelectionPoint
+      || { x: 0, y: 0 };
+    return {
+      kind: "screen",
+      event_id: lastTerminalFrame.event_id,
+      start,
+      end,
+      excerpt,
+      rect: { left: point.x, top: point.y, width: 0, height: 0 },
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
 function selectionCandidate() {
   try {
     const selection = window.getSelection();
@@ -1152,7 +1591,8 @@ function scheduleSelectionMenu(clickCount = 1) {
     state.selectionTimer = null;
     state.selectionMenuDelay = 0;
     if (state.selectionBusy || state.pointerSelecting) return;
-    const candidate = selectionCandidate();
+    const terminalCandidate = terminalEngine ? terminalSelectionCandidate() : null;
+    const candidate = terminalCandidate || selectionCandidate();
     if (candidate) showSelectionMenu(candidate);
     else hideSelectionMenu();
   }, delay);
@@ -1356,6 +1796,18 @@ async function loadMeetings() {
 }
 
 async function selectMeeting(meetingId) {
+  // Selecting a session from the (overlay) sidebar should get out of the way
+  // and give the workspace the full width. Static sidebar layouts (narrow
+  // screens) keep it visible.
+  const appShell = document.querySelector(".app-shell");
+  const sideBar = document.querySelector(".sidebar");
+  if (
+    appShell
+    && sideBar
+    && getComputedStyle(sideBar).position === "fixed"
+  ) {
+    appShell.classList.remove("sidebar-open");
+  }
   stopLiveScreenQueue();
   hideSelectionMenu();
   hidePlaybackHover();
@@ -1375,6 +1827,7 @@ async function selectMeeting(meetingId) {
   state.snapshot = snapshot;
   state.timeline = eventPayload.events || [];
   state.cursor = eventPayload.cursor || 0;
+  state.playbackFreezeAt = 0;
   state.followLive = true;
   state.chatFollow = true;
   state.playbackIndex = state.timeline.length - 1;
@@ -1406,6 +1859,19 @@ async function refreshSelected() {
     if (additions.length) enqueueLiveScreens(additions);
     state.cursor = Math.max(Number(eventsResult.payload.cursor) || 0, state.cursor);
     if (additions.length) changed = true;
+    // If new frames arrive while the timeline is parked on an old frame
+    // (e.g. from an earlier scrub) and the user has not touched playback
+    // recently, jump back to live so the terminal never lags the chat.
+    if (
+      additions.length
+      && !state.playing
+      && !state.followLive
+      && Date.now() - (state.playbackFreezeAt || 0) > 4000
+    ) {
+      state.followLive = true;
+      state.chatFollow = true;
+      state.playbackIndex = state.timeline.length - 1;
+    }
   }
   if (state.followLive) state.playbackIndex = state.timeline.length - 1;
   if (!changed) return;
@@ -1430,7 +1896,7 @@ function schedulePoll() {
       }
     } catch (error) { toast(error.message); }
     schedulePoll();
-  }, active ? 500 : 2000);
+  }, active ? 500 : 1000);
 }
 
 async function postMeetingAction(suffix, body = {}) {
@@ -1594,6 +2060,17 @@ function bind() {
   el.refresh_button.addEventListener("click", () => refreshSelected().catch((error) => toast(error.message)));
   el.acquire_button.addEventListener("click", () => postMeetingAction("control/acquire").catch((error) => toast(error.message)));
   el.release_button.addEventListener("click", () => postMeetingAction("control/release").catch((error) => toast(error.message)));
+  el.terminal_copy_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalPlainText));
+  el.terminal_copy_ansi_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalAnsiText || lastTerminalPlainText));
+  // Refit the terminal when the window/panel size changes (DevTools dock,
+  // pane resize), so rows are never clipped and the cursor stays visible.
+  window.addEventListener("resize", () => {
+    if (!terminalEngine) return;
+    terminalEngine.term._cellHeight = null;
+    termRowsState = null;
+    state.terminalFrameKey = null;
+    renderTerminal();
+  });
   el.resume_button.addEventListener("click", () => postMeetingAction("agent/resume").catch((error) => toast(error.message)));
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
@@ -1686,6 +2163,7 @@ function bind() {
   el.playback_slider.addEventListener("input", () => {
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
+    markPlaybackFrozen();
     state.followLive = false;
     state.chatFollow = true;
     state.playbackIndex = Number(el.playback_slider.value);
@@ -1696,6 +2174,7 @@ function bind() {
   el.live_button.addEventListener("click", () => {
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
+    state.playbackFreezeAt = 0;
     state.followLive = true;
     state.chatFollow = true;
     state.playbackIndex = state.timeline.length - 1;
@@ -1707,6 +2186,7 @@ function bind() {
     if (state.playing) { stopPlayback(); return; }
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
+    markPlaybackFrozen();
     state.chatFollow = true;
     stopLiveScreenQueue();
     state.playing = true;

@@ -652,6 +652,7 @@ class MeetingStore:
         phase: Optional[str] = None,
         change_kind: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        segments: Optional[list] = None,
     ) -> Optional[Dict[str, Any]]:
         with self._exclusive_state():
             metadata_changed = (
@@ -693,6 +694,16 @@ class MeetingStore:
                 if reserved.intersection(metadata):
                     raise MeetingError("screen metadata contains reserved fields")
                 data.update(metadata)
+            if segments is not None:
+                # Color payload for the frontend (ScreenCapture
+                # terminal_text_content). ``content`` stays the plain
+                # projection (screen_data) the model consumes; ``ansi`` is
+                # the derived SGR encoding a terminal emulator can write
+                # directly.
+                from terminal_text import encode_segments
+
+                data["segments"] = segments
+                data["ansi"] = encode_segments(segments)
             return self._append_event_unlocked(
                 "screen",
                 "workspace",

@@ -258,6 +258,7 @@ class ClaudeCodeBackend:
         self._turn_response_id: Optional[str] = None
         self._turn_result_seen = False
         self._turn_protocol_error: Optional[str] = None
+        self._last_prose: Optional[str] = None
         self._rejections = 0
         self._last_rejection = ""
         self._turn_nudges = 0
@@ -415,6 +416,7 @@ class ClaudeCodeBackend:
             self._turn_response_id = None
             self._turn_result_seen = False
             self._turn_protocol_error = None
+            self._last_prose = None
             self._rejections = 0
             self._last_rejection = ""
             self._turn_nudges = 0
@@ -771,13 +773,21 @@ class ClaudeCodeBackend:
         if kind == "assistant":
             content = message.get("message", {}).get("content", []) if isinstance(message.get("message"), dict) else []
             for block in content if isinstance(content, list) else []:
-                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") != TOOL_NAME:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"].strip():
+                    # Remember the model's latest prose: if the whole turn ends
+                    # without a tool call, this text is salvaged as a chat
+                    # question instead of failing the session.
+                    self._last_prose = block["text"]
+                if block.get("type") == "tool_use" and block.get("name") != TOOL_NAME:
                     with self._condition:
                         self._turn_protocol_error = "Claude Code attempted an unregistered tool"
                         self._condition.notify_all()
             return
         if kind == "result":
             nudge = False
+            synth_prose = None
             with self._condition:
                 if self._turn_id is None:
                     return
@@ -807,8 +817,12 @@ class ClaudeCodeBackend:
                     self._turn_nudges += 1
                     nudge = True
                 else:
-                    self._turn_protocol_error = "Claude Code returned no RemoteBuddy action"
-                    self._turn_result_seen = True
+                    prose = self._last_prose.strip() if self._last_prose else ""
+                    if prose and self._active_handler is not None:
+                        synth_prose = prose
+                    else:
+                        self._turn_protocol_error = "Claude Code returned no RemoteBuddy action"
+                        self._turn_result_seen = True
                 self._condition.notify_all()
             if nudge:
                 self._emit(
@@ -823,6 +837,34 @@ class ClaudeCodeBackend:
                     with self._condition:
                         self._process_error = self._process_error or self._redact(str(exc))
                         self._condition.notify_all()
+                return
+            if synth_prose is not None:
+                # Nudges are exhausted but the model did produce prose: hand
+                # it back as a chat question so the session keeps working and
+                # the human can steer, instead of failing the whole cycle.
+                action = {
+                    "type": "chat",
+                    "message_type": "question",
+                    "content": synth_prose[: 64 * 1024],
+                    "command": "none",
+                    "path": "",
+                    "keys": [],
+                    "delay_ms": 0,
+                    "references": [],
+                }
+                request = {
+                    "token": self._bridge_token,
+                    "request_id": "synth-" + uuid.uuid4().hex,
+                    "action": {"action": action},
+                }
+                result = self._handle_bridge_request(request)
+                with self._condition:
+                    if result.get("success"):
+                        self._turn_result_seen = True
+                    else:
+                        self._turn_protocol_error = "Claude Code returned no RemoteBuddy action"
+                        self._turn_result_seen = True
+                    self._condition.notify_all()
 
     def _validate_init(self, message: Dict[str, Any]) -> None:
         session_id = message.get("session_id")

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RemoteBuddy Workspace</title>
   <link rel="stylesheet" href="/assets/workspace.css">
+  <link rel="stylesheet" href="/assets/vendor/xterm/xterm.css">
 </head>
 <body>
   <div class="app-shell">
@@ -150,6 +151,8 @@
                 <span id="terminal-path">workspace</span>
               </div>
               <span id="terminal-readonly" class="readonly-badge">只读预览</span>
+              <button id="terminal-copy-button" class="command-button compact" type="button" title="复制当前画面文本">复制文本</button>
+              <button id="terminal-copy-ansi-button" class="command-button compact" type="button" title="Shift+右键 也可">复制 ANSI</button>
               <div id="terminal-score-status" class="score-summary" aria-live="polite"></div>
               <div class="viewport-mode" role="group" aria-label="内容滚动模式">
                 <span class="viewport-mode-label">视野</span>
@@ -159,7 +162,7 @@
                 </div>
               </div>
             </header>
-            <pre id="terminal-screen" class="terminal-screen" tabindex="0">等待终端画面…</pre>
+            <div id="terminal-screen" class="terminal-screen xterm-host" tabindex="0">等待终端画面…</div>
 
             <div class="control-bar">
               <div class="playback-bar terminal-playback">
@@ -304,6 +307,7 @@
   </dialog>
 
   <div id="toast" class="toast" hidden></div>
+  <script src="/assets/vendor/xterm/xterm.js"></script>
   <script src="/assets/workspace.js" defer></script>
 </body>
 </html>

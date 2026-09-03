@@ -72,13 +72,24 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .session-header { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .session-view .session-details { position: absolute; top: 56px; left: 0; right: 0; z-index: 40; display: none; background: white; border-bottom: 1px solid var(--line); box-shadow: 0 12px 28px rgb(20 24 22 / .14); }
 .session-view.details-open .session-details { display: grid; }
-.session-identity { min-width: 0; }
+.session-identity { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .session-title-line { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .session-more-button { border: 0; background: transparent; color: var(--muted); font-size: 20px; line-height: 1; padding: 6px 8px; cursor: pointer; }
 .session-more-button:hover { color: var(--ink); }
-.session-header .status-line,
-.session-header #meeting-title { display: none; }
-.session-identity #session-meta { margin: 0; color: var(--ink); font-size: 13px; font-weight: 650; }
+.session-header .status-line { display: none; }
+.session-header #meeting-title {
+  display: block;
+  margin: 0;
+  font: 700 13px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: min(360px, 34vw);
+  cursor: default;
+  flex: 0 0 auto;
+}
+.session-identity #session-meta { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 13px; font-weight: 650; }
 .session-identity #session-meta.error { color: var(--red); white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .session-identity .failure-message { margin-top: 4px; max-width: min(680px, 70vw); color: var(--red); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 .status-line { display: flex; gap: 6px; }
@@ -179,6 +190,21 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .viewport-mode-label { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .viewport-mode .segment { min-height: 26px; padding: 0 7px; font-size: 10px; }
 .terminal-screen { min-height: 0; margin: 0; overflow: auto; padding: 14px 16px; background: var(--terminal); color: var(--terminal-ink); white-space: pre; tab-size: 4; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; scrollbar-color: #3a403c #151817; }
+.terminal-screen.xterm-host { padding: 0; overflow: hidden; }
+.terminal-screen.xterm-host .xterm { height: 100%; }
+.terminal-screen.xterm-host .xterm .xterm-viewport { background: transparent; }
+.terminal-screen.xterm-host .xterm .xterm-screen { background: transparent; }
+.terminal-screen.xterm-host .xterm .xterm-selection div {
+  background: rgb(96 145 255 / .55) !important;
+  color: #ffffff !important;
+}
+.terminal-screen.xterm-host .xterm .xterm-viewport::-webkit-scrollbar { width: 10px; }
+.terminal-screen.xterm-host .xterm .xterm-viewport::-webkit-scrollbar-track { background: #151817; }
+.terminal-screen.xterm-host .xterm .xterm-viewport::-webkit-scrollbar-thumb { background: #3a403c; border-radius: 5px; }
+.copy-fallback-overlay { position: fixed; inset: 0; background: rgb(0 0 0 / .45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 20px; }
+.copy-fallback-panel { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 14px 16px; max-width: min(720px, 92vw); width: 100%; box-shadow: 0 10px 30px rgb(0 0 0 / .2); }
+.copy-fallback-panel p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.copy-fallback-area { width: 100%; min-height: 180px; box-sizing: border-box; margin: 0 0 10px; border: 1px solid var(--line); border-radius: 6px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 8px; white-space: pre; }
 .terminal-screen::-webkit-scrollbar { width: 10px; }
 .terminal-screen::-webkit-scrollbar-track { background: #151817; }
 .terminal-screen::-webkit-scrollbar-thumb { background: #3a403c; border-radius: 5px; }
@@ -288,7 +314,7 @@ dialog::backdrop { background: rgb(20 24 22 / .45); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
 @media (max-width: 980px) {
-  .app-shell { grid-template-columns: 210px minmax(0, 1fr); }
+  .app-shell { grid-template-columns: 56px minmax(0, 1fr); }
   .presence-strip { grid-template-columns: repeat(3, 1fr); }
   .presence-strip > div:nth-child(3n) { border-right: 0; }
   .presence-strip > div:nth-child(n+4) { border-top: 1px solid var(--line); }
