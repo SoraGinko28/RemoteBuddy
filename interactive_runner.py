@@ -1273,6 +1273,7 @@ class InteractiveRunner:
         self.store.append_event(
             "control", "harness", "human_control", data={"owner": "human", "status": "acquired"}
         )
+        self.store.note_terminal_control("human")
         return True
 
     def _check_stop(self) -> None:

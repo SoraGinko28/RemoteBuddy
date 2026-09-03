@@ -9,9 +9,9 @@ const el = Object.fromEntries([
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
-  "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button", "terminal-controls",
+  "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
-  "command-form", "command-select", "command-path", "vim-form", "vim-text", "process-input-label", "play-button",
+  "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "settings-button", "settings-dialog", "settings-form", "judge-name-input", "save-settings", "close-settings", "cancel-settings", "settings-error", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
   "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
@@ -219,7 +219,10 @@ function advanceLiveScreenQueue() {
 }
 
 function enqueueLiveScreens(events) {
-  if (!state.followLive) return;
+  // During takeover the terminal is byte-streamed; journal frames are not
+  // queued for paced painting (the capture worker still records them for the
+  // Agent after release).
+  if (takeoverStream.active || !state.followLive) return;
   const screens = events.filter((event) => event.kind === "screen");
   if (!screens.length) return;
   if (screens.length > MAX_LIVE_SCREEN_QUEUE) {
@@ -326,16 +329,27 @@ function renderHeader() {
   el.cleanup_button.hidden = !terminalState || meeting.session_state === "stopped";
   el.resume_button.hidden = !["api_error", "cycle_timeout", "waiting_for_user", "completion_proposed"].includes(meeting.phase) || terminalState;
   el.resume_button.textContent = meeting.phase === "completion_proposed" ? "继续工作" : "继续 Agent";
-  el.acquire_button.hidden = true;
-  el.release_button.hidden = meeting.control_owner !== "human";
-  el.terminal_controls.hidden = true;
-  const vimActive = ["vim", "vi"].includes(terminal.current_command);
-  const pythonActive = String(terminal.current_command || "").toLowerCase().startsWith("python");
-  const shellActive = ["bash", "zsh", "sh"].includes(terminal.current_command);
-  el.command_form.hidden = !shellActive;
-  el.vim_form.hidden = !(vimActive || pythonActive);
-  el.process_input_label.textContent = vimActive ? "Vim 输入" : "Python 输入";
-  document.querySelector(".key-row").hidden = !(vimActive || pythonActive);
+  const takeoverLive = meeting.control_owner === "human" && meeting.phase === "human_control";
+  const waitingHandoff = meeting.control_requested === "human" && meeting.control_owner !== "human";
+  const canAcquire = !terminalState && meeting.status === "running"
+    && ["agent_thinking", "agent_acting", "waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"].includes(meeting.phase);
+  el.acquire_button.hidden = terminalState || takeoverLive;
+  el.acquire_button.disabled = !canAcquire;
+  el.acquire_button.textContent = waitingHandoff ? "等待交权…" : "接管";
+  el.acquire_button.title = canAcquire ? "打断 Agent 并接管共享终端" : "";
+  el.release_button.hidden = !takeoverLive;
+  const terminalReadonly = el.terminal_readonly;
+  if (terminalReadonly) {
+    terminalReadonly.textContent = takeoverLive ? "已接管 · 实时终端" : "只读预览";
+    terminalReadonly.classList.toggle("takeover-live", takeoverLive);
+  }
+  el.message_hint.textContent = takeoverLive
+    ? "接管中：发消息 = 交还控制权并让 Agent 继续"
+    : "Enter 发送 · Shift/⌘+Enter 换行 · 消息在下一个动作边界生效";
+  el.message_input.placeholder = takeoverLive
+    ? "接管中：输入消息会结束接管并交给 Agent…"
+    : "继续说明、纠正或打断 Agent…";
+  syncTerminalTakeover(takeoverLive);
 }
 
 function visibleChats() {
@@ -739,10 +753,23 @@ function copyTextToClipboard(text) {
   return false;
 }
 
-function installTerminalClipboard(term) {
+// Clipboard/selection helpers talk to whichever Terminal instance is live so
+// they can be bound once while the terminal itself is rebuilt on mode
+// switches (takeover stream <-> captured-frame painting).
+let terminalClipboardBound = false;
+
+function activeTerm() {
+  return terminalEngine ? terminalEngine.term : null;
+}
+
+function installTerminalClipboard() {
+  if (terminalClipboardBound) return;
+  terminalClipboardBound = true;
   // Entering the terminal with a click gives xterm focus so its own
   // selection machinery (drag, double/triple click) is active.
   el.terminal_screen.addEventListener("pointerdown", () => {
+    const term = activeTerm();
+    if (!term) return;
     try {
       term.focus();
     } catch (_error) {
@@ -755,8 +782,9 @@ function installTerminalClipboard(term) {
   // gesture.
   let multiClickTimer = null;
   el.terminal_screen.addEventListener("pointerup", (event) => {
+    const term = activeTerm();
     lastTerminalSelectionPoint = { x: event.clientX, y: event.clientY };
-    if (!event.detail || event.detail < 2) return;
+    if (!term || !event.detail || event.detail < 2) return;
     clearTimeout(multiClickTimer);
     multiClickTimer = setTimeout(() => {
       const position = typeof term.getSelectionPosition === "function" ? term.getSelectionPosition() : null;
@@ -772,6 +800,8 @@ function installTerminalClipboard(term) {
     if (!(event.metaKey || event.ctrlKey)) return;
     const key = event.key.toLowerCase();
     if (key !== "c") return;
+    const term = activeTerm();
+    if (!term) return;
     const selected = term.getSelection();
     if (!selected) return;
     event.preventDefault();
@@ -786,7 +816,8 @@ function installTerminalClipboard(term) {
       copyTextToClipboard(lastTerminalAnsiText || lastTerminalPlainText);
       return;
     }
-    const selected = term.getSelection();
+    const term = activeTerm();
+    const selected = term ? term.getSelection() : "";
     copyTextToClipboard(selected || lastTerminalPlainText);
   });
 }
@@ -823,7 +854,7 @@ function ensureTerminalEngine() {
     });
     el.terminal_screen.replaceChildren();
     term.open(el.terminal_screen);
-    installTerminalClipboard(term);
+    installTerminalClipboard();
   } catch (_error) {
     return null;
   }
@@ -839,6 +870,374 @@ function ensureTerminalEngine() {
   }, 350);
   return term;
 }
+
+// Rebuild the xterm from scratch. The two rendering modes -- captured-frame
+// painting (normal/Agent) and the byte-stream takeover -- must never share a
+// lingering screen buffer: painting over stream leftovers or seeding over
+// painted leftovers is exactly what produced duplicated rows and scrambled
+// columns on release/re-acquire. A fresh Terminal instance makes every mode
+// switch start from a physically empty screen.
+function rebuildTerminalEngine() {
+  if (terminalEngine) {
+    try {
+      terminalEngine.term.dispose();
+    } catch (_error) {
+      // dispose may throw if the terminal is mid-render; ignore.
+    }
+    terminalEngine = null;
+  }
+  return ensureTerminalEngine();
+}
+
+// Re-measure the real cell box and repaint when the terminal's container size
+// changes (window resize, or the takeover panel appearing/disappearing under
+// it). Row count is derived from the measured height, never hard-coded.
+function refitTerminal() {
+  if (!terminalEngine) return;
+  terminalEngine.term._cellHeight = null;
+  termRowsState = null;
+  state.terminalFrameKey = null;
+  renderTerminal();
+}
+
+// Tracks takeover-panel visibility between renders so the terminal refits
+// exactly when the panel appears or disappears (not on every poll).
+// ---- True-terminal takeover (byte stream) ----
+// While the human owns the pane, the xterm screen becomes a real terminal:
+// server output (tmux pipe-pane) streams in over SSE and keystrokes are sent
+// back byte-for-byte through /terminal/input and recorded in the journal.
+const takeoverStream = {
+  active: false,
+  source: null,
+  inputHex: "",
+  strokes: [],
+  flushTimer: null,
+  flushing: false,
+  lastFlushErrorAt: 0,
+  keyHandler: null,
+  compositionHandler: null,
+  pasteHandler: null,
+};
+
+function decodeBase64(text) {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function flushTakeoverInput(silent = false) {
+  takeoverStream.flushTimer = null;
+  if (!takeoverStream.inputHex || takeoverStream.flushing) return;
+  const hex = takeoverStream.inputHex;
+  const strokes = takeoverStream.strokes;
+  takeoverStream.inputHex = "";
+  takeoverStream.strokes = [];
+  takeoverStream.flushing = true;
+  const body = { bytes: hex };
+  if (strokes.length) body.strokes = strokes;
+  api(`/api/meetings/${encodeURIComponent(state.selectedId || "")}/terminal/input`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  }).catch(() => {
+    if (!silent) {
+      const now = Date.now();
+      if (now - takeoverStream.lastFlushErrorAt > 2500) {
+        takeoverStream.lastFlushErrorAt = now;
+        toast("终端输入发送失败：连接已断开？");
+      }
+    }
+  }).finally(() => {
+    takeoverStream.flushing = false;
+    // Anything queued while the request was in flight must still go out.
+    if (takeoverStream.inputHex && takeoverStream.flushTimer === null) {
+      takeoverStream.flushTimer = setTimeout(() => flushTakeoverInput(false), 15);
+    }
+  });
+}
+
+// Control keys (Enter, Backspace, arrows, Ctrl+letter) must feel instant:
+// they flush immediately instead of waiting for the typing batch window.
+function takeoverBytesUrgent(text) {
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function queueTakeoverInput(text, urgent = false) {
+  const bytes = new TextEncoder().encode(text);
+  let hex = "";
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+  takeoverStream.inputHex += hex;
+  // One journaled stroke per physical input event (keystroke, IME commit,
+  // or paste), stamped with the moment the user actually typed it.
+  takeoverStream.strokes.push({ hex, stroke_time: new Date().toISOString() });
+  if (takeoverStream.flushTimer !== null) {
+    if (!urgent) return;
+    clearTimeout(takeoverStream.flushTimer);
+    takeoverStream.flushTimer = null;
+  }
+  takeoverStream.flushTimer = setTimeout(
+    () => flushTakeoverInput(false),
+    urgent ? 0 : 30,
+  );
+}
+
+// The live terminal must match the pane exactly, so the pane is resized to
+// this grid before the stream opens (real clients resize the pty to the
+// client). Rows/cols are derived from the measured panel and cell box, never
+// guessed.
+function takeoverGrid(engine) {
+  const panelWidth = el.terminal_screen.clientWidth || 0;
+  const panelHeight = el.terminal_screen.clientHeight || 0;
+  let charWidth = Number.NaN;
+  try {
+    charWidth = Number(engine?._core?._renderService?.dimensions?.css?.cell?.width);
+  } catch (_error) {
+    // fall through to the estimate
+  }
+  if (!Number.isFinite(charWidth) || charWidth <= 0) charWidth = TERMINAL_FONT_SIZE * 0.6;
+  const cellHeight = terminalCellHeight(engine);
+  let cols = 80;
+  if (panelWidth > 0 && charWidth > 0) cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth)));
+  let rows = 24;
+  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
+  rows = Math.max(12, Math.min(120, rows));
+  return { cols, rows };
+}
+
+const takeoverKeymap = {
+  Enter: "\r",
+  Backspace: "\x7f",
+  Tab: "\t",
+  Escape: "\x1b",
+  ArrowUp: "\x1b[A",
+  ArrowDown: "\x1b[B",
+  ArrowRight: "\x1b[C",
+  ArrowLeft: "\x1b[D",
+  Home: "\x1b[H",
+  End: "\x1b[F",
+  Insert: "\x1b[2~",
+  Delete: "\x1b[3~",
+  PageUp: "\x1b[5~",
+  PageDown: "\x1b[6~",
+};
+
+// Keys we own while takeover is live. xterm's own keyboard path is disabled
+// (disableStdin) because several of its handlers can each emit the same key;
+// every physical key must reach the pane exactly once. Returns bytes or null
+// when the browser should keep the event (meta shortcuts, IME, modifiers).
+function takeoverKeyBytes(event) {
+  if (event.metaKey || event.altKey) return null;
+  if (event.ctrlKey) {
+    const key = event.key.toLowerCase();
+    if (key.length === 1 && key >= "a" && key <= "z") {
+      return String.fromCharCode(key.charCodeAt(0) - 96);
+    }
+    const extras = {
+      " ": "\x00", "[": "\x1b", "\\": "\x1c", "]": "\x1d",
+      "^": "\x1e", "_": "\x1f", "2": "\x00", "6": "\x1e",
+      "-": "\x1f", "/": "\x1f", "@": "\x00",
+    };
+    return Object.prototype.hasOwnProperty.call(extras, event.key) ? extras[event.key] : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(takeoverKeymap, event.key)) return takeoverKeymap[event.key];
+  if (event.key.length === 1) return event.key;
+  return null;
+}
+
+function takeoverInputInScreen(target) {
+  return Boolean(el.terminal_screen && target instanceof Node && el.terminal_screen.contains(target));
+}
+
+function bindTakeoverInput(engine) {
+  takeoverStream.keyHandler = (event) => {
+    if (!takeoverStream.active || !takeoverInputInScreen(event.target)) return;
+    if (event.isComposing || event.keyCode === 229) return; // IME composing
+    if (event.metaKey) return; // leave ⌘ shortcuts (copy/paste) alone
+    if (event.ctrlKey && event.shiftKey && ["c", "v"].includes(event.key.toLowerCase())) return;
+    if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "c") {
+      const term = activeTerm();
+      if (term && typeof term.hasSelection === "function" && term.hasSelection()) return; // copy, not SIGINT
+    }
+    const bytes = takeoverKeyBytes(event);
+    if (bytes === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    queueTakeoverInput(bytes, takeoverBytesUrgent(bytes));
+  };
+  takeoverStream.compositionHandler = (event) => {
+    if (!takeoverStream.active || !takeoverInputInScreen(event.target)) return;
+    if (event.type === "compositionend" && event.data) queueTakeoverInput(event.data, takeoverBytesUrgent(event.data));
+  };
+  takeoverStream.pasteHandler = (event) => {
+    if (!takeoverStream.active || !takeoverInputInScreen(event.target)) return;
+    const text = event.clipboardData ? event.clipboardData.getData("text/plain") : "";
+    if (!text) return;
+    event.preventDefault();
+    queueTakeoverInput(text, takeoverBytesUrgent(text));
+  };
+  for (const [type, handler] of [
+    ["keydown", takeoverStream.keyHandler],
+    ["compositionend", takeoverStream.compositionHandler],
+    ["paste", takeoverStream.pasteHandler],
+  ]) {
+    document.addEventListener(type, handler, true);
+  }
+  try { engine.focus(); } catch (_error) { /* no-op */ }
+}
+
+function unbindTakeoverInput() {
+  for (const [type, key] of [
+    ["keydown", "keyHandler"],
+    ["compositionend", "compositionHandler"],
+    ["paste", "pasteHandler"],
+  ]) {
+    const handler = takeoverStream[key];
+    if (handler) {
+      document.removeEventListener(type, handler, true);
+      takeoverStream[key] = null;
+    }
+  }
+}
+
+function startTerminalTakeover() {
+  if (takeoverStream.active) return;
+  // Measure the viewport grid on the CURRENT engine (its cell metrics are
+  // already real from frame painting), then hand the stream a brand-new
+  // Terminal so no painted cells survive into the byte-stream mode.
+  const previous = ensureTerminalEngine();
+  const grid = previous ? takeoverGrid(previous) : { cols: 80, rows: 24 };
+  const engine = rebuildTerminalEngine();
+  if (!engine) return;
+  takeoverStream.active = true;
+  takeoverRepaintPending = false;
+  takeoverRepaintForceReset = false;
+  stopLiveScreenQueue();
+  // xterm's own keyboard path stays OFF (disableStdin): multiple internal
+  // handlers could each emit the same key, doubling every character. We
+  // translate keys ourselves in document capture and send exactly once.
+  engine.options.disableStdin = true;
+  // convertEol stays TRUE: the seed frame separates rows with bare LF and
+  // the emulator must turn LF into CRLF or every new row starts where the
+  // previous row ended (lines drift right). A real CRLF in the stream only
+  // adds a harmless extra carriage return.
+  engine.options.convertEol = true;
+  // No browser-side scrollback during takeover: the viewport equals the
+  // pane's own screen (which scrolls internally), and a vertical scrollbar
+  // would steal gutter width and push the rightmost columns underneath it.
+  engine.options.scrollback = 0;
+  if (engine.cols !== grid.cols || engine.rows !== grid.rows) engine.resize(grid.cols, grid.rows);
+  termRowsState = null;
+  engine.reset();
+  bindTakeoverInput(engine);
+
+  const streamUrl = `/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/stream?cols=${grid.cols}&rows=${grid.rows}`;
+  const source = new EventSource(streamUrl);
+  takeoverStream.source = source;
+  source.addEventListener("size", (event) => {
+    if (!takeoverStream.active) return;
+    const match = /^(\d+)x(\d+)$/.exec(event.data || "");
+    if (!match) return;
+    const paneWidth = Number(match[1]);
+    const paneHeight = Number(match[2]);
+    // The pane's actual size after tmux processing is the single truth; the
+    // emulator must match it exactly or erases/wraps drift.
+    if (paneWidth >= 40 && paneHeight >= 12 && (engine.cols !== paneWidth || engine.rows !== paneHeight)) {
+      engine.resize(paneWidth, paneHeight);
+    }
+  });
+  source.addEventListener("seed", (event) => {
+    if (!takeoverStream.active) return;
+    engine.reset();
+    engine.write(new Uint8Array(decodeBase64(event.data)));
+    engine.scrollToBottom();
+  });
+  source.addEventListener("data", (event) => {
+    if (!takeoverStream.active) return;
+    engine.write(new Uint8Array(decodeBase64(event.data)));
+    engine.scrollToBottom();
+  });
+  source.addEventListener("control", (event) => {
+    if (!takeoverStream.active) return;
+    if (event.data === "reset") engine.reset();
+    if (event.data === "released") stopTerminalTakeover(false);
+  });
+  source.onerror = () => {
+    // The server closes the stream with a 4xx when takeover ended; do not
+    // let EventSource reconnect forever once control is no longer human.
+    const meeting = state.snapshot?.meeting;
+    if (!meeting || meeting.control_owner !== "human" || meeting.phase !== "human_control") {
+      stopTerminalTakeover(false);
+    }
+  };
+  // Bring focus in so typing starts working immediately after 接管.
+  setTimeout(() => {
+    if (takeoverStream.active) {
+      try { engine.focus(); } catch (_error) { /* no-op */ }
+    }
+  }, 80);
+}
+
+function stopTerminalTakeover(flushPending) {
+  if (!takeoverStream.active) return;
+  takeoverStream.active = false;
+  if (takeoverStream.flushTimer !== null) {
+    clearTimeout(takeoverStream.flushTimer);
+    takeoverStream.flushTimer = null;
+  }
+  if (flushPending) flushTakeoverInput(true);
+  const source = takeoverStream.source;
+  takeoverStream.source = null;
+  if (source) source.close();
+  unbindTakeoverInput();
+  takeoverStream.inputHex = "";
+  takeoverStream.strokes = [];
+  // Hand the terminal back to frame painting from a fresh instance so no
+  // byte-stream cells can linger under the painted frames. The local
+  // timeline/buffer can no longer be trusted after mode switches, so block
+  // every local paint, re-fetch the authoritative screen from the server,
+  // and paint exactly once from that snapshot. Any local render racing this
+  // transition is skipped while the fetch is pending.
+  stopLiveScreenQueue();
+  rebuildTerminalEngine();
+  termRowsState = null;
+  state.terminalFrameKey = null;
+  takeoverRepaintPending = true;
+  setTimeout(async () => {
+    try {
+      if (!takeoverStream.active) {
+        await refreshSelected();
+      }
+    } catch (_error) {
+      // paint whatever we have below rather than leaving a blank screen
+    } finally {
+      takeoverRepaintPending = false;
+      if (!takeoverStream.active) {
+        takeoverRepaintForceReset = true;
+        renderTerminal();
+      }
+    }
+  }, 0);
+}
+
+function syncTerminalTakeover(live) {
+  if (live && !takeoverStream.active) {
+    startTerminalTakeover();
+  } else if (!live && takeoverStream.active) {
+    stopTerminalTakeover(true);
+  }
+}
+
+// When takeover ends, painting is suspended until the authoritative screen
+// is re-fetched from the server; only that one paint is allowed, so no local
+// render can stack a second copy over stream leftovers.
+let takeoverRepaintPending = false;
+let takeoverRepaintForceReset = false;
 
 const TERMINAL_FONT_SIZE = 12;
 const TERMINAL_LINE_HEIGHT = 1.42;
@@ -989,6 +1388,17 @@ function terminalCellHeight(term) {
 
 function renderTerminal() {
   if (activeSourceSelection()) return;
+  // While the human owns the pane, the screen is a live byte-streamed
+  // terminal; captured-frame painting would fight the stream, so skip it.
+  if (takeoverStream.active) return;
+  // After takeover ends, all local paints are blocked until the fresh
+  // server snapshot arrives; only that repaint may draw.
+  if (takeoverRepaintPending) return;
+  if (takeoverRepaintForceReset) {
+    takeoverRepaintForceReset = false;
+    termRowsState = null;
+    state.terminalFrameKey = null;
+  }
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
   const replayReference = scoreReferenceAtPlayback();
   const replaySource = replayReference?.kind === "screen"
@@ -1571,6 +1981,10 @@ function showSelectionMenu(candidate) {
 }
 
 function scheduleSelectionMenu(clickCount = 1) {
+  // During live takeover the terminal shows a byte stream, not a captured
+  // frame, so quoting "the screen" from a selection is meaningless there;
+  // suppress the reference menu and keep plain copy working.
+  if (takeoverStream.active) return;
   // A double-click may be the first two clicks of a triple-click. Wait a bit
   // after double-click so the third click can replace the word selection with
   // the paragraph selection instead of being blocked by an early menu.
@@ -1931,16 +2345,6 @@ function openSettingsDialog() {
   el.judge_name_input.select();
 }
 
-function textTokens(value) {
-  const lines = value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-  const tokens = [];
-  lines.forEach((line, index) => {
-    if (line) tokens.push({ kind: "literal", value: line });
-    if (index < lines.length - 1) tokens.push({ kind: "key", value: "Enter" });
-  });
-  return tokens;
-}
-
 function bind() {
   el.new_button.addEventListener("click", openNewDialog);
   el.welcome_new_button.addEventListener("click", openNewDialog);
@@ -2064,37 +2468,11 @@ function bind() {
   el.terminal_copy_ansi_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalAnsiText || lastTerminalPlainText));
   // Refit the terminal when the window/panel size changes (DevTools dock,
   // pane resize), so rows are never clipped and the cursor stays visible.
-  window.addEventListener("resize", () => {
-    if (!terminalEngine) return;
-    terminalEngine.term._cellHeight = null;
-    termRowsState = null;
-    state.terminalFrameKey = null;
-    renderTerminal();
-  });
+  window.addEventListener("resize", () => refitTerminal());
   el.resume_button.addEventListener("click", () => postMeetingAction("agent/resume").catch((error) => toast(error.message)));
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
   el.cleanup_button.addEventListener("click", () => postMeetingAction("cleanup").catch((error) => toast(error.message)));
-  el.command_select.addEventListener("change", () => { el.command_path.disabled = el.command_select.value === "pwd"; });
-  el.command_form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    try { await postMeetingAction("terminal/input", { type: "command", command: el.command_select.value, path: el.command_select.value === "pwd" ? "" : el.command_path.value }); }
-    catch (error) { toast(error.message); }
-  });
-  el.vim_form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const keys = textTokens(el.vim_text.value);
-    if (!keys.length) return;
-    const current = state.snapshot?.latest_screen?.data?.current_command || "";
-    const inputType = String(current).toLowerCase().startsWith("python") ? "terminal_keys" : "vim_keys";
-    try { await postMeetingAction("terminal/input", { type: inputType, keys }); el.vim_text.value = ""; }
-    catch (error) { toast(error.message); }
-  });
-  document.querySelectorAll("[data-key]").forEach((button) => button.addEventListener("click", () => {
-    const current = state.snapshot?.latest_screen?.data?.current_command || "";
-    const inputType = String(current).toLowerCase().startsWith("python") ? "terminal_keys" : "vim_keys";
-    postMeetingAction("terminal/input", { type: inputType, keys: [{ kind: "key", value: button.dataset.key }] }).catch((error) => toast(error.message));
-  }));
   document.querySelectorAll("[data-chat-filter]").forEach((button) => button.addEventListener("click", () => {
     state.chatFilter = button.dataset.chatFilter;
     document.querySelectorAll("[data-chat-filter]").forEach((item) => item.classList.toggle("active", item === button));

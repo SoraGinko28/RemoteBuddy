@@ -303,6 +303,65 @@ class TmuxTransport:
             *[f"{byte:02x}" for byte in encoded],
         )
 
+    def send_hex(self, pane_id: str, hex_text: str) -> None:
+        """Inject raw bytes (hex) into the pane, exactly as if typed locally.
+
+        This is the takeover input path: the web terminal forwards its key
+        bytes verbatim (control characters, UTF-8 text, CSI sequences) so
+        tmux and the foreground program see the same bytes a local keyboard
+        would produce.
+        """
+        if not hex_text or not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", hex_text):
+            raise TmuxError("send_hex requires non-empty even-length hex")
+        if len(hex_text) // 2 > 128 * 1024:
+            raise TmuxError("send_hex payload is too large")
+        pane = self._pane(pane_id)
+        self._checked_cmd(
+            pane,
+            "send-keys",
+            "-H",
+            *[hex_text[index : index + 2] for index in range(0, len(hex_text), 2)],
+        )
+
+    def start_output_pipe(self, pane_id: str, target_path: str) -> None:
+        """Pipe the pane's output bytes to a file (tmux ``pipe-pane -O``).
+
+        Only new output is captured, so callers seed the screen first and
+        then serve strictly newer bytes from this file. A pane may hold one
+        pipe at a time.
+        """
+        pane = self._pane(pane_id)
+        command = "cat >> " + shlex.quote(str(target_path))
+        self._checked_cmd(pane, "pipe-pane", command)
+
+    def stop_output_pipe(self, pane_id: str) -> None:
+        """Close the pane's output pipe (``pipe-pane`` with no command)."""
+        pane = self._pane(pane_id)
+        self._checked_cmd(pane, "pipe-pane")
+
+    def resize_workspace_session(self, session_name: str, cols: int, rows: int) -> None:
+        """Resize the workspace window to an exact grid (takeover viewport fit).
+
+        The workspace window keeps ``window-size manual``, so it never follows
+        an attached client; an explicit ``resize-window`` is the only thing
+        that moves it. Bounds mirror ``create_workspace_session``.
+        """
+        self._validate_session(session_name)
+        if not isinstance(cols, int) or not isinstance(rows, int):
+            raise TmuxError("resize requires integer columns and rows")
+        if cols < 40 or cols > 300 or rows < 12 or rows > 120:
+            raise TmuxError("resize dimensions are outside supported bounds")
+        self._checked_cmd(
+            self._server,
+            "resize-window",
+            "-t",
+            session_name,
+            "-x",
+            str(cols),
+            "-y",
+            str(rows),
+        )
+
     def send_keys(self, pane_id: str, text: str) -> None:
         self.send_literal(pane_id, text)
         self.send_enter(pane_id)

@@ -179,41 +179,10 @@
               </div>
               <div class="control-actions">
                 <button id="acquire-button" class="command-button" type="button">接管</button>
-                <button id="release-button" class="primary-command compact" type="button" hidden>交还 Agent</button>
+                <button id="release-button" class="command-button compact" type="button" hidden>交还</button>
               </div>
             </div>
 
-            <div id="terminal-controls" class="terminal-controls" hidden>
-              <form id="command-form" class="command-form">
-                <label for="command-select">命令</label>
-                <select id="command-select">
-                  <option value="pwd">pwd</option>
-                  <option value="cd">cd</option>
-                  <option value="vim">vim</option>
-                  <option value="python">python</option>
-                </select>
-                <label class="sr-only" for="command-path">路径</label>
-                <input id="command-path" type="text" maxlength="4096" placeholder="相对路径" disabled>
-                <button class="command-button" type="submit">执行</button>
-              </form>
-
-              <form id="vim-form" class="vim-form">
-                <label id="process-input-label" for="vim-text">进程输入</label>
-                <textarea id="vim-text" rows="2" maxlength="8192" placeholder="输入要发送到当前进程的文字"></textarea>
-                <button class="command-button" type="submit">发送文字</button>
-              </form>
-              <div class="key-row" aria-label="Vim 特殊按键">
-                <button data-key="Escape" type="button" title="Escape">Esc</button>
-                <button data-key="Enter" type="button" title="Enter">↵</button>
-                <button data-key="Tab" type="button" title="Tab">Tab</button>
-                <button data-key="Left" type="button" title="Left">←</button>
-                <button data-key="Down" type="button" title="Down">↓</button>
-                <button data-key="Up" type="button" title="Up">↑</button>
-                <button data-key="Right" type="button" title="Right">→</button>
-                <button data-key="Backspace" type="button" title="Backspace">⌫</button>
-                <button data-key="C-c" type="button" title="Ctrl+C">C-c</button>
-              </div>
-            </div>
           </section>
         </div>
       </section>

@@ -2,6 +2,7 @@
 """RemoteBuddy v2 local workspace service."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -20,7 +21,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from agent_protocol import AgentBackend
+from agent_protocol import (
+    AgentBackend,
+    AgentProtocolError,
+    normalize_model_key_tokens,
+    validate_key_tokens,
+)
 from codex_app_server_client import (
     CodexAppServerBackend,
     CodexAppServerError,
@@ -74,9 +80,6 @@ TERMINAL_STATUSES = {"completed", "failed", "interrupted"}
 # Phases from which the human can resume or wake the Agent. The frontend
 # mirrors this set for its resume-button predicate.
 RESUMABLE_PHASES = {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"}
-# Human terminal input is intentionally disabled while the shared workspace
-# screen is being validated. Agent actions still use the internal transport.
-HUMAN_TERMINAL_READ_ONLY = True
 DEFAULT_JUDGE_NAME = "human"
 MAX_JUDGE_NAME_BYTES = 200
 LOCAL_SETTINGS_PATH = ".remotebuddy/settings.local.json"
@@ -109,6 +112,44 @@ class WebError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+class StreamClosed(RuntimeError):
+    """The SSE takeover stream's client went away; stop emitting."""
+
+
+# Keystroke classification for the takeover journal: a stroke that carries
+# any C0/C1 control byte is $ctrl (mapped to the terminal key name where
+# known), otherwise it is plain $text (UTF-8). Multi-byte escape sequences
+# from arrows/special keys are named keys too.
+_CTRL_BYTE_NAME = {
+    0x0d: "Enter", 0x0a: "Enter", 0x7f: "Backspace", 0x09: "Tab", 0x1b: "Escape",
+}
+_ESC_SEQ_NAME = {
+    b"\x1b[A": "Up", b"\x1b[B": "Down", b"\x1b[C": "Right", b"\x1b[D": "Left",
+    b"\x1b[H": "Home", b"\x1b[F": "End",
+    b"\x1b[2~": "Insert", b"\x1b[3~": "Delete",
+    b"\x1b[5~": "PageUp", b"\x1b[6~": "PageDown",
+}
+
+
+def classify_keystroke(hex_text: str) -> Dict[str, Any]:
+    data = bytes.fromhex(hex_text)
+    if data in _ESC_SEQ_NAME:
+        return {"kind": "ctrl", "value": _ESC_SEQ_NAME[data]}
+    if len(data) == 1 and data[0] in _CTRL_BYTE_NAME:
+        return {"kind": "ctrl", "value": _CTRL_BYTE_NAME[data[0]]}
+    if len(data) == 1 and 1 <= data[0] <= 26:
+        return {"kind": "ctrl", "value": "C-" + chr(ord("a") + data[0] - 1)}
+    if any(byte < 0x20 or byte == 0x7f for byte in data):
+        return {"kind": "ctrl", "value": "x" + hex_text}
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"kind": "ctrl", "value": "x" + hex_text}
+    return {"kind": "text", "value": text}
+
+
 
 
 def _settings_path(project_root: Path) -> Path:
@@ -233,6 +274,12 @@ class MeetingWebService:
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
+        self.human_pipes: Dict[str, bool] = {}
+        self.human_geometry: Dict[str, Dict[str, int]] = {}
+        # Whether the Agent was mid-work when the human took over; only then
+        # does a plain 交还 resume it. Takeover from an idle/waiting state
+        # returns to waiting instead of letting the Agent run on its own.
+        self.human_resume: Dict[str, bool] = {}
         self._store_cache: Dict[str, MeetingStore] = {}
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
@@ -276,6 +323,172 @@ class MeetingWebService:
             # The runner owns failure classification; control operations stay
             # idempotent even if the model process has already exited.
             pass
+
+    def close_human_pipe(self, meeting_id: str) -> None:
+        """Best-effort pipe cleanup after a stream ends (release/stop/etc.)."""
+        try:
+            with self._meeting_lock(meeting_id):
+                store = self.load_store(meeting_id)
+                self._sync_human_pipe(store)
+        except (WebError, MeetingError, OSError):
+            pass
+
+    def _human_pipe_path(self, store: MeetingStore) -> Path:
+        return store.events_path.parent / "human-pipe.log"
+
+    def _sync_human_pipe(self, store: MeetingStore) -> None:
+        """Open/close the takeover output pipe to match current ownership.
+
+        The pipe records every byte the pane emits while the human owns it
+        (``tmux pipe-pane``); the browser's SSE stream tails this file. It is
+        opened when ownership becomes human and closed when it leaves human,
+        and each open truncates leftovers from an earlier takeover.
+        """
+        meeting_id = store.meeting.meeting_id
+        pane_id = store.meeting.pane_id
+        wants_open = (
+            store.meeting.status not in TERMINAL_STATUSES
+            and store.meeting.control_owner == "human"
+            and store.meeting.phase == "human_control"
+            and bool(pane_id)
+        )
+        with self.lock:
+            is_open = self.human_pipes.get(meeting_id, False)
+            if wants_open == is_open:
+                return
+        transport = self._transport()
+        path = self._human_pipe_path(store)
+        if wants_open:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("w", encoding="utf-8"):
+                    pass
+                transport.start_output_pipe(pane_id, str(path))
+                with self.lock:
+                    self.human_pipes[meeting_id] = True
+            except (TmuxError, OSError, AttributeError) as exc:
+                store.append_event(
+                    "error",
+                    "harness",
+                    "human_control",
+                    content=f"cannot open output pipe: {exc}",
+                )
+        else:
+            try:
+                transport.stop_output_pipe(pane_id)
+            except (TmuxError, OSError, AttributeError):
+                pass  # the pane may already be gone, or the transport has no pipe
+            with self.lock:
+                self.human_pipes[meeting_id] = False
+            # Handing the terminal back restores the pane to the size the
+            # Agent's earlier frames were captured at.
+            self._restore_human_geometry(store)
+
+    def _restore_human_geometry(self, store: MeetingStore) -> None:
+        meeting_id = store.meeting.meeting_id
+        with self.lock:
+            original = self.human_geometry.get(meeting_id)
+            if not original:
+                return
+            self.human_geometry.pop(meeting_id, None)
+        try:
+            transport = self._transport()
+            transport.resize_workspace_session(
+                store.meeting.session_name, original["cols"], original["rows"]
+            )
+        except (TmuxError, OSError, RunnerError, AttributeError):
+            pass  # the session may be gone; nothing to restore
+
+    def meeting_live_state(self, meeting_id: str) -> Dict[str, Any]:
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            return {
+                "owner": store.meeting.control_owner,
+                "phase": store.meeting.phase,
+                "status": store.meeting.status,
+            }
+
+    def human_stream_start(
+        self,
+        meeting_id: str,
+        cols: Optional[int] = None,
+        rows: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Prepare the takeover byte stream: pipe open + a fresh screen seed.
+
+        When the browser supplies ``cols``/``rows`` the workspace window is
+        resized to that exact grid first (a real interactive terminal matches
+        the pane to the client); the pre-takeover size is remembered and
+        restored when control is handed back. Returns the output file path,
+        the byte offset from which new output should be served, and a
+        base64-encoded ANSI seed of the current screen.
+        """
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                raise WebError(409, "meeting is already finished")
+            if (
+                store.meeting.control_owner != "human"
+                or store.meeting.phase != "human_control"
+            ):
+                raise WebError(409, "no active human takeover")
+            pane_id = store.meeting.pane_id
+            if not pane_id:
+                raise WebError(409, "workspace pane is not available")
+            transport = self._transport()
+            if cols is not None or rows is not None:
+                if not isinstance(cols, int) or not isinstance(rows, int):
+                    raise WebError(400, "terminal stream size must be integers")
+                if cols < 40 or cols > 300 or rows < 12 or rows > 120:
+                    raise WebError(400, "terminal stream size is outside supported bounds")
+                try:
+                    info = transport.pane_info(pane_id)
+                    current_cols = int(info["pane_width"])
+                    current_rows = int(info["pane_height"])
+                except (TmuxError, OSError, ValueError) as exc:
+                    raise WebError(502, f"cannot read pane size: {exc}") from exc
+                if current_cols != cols or current_rows != rows:
+                    with self.lock:
+                        self.human_geometry.setdefault(
+                            meeting_id, {"cols": current_cols, "rows": current_rows}
+                        )
+                    try:
+                        transport.resize_workspace_session(
+                            store.meeting.session_name, cols, rows
+                        )
+                    except (TmuxError, OSError) as exc:
+                        raise WebError(502, f"cannot resize workspace: {exc}") from exc
+            self._sync_human_pipe(store)
+            try:
+                seed_ansi = transport.capture_visible_ansi(pane_id)
+                info = transport.pane_info(pane_id)
+                cursor_x = int(info["cursor_x"])
+                cursor_y = int(info["cursor_y"])
+            except (TmuxError, OSError, ValueError) as exc:
+                raise WebError(502, f"cannot seed terminal stream: {exc}") from exc
+            # Park the emulator's cursor exactly where the pane's cursor is.
+            # New output usually does NOT carry a cursor-move before its first
+            # character (a typed key is echoed as just the character), so a
+            # seed ending at the wrong cell makes every echo land misplaced
+            # and later erases only partially repair it -- the visible mess.
+            seed_bytes = seed_ansi.encode("utf-8") + (
+                f"\x1b[{cursor_y + 1};{cursor_x + 1}H".encode("ascii")
+            )
+            # The pane's ACTUAL size after any resize is the one truth; the
+            # emulator must match it exactly (tmux can clamp/clip requests).
+            pane_width = int(info["pane_width"])
+            pane_height = int(info["pane_height"])
+            path = self._human_pipe_path(store)
+            # Serve strictly newer bytes than the seed frame shows.
+            offset = path.stat().st_size if path.exists() else 0
+        return {
+            "meeting_id": meeting_id,
+            "path": str(path),
+            "seed": base64.b64encode(seed_bytes).decode("ascii"),
+            "seed_offset": offset,
+            "pane_width": pane_width,
+            "pane_height": pane_height,
+        }
 
     def _runs_root(self) -> Path:
         runs = self.project_root / "runs"
@@ -585,6 +798,7 @@ class MeetingWebService:
         store = self.load_store(meeting_id)
         if store.meeting.control_owner == "human":
             self._ensure_capture_worker(store)
+            self._sync_human_pipe(store)
         # One parse serves the whole payload. The frontend rebuilds chat and
         # scores from its own timeline, so they are not shipped per poll.
         events = store.events()
@@ -871,6 +1085,7 @@ class MeetingWebService:
                                 failure=str(exc),
                                 session_state=session_state,
                             )
+                            self._sync_human_pipe(store)
                             return
                     elif store.meeting.control_requested != "human":
                         return
@@ -922,6 +1137,11 @@ class MeetingWebService:
                     "request",
                     reference=references[0] if references else None,
                 )
+            if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
+                # A chat while the human holds the terminal is an explicit
+                # instruction: hand control back AND resume the Agent with it.
+                self._sync_human_pipe(store)
+                return self._resume_agent_from_human(meeting_id)
             if delivery == "interrupt" or wake_agent:
                 store.bump_request_generation(
                     failure=None,
@@ -976,11 +1196,13 @@ class MeetingWebService:
             store = self.load_store(meeting_id)
             if store.meeting.status in TERMINAL_STATUSES:
                 raise WebError(409, "meeting is already finished")
-            if HUMAN_TERMINAL_READ_ONLY:
-                raise WebError(409, "terminal is temporarily read-only for human users")
             if store.meeting.control_owner == "human":
                 return store
             orphaned_agent = self._orphaned_agent(store, meeting_id)
+            with self.lock:
+                self.human_resume[meeting_id] = (
+                    store.meeting.phase in {"agent_thinking", "agent_acting"} or orphaned_agent
+                )
             store.bump_request_generation(
                 control_requested="human",
                 recovery_required=store.meeting.recovery_required or orphaned_agent,
@@ -989,6 +1211,8 @@ class MeetingWebService:
             if store.meeting.phase in RESUMABLE_PHASES or orphaned_agent:
                 store.update(phase="human_control", control_owner="human", control_requested=None)
                 store.append_event("control", "human", "human_control", data={"status": "acquired"})
+                store.note_terminal_control("human")
+                self._sync_human_pipe(store)
             self._ensure_capture_worker(store)
         return store
 
@@ -997,34 +1221,234 @@ class MeetingWebService:
             store = self.load_store(meeting_id)
             if store.meeting.control_owner != "human":
                 return store
-            config = self._config_for_store(store)
-            fresh_conversation = store.meeting.recovery_required
-            store.bump_request_generation(
-                phase="agent_thinking",
-                control_owner="agent",
+            with self.lock:
+                resume_agent = self.human_resume.pop(meeting_id, False)
+            if resume_agent:
+                # The Agent was mid-work when the human took over: a plain 交还
+                # resumes it where it stopped.
+                return self._resume_agent_from_human(meeting_id)
+            # The Agent was idle (waiting) when the human took over: hand back
+            # to waiting instead of letting the Agent run on its own.
+            store.update(
+                phase="waiting_for_user",
+                control_owner="none",
                 control_requested=None,
-                cycle_action_count=0,
-                cycle_started_at=utc_now(),
-                status="running",
+                pending_action_id=None,
             )
-            store.append_event("control", "human", "agent_thinking", data={"status": "released"})
-            self._ensure_worker(
-                store,
-                config,
-                resume=True,
-                fresh_conversation=fresh_conversation,
-            )
+            store.append_event("control", "human", "waiting_for_user", data={"status": "released"})
+            self._sync_human_pipe(store)
+            return self.load_store(meeting_id)
+
+    def _resume_agent_from_human(self, meeting_id: str) -> MeetingStore:
+        """Hand control to the Agent and start a resume cycle.
+
+        Called with the meeting lock held, from release (Agent was mid-work)
+        or from a chat sent during takeover (which always carries a task).
+        """
+        store = self.load_store(meeting_id)
+        config = self._config_for_store(store)
+        fresh_conversation = store.meeting.recovery_required
+        store.bump_request_generation(
+            phase="agent_thinking",
+            control_owner="agent",
+            control_requested=None,
+            cycle_action_count=0,
+            cycle_started_at=utc_now(),
+            status="running",
+        )
+        store.append_event("control", "human", "agent_thinking", data={"status": "released"})
+        store.note_terminal_control("agent")
+        self._sync_human_pipe(store)
+        self._ensure_worker(
+            store,
+            config,
+            resume=True,
+            fresh_conversation=fresh_conversation,
+        )
         return store
 
     def terminal_input(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
-        del payload
+        """Deliver human input into the shared pane while the human owns it.
+
+        Two payload shapes are accepted:
+
+        - ``{"bytes": "<hex>"}`` -- the takeover terminal's raw keystroke
+          bytes (control characters, UTF-8 text, CSI sequences), sent to the
+          pane verbatim and journaled as one human action.
+        - ``{"keys": [...]}`` -- the Agent keystroke DSL (``$text`` /
+          ``$ctrl`` / ``$rest`` plus bare literal strings), retained for
+          programmatic callers and tests.
+
+        The human is deliberately free to type anywhere -- shell, Vim, a
+        REPL, or any foreground program -- so no process whitelist is
+        enforced. Input re-checks ownership before sending, so a burst stops
+        the moment the human releases, chats, or stops the meeting.
+        """
         with self._meeting_lock(meeting_id):
-            self.load_store(meeting_id)
-            # The human terminal is read-only for now. The execution body was
-            # removed while the feature is disabled; restore it from git
-            # history if HUMAN_TERMINAL_READ_ONLY ever becomes a runtime
-            # setting again.
-            raise WebError(403, "terminal is temporarily read-only for human users")
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                raise WebError(409, "meeting is already finished")
+            if (
+                store.meeting.control_owner != "human"
+                or store.meeting.phase != "human_control"
+            ):
+                raise WebError(409, "acquire terminal control before sending input")
+            fields = set(payload) if isinstance(payload, dict) else set()
+            if fields == {"keys"}:
+                pass
+            elif fields in ({"bytes"}, {"bytes", "strokes"}):
+                pass
+            else:
+                raise WebError(400, "terminal input requires a bytes or keys payload")
+            pane_id = store.meeting.pane_id
+            if not pane_id:
+                raise WebError(409, "workspace pane is not available")
+            hex_text: Optional[str] = None
+            keys: Optional[list] = None
+            strokes: Optional[list] = None
+            if "bytes" in payload:
+                hex_text = payload["bytes"]
+                if not isinstance(hex_text, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", hex_text):
+                    raise WebError(400, "bytes must be non-empty even-length hex")
+                if len(hex_text) // 2 > 64 * 1024:
+                    raise WebError(413, "bytes payload is too large")
+                raw_strokes = payload.get("strokes")
+                if raw_strokes is not None:
+                    if not isinstance(raw_strokes, list) or not raw_strokes:
+                        raise WebError(400, "strokes must be a non-empty array")
+                    parsed_strokes: List[Dict[str, Any]] = []
+                    concatenated = ""
+                    for item in raw_strokes:
+                        if (
+                            not isinstance(item, dict)
+                            or set(item) != {"hex", "stroke_time"}
+                            or not isinstance(item.get("hex"), str)
+                            or not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", item["hex"])
+                            or not isinstance(item.get("stroke_time"), str)
+                            or not item["stroke_time"]
+                        ):
+                            raise WebError(400, "invalid stroke entry")
+                        parsed_strokes.append(item)
+                        concatenated += item["hex"]
+                    if concatenated.lower() != hex_text.lower():
+                        raise WebError(400, "strokes must cover the bytes payload exactly")
+                    strokes = parsed_strokes
+            else:
+                raw_keys = payload["keys"]
+                if not isinstance(raw_keys, list) or not raw_keys:
+                    raise WebError(400, "keys must be a non-empty array")
+                try:
+                    keys = normalize_model_key_tokens(raw_keys)
+                    validate_key_tokens(keys)
+                except (AgentProtocolError, TypeError, ValueError) as exc:
+                    raise WebError(400, str(exc)) from exc
+            transport = self._transport()
+            action_id = "human-action-" + secrets.token_hex(6)
+            profile = store.meeting.typing_profile or "balanced"
+            store.append_event(
+                "action",
+                "human",
+                "human_control",
+                data={"action_id": action_id, "status": "received", "input": payload},
+            )
+            store.append_event(
+                "action", "human", "human_control", data={"action_id": action_id, "status": "started"}
+            )
+
+        def owns_terminal(current: MeetingStore) -> bool:
+            return (
+                current.meeting.status not in TERMINAL_STATUSES
+                and current.meeting.control_owner == "human"
+                and current.meeting.phase == "human_control"
+            )
+
+        def record(status: str, *, content: str = "", extra: Optional[Dict[str, Any]] = None) -> None:
+            with self._meeting_lock(meeting_id):
+                current = self.load_store(meeting_id)
+                data: Dict[str, Any] = {"action_id": action_id, "status": status}
+                if extra:
+                    data.update(extra)
+                current.append_event(
+                    "action",
+                    "human",
+                    "human_control",
+                    content=content,
+                    data=data,
+                )
+
+        cancelled = False
+        try:
+            if hex_text is not None:
+                # Raw takeover keystrokes: one hex send, re-checked under the
+                # lock, followed by a captured frame of the result.
+                with self._meeting_lock(meeting_id):
+                    store = self.load_store(meeting_id)
+                    if not owns_terminal(store):
+                        cancelled = True
+                    else:
+                        transport.send_hex(pane_id, hex_text)
+                # No settle sleep and no per-batch screen capture here: the
+                # pane echo returns through the byte stream immediately and
+                # the 4Hz capture worker journals frames while takeover is
+                # live. Waiting 50ms plus a capture made every keystroke
+                # batch feel ~150ms late, worst for Enter/Backspace.
+            else:
+                for index, token in enumerate(keys):  # type: ignore[union-attr]
+                    is_rest = token.get("kind") == "rest"
+                    with self._meeting_lock(meeting_id):
+                        store = self.load_store(meeting_id)
+                        if not owns_terminal(store):
+                            cancelled = True
+                            break
+                        if not is_rest:
+                            transport.send_tokens(pane_id, [token])
+                    if is_rest:
+                        time.sleep(int(token["value"]) / 1000.0)
+                        continue
+                    time.sleep(0.05)
+                    with self._meeting_lock(meeting_id):
+                        store = self.load_store(meeting_id)
+                        if not owns_terminal(store):
+                            cancelled = True
+                            break
+                        capture_workspace(
+                            store,
+                            transport,
+                            change_kind="typing",
+                            metadata={
+                                "typing_profile": profile,
+                                "typing_policy_version": "1",
+                                "action_id": action_id,
+                                "burst_index": index,
+                                "planned_delay_ms": 50,
+                                "input_context": "keystrokes",
+                            },
+                        )
+                if not cancelled:
+                    with self._meeting_lock(meeting_id):
+                        store = self.load_store(meeting_id)
+                        if not owns_terminal(store):
+                            cancelled = True
+                        else:
+                            capture_workspace(store, transport)
+            if not cancelled:
+                extra: Dict[str, Any] = {}
+                if strokes is not None:
+                    extra["strokes"] = [
+                        {
+                            "user_name": "human",
+                            "stroke_time": stroke["stroke_time"],
+                            "data": classify_keystroke(stroke["hex"]),
+                        }
+                        for stroke in strokes
+                    ]
+                record("completed", extra=extra)
+            else:
+                record("cancelled", extra={"remaining_characters": 0})
+        except (RunnerError, TmuxError, OSError) as exc:
+            record("rejected", content=str(exc))
+            raise WebError(422, str(exc)) from exc
+        return store
 
     def complete(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -1042,6 +1466,7 @@ class MeetingWebService:
                 control_requested=None,
                 session_state="retained",
             )
+            self._sync_human_pipe(store)
             self._interrupt_backend(meeting_id)
             store.append_event("state", "human", "completed", data={"status": "completed"})
             with self.lock:
@@ -1072,6 +1497,7 @@ class MeetingWebService:
                 pending_action_id=None,
                 failure="stopped by user",
             )
+            self._sync_human_pipe(store)
             try:
                 self._transport().kill_session(
                     store.meeting.session_name
@@ -1100,6 +1526,7 @@ class MeetingWebService:
                 store.append_event("error", "harness", store.meeting.phase, content=str(exc))
                 raise WebError(502, "tmux cleanup failed") from exc
             store.mark_session_stopped()
+            self._sync_human_pipe(store)
             store.append_event("control", "human", store.meeting.phase, data={"status": "cleaned"})
         return store
 
@@ -1377,6 +1804,109 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _stream_terminal(self, meeting_id: str, cols: Optional[int] = None, rows: Optional[int] = None) -> None:
+        """Serve the takeover byte stream as Server-Sent Events.
+
+        The first event is ``seed`` (base64 ANSI of the current screen, from
+        which only newer bytes follow), then every growth of the output pipe
+        file is pushed as a ``data`` event whose ``id`` is the byte offset
+        (EventSource reconnects resume from ``Last-Event-ID``). When the
+        meeting leaves human control the stream sends ``control: released``
+        and closes.
+        """
+        try:
+            prepared = self.service.human_stream_start(meeting_id, cols, rows)
+        except WebError as exc:
+            self._error(exc.status, exc.message)
+            return
+        path = Path(prepared["path"])
+        seed = prepared["seed"]
+        seed_offset = prepared["seed_offset"]
+        resume_header = self.headers.get("Last-Event-ID", "")
+        resume = int(resume_header) if resume_header.isdigit() else -1
+        self.send_response(200)
+        self._headers("text/event-stream", cache="no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            self.connection.settimeout(None)
+        except (OSError, AttributeError):
+            pass
+        wfile = self.wfile
+
+        def emit(event: str, data: str, event_id: Optional[int] = None) -> None:
+            lines = []
+            if event_id is not None:
+                lines.append(f"id: {event_id}")
+            if event:
+                lines.append(f"event: {event}")
+            lines.append(f"data: {data}")
+            try:
+                wfile.write(("\n".join(lines) + "\n\n").encode("utf-8"))
+                wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                raise StreamClosed(str(exc)) from exc
+
+        try:
+            size_now = path.stat().st_size if path.exists() else 0
+            if resume >= 0 and resume <= size_now:
+                offset = resume
+            else:
+                # First connect (or the pipe file was rotated/reopened): send
+                # the pane's authoritative size first, then a fresh seed, and
+                # continue strictly after the seed.
+                if resume >= 0:
+                    emit("control", "reset")
+                emit(
+                    "size",
+                    f'{prepared["pane_width"]}x{prepared["pane_height"]}',
+                )
+                emit("seed", seed, event_id=seed_offset)
+                offset = seed_offset
+            handle = path.open("rb")
+            try:
+                handle.seek(offset)
+                heartbeat = time.monotonic()
+                state_check = time.monotonic()
+                while True:
+                    now = time.monotonic()
+                    try:
+                        size = path.stat().st_size
+                    except OSError:
+                        break
+                    if size > offset:
+                        chunk = handle.read(min(1 << 18, size - offset))
+                        offset += len(chunk)
+                        if chunk:
+                            emit("data", base64.b64encode(chunk).decode("ascii"), event_id=offset)
+                        continue
+                    if now - state_check > 0.5:
+                        state_check = now
+                        try:
+                            live = self.service.meeting_live_state(meeting_id)
+                        except (WebError, MeetingError, OSError):
+                            break
+                        if (
+                            live["status"] in TERMINAL_STATUSES
+                            or live["owner"] != "human"
+                            or live["phase"] != "human_control"
+                        ):
+                            emit("control", "released")
+                            break
+                    if now - heartbeat > 12:
+                        heartbeat = now
+                        wfile.write(b": heartbeat\n\n")
+                        wfile.flush()
+                    time.sleep(0.02)
+            finally:
+                handle.close()
+        except StreamClosed:
+            pass
+        finally:
+            # The stream only lives while the human owns the terminal; when it
+            # ends (release/stop/chats), make sure the pipe is closed too.
+            self.service.close_human_pipe(meeting_id)
+
     def do_GET(self) -> None:  # noqa: N802
         try:
             self._guard()
@@ -1426,6 +1956,30 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 payload = self.service.events(meeting_id, after)
                 etag = '"' + sha256_text(payload["revision"] + str(after))[:24] + '"'
                 self._json(payload, etag=etag)
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/terminal/stream", path)
+            if match:
+                query = parse_qs(parsed.query, keep_blank_values=False)
+
+                def grid_value(name: str) -> Optional[int]:
+                    values = query.get(name)
+                    if not values:
+                        return None
+                    if not values[-1].isdigit():
+                        raise WebError(400, f"{name} must be an integer")
+                    return int(values[-1])
+
+                # SSE errors are handled inside _stream_terminal (client
+                # aborts, release); never write a second response after the
+                # stream headers are already on the wire.
+                try:
+                    self._stream_terminal(
+                        unquote(match.group(1)),
+                        grid_value("cols"),
+                        grid_value("rows"),
+                    )
+                except Exception:
+                    pass
                 return
             raise WebError(404, "route not found")
         except WebError as exc:
