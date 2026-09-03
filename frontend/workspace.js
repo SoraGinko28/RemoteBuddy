@@ -1095,6 +1095,8 @@ function startTerminalTakeover() {
   const engine = rebuildTerminalEngine();
   if (!engine) return;
   takeoverStream.active = true;
+  takeoverRepaintPending = false;
+  takeoverRepaintForceReset = false;
   stopLiveScreenQueue();
   // xterm's own keyboard path stays OFF (disableStdin): multiple internal
   // handlers could each emit the same key, doubling every character. We
@@ -1174,18 +1176,31 @@ function stopTerminalTakeover(flushPending) {
   unbindTakeoverInput();
   takeoverStream.inputHex = "";
   // Hand the terminal back to frame painting from a fresh instance so no
-  // byte-stream cells can linger under the painted frames. Then let the
-  // layout settle and repaint exactly once from the freshest snapshot;
-  // painting immediately here can race other queued renders and stack two
-  // copies of the frame (page refresh "fixes" it because it repaints once).
+  // byte-stream cells can linger under the painted frames. The local
+  // timeline/buffer can no longer be trusted after mode switches, so block
+  // every local paint, re-fetch the authoritative screen from the server,
+  // and paint exactly once from that snapshot. Any local render racing this
+  // transition is skipped while the fetch is pending.
   stopLiveScreenQueue();
   rebuildTerminalEngine();
   termRowsState = null;
   state.terminalFrameKey = null;
-  takeoverJustEnded = true;
-  setTimeout(() => {
-    if (!takeoverStream.active) renderTerminal();
-  }, 60);
+  takeoverRepaintPending = true;
+  setTimeout(async () => {
+    try {
+      if (!takeoverStream.active) {
+        await refreshSelected();
+      }
+    } catch (_error) {
+      // paint whatever we have below rather than leaving a blank screen
+    } finally {
+      takeoverRepaintPending = false;
+      if (!takeoverStream.active) {
+        takeoverRepaintForceReset = true;
+        renderTerminal();
+      }
+    }
+  }, 0);
 }
 
 function syncTerminalTakeover(live) {
@@ -1196,10 +1211,11 @@ function syncTerminalTakeover(live) {
   }
 }
 
-// When takeover ends, the very next terminal paint must start from a fully
-// cleared screen; several renders can race right after the mode switch and a
-// normal diff paint can stack onto stream leftovers.
-let takeoverJustEnded = false;
+// When takeover ends, painting is suspended until the authoritative screen
+// is re-fetched from the server; only that one paint is allowed, so no local
+// render can stack a second copy over stream leftovers.
+let takeoverRepaintPending = false;
+let takeoverRepaintForceReset = false;
 
 const TERMINAL_FONT_SIZE = 12;
 const TERMINAL_LINE_HEIGHT = 1.42;
@@ -1353,8 +1369,11 @@ function renderTerminal() {
   // While the human owns the pane, the screen is a live byte-streamed
   // terminal; captured-frame painting would fight the stream, so skip it.
   if (takeoverStream.active) return;
-  if (takeoverJustEnded) {
-    takeoverJustEnded = false;
+  // After takeover ends, all local paints are blocked until the fresh
+  // server snapshot arrives; only that repaint may draw.
+  if (takeoverRepaintPending) return;
+  if (takeoverRepaintForceReset) {
+    takeoverRepaintForceReset = false;
     termRowsState = null;
     state.terminalFrameKey = null;
   }
