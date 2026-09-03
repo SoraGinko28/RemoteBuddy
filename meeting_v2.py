@@ -644,6 +644,31 @@ class MeetingStore:
             },
         )
 
+    def note_terminal_control(self, user_name: str) -> None:
+        """Record that ``user_name`` started controlling the shared pane.
+
+        ADT TerminalControl: there is no end_time -- the next controller's
+        start_time marks the boundary. Stored as a ``control`` event so the
+        Agent-visible journal shape does not grow new kinds.
+        """
+        if user_name not in {"human", "agent"}:
+            raise MeetingError("terminal control user_name must be human or agent")
+        pane = self.meeting.pane_id or ""
+        digits = pane.lstrip("%")
+        tmux_pane: Optional[int] = int(digits) if digits.isdigit() else None
+        self.append_event(
+            "control",
+            user_name,
+            self.meeting.phase,
+            data={
+                "status": "terminal_control",
+                "user_name": user_name,
+                "tmux_window_name": self.meeting.session_name,
+                "tmux_pane": tmux_pane,
+                "start_time": utc_now(),
+            },
+        )
+
     def append_screen(
         self,
         content: str,

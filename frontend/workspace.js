@@ -910,6 +910,7 @@ const takeoverStream = {
   active: false,
   source: null,
   inputHex: "",
+  strokes: [],
   flushTimer: null,
   flushing: false,
   lastFlushErrorAt: 0,
@@ -931,11 +932,15 @@ function flushTakeoverInput(silent = false) {
   takeoverStream.flushTimer = null;
   if (!takeoverStream.inputHex || takeoverStream.flushing) return;
   const hex = takeoverStream.inputHex;
+  const strokes = takeoverStream.strokes;
   takeoverStream.inputHex = "";
+  takeoverStream.strokes = [];
   takeoverStream.flushing = true;
+  const body = { bytes: hex };
+  if (strokes.length) body.strokes = strokes;
   api(`/api/meetings/${encodeURIComponent(state.selectedId || "")}/terminal/input`, {
     method: "POST",
-    body: JSON.stringify({ bytes: hex }),
+    body: JSON.stringify(body),
   }).catch(() => {
     if (!silent) {
       const now = Date.now();
@@ -965,7 +970,12 @@ function takeoverBytesUrgent(text) {
 
 function queueTakeoverInput(text, urgent = false) {
   const bytes = new TextEncoder().encode(text);
-  for (const byte of bytes) takeoverStream.inputHex += byte.toString(16).padStart(2, "0");
+  let hex = "";
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+  takeoverStream.inputHex += hex;
+  // One journaled stroke per physical input event (keystroke, IME commit,
+  // or paste), stamped with the moment the user actually typed it.
+  takeoverStream.strokes.push({ hex, stroke_time: new Date().toISOString() });
   if (takeoverStream.flushTimer !== null) {
     if (!urgent) return;
     clearTimeout(takeoverStream.flushTimer);
@@ -1186,6 +1196,7 @@ function stopTerminalTakeover(flushPending) {
   if (source) source.close();
   unbindTakeoverInput();
   takeoverStream.inputHex = "";
+  takeoverStream.strokes = [];
   // Hand the terminal back to frame painting from a fresh instance so no
   // byte-stream cells can linger under the painted frames. The local
   // timeline/buffer can no longer be trusted after mode switches, so block

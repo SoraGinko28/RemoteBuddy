@@ -487,6 +487,15 @@ class InteractiveRunnerTest(unittest.TestCase):
                 for event in loaded.events()
             )
         )
+        self.assertTrue(
+            any(
+                event["kind"] == "control"
+                and event.get("data", {}).get("status") == "terminal_control"
+                and event.get("data", {}).get("user_name") == "human"
+                for event in loaded.events()
+            ),
+            "deferred human takeover must record a terminal_control start",
+        )
 
     def test_agent_uses_one_pane_and_done_waits_for_user(self):
         client = FakeClient(

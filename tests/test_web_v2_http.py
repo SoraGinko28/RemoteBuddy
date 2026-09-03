@@ -350,6 +350,57 @@ class MeetingWebServiceTest(unittest.TestCase):
             any(item[1] == "resize" and item[2:] == (120, 36) for item in self.transport.commands)
         )
 
+    def test_terminal_control_and_keystroke_records(self):
+        self.start_meeting("adt-records")
+        self.service.acquire("adt-records")
+        events = MeetingStore.load(self.root, "adt-records").events()
+        controls = [
+            e for e in events
+            if e["kind"] == "control" and e.get("data", {}).get("status") == "terminal_control"
+        ]
+        self.assertTrue(controls, "acquire must record a terminal_control")
+        self.assertEqual("human", controls[-1]["data"]["user_name"])
+        self.assertEqual(9, controls[-1]["data"]["tmux_pane"])
+        self.assertTrue(controls[-1]["data"]["tmux_window_name"])
+        self.assertTrue(controls[-1]["data"]["start_time"])
+
+        store = self.service.terminal_input(
+            "adt-records",
+            {
+                "bytes": "636c6561720d",
+                "strokes": [
+                    {"hex": "63", "stroke_time": "2026-09-03T00:00:01.000Z"},
+                    {"hex": "6c", "stroke_time": "2026-09-03T00:00:02.000Z"},
+                    {"hex": "656172", "stroke_time": "2026-09-03T00:00:03.000Z"},
+                    {"hex": "0d", "stroke_time": "2026-09-03T00:00:04.000Z"},
+                ],
+            },
+        )
+        actions = [
+            e for e in store.events()
+            if e["kind"] == "action" and e.get("data", {}).get("status") == "completed"
+        ]
+        last = actions[-1]["data"]["strokes"]
+        self.assertEqual(
+            [
+                {"user_name": "human", "stroke_time": "2026-09-03T00:00:01.000Z", "data": {"kind": "text", "value": "c"}},
+                {"user_name": "human", "stroke_time": "2026-09-03T00:00:02.000Z", "data": {"kind": "text", "value": "l"}},
+                {"user_name": "human", "stroke_time": "2026-09-03T00:00:03.000Z", "data": {"kind": "text", "value": "ear"}},
+                {"user_name": "human", "stroke_time": "2026-09-03T00:00:04.000Z", "data": {"kind": "ctrl", "value": "Enter"}},
+            ],
+            last,
+        )
+        with self.assertRaises(WebError):
+            self.service.terminal_input(
+                "adt-records",
+                {
+                    "bytes": "6162",
+                    "strokes": [{"hex": "61", "stroke_time": "2026-09-03T00:00:05.000Z"}],
+                },
+            )
+        self.service.release("adt-records")
+        self.wait_for_workers()
+
     def test_message_during_human_control_hands_back_and_resumes(self):
         self.start_meeting("control-message")
         self.service.acquire("control-message")
@@ -359,6 +410,12 @@ class MeetingWebServiceTest(unittest.TestCase):
         )
         store = self.service.message("control-message", {"message": "接管结束，继续改 README"})
         self.assertEqual("agent", store.meeting.control_owner)
+        loaded = MeetingStore.load(self.root, "control-message")
+        controls = [
+            e for e in loaded.events()
+            if e["kind"] == "control" and e.get("data", {}).get("status") == "terminal_control"
+        ]
+        self.assertEqual("agent", controls[-1]["data"]["user_name"])
         self.wait_for_workers()
         self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
         chats = MeetingStore.load(self.root, "control-message").chat_messages()
