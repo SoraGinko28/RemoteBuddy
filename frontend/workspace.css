@@ -93,6 +93,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 
 .work-grid { min-height: 0; display: grid; grid-template-columns: minmax(330px, 38%) minmax(0, 1fr); }
 .chat-pane, .terminal-pane { min-height: 0; display: grid; background: var(--surface); }
+.chat-pane > .pane-header,
+.terminal-pane > .pane-header { display: none; }
 .chat-pane { grid-template-rows: auto minmax(0, 1fr) auto; border-right: 1px solid var(--line); }
 .composer-shell { min-width: 0; border-top: 1px solid var(--line); background: white; }
 .terminal-pane { grid-template-rows: auto minmax(0, 1fr) auto auto; }
