@@ -1386,6 +1386,15 @@ function bind() {
   document.querySelector(".workspace-main")?.addEventListener("pointerdown", () => {
     appShell?.classList.remove("sidebar-open");
   });
+  const sessionMore = document.getElementById("session-more-button");
+  const sessionView = document.getElementById("session-view");
+  if (sessionMore && sessionView) {
+    sessionMore.addEventListener("click", () => {
+      const open = sessionView.classList.toggle("details-open");
+      sessionMore.setAttribute("aria-expanded", String(open));
+      sessionMore.title = open ? "收起会话详情" : "展开会话详情";
+    });
+  }
   el.settings_button.addEventListener("click", openSettingsDialog);
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());

@@ -55,6 +55,7 @@
             <p id="failure-message" class="failure-message" hidden></p>
           </div>
           <div class="header-actions">
+            <button id="session-more-button" class="icon-button" type="button" title="展开会话详情" aria-label="展开会话详情" aria-expanded="false">⋯</button>
             <button id="refresh-button" class="icon-button" type="button" title="刷新" aria-label="刷新">↻</button>
             <button id="resume-button" class="command-button" type="button" hidden>继续 Agent</button>
             <button id="complete-button" class="command-button" type="button">结束并保留</button>
@@ -63,7 +64,7 @@
           </div>
         </header>
 
-        <div class="presence-strip">
+        <div class="presence-strip session-details" id="session-details">
           <div><span>阶段</span><strong id="phase-label">—</strong></div>
           <div><span>后端</span><strong id="backend-label">—</strong></div>
           <div><span>Provider</span><strong id="provider-label">—</strong></div>
