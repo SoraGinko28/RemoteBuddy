@@ -1318,7 +1318,7 @@ function buildTerminalRows(segments, plainText, height) {
   let rowPlain = "";
   let rowRuns = [];
   const pushLine = () => {
-    rows.push({ plain: rowPlain, ansi: "\x1b[0m" + rowRuns.map((r) => encodeRunSgr(r.fg, r.bg, r.styles) + r.text).join("") });
+    rows.push({ plain: rowPlain, ansi: "\x1b[0m" + rowRuns.map((r) => "\x1b[0m" + encodeRunSgr(r.fg, r.bg, r.styles) + r.text).join("") });
     rowPlain = "";
     rowRuns = [];
   };
