@@ -40,6 +40,9 @@ const state = {
   viewportMode: "follow",
   chatFollow: true,
   renderingChat: false,
+  // scrollTop value most recently applied by renderChat; used to tell a real
+  // user scroll apart from the follow-scroll renderChat performs itself.
+  chatScrollApplied: null,
   playing: false,
   timer: null,
   pollTimer: null,
@@ -714,28 +717,33 @@ function renderChat() {
       cursorArticle.insertAdjacentElement("afterend", cursorDivider);
     }
     if (!chats.length) el.chat_list.append(node("div", "empty-chat", "还没有聊天消息"));
+    // All scrollTop writes go through here so the follow-scroll renderChat
+    // applies can be told apart from a genuine user scroll: the chat scroll
+    // handler must not pause following because of its own programmatic scroll.
+    const scrollChatTo = (value) => {
+      const maxScroll = Math.max(0, el.chat_list.scrollHeight - el.chat_list.clientHeight);
+      const target = Math.max(0, Math.min(value, maxScroll));
+      state.chatScrollApplied = target;
+      el.chat_list.scrollTop = target;
+    };
     if (replayTarget) {
       const listRect = el.chat_list.getBoundingClientRect();
       const targetRect = replayTarget.getBoundingClientRect();
       const targetTop = el.chat_list.scrollTop + targetRect.top - listRect.top;
-      el.chat_list.scrollTop = Math.max(0, targetTop - (el.chat_list.clientHeight - targetRect.height) / 2);
+      scrollChatTo(targetTop - (el.chat_list.clientHeight - targetRect.height) / 2);
     } else if (state.chatFollow) {
       if (state.followLive || !cursorDivider) {
-        el.chat_list.scrollTop = el.chat_list.scrollHeight;
+        scrollChatTo(el.chat_list.scrollHeight);
       } else {
         // Keep the playback cursor line pinned near the bottom while the
         // transcript keeps scrolling above it as the replay advances.
         const listRect = el.chat_list.getBoundingClientRect();
         const dividerRect = cursorDivider.getBoundingClientRect();
         const dividerTop = el.chat_list.scrollTop + dividerRect.top - listRect.top;
-        el.chat_list.scrollTop = Math.max(
-          0,
-          dividerTop + dividerRect.height + 16 - el.chat_list.clientHeight,
-        );
+        scrollChatTo(dividerTop + dividerRect.height + 16 - el.chat_list.clientHeight);
       }
     } else {
-      const maxScroll = Math.max(0, el.chat_list.scrollHeight - el.chat_list.clientHeight);
-      el.chat_list.scrollTop = Math.min(previousScrollTop, maxScroll);
+      scrollChatTo(previousScrollTop);
     }
   } finally {
     state.renderingChat = false;
@@ -2640,9 +2648,14 @@ function bind() {
       const remaining = el.chat_list.scrollHeight - el.chat_list.clientHeight - el.chat_list.scrollTop;
       state.chatFollow = remaining <= 12;
     } else {
-      // Playback: any manual scroll pauses following the playback cursor;
-      // pressing play, scrubbing the timeline, or the follow button re-pins.
-      state.chatFollow = false;
+      // Playback: only a genuine user scroll pauses following the playback
+      // cursor; pressing play, scrubbing the timeline, or the follow button
+      // re-pins. The scroll renderChat applies itself arrives here as an
+      // async scroll event too, so it must not count as user intent.
+      const applied = state.chatScrollApplied;
+      if (applied === null || Math.abs(el.chat_list.scrollTop - applied) > 1) {
+        state.chatFollow = false;
+      }
     }
   }, { passive: true });
   el.free_scroll_button.addEventListener("click", () => setViewportMode("free"));
