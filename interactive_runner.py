@@ -89,6 +89,11 @@ class InteractiveRunner:
         self._cycle_acknowledged = False
         self._last_action_was_chat = False
         self._last_terminal_evidence: Optional[str] = None
+        # Compare-and-execute guard: the screen snapshot the model saw when it
+        # started thinking vs. the snapshot right before its action runs. If
+        # they differ the action is stale and must not be executed.
+        self._screen_before_think: Optional[tuple] = None
+        self._stale_action_streak = 0
         self._invalid_action_streak = 0
         self._dynamic_action_active = threading.Event()
         self._cycle_started_monotonic = time.monotonic()
@@ -342,6 +347,8 @@ class InteractiveRunner:
                 if self.store.meeting.control_owner != "agent" or self.store.meeting.status != "running":
                     return
                 capture_workspace(self.store, self.transport)
+                if self.store.meeting.pane_id:
+                    self._screen_before_think = self._pane_snapshot(self.store.meeting.pane_id)
                 unread = [
                     event
                     for event in self.store.events_after(self.store.meeting.agent_cursor)
@@ -529,6 +536,24 @@ class InteractiveRunner:
                         self._wait_for_user("action_budget_exhausted")
                         return
                     continue
+
+                # Compare-and-execute: a terminal action planned against a
+                # screen that changed while the model thought is stale --
+                # refuse to run it, then re-observe and let the model decide
+                # again against the current screen.
+                if response.action.type in {
+                    "command", "vim_keys", "terminal_keys", "keystrokes",
+                }:
+                    pane_id = self.store.meeting.pane_id
+                    before = self._screen_before_think
+                    now = self._pane_snapshot(pane_id) if pane_id else None
+                    if before is not None and now is not None and before != now:
+                        if self._reject_stale_action(
+                            request_id, response.response_id, response.action
+                        ):
+                            return
+                        continue
+                    self._stale_action_streak = 0
 
                 self.store.append_event(
                     "action",
@@ -1305,6 +1330,44 @@ class InteractiveRunner:
                 or self.store.meeting.control_owner != "agent"
                 or self.store.meeting.status != "running"
             )
+
+    def _pane_snapshot(self, pane_id: str) -> Optional[tuple]:
+        try:
+            command = self.transport.pane_info(pane_id)["command"]
+            text = self.transport.capture_visible(pane_id)
+        except (RunnerError, TmuxError, OSError):
+            return None
+        return (command, text)
+
+    def _reject_stale_action(
+        self, request_id: str, response_id: str, action: Any
+    ) -> bool:
+        """Refuse to run an action planned against a screen that changed.
+
+        Returns True when the runner must stop the cycle (repeated stale
+        actions), False when it should simply re-observe and re-decide.
+        """
+        with self.lock:
+            self.store.refresh()
+            self._check_stop()
+            self._stale_action_streak += 1
+            self.store.append_event(
+                "action",
+                "harness",
+                "agent_thinking",
+                data={
+                    "action_id": request_id,
+                    "response_id": response_id,
+                    "status": "rejected",
+                    "reason": "screen_changed_before_exec",
+                    "action": asdict(action),
+                },
+            )
+            self.store.update(phase="agent_thinking", pending_action_id=None)
+        if self._stale_action_streak >= 3:
+            self._wait_for_user("screen_changed_repeatedly")
+            return True
+        return False
 
     def _complete_action(self, action_id: str) -> None:
         self.store.append_event(
