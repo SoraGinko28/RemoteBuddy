@@ -2,6 +2,13 @@
 
 const LIVE_SCREEN_FRAME_MS = 700;
 const MAX_LIVE_SCREEN_QUEUE = 120;
+// Playback pacing for frames captured while the human owns the terminal.
+// Takeover frames are recorded every ~0.2-0.35s, so pacing each at the
+// generic 700ms makes a takeover stretch replay slower than it actually
+// happened ("I did not type that slowly"). They are replayed fast-forward
+// instead; idle gaps between takeover bursts produce no frames, so pauses
+// still jump instantly.
+const HUMAN_TAKEOVER_FRAME_MS = 200;
 
 const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
@@ -33,6 +40,9 @@ const state = {
   viewportMode: "follow",
   chatFollow: true,
   renderingChat: false,
+  // scrollTop value most recently applied by renderChat; used to tell a real
+  // user scroll apart from the follow-scroll renderChat performs itself.
+  chatScrollApplied: null,
   playing: false,
   timer: null,
   pollTimer: null,
@@ -101,6 +111,7 @@ function agentStateForPhase(phase) {
 
 function eventDelay(event, queueLength = 0) {
   if (event?.kind !== "screen") return 250;
+  if (event.phase === "human_control") return HUMAN_TAKEOVER_FRAME_MS;
   const kind = event.data?.change_kind;
   if (!['typing', 'paste'].includes(kind)) return LIVE_SCREEN_FRAME_MS;
   const raw = Number(event.data?.planned_delay_ms);
@@ -184,6 +195,24 @@ function duration(value) {
 
 function eventAt(index) {
   return index >= 0 && index < state.timeline.length ? state.timeline[index] : null;
+}
+
+// A human keystroke is journaled verbatim as ground truth: three bookkeeping
+// actions per stroke (received/started/completed). During playback those
+// events carry no visuals of their own -- the takeover terminal paints through
+// the interleaved screen frames -- so auto-play coalesces them: a whole run is
+// skipped in one step and rendering resumes at the next real event. Per-event
+// pacing of these events only adds per-character stalls (250ms or even a 1ms
+// timer still has to fire per recorded event), so a typed burst flashes to the
+// next frame instead. Recording stays per-stroke.
+function isHumanKeystrokeEvent(event) {
+  return Boolean(
+    event
+    && event.kind === "action"
+    && event.actor === "human"
+    && event.phase === "human_control"
+    && ["received", "started", "completed"].includes(event.data?.status),
+  );
 }
 
 function playbackSequence() {
@@ -688,28 +717,33 @@ function renderChat() {
       cursorArticle.insertAdjacentElement("afterend", cursorDivider);
     }
     if (!chats.length) el.chat_list.append(node("div", "empty-chat", "还没有聊天消息"));
+    // All scrollTop writes go through here so the follow-scroll renderChat
+    // applies can be told apart from a genuine user scroll: the chat scroll
+    // handler must not pause following because of its own programmatic scroll.
+    const scrollChatTo = (value) => {
+      const maxScroll = Math.max(0, el.chat_list.scrollHeight - el.chat_list.clientHeight);
+      const target = Math.max(0, Math.min(value, maxScroll));
+      state.chatScrollApplied = target;
+      el.chat_list.scrollTop = target;
+    };
     if (replayTarget) {
       const listRect = el.chat_list.getBoundingClientRect();
       const targetRect = replayTarget.getBoundingClientRect();
       const targetTop = el.chat_list.scrollTop + targetRect.top - listRect.top;
-      el.chat_list.scrollTop = Math.max(0, targetTop - (el.chat_list.clientHeight - targetRect.height) / 2);
+      scrollChatTo(targetTop - (el.chat_list.clientHeight - targetRect.height) / 2);
     } else if (state.chatFollow) {
       if (state.followLive || !cursorDivider) {
-        el.chat_list.scrollTop = el.chat_list.scrollHeight;
+        scrollChatTo(el.chat_list.scrollHeight);
       } else {
         // Keep the playback cursor line pinned near the bottom while the
         // transcript keeps scrolling above it as the replay advances.
         const listRect = el.chat_list.getBoundingClientRect();
         const dividerRect = cursorDivider.getBoundingClientRect();
         const dividerTop = el.chat_list.scrollTop + dividerRect.top - listRect.top;
-        el.chat_list.scrollTop = Math.max(
-          0,
-          dividerTop + dividerRect.height + 16 - el.chat_list.clientHeight,
-        );
+        scrollChatTo(dividerTop + dividerRect.height + 16 - el.chat_list.clientHeight);
       }
     } else {
-      const maxScroll = Math.max(0, el.chat_list.scrollHeight - el.chat_list.clientHeight);
-      el.chat_list.scrollTop = Math.min(previousScrollTop, maxScroll);
+      scrollChatTo(previousScrollTop);
     }
   } finally {
     state.renderingChat = false;
@@ -869,8 +903,12 @@ function ensureTerminalEngine() {
       allowProposedApi: true,
       disableStdin: true,
       convertEol: true,
-      cursorBlink: false,
+      cursorBlink: true,
       cursorStyle: "block",
+      // An unfocused xterm draws its cursor as a faint outline by default,
+      // which is invisible on the dark theme while playback/scrubbing (no
+      // keyboard focus). Keep the solid block cursor at all times.
+      cursorInactiveStyle: "block",
       fontSize: TERMINAL_FONT_SIZE,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       lineHeight: TERMINAL_LINE_HEIGHT,
@@ -1256,6 +1294,8 @@ function stopTerminalTakeover(flushPending) {
       if (!takeoverStream.active) {
         takeoverRepaintForceReset = true;
         renderTerminal();
+        // Back in frame-painted live view: keep the cursor blinking.
+        focusTerminalCursor();
       }
     }
   }, 0);
@@ -1420,6 +1460,56 @@ function terminalCellHeight(term) {
   return TERMINAL_ROW_PX;
 }
 
+// xterm only starts drawing its cursor once the cursor is "initialized",
+// which normally happens on focus or key input. Captured-frame painting (live
+// preview and playback) never focuses or types, so the cursor would stay
+// invisible forever. Borrow focus once per engine and hand it straight back:
+// the focus handler initializes the cursor, and the previous element (e.g. the
+// chat composer) keeps the keyboard.
+function initializeTerminalCursor(term) {
+  if (terminalEngine?.cursorInitDone) return;
+  if (terminalEngine) terminalEngine.cursorInitDone = true;
+  try {
+    const previous = document.activeElement;
+    term.focus();
+    if (previous && previous !== document.activeElement && typeof previous.focus === "function") {
+      setTimeout(() => {
+        if (document.activeElement === term.textarea) previous.focus();
+      }, 0);
+    }
+  } catch (_error) {
+    // focus may be unavailable or throw in odd states; the cursor is cosmetic.
+  }
+}
+
+// xterm only blinks its cursor while its textarea holds focus. Live watching
+// and takeover should blink (like a real terminal), and clicking around the UI
+// (scrubber, buttons...) must not stop that: as long as the focus is not on an
+// editable field, hand it back to the terminal. The chat composer and other
+// text inputs are never touched, so typing a message still works normally.
+function isEditableFocusTarget(node) {
+  if (!node || node === document.body) return false;
+  if (node.isContentEditable) return true;
+  const tag = node.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT") {
+    const type = String(node.type || "text").toLowerCase();
+    return !["range", "checkbox", "radio", "button", "submit", "reset", "color", "file", "hidden"].includes(type);
+  }
+  return false;
+}
+
+function focusTerminalCursor() {
+  if (isEditableFocusTarget(document.activeElement)) return;
+  const term = activeTerm();
+  if (!term) return;
+  try {
+    term.focus();
+  } catch (_error) {
+    // focus may be no-op before the terminal is fully open.
+  }
+}
+
 function renderTerminal() {
   if (activeSourceSelection()) return;
   // While the human owns the pane, the screen is a live byte-streamed
@@ -1455,6 +1545,7 @@ function renderTerminal() {
   const sourceAnnotations = source ? scoreAnnotationsForSource(source) : [];
   const engine = ensureTerminalEngine();
   if (engine) {
+    initializeTerminalCursor(engine);
     // Color-capable rendering through xterm.js. Frames are painted
     // incrementally: only rows that changed between two frames are rewritten,
     // so live typing no longer flashes the whole screen on every burst.
@@ -2322,6 +2413,8 @@ async function selectMeeting(meetingId) {
   state.playbackIndex = state.timeline.length - 1;
   renderAll();
   schedulePoll();
+  // Opening a session lands in live view: blink the terminal cursor.
+  focusTerminalCursor();
 }
 
 async function refreshSelected() {
@@ -2603,6 +2696,19 @@ function bind() {
       state.keyboardSelection = null;
     }
   });
+  // While the user is watching the terminal (live or takeover), clicking
+  // anywhere outside it -- including non-focusable surfaces like chat blank
+  // space, where no focus event ever fires -- moves focus to <body> and stops
+  // the cursor blink. After such a click, hand focus straight back to the
+  // terminal; editable fields (chat composer, dialogs) are never touched, and
+  // playback scrubbing (followLive false) leaves focus alone.
+  document.addEventListener("pointerdown", (event) => {
+    if (!(takeoverStream.active || state.followLive)) return;
+    const target = event.target;
+    if (el.terminal_screen && (target === el.terminal_screen || el.terminal_screen.contains(target))) return;
+    if (isEditableFocusTarget(target)) return;
+    setTimeout(focusTerminalCursor, 0);
+  }, true);
   el.selection_menu.addEventListener("pointerdown", (event) => event.stopPropagation());
   el.selection_menu.querySelectorAll("[data-selection-action]").forEach((button) => {
     button.addEventListener("click", () => handleSelectionAction(button.dataset.selectionAction));
@@ -2614,9 +2720,14 @@ function bind() {
       const remaining = el.chat_list.scrollHeight - el.chat_list.clientHeight - el.chat_list.scrollTop;
       state.chatFollow = remaining <= 12;
     } else {
-      // Playback: any manual scroll pauses following the playback cursor;
-      // pressing play, scrubbing the timeline, or the follow button re-pins.
-      state.chatFollow = false;
+      // Playback: only a genuine user scroll pauses following the playback
+      // cursor; pressing play, scrubbing the timeline, or the follow button
+      // re-pins. The scroll renderChat applies itself arrives here as an
+      // async scroll event too, so it must not count as user intent.
+      const applied = state.chatScrollApplied;
+      if (applied === null || Math.abs(el.chat_list.scrollTop - applied) > 1) {
+        state.chatFollow = false;
+      }
     }
   }, { passive: true });
   el.free_scroll_button.addEventListener("click", () => setViewportMode("free"));
@@ -2645,6 +2756,8 @@ function bind() {
     stopLiveScreenQueue();
     stopPlayback();
     renderAll();
+    // Entering the live view: focus the terminal so its cursor blinks again.
+    focusTerminalCursor();
   });
   el.play_button.addEventListener("click", () => {
     if (state.playing) { stopPlayback(); return; }
@@ -2659,7 +2772,13 @@ function bind() {
     el.play_button.textContent = "❚❚";
     const advancePlayback = () => {
       if (!state.playing) return;
-      state.playbackIndex += 1;
+      let next = state.playbackIndex + 1;
+      // Coalesce human keystroke bookkeeping (received/started/completed per
+      // stroke): land on the first event that actually changes what playback
+      // shows and pay a single delay there, instead of one timer tick per
+      // recorded keystroke event.
+      while (next < state.timeline.length - 1 && isHumanKeystrokeEvent(eventAt(next))) next += 1;
+      state.playbackIndex = Math.min(next, state.timeline.length - 1);
       renderAll();
       if (state.playbackIndex >= state.timeline.length - 1) {
         state.playbackIndex = state.timeline.length - 1;
