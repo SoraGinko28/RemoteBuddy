@@ -2,6 +2,13 @@
 
 const LIVE_SCREEN_FRAME_MS = 700;
 const MAX_LIVE_SCREEN_QUEUE = 120;
+// Playback pacing for frames captured while the human owns the terminal.
+// Takeover frames are recorded every ~0.2-0.35s, so pacing each at the
+// generic 700ms makes a takeover stretch replay slower than it actually
+// happened ("I did not type that slowly"). They are replayed fast-forward
+// instead; idle gaps between takeover bursts produce no frames, so pauses
+// still jump instantly.
+const HUMAN_TAKEOVER_FRAME_MS = 200;
 
 const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
@@ -101,6 +108,7 @@ function agentStateForPhase(phase) {
 
 function eventDelay(event, queueLength = 0) {
   if (event?.kind !== "screen") return 250;
+  if (event.phase === "human_control") return HUMAN_TAKEOVER_FRAME_MS;
   const kind = event.data?.change_kind;
   if (!['typing', 'paste'].includes(kind)) return LIVE_SCREEN_FRAME_MS;
   const raw = Number(event.data?.planned_delay_ms);
@@ -184,6 +192,24 @@ function duration(value) {
 
 function eventAt(index) {
   return index >= 0 && index < state.timeline.length ? state.timeline[index] : null;
+}
+
+// A human keystroke is journaled verbatim as ground truth: three bookkeeping
+// actions per stroke (received/started/completed). During playback those
+// events carry no visuals of their own -- the takeover terminal paints through
+// the interleaved screen frames -- so auto-play coalesces them: a whole run is
+// skipped in one step and rendering resumes at the next real event. Per-event
+// pacing of these events only adds per-character stalls (250ms or even a 1ms
+// timer still has to fire per recorded event), so a typed burst flashes to the
+// next frame instead. Recording stays per-stroke.
+function isHumanKeystrokeEvent(event) {
+  return Boolean(
+    event
+    && event.kind === "action"
+    && event.actor === "human"
+    && event.phase === "human_control"
+    && ["received", "started", "completed"].includes(event.data?.status),
+  );
 }
 
 function playbackSequence() {
@@ -2659,7 +2685,13 @@ function bind() {
     el.play_button.textContent = "❚❚";
     const advancePlayback = () => {
       if (!state.playing) return;
-      state.playbackIndex += 1;
+      let next = state.playbackIndex + 1;
+      // Coalesce human keystroke bookkeeping (received/started/completed per
+      // stroke): land on the first event that actually changes what playback
+      // shows and pay a single delay there, instead of one timer tick per
+      // recorded keystroke event.
+      while (next < state.timeline.length - 1 && isHumanKeystrokeEvent(eventAt(next))) next += 1;
+      state.playbackIndex = Math.min(next, state.timeline.length - 1);
       renderAll();
       if (state.playbackIndex >= state.timeline.length - 1) {
         state.playbackIndex = state.timeline.length - 1;
