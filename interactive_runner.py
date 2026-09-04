@@ -1235,12 +1235,6 @@ class InteractiveRunner:
                 raise RunnerError("unsupported agent action")
             if self.action_settle_seconds > 0:
                 time.sleep(self.action_settle_seconds)
-            if action.type in {"vim_keys", "terminal_keys", "keystrokes"}:
-                pressed_enter = any(
-                    token.get("kind") == "key" and token.get("value") == "Enter"
-                    for token in action.keys
-                )
-                self._wait_for_pane_quiescence(pane_id, bool(pressed_enter))
             with self.lock:
                 self.store.refresh()
                 self._check_stop()
@@ -1336,33 +1330,6 @@ class InteractiveRunner:
                 or self.store.meeting.control_owner != "agent"
                 or self.store.meeting.status != "running"
             )
-
-    def _wait_for_pane_quiescence(self, pane_id: str, pressed_enter: bool) -> None:
-        """Hold the closing capture until the pane's screen stops changing.
-
-        A key action ending in Enter can make the foreground program exit or
-        redraw asynchronously (an editor closing, a REPL prompt, a pager). If
-        the closing frame is captured mid-transition the model sees stale
-        state and may re-issue the key. This waits generically -- screen text
-        plus foreground command sampled 0.12s apart must agree twice -- with
-        no knowledge of any particular program, bounded to ~1.2s.
-        """
-        if not pressed_enter:
-            return
-        previous = None
-        deadline = time.monotonic() + 1.2
-        while time.monotonic() < deadline:
-            try:
-                signature = (
-                    self.transport.pane_info(pane_id)["command"],
-                    self.transport.capture_visible(pane_id),
-                )
-            except (RunnerError, TmuxError, OSError):
-                return
-            if previous is not None and signature == previous:
-                return
-            previous = signature
-            time.sleep(0.12)
 
     def _pane_snapshot(self, pane_id: str) -> Optional[tuple]:
         try:
