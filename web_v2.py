@@ -47,6 +47,7 @@ from meeting_v2 import (
     MAX_MESSAGE_BYTES,
     MEETING_ID_RE,
     SCHEMA_VERSION,
+    VALID_REASONING_EFFORTS,
     VALID_SCORE_TAGS,
     MeetingError,
     MeetingStore,
@@ -242,6 +243,12 @@ def _public_manifest(store: MeetingStore) -> Dict[str, Any]:
     payload["run_path"] = f"runs/{store.meeting.meeting_id}"
     payload["event_count"] = store.event_count()
     return payload
+
+
+def _apply_meeting_effort(config: ModelApiConfig, store: MeetingStore) -> ModelApiConfig:
+    if store.meeting.reasoning_effort:
+        return replace(config, reasoning_effort=store.meeting.reasoning_effort)
+    return config
 
 
 class MeetingWebService:
@@ -770,6 +777,7 @@ class MeetingWebService:
             store.meeting.agent_provider,
             store.meeting.model,
         )
+        resolved = _apply_meeting_effort(resolved, store)
         self._probe_selected_config(resolved)
         return resolved
 
@@ -921,6 +929,7 @@ class MeetingWebService:
             "typing_profile",
             "agent_backend",
             "agent_provider",
+            "reasoning_effort",
         }
         if unexpected:
             raise WebError(400, "unexpected meeting fields: " + ", ".join(sorted(unexpected)))
@@ -936,13 +945,29 @@ class MeetingWebService:
         backend = payload.get("agent_backend", self.default_backend or config.agent_backend)
         provider = payload.get("agent_provider", self.default_provider or config.agent_provider)
         backend, provider = self._validate_backend_pair(backend, provider)
-        model = payload.get("model") or None
-        if model is not None and (not isinstance(model, str) or not MODEL_RE.fullmatch(model)):
-            raise WebError(400, "model must be a short string")
+        model = payload.get("model")
+        if model is not None:
+            if not isinstance(model, str):
+                raise WebError(400, "model must be a short string")
+            if model == "":
+                # Empty string = "let the Codex CLI use its own default model"
+                # (needed for ChatGPT-plan logins); only codex supports it.
+                if backend != "codex-app-server":
+                    raise WebError(400, "empty model is only supported for codex-app-server")
+            elif not MODEL_RE.fullmatch(model):
+                raise WebError(400, "model must be a short string")
         config = self._resolve_config(config, backend, provider, model)
+        reasoning_effort = payload.get("reasoning_effort")
+        if reasoning_effort is not None and reasoning_effort not in VALID_REASONING_EFFORTS:
+            raise WebError(400, "reasoning_effort must be none, low, medium, high, xhigh, or max")
+        if reasoning_effort:
+            config = replace(config, reasoning_effort=reasoning_effort)
         self._probe_selected_config(config)
         model = config.model
-        if not isinstance(model, str) or not MODEL_RE.fullmatch(model):
+        if not isinstance(model, str) or not (
+            MODEL_RE.fullmatch(model)
+            or (model == "" and config.agent_backend == "codex-app-server")
+        ):
             raise WebError(400, "model must be a short string")
         typing_profile = payload.get("typing_profile", "balanced")
         if typing_profile not in {"demo", "balanced", "fast"}:
@@ -959,6 +984,10 @@ class MeetingWebService:
                 agent_backend=config.agent_backend,
                 typing_profile=typing_profile,
                 agent_provider=config.agent_provider,
+                # Ordinals are reserved for future multi-agent meetings; the
+                # single agent of every conversation is always Agent1.
+                agent_ordinal=1,
+                reasoning_effort=reasoning_effort,
             )
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
@@ -982,6 +1011,7 @@ class MeetingWebService:
             )
         except ModelConfigError as exc:
             raise WebError(503, str(exc)) from exc
+        config = _apply_meeting_effort(config, store)
         with self.lock:
             current = self.jobs.get(meeting_id)
             if current and current.is_alive():
@@ -1096,6 +1126,21 @@ class MeetingWebService:
             with self.lock:
                 if self.capture_jobs.get(meeting_id) is threading.current_thread():
                     self.capture_jobs.pop(meeting_id, None)
+
+    def set_reasoning_effort(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            if not isinstance(payload, dict) or set(payload) != {"reasoning_effort"}:
+                raise WebError(400, "request must contain only reasoning_effort")
+            effort = payload["reasoning_effort"]
+            if effort is not None and effort not in VALID_REASONING_EFFORTS:
+                raise WebError(400, "reasoning_effort must be none, low, medium, high, xhigh, or max")
+            if store.meeting.status in TERMINAL_STATUSES:
+                raise WebError(409, "meeting is already finished")
+            # A cycle already in flight keeps its frozen config; the override
+            # is picked up when the next worker resolves its config.
+            store.update(reasoning_effort=effort)
+            return store
 
     def message(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -1581,10 +1626,16 @@ class MeetingWebService:
         try:
             config = self._apply_overrides(ModelApiConfig.load(self.model_api_path))
             if self.default_backend:
-                config = config.resolve(
-                    self.default_backend,
-                    self.default_provider or config.agent_provider,
-                )
+                try:
+                    config = config.resolve(
+                        self.default_backend,
+                        self.default_provider or config.agent_provider,
+                    )
+                except ModelConfigError:
+                    # A missing key for the CLI-selected default must not hide
+                    # the per-combination rows below (e.g. codex without any
+                    # stored API key).
+                    pass
             selected_key = f"{config.agent_backend}/{config.agent_provider}"
             checks.append(
                 {
@@ -1613,7 +1664,9 @@ class MeetingWebService:
                         "base_url": resolved.base_url,
                         "auth_key_name": auth_key_name,
                         "has_api_key": has_api_key,
-                        "needs_api_key": not has_api_key,
+                        # codex-app-server authenticates via the local CLI
+                        # login and never needs a stored key.
+                        "needs_api_key": not has_api_key and backend != "codex-app-server",
                         "required": key == selected_key,
                     }
                 except (ModelConfigError, ClaudeCodeError, CodexAppServerError) as exc:
@@ -1631,7 +1684,7 @@ class MeetingWebService:
                         ),
                         "auth_key_name": auth_key_name,
                         "has_api_key": has_api_key,
-                        "needs_api_key": not has_api_key,
+                        "needs_api_key": not has_api_key and backend != "codex-app-server",
                         "required": key == selected_key,
                     }
             selected = backends.get(selected_key)
@@ -2012,6 +2065,11 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             match = re.fullmatch(r"/api/meetings/([^/]+)/messages", path)
             if match:
                 store = self.service.message(unquote(match.group(1)), self._read_json())
+                self._json({"meeting": _public_manifest(store)})
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/effort", path)
+            if match:
+                store = self.service.set_reasoning_effort(unquote(match.group(1)), self._read_json())
                 self._json({"meeting": _public_manifest(store)})
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/terminal/input", path)

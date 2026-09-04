@@ -924,7 +924,6 @@ class ClaudeCodeBackend:
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": fast_model,
                 "CLAUDE_CODE_SUBAGENT_MODEL": fast_model,
-                "CLAUDE_CODE_EFFORT_LEVEL": self.config.reasoning_effort,
                 "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432",
                 "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
@@ -934,6 +933,10 @@ class ClaudeCodeBackend:
                 "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
             }
         )
+        # "none" defers to the CLI's default effort by omitting the variable —
+        # the same omit-on-none convention as the responses and codex clients.
+        if self.config.reasoning_effort != "none":
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = self.config.reasoning_effort
         return env
 
     @staticmethod

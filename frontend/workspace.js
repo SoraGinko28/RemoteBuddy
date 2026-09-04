@@ -5,7 +5,7 @@ const MAX_LIVE_SCREEN_QUEUE = 120;
 
 const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
-  "welcome", "session-view", "meeting-title", "status-badge", "owner-badge", "session-meta",
+  "welcome", "session-view", "meeting-title", "agent-state", "agent-state-text", "status-badge", "owner-badge",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
@@ -13,7 +13,7 @@ const el = Object.fromEntries([
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "settings-button", "settings-dialog", "settings-form", "judge-name-input", "save-settings", "close-settings", "cancel-settings", "settings-error", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
-  "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "start-button", "new-error",
+  "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
@@ -61,14 +61,43 @@ const state = {
 
 const labels = {
   status: { created: "已创建", starting: "启动中", running: "协作中", completed: "已完成", failed: "失败", interrupted: "已中止" },
-  phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "Agent 思考中", agent_acting: "Agent 操作中", waiting_for_user: "等待你的消息", completion_proposed: "Agent 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
-  owner: { agent: "Agent 控制", human: "你在控制", none: "无人控制" },
+  phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "{agent} 思考中", agent_acting: "{agent} 操作中", waiting_for_user: "等待你的消息", completion_proposed: "{agent} 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
+  owner: { agent: "{agent} 控制", human: "你在控制", none: "无人控制" },
   message: { request: "请求", ack: "回应", progress: "进度", question: "问题", final: "结果" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
   score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
+  agentState: { thinking: "思考中", acting: "操作中", idle: "待命中", error: "异常" },
+  effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
+
+// Ordinals are reserved for future multi-agent sessions; today every
+// conversation has one agent and it is always "Agent1".
+function agentName(meeting) {
+  const n = Number(meeting?.agent_ordinal);
+  return `Agent${Number.isInteger(n) && n > 0 ? n : 1}`;
+}
+
+function withAgent(text, meeting) {
+  return String(text).replaceAll("{agent}", agentName(meeting));
+}
+
+// Every phase outside these buckets (terminal states, human takeover,
+// waiting) renders as the muted "待命中" badge; error details stay in
+// #failure-message.
+const AGENT_STATE_PHASES = {
+  starting: "thinking",
+  agent_thinking: "thinking",
+  agent_acting: "acting",
+  api_error: "error",
+  cycle_timeout: "error",
+  failed: "error",
+};
+
+function agentStateForPhase(phase) {
+  return AGENT_STATE_PHASES[phase] || "idle";
+}
 
 function eventDelay(event, queueLength = 0) {
   if (event?.kind !== "screen") return 250;
@@ -255,7 +284,7 @@ function renderMeetingList() {
     const top = node("span", "meeting-item-top");
     top.append(node("strong", "", meeting.meeting_id), node("span", `mini-status ${meeting.status}`, labels.status[meeting.status] || meeting.status));
     const provider = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
-    button.append(top, node("span", "meeting-item-meta", `${labels.phase[meeting.phase] || meeting.phase} · ${provider} · ${fmtTime(meeting.updated_at)}`));
+    button.append(top, node("span", "meeting-item-meta", `${withAgent(labels.phase[meeting.phase] || meeting.phase, meeting)} · ${provider} · ${fmtTime(meeting.updated_at)}`));
     button.addEventListener("click", () => selectMeeting(meeting.meeting_id));
     el.meeting_list.append(button);
   }
@@ -265,6 +294,12 @@ function renderHeader() {
   if (!state.snapshot) return;
   const meeting = state.snapshot.meeting;
   el.meeting_title.textContent = meeting.meeting_id;
+  if (el.agent_state) {
+    const agentState = agentStateForPhase(meeting.phase);
+    el.agent_state_text.textContent = `${agentName(meeting)} · ${labels.agentState[agentState]}`;
+    el.agent_state.className = `agent-state ${agentState}`;
+    el.agent_state.hidden = false;
+  }
   if (el.status_badge) {
     el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
     el.status_badge.dataset.status = meeting.status;
@@ -276,21 +311,22 @@ function renderHeader() {
   const failure = typeof meeting.failure === "string" ? meeting.failure.trim() : "";
   const inErrorPhase = errorPhases.includes(meeting.phase);
   if (failure && inErrorPhase) {
-    el.session_meta.textContent = failure;
-    el.session_meta.classList.add("error");
+    el.failure_message.textContent = failure;
+    el.failure_message.hidden = false;
   } else {
-    const topStatus = inErrorPhase
-      ? (labels.phase[meeting.phase] || meeting.phase)
-      : (labels.status[meeting.status] || meeting.status);
-    el.session_meta.textContent = `${topStatus} · ${labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI"}`;
-    el.session_meta.classList.remove("error");
+    el.failure_message.hidden = true;
   }
-  el.failure_message.hidden = true;
-  el.phase_label.textContent = labels.phase[meeting.phase] || meeting.phase;
+  el.phase_label.textContent = withAgent(labels.phase[meeting.phase] || meeting.phase, meeting);
   el.backend_label.textContent = labels.backend[meeting.agent_backend] || meeting.agent_backend || "Responses API";
   el.provider_label.textContent = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
-  el.model_label.textContent = meeting.model;
+  el.model_label.textContent = meeting.model || "默认（CLI）";
   el.typing_profile_label.textContent = labels.typing[meeting.typing_profile] || "平衡";
+  if (el.effort_live_select) {
+    if (document.activeElement !== el.effort_live_select) {
+      el.effort_live_select.value = meeting.reasoning_effort || "";
+    }
+    el.effort_live_select.disabled = ["completed", "failed", "interrupted"].includes(meeting.status);
+  }
   el.action_label.textContent = `${meeting.cycle_action_count || 0} / 60`;
   el.runtime_label.textContent = duration(meeting.created_at);
   el.event_count.textContent = String(meeting.event_count || state.timeline.length);
@@ -302,7 +338,7 @@ function renderHeader() {
     ? displayedTerminal.current_path.split("/").slice(-2).join("/")
     : "workspace";
   if (el.control_label) {
-    el.control_label.textContent = meeting.control_requested === "human" ? "等待 Agent 交出控制权" : (labels.owner[meeting.control_owner] || "无人控制");
+    el.control_label.textContent = meeting.control_requested === "human" ? `等待 ${agentName(meeting)} 交出控制权` : withAgent(labels.owner[meeting.control_owner] || "无人控制", meeting);
   }
 
   const terminalState = ["completed", "failed", "interrupted"].includes(meeting.status);
@@ -328,7 +364,7 @@ function renderHeader() {
   el.stop_button.hidden = terminalState;
   el.cleanup_button.hidden = !terminalState || meeting.session_state === "stopped";
   el.resume_button.hidden = !["api_error", "cycle_timeout", "waiting_for_user", "completion_proposed"].includes(meeting.phase) || terminalState;
-  el.resume_button.textContent = meeting.phase === "completion_proposed" ? "继续工作" : "继续 Agent";
+  el.resume_button.textContent = meeting.phase === "completion_proposed" ? "继续工作" : `继续 ${agentName(meeting)}`;
   const takeoverLive = meeting.control_owner === "human" && meeting.phase === "human_control";
   const waitingHandoff = meeting.control_requested === "human" && meeting.control_owner !== "human";
   const canAcquire = !terminalState && meeting.status === "running"
@@ -336,7 +372,7 @@ function renderHeader() {
   el.acquire_button.hidden = terminalState || takeoverLive;
   el.acquire_button.disabled = !canAcquire;
   el.acquire_button.textContent = waitingHandoff ? "等待交权…" : "接管";
-  el.acquire_button.title = canAcquire ? "打断 Agent 并接管共享终端" : "";
+  el.acquire_button.title = canAcquire ? `打断 ${agentName(meeting)} 并接管共享终端` : "";
   el.release_button.hidden = !takeoverLive;
   const terminalReadonly = el.terminal_readonly;
   if (terminalReadonly) {
@@ -344,11 +380,11 @@ function renderHeader() {
     terminalReadonly.classList.toggle("takeover-live", takeoverLive);
   }
   el.message_hint.textContent = takeoverLive
-    ? "接管中：发消息 = 交还控制权并让 Agent 继续"
+    ? `接管中：发消息 = 交还控制权并让 ${agentName(meeting)} 继续`
     : "Enter 发送 · Shift/⌘+Enter 换行 · 消息在下一个动作边界生效";
   el.message_input.placeholder = takeoverLive
-    ? "接管中：输入消息会结束接管并交给 Agent…"
-    : "继续说明、纠正或打断 Agent…";
+    ? `接管中：输入消息会结束接管并交给 ${agentName(meeting)}…`
+    : `继续说明、纠正或打断 ${agentName(meeting)}…`;
   syncTerminalTakeover(takeoverLive);
 }
 
@@ -592,7 +628,7 @@ function renderChat() {
       timeEl.title = "跳转到相近终端画面";
       timeEl.addEventListener("click", () => jumpToChatTime(event));
       head.append(
-        node("strong", "", event.actor === "human" ? "你" : "Agent"),
+        node("strong", "", event.actor === "human" ? "你" : agentName(state.snapshot?.meeting)),
         node("span", `message-type ${event.message_type || ""}`, labels.message[event.message_type] || "消息"),
         timeEl,
       );
@@ -1314,7 +1350,7 @@ function buildTerminalRows(segments, plainText, height) {
   return rows;
 }
 
-function paintTerminalFrame(term, rows, width, height, fullAnsi, hasWaiting) {
+function paintTerminalFrame(term, rows, width, height, hasWaiting) {
   if (
     hasWaiting
     || !termRowsState
@@ -1322,13 +1358,12 @@ function paintTerminalFrame(term, rows, width, height, fullAnsi, hasWaiting) {
     || termRowsState.height !== height
     || termRowsState.plain.length !== rows.length
   ) {
+    // Full repaint writes every row at its absolute position. Streaming a
+    // whole frame through the terminal instead would scroll by the frame's
+    // own line count and drift away from the cursor/offset math.
     term.reset();
-    if (fullAnsi) {
-      term.write(fullAnsi);
-    } else {
-      for (let index = 0; index < rows.length; index += 1) {
-        term.write(rows[index].plain + (index < rows.length - 1 ? "\n" : ""));
-      }
+    for (let index = 0; index < rows.length; index += 1) {
+      term.write(`\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K");
     }
   } else {
     const changed = [];
@@ -1342,9 +1377,8 @@ function paintTerminalFrame(term, rows, width, height, fullAnsi, hasWaiting) {
     } else if (changed.length) {
       // Too many rows changed: a full repaint is cheaper than many moves.
       term.reset();
-      if (fullAnsi) term.write(fullAnsi);
-      else for (let index = 0; index < rows.length; index += 1) {
-        term.write(rows[index].plain + (index < rows.length - 1 ? "\n" : ""));
+      for (let index = 0; index < rows.length; index += 1) {
+        term.write(`\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K");
       }
     }
   }
@@ -1449,21 +1483,29 @@ function renderTerminal() {
       lastTerminalFrame = hasScreenContent
         ? { event_id: source.event_id || "", content: source.content }
         : null;
-      const rowOffset = fullRows - viewRows;
       if (geometryChanged) engine.resize(width, viewRows);
       const ansi = typeof terminal.ansi === "string" ? terminal.ansi : "";
       const waiting = !ansi && !hasScreenContent;
+      const cursorX = Number(terminal.cursor_x);
+      const cursorY = Number(terminal.cursor_y);
+      // The captured pane is top-anchored (blank rows pad the bottom). When
+      // the panel is shorter than the pane, slide the visible window down
+      // only once the cursor passes it — always cutting the top rows hid the
+      // prompt and typed text while the shell was still near the top.
+      let rowOffset = 0;
+      if (viewRows < fullRows) {
+        const anchorRow = Number.isFinite(cursorY) ? cursorY : fullRows - 1;
+        rowOffset = Math.max(0, Math.min(fullRows - viewRows, anchorRow - viewRows + 1));
+      }
       if (waiting) {
         termRowsState = null;
         engine.reset();
         engine.write("等待终端画面…");
       } else {
         let rows = buildTerminalRows(terminal.segments, source.content, fullRows);
-        if (rowOffset > 0) rows = rows.slice(rowOffset);
-        paintTerminalFrame(engine, rows, width, viewRows, ansi || null, false);
+        rows = rows.slice(rowOffset, rowOffset + viewRows);
+        paintTerminalFrame(engine, rows, width, viewRows, false);
       }
-      const cursorX = Number(terminal.cursor_x);
-      const cursorY = Number(terminal.cursor_y);
       if (Number.isFinite(cursorX) && Number.isFinite(cursorY)) {
         const visibleRow = Math.min(viewRows, Math.max(1, cursorY - rowOffset + 1));
         engine.write(`\x1b[${visibleRow};${Math.min(cursorX + 1, width)}H`);
@@ -1498,7 +1540,7 @@ function renderTerminal() {
   const terminalSummary = scoreSummary(sourceAnnotations);
   if (terminalSummary) el.terminal_score_status.append(...terminalSummary.childNodes);
   const changeKind = terminal.change_kind;
-  el.typing_state.textContent = changeKind === "paste" ? "Agent 正在粘贴" : (changeKind === "typing" ? "Agent 输入中" : "");
+  el.typing_state.textContent = changeKind === "paste" ? `${agentName(state.snapshot?.meeting)} 正在粘贴` : (changeKind === "typing" ? `${agentName(state.snapshot?.meeting)} 输入中` : "");
   el.typing_state.hidden = !["typing", "paste"].includes(changeKind);
 }
 
@@ -2132,7 +2174,7 @@ async function loadHealth() {
   const health = await api("/api/health");
   state.health = health;
   const backendEntries = Object.values(health.backends || {});
-  state.healthy = Boolean(health.core_ok && backendEntries.some((item) => item.ok || item.needs_api_key));
+  state.healthy = Boolean(health.core_ok && backendEntries.some(usableBackendEntry));
   el.health_dot.classList.toggle("ok", Boolean(health.ok));
   const failedChecks = (health.checks || []).filter((item) => !item.ok);
   const failed = failedChecks.map((item) => item.detail);
@@ -2156,10 +2198,17 @@ function backendEntry(backend, provider) {
   return state.health?.backends?.[`${backend}/${provider}`] || null;
 }
 
+// codex-app-server authenticates via the local CLI login, so it stays
+// selectable even when its probe fails — the dialog then shows the real
+// reason (e.g. "Codex CLI is not logged in") instead of hiding the option.
+function usableBackendEntry(item) {
+  return item.ok || item.needs_api_key || item.agent_backend === "codex-app-server";
+}
+
 function syncBackendSelectors(preferCurrent = true) {
   if (!el.backend_select || !el.provider_select) return;
   const entries = Object.values(state.health?.backends || {});
-  const usable = (item) => item.ok || item.needs_api_key;
+  const usable = usableBackendEntry;
   for (const option of el.backend_select.options) {
     option.disabled = !entries.some((item) => item.agent_backend === option.value && usable(item));
   }
@@ -2181,13 +2230,39 @@ function syncBackendSelectors(preferCurrent = true) {
     el.provider_select.value = entry.agent_provider;
     el.model_input.placeholder = `默认 ${entry.default_model || "由服务端决定"}`;
   }
+  syncCliDefaultModel();
   updateCredentialFields();
+}
+
+function syncCliDefaultModel() {
+  if (!el.cli_default_model_row) return;
+  const isCodex = el.backend_select.value === "codex-app-server";
+  el.cli_default_model_row.hidden = !isCodex;
+  const cliDefault = isCodex && el.cli_default_model.checked;
+  el.model_input.disabled = cliDefault;
+  if (cliDefault) {
+    el.model_input.placeholder = "由 Codex CLI 决定";
+  } else {
+    const entry = backendEntry(el.backend_select.value, el.provider_select.value);
+    el.model_input.placeholder = `默认 ${entry?.default_model || "由服务端决定"}`;
+  }
 }
 
 function updateCredentialFields() {
   if (!el.api_key_input) return;
   const entry = backendEntry(el.backend_select.value, el.provider_select.value);
   const provider = el.provider_select.value;
+  const isCodex = el.backend_select.value === "codex-app-server";
+  if (el.api_credential_fields) el.api_credential_fields.hidden = isCodex;
+  if (isCodex) {
+    // codex authenticates through the local CLI login; surface the probe's
+    // real failure reason instead of asking for an API key.
+    el.api_key_hint.textContent = entry && !entry.ok
+      ? `Codex 后端尚未就绪：${entry.detail || "未知原因"}。如未登录，请在终端运行 codex login。`
+      : "该组合使用本地 Codex CLI 登录（含 ChatGPT 订阅），无需 API Key。";
+    el.api_key_hint.hidden = false;
+    return;
+  }
   const authName = entry?.auth_key_name || (provider === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENAI_API_KEY");
   el.api_key_name.textContent = authName;
   el.api_key_input.placeholder = entry?.has_api_key ? "已保存，留空沿用" : "尚未配置，请填写";
@@ -2372,6 +2447,7 @@ function bind() {
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
   el.backend_select.addEventListener("change", () => syncBackendSelectors(true));
   el.provider_select.addEventListener("change", () => syncBackendSelectors(true));
+  el.cli_default_model?.addEventListener("change", () => syncCliDefaultModel());
   el.evaluation_form.addEventListener("submit", submitEvaluation);
   el.evaluation_back_button.addEventListener("click", closeEvaluationPanel);
   el.evaluation_cancel_button.addEventListener("click", closeEvaluationPanel);
@@ -2413,14 +2489,18 @@ function bind() {
         await loadHealth();
       }
       const typingProfile = document.querySelector('input[name="typing-profile"]:checked')?.value || "balanced";
+      // Empty string = follow the Codex CLI's own default model; null = the
+      // server config's default.
+      const cliDefault = el.backend_select.value === "codex-app-server" && el.cli_default_model?.checked;
       const response = await api("/api/meetings", {
         method: "POST",
         body: JSON.stringify({
           message: el.initial_message.value,
           agent_backend: el.backend_select.value,
           agent_provider: el.provider_select.value,
-          model: el.model_input.value.trim() || null,
+          model: cliDefault ? "" : (el.model_input.value.trim() || null),
           typing_profile: typingProfile,
+          ...(el.effort_select.value ? { reasoning_effort: el.effort_select.value } : {}),
         }),
       });
       el.new_dialog.close();
@@ -2462,6 +2542,12 @@ function bind() {
     el.message_form.requestSubmit();
   });
   el.refresh_button.addEventListener("click", () => refreshSelected().catch((error) => toast(error.message)));
+  el.effort_live_select?.addEventListener("change", async () => {
+    try {
+      await postMeetingAction("effort", { reasoning_effort: el.effort_live_select.value || null });
+      toast("推理力度已更新，下一个工作周期生效");
+    } catch (error) { toast(error.message); }
+  });
   el.acquire_button.addEventListener("click", () => postMeetingAction("control/acquire").catch((error) => toast(error.message)));
   el.release_button.addEventListener("click", () => postMeetingAction("control/release").catch((error) => toast(error.message)));
   el.terminal_copy_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalPlainText));

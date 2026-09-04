@@ -151,6 +151,32 @@ class ModelApiConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ModelConfigError, "wire_api"):
             ModelApiConfig.load(self.root)
 
+    def test_missing_key_defers_to_selection_time(self):
+        # A responses-default config with no auth.json still loads (with a
+        # warning) so key-less installs can select codex-app-server; the key
+        # is enforced when the responses combination is actually resolved.
+        self.write_config()
+        (self.root / "auth.json").unlink()
+        config = ModelApiConfig.load(self.root)
+        self.assertEqual("", config.api_key)
+        self.assertTrue(
+            any("auth.json is missing OPENAI_API_KEY" in warning for warning in config.warnings)
+        )
+        with self.assertRaisesRegex(ModelConfigError, "auth.json is missing OPENAI_API_KEY"):
+            config.resolve("responses", "openai")
+        resolved = config.resolve("codex-app-server", "openai")
+        self.assertEqual("codex-app-server", resolved.agent_backend)
+
+    def test_empty_model_is_codex_only_cli_default(self):
+        self.write_config()
+        config = ModelApiConfig.load(self.root)
+        resolved = config.resolve("codex-app-server", "openai", model="")
+        self.assertEqual("", resolved.model)
+        # For other backends the empty string keeps today's falsy fallback to
+        # the config default.
+        fallback = config.resolve("responses", "openai", model="")
+        self.assertEqual("gpt-5.6-luna", fallback.model)
+
     def test_backend_flags_and_codex_login_auth_mode(self):
         self.write_config(
             'agent_backend="codex-app-server"\n'

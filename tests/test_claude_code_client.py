@@ -157,6 +157,21 @@ class ClaudeCodeBackendTest(unittest.TestCase):
             skip_protocol_check=True,
         )
 
+    def test_effort_level_env_omitted_when_reasoning_is_none(self):
+        from dataclasses import replace
+
+        backend = ClaudeCodeBackend(
+            replace(self.config(), reasoning_effort="none"),
+            claude_binary="fake-claude",
+            process_factory=self.process_factory,
+            skip_protocol_check=True,
+        )
+        env = backend._child_environment("deepseek-v4-pro[1m]")
+        self.assertNotIn("CLAUDE_CODE_EFFORT_LEVEL", env)
+
+        env = self.backend()._child_environment("deepseek-v4-pro[1m]")
+        self.assertEqual("max", env["CLAUDE_CODE_EFFORT_LEVEL"])
+
     def test_isolated_command_environment_and_single_executed_action(self):
         backend = self.backend()
         actions = []

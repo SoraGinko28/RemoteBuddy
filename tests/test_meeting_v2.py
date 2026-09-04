@@ -173,6 +173,61 @@ class MeetingStoreV2Test(unittest.TestCase):
 
         self.assertEqual(before, old_manifest.read_bytes())
 
+    def test_agent_ordinal_and_reasoning_effort_round_trip(self):
+        store = MeetingStore.create(
+            self.root,
+            "numbered-agent",
+            "Use the shared workspace.",
+            self.skill,
+            "remotebuddy-numbered-agent",
+            "test-model",
+            agent_ordinal=3,
+            reasoning_effort="high",
+        )
+        loaded = MeetingStore.load(self.root, store.meeting.meeting_id)
+        self.assertEqual(3, loaded.meeting.agent_ordinal)
+        self.assertEqual("high", loaded.meeting.reasoning_effort)
+        loaded.update(reasoning_effort="low")
+        self.assertEqual(
+            "low",
+            MeetingStore.load(self.root, "numbered-agent").meeting.reasoning_effort,
+        )
+        loaded.update(reasoning_effort=None)
+        self.assertIsNone(
+            MeetingStore.load(self.root, "numbered-agent").meeting.reasoning_effort
+        )
+        with self.assertRaisesRegex(MeetingError, "invalid reasoning effort"):
+            loaded.update(reasoning_effort="turbo")
+        with self.assertRaisesRegex(MeetingError, "invalid reasoning effort"):
+            MeetingStore.create(
+                self.root,
+                "bad-effort",
+                "Use the shared workspace.",
+                self.skill,
+                "remotebuddy-bad-effort",
+                "test-model",
+                reasoning_effort="turbo",
+            )
+        with self.assertRaisesRegex(MeetingError, "invalid agent ordinal"):
+            MeetingStore.create(
+                self.root,
+                "bad-ordinal",
+                "Use the shared workspace.",
+                self.skill,
+                "remotebuddy-bad-ordinal",
+                "test-model",
+                agent_ordinal=-1,
+            )
+
+    def test_old_v2_manifest_defaults_ordinal_and_effort(self):
+        payload = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
+        payload.pop("agent_ordinal", None)
+        payload.pop("reasoning_effort", None)
+        self.store.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+        loaded = MeetingStore.load(self.root, "workspace-demo")
+        self.assertEqual(0, loaded.meeting.agent_ordinal)
+        self.assertIsNone(loaded.meeting.reasoning_effort)
+
     def test_existing_v2_manifest_defaults_to_responses_backend(self):
         payload = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
         for key in (

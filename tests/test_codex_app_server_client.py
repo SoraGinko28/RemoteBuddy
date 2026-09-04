@@ -233,11 +233,42 @@ class CodexAppServerBackendTest(unittest.TestCase):
         self.assertEqual("never", thread["params"]["approvalPolicy"])
         self.assertEqual("read-only", thread["params"]["sandbox"])
         self.assertNotIn("dynamicTools", thread["params"])
+        self.assertEqual("test-model", thread["params"]["model"])
         turn = next(value for value in requests if value.get("method") == "turn/start")
         self.assertEqual("initial full local context", turn["params"]["input"][0]["text"])
+        self.assertEqual("test-model", turn["params"]["model"])
         self.assertFalse(turn["params"]["sandboxPolicy"]["networkAccess"])
         self.assertIn("outputSchema", turn["params"])
         self.assertFalse(any("text" in item for item in self.telemetry))
+
+    def test_empty_model_defers_to_cli_default(self):
+        from dataclasses import replace
+
+        backend = CodexAppServerBackend(
+            replace(self.config(), model=""),
+            codex_binary="fake-codex",
+            process_factory=self.process_factory,
+        )
+        try:
+            session = backend.start_cycle(
+                "meeting-one",
+                "RemoteBuddy Skill",
+                "initial full local context",
+                event_callback=self.telemetry.append,
+            )
+            backend.next_action(
+                session,
+                "later delta",
+                allowed_types=("chat",),
+                allowed_message_types=("ack", "question"),
+            )
+        finally:
+            backend.close()
+        requests = self.wire()
+        thread = next(value for value in requests if value.get("method") == "thread/start")
+        self.assertNotIn("model", thread["params"])
+        turn = next(value for value in requests if value.get("method") == "turn/start")
+        self.assertNotIn("model", turn["params"])
 
     def test_instruction_sources_and_forbidden_items_are_rejected(self):
         polluted = self.backend()

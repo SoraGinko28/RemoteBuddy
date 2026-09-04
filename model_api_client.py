@@ -159,14 +159,19 @@ class ModelApiConfig:
             raise ModelConfigError("provider or harness profiles are invalid")
 
         warnings: List[str] = []
-        auth = _read_auth_file(auth_path, required=agent_backend == "responses" or agent_provider == "deepseek")
+        # A missing auth.json is tolerated at load time so key-less installs
+        # (for example codex-app-server via the local CLI login) stay usable;
+        # resolve() enforces the key for the combination actually selected.
+        auth = _read_auth_file(auth_path, required=False)
         if auth_path.is_file() and os.name == "posix" and stat.S_IMODE(auth_path.stat().st_mode) & 0o077:
             warnings.append("model_api/auth.json should be readable only by its owner (chmod 600)")
         auth_keys = dict(auth)
         auth_name = str(values.get("auth_key") or _default_auth_key(agent_provider))
         api_key = _select_auth_key(auth_keys, auth_name)
         if (agent_backend == "responses" or agent_provider == "deepseek") and not api_key:
-            raise ModelConfigError(f"auth.json is missing {auth_name}")
+            warnings.append(
+                f"auth.json is missing {auth_name}; the {agent_backend} backend cannot start until it is saved"
+            )
         harness_profile = harness_profiles.get(agent_backend, {})
         if not isinstance(harness_profile, dict):
             harness_profile = {}
@@ -209,13 +214,20 @@ class ModelApiConfig:
         profile = self.provider_profiles.get(provider, {})
         if not isinstance(profile, Mapping):
             profile = {}
-        selected_model = model or profile.get("model") or (self.model if provider == self.agent_provider else None)
+        # An explicit empty model on codex-app-server means "let the Codex CLI
+        # use its own configured default" — required for ChatGPT-plan logins
+        # that may not have access to a hard-coded model id.
+        if backend == "codex-app-server" and model == "":
+            selected_model = ""
+        else:
+            selected_model = model or profile.get("model") or (self.model if provider == self.agent_provider else None)
         selected_base_url = profile.get("base_url") or (self.base_url if provider == self.agent_provider else None)
         if provider == "deepseek":
             selected_model = selected_model or "deepseek-v4-pro[1m]"
             selected_base_url = selected_base_url or "https://api.deepseek.com/anthropic"
-        if not isinstance(selected_model, str) or not MODEL_RE.fullmatch(selected_model):
-            raise ModelConfigError("model must be a short model identifier")
+        if not (backend == "codex-app-server" and selected_model == ""):
+            if not isinstance(selected_model, str) or not MODEL_RE.fullmatch(selected_model):
+                raise ModelConfigError("model must be a short model identifier")
         if not isinstance(selected_base_url, str):
             raise ModelConfigError("provider requires base_url")
         _validate_base_url(selected_base_url)

@@ -209,6 +209,13 @@ class TmuxTransportTest(unittest.TestCase):
         )
         self.assertEqual({"key": "Enter"}, self.pane.inputs[1])
 
+    def test_send_hex_stays_byte_faithful(self):
+        # Takeover bytes are forwarded verbatim as key bytes — never rewritten
+        # into pastes — so the pane sees exactly what the human typed.
+        self.transport.send_hex("%7", "7820790d")
+        self.assertEqual("x y\r", "".join(item["text"] for item in self.pane.inputs))
+        self.assertEqual({"send-keys"}, {cmd for cmd, _args in self.pane.commands})
+
     def test_send_literal_does_not_submit(self):
         self.transport.send_literal("%7", "draft")
         self.assertEqual(1, len(self.pane.inputs))

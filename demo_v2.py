@@ -26,7 +26,13 @@ def doctor() -> bool:
     checks.append(("libtmux", version is not None, version or "not installed"))
     try:
         config = ModelApiConfig.load(PROJECT_ROOT / "model_api")
-        checks.append(("model-api", True, f"{config.model} ({config.agent_backend}/{config.agent_provider})"))
+        key_missing = (
+            config.agent_backend == "responses" or config.agent_provider == "deepseek"
+        ) and not config.api_key
+        if key_missing:
+            checks.append(("model-api", False, "auth.json is missing the selected provider's API key"))
+        else:
+            checks.append(("model-api", True, f"{config.model} ({config.agent_backend}/{config.agent_provider})"))
         for warning in config.warnings:
             print(f"[WARN] model-api: {warning}")
         if config.agent_backend == "codex-app-server":

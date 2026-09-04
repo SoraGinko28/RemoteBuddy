@@ -17,6 +17,7 @@ from agent_protocol import (
     AgentBackendError,
     AgentInterrupted,
     AgentProtocolError,
+    normalize_model_key_tokens,
 )
 from meeting_v2 import MeetingError, MeetingStore, utc_now
 from references import reference_from_event
@@ -741,6 +742,25 @@ class InteractiveRunner:
         try:
             AgentAction.from_dict(payload, allowed_types, allowed_messages)
             self._resolved_action_references(action)
+            if action.type == "keystrokes":
+                command = (self.store.meeting.current_command or "").lower()
+                if command in SHELL_COMMANDS:
+                    # Multi-line typing at a shell prompt executes every line
+                    # as a command — the classic failure is a model typing a
+                    # whole document (with Vim `i`/`:wq` framing) into bash.
+                    enters = sum(
+                        1
+                        for token in normalize_model_key_tokens(action.keys)
+                        if token.get("kind") == "key" and token.get("value") == "Enter"
+                    )
+                    if enters > 1:
+                        raise AgentProtocolError(
+                            "the foreground program is the shell, so one keystrokes "
+                            "action may submit at most one input line; run shell "
+                            "command lines with the command action, and to type "
+                            "document text open the editor first with the structured "
+                            "vim command and wait until Vim is visible on screen"
+                        )
             if action.type == "chat" and action.message_type == "progress":
                 if self._last_terminal_evidence is None:
                     raise AgentProtocolError(

@@ -237,6 +237,76 @@ class MeetingWebServiceTest(unittest.TestCase):
             self.service.snapshot("profile-demo")["meeting"]["typing_profile"],
         )
 
+    def test_every_meeting_starts_with_agent_one(self):
+        first = self.service.start({"message": "First.", "meeting_id": "ordinal-a"})
+        second = self.service.start({"message": "Second.", "meeting_id": "ordinal-b"})
+        self.wait_for_workers()
+        self.assertEqual(1, first.meeting.agent_ordinal)
+        self.assertEqual(1, second.meeting.agent_ordinal)
+        self.assertEqual(
+            1, self.service.snapshot("ordinal-b")["meeting"]["agent_ordinal"]
+        )
+
+    def test_reasoning_effort_creation_and_mid_session_change(self):
+        captured = []
+
+        def capturing_factory(config):
+            captured.append(config)
+            return FakeClient()
+
+        self.service.client_factory = capturing_factory
+        store = self.service.start(
+            {
+                "message": "Please create a note.",
+                "meeting_id": "effort-demo",
+                "reasoning_effort": "high",
+            }
+        )
+        self.wait_for_workers()
+        self.assertEqual("high", store.meeting.reasoning_effort)
+        self.assertEqual("high", captured[-1].reasoning_effort)
+
+        self.service.set_reasoning_effort("effort-demo", {"reasoning_effort": "medium"})
+        self.service.message("effort-demo", {"message": "Continue please."})
+        self.wait_for_workers()
+        self.assertEqual("medium", captured[-1].reasoning_effort)
+
+        # null resets to the config.toml default ("low" in this fixture).
+        self.service.set_reasoning_effort("effort-demo", {"reasoning_effort": None})
+        self.service.message("effort-demo", {"message": "One more."})
+        self.wait_for_workers()
+        self.assertEqual("low", captured[-1].reasoning_effort)
+
+        with self.assertRaisesRegex(WebError, "reasoning_effort"):
+            self.service.set_reasoning_effort("effort-demo", {"reasoning_effort": "turbo"})
+        with self.assertRaisesRegex(WebError, "only reasoning_effort"):
+            self.service.set_reasoning_effort("effort-demo", {"other": 1})
+        with self.assertRaisesRegex(WebError, "reasoning_effort"):
+            self.service.start({"message": "Bad.", "reasoning_effort": "turbo"})
+        self.service.stop("effort-demo")
+        self.wait_for_workers()
+        with self.assertRaisesRegex(WebError, "finished"):
+            self.service.set_reasoning_effort("effort-demo", {"reasoning_effort": "low"})
+
+    def test_empty_model_uses_codex_cli_default(self):
+        store = self.service.start(
+            {
+                "message": "Use the CLI default model.",
+                "meeting_id": "cli-default",
+                "agent_backend": "codex-app-server",
+                "agent_provider": "openai",
+                "model": "",
+            }
+        )
+        self.wait_for_workers()
+        self.assertEqual("", store.meeting.model)
+        # Resume paths re-resolve the empty model without raising.
+        self.service.message("cli-default", {"message": "Continue."})
+        self.wait_for_workers()
+        self.assertEqual("", MeetingStore.load(self.root, "cli-default").meeting.model)
+        with self.assertRaisesRegex(WebError, "codex-app-server"):
+            self.service.start({"message": "Bad.", "model": ""})
+
     def test_acquire_terminal_keys_and_release_human_control(self):
         self.start_meeting("control-demo")
         acquired = self.service.acquire("control-demo")
@@ -546,7 +616,12 @@ class MeetingWebServiceTest(unittest.TestCase):
         (self.model_api / "auth.json").unlink()
         health = self.service.health()
         self.assertFalse(health["ok"])
-        self.assertFalse(next(item for item in health["checks"] if item["name"] == "model-api")["ok"])
+        # The config still loads without a key; only the responses combination
+        # is blocked, so key-less codex installs stay usable.
+        self.assertTrue(next(item for item in health["checks"] if item["name"] == "model-api")["ok"])
+        responses_row = health["backends"]["responses/openai"]
+        self.assertFalse(responses_row["ok"])
+        self.assertTrue(responses_row["needs_api_key"])
         with self.assertRaisesRegex(WebError, "auth.json"):
             self.service.start({"message": "cannot start"})
 

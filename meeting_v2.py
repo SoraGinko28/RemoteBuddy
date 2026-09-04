@@ -43,6 +43,9 @@ VALID_EVENT_KINDS = {"chat", "screen", "score", "action", "control", "state", "e
 VALID_SCORE_TAGS = {"competent", "incompetent"}
 VALID_AGENT_BACKENDS = {"responses", "codex-app-server", "claude-code"}
 VALID_AGENT_PROVIDERS = {"openai", "deepseek"}
+# Mirrors the effort levels accepted by model_api_client; None on a meeting
+# means "follow the config.toml default".
+VALID_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 MAX_CHAT_REFERENCES = 32
 
 
@@ -148,6 +151,8 @@ class Meeting:
     agent_protocol_version: Optional[str] = None
     typing_profile: str = "balanced"
     typing_policy_version: str = TYPING_POLICY_VERSION
+    agent_ordinal: int = 0
+    reasoning_effort: Optional[str] = None
     schema_version: int = SCHEMA_VERSION
     mode: str = MEETING_MODE
 
@@ -176,6 +181,8 @@ class Meeting:
             raise ValueError("claude-code requires deepseek provider")
         if values["typing_profile"] not in TYPING_PROFILES:
             raise ValueError("invalid typing profile")
+        if values["reasoning_effort"] is not None and values["reasoning_effort"] not in VALID_REASONING_EFFORTS:
+            raise ValueError("invalid reasoning effort")
         return cls(**values)
 
 
@@ -222,6 +229,8 @@ class MeetingStore:
         agent_backend: str = "responses",
         typing_profile: str = "balanced",
         agent_provider: str = "openai",
+        agent_ordinal: int = 0,
+        reasoning_effort: Optional[str] = None,
     ) -> "MeetingStore":
         if not isinstance(initial_message, str) or not initial_message.strip():
             raise MeetingError("initial message must be non-empty")
@@ -235,6 +244,10 @@ class MeetingStore:
             raise MeetingError("claude-code requires deepseek provider")
         if typing_profile not in TYPING_PROFILES:
             raise MeetingError("invalid typing profile")
+        if not isinstance(agent_ordinal, int) or isinstance(agent_ordinal, bool) or agent_ordinal < 0:
+            raise MeetingError("invalid agent ordinal")
+        if reasoning_effort is not None and reasoning_effort not in VALID_REASONING_EFFORTS:
+            raise MeetingError("invalid reasoning effort")
         skill_source = skill_source.expanduser().resolve()
         if not skill_source.is_file() or skill_source.is_symlink():
             raise MeetingError(f"workspace skill not found: {skill_source}")
@@ -267,6 +280,8 @@ class MeetingStore:
             agent_backend=agent_backend,
             agent_provider=agent_provider,
             typing_profile=typing_profile,
+            agent_ordinal=agent_ordinal,
+            reasoning_effort=reasoning_effort,
             cycle_started_at=now,
         )
         store = cls(run_dir, meeting)
@@ -820,6 +835,8 @@ class MeetingStore:
                 raise MeetingError(f"invalid control owner: {value}")
             if key == "typing_profile" and value not in TYPING_PROFILES:
                 raise MeetingError("invalid typing profile")
+            if key == "reasoning_effort" and value is not None and value not in VALID_REASONING_EFFORTS:
+                raise MeetingError("invalid reasoning effort")
             setattr(self.meeting, key, value)
 
     def set_session(self, pane_id: str) -> None:

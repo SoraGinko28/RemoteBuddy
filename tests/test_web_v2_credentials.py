@@ -120,6 +120,13 @@ class WebV2CredentialsTest(unittest.TestCase):
         self.assertFalse(entry["needs_api_key"])
         self.assertTrue(entry["has_api_key"])
 
+    def test_codex_backend_never_needs_a_stored_api_key(self):
+        # codex-app-server authenticates through the local CLI login; the
+        # health row must not steer the UI toward an API key prompt.
+        health = self.service.health()
+        entry = health["backends"]["codex-app-server/openai"]
+        self.assertFalse(entry["needs_api_key"])
+
     def test_credentials_status_endpoint_shape(self):
         status = self.service.credentials_status()
         self.assertEqual({"openai", "deepseek"}, set(status["providers"]))

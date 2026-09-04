@@ -89,21 +89,36 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   cursor: default;
   flex: 0 0 auto;
 }
-.session-identity #session-meta { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 13px; font-weight: 650; }
-.session-identity #session-meta.error { color: var(--red); white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .session-identity .failure-message { margin-top: 4px; max-width: min(680px, 70vw); color: var(--red); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 .status-line { display: flex; gap: 6px; }
+.agent-state { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.agent-state-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.agent-state .session-more-button { border: 0; background: transparent; color: inherit; font-size: 12px; line-height: 1; padding: 0 0 0 2px; margin: -3px -4px -3px 0; cursor: pointer; }
+.agent-state .session-more-button:hover { color: var(--ink); }
+.agent-state.thinking { color: var(--blue); border-color: #b9cbde; background: #eef4fa; }
+.agent-state.acting { color: var(--amber); border-color: #ddc79b; background: var(--amber-soft); }
+.agent-state.error { color: var(--red); border-color: #dfb9b3; background: var(--red-soft); }
+.agent-state.thinking .agent-state-dot, .agent-state.acting .agent-state-dot { animation: agent-pulse 1.2s ease-in-out infinite; }
+@keyframes agent-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.72); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-state-dot { animation: none !important; }
+}
 .status-badge, .owner-badge { padding: 3px 7px; border-radius: 4px; background: #e8ebe8; color: #46504a; font-size: 10px; font-weight: 750; }
 .status-badge[data-status="running"] { background: var(--green-soft); color: var(--green); }
 .status-badge[data-status="failed"], .status-badge[data-status="interrupted"] { background: var(--red-soft); color: var(--red); }
-.header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
 .header-actions > button:not(#session-more-button) { display: none !important; }
-.presence-strip { display: grid; grid-template-columns: repeat(8, minmax(82px, 1fr)); border-bottom: 1px solid var(--line); background: #fafbfa; }
+.presence-strip { display: grid; grid-template-columns: repeat(9, minmax(82px, 1fr)); border-bottom: 1px solid var(--line); background: #fafbfa; }
 .presence-strip > div { min-width: 0; padding: 9px 16px; border-right: 1px solid var(--line); }
 .presence-strip > div:last-child { border-right: 0; }
 .presence-strip span, .presence-strip strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .presence-strip span { color: var(--muted); font-size: 9px; text-transform: uppercase; }
 .presence-strip strong { margin-top: 3px; font-size: 12px; }
+.effort-live-select { display: block; margin-top: 1px; width: 100%; border: 0; padding: 0; background: transparent; font-size: 12px; font-weight: 700; color: var(--ink); cursor: pointer; }
+.effort-live-select:disabled { color: var(--muted); cursor: not-allowed; }
 
 .work-grid { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 38%); }
 .chat-pane { order: 2; border-left: 1px solid var(--line); border-right: 0; }
@@ -298,6 +313,8 @@ dialog::backdrop { background: rgb(20 24 22 / .45); }
 .new-dialog summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .new-dialog details label { display: block; margin: 12px 0 6px; }
 .new-dialog details input, .new-dialog details select { width: 100%; }
+.new-dialog details label.cli-default-model-row { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+.new-dialog details label.cli-default-model-row input { width: auto; margin: 0; }
 .backend-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .backend-fields select { min-height: 36px; min-width: 0; border: 1px solid var(--line-strong); border-radius: 5px; padding: 0 8px; background: white; }
 .profile-fieldset { margin: 14px 0 0; padding: 0; border: 0; }

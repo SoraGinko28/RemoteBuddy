@@ -408,6 +408,54 @@ class InteractiveRunnerTest(unittest.TestCase):
         ]
         self.assertTrue(typed)
 
+    def test_multiline_keystrokes_at_shell_are_rejected(self):
+        # Regression for the vim-state confusion failure: a model typed a whole
+        # Python file (framed by Vim `i` ... `:wq`) as keystrokes while bash was
+        # still the foreground program, executing every line as a command.
+        client = FakeClient(
+            [
+                make_action(),
+                make_action(
+                    "keystrokes",
+                    keys=[
+                        "$text i",
+                        "$text import socket",
+                        "$ctrl Enter",
+                        "$text HOST = \"127.0.0.1\"",
+                        "$ctrl Enter",
+                        "$text :wq",
+                        "$ctrl Enter",
+                    ],
+                ),
+                make_action("command", command="pwd"),
+                make_action(
+                    "chat",
+                    message_type="question",
+                    content="I will open the file with the structured vim command instead.",
+                ),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0,
+            typing_interval_seconds=0,
+        ).start()
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("waiting_for_user", loaded.meeting.phase)
+        rejected = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "rejected"
+        ]
+        self.assertEqual(1, len(rejected))
+        self.assertIn("at most one input line", rejected[0]["content"])
+        typed = [
+            token.get("value")
+            for _pane, tokens in self.transport.tokens
+            for token in tokens
+            if token.get("kind") == "literal"
+        ]
+        self.assertNotIn("import socket", typed)
+
     def test_rule_plan_can_interrupt_between_bursts(self):
         pane_id = self.transport.create_workspace_session(
             self.store.meeting.session_name,

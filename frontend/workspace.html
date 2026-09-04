@@ -48,13 +48,13 @@
         <header class="session-header">
           <div class="session-identity">
             <h1 id="meeting-title">—</h1>
-            <div class="session-title-line">
-              <p id="session-meta">—</p>
-              <button id="session-more-button" class="session-more-button" type="button" title="展开会话详情" aria-label="展开会话详情" aria-expanded="false">▾</button>
-            </div>
             <p id="failure-message" class="failure-message" hidden></p>
           </div>
           <div class="header-actions">
+            <span id="agent-state" class="agent-state" hidden>
+              <span class="agent-state-dot" aria-hidden="true"></span><span id="agent-state-text"></span>
+              <button id="session-more-button" class="session-more-button" type="button" title="展开会话详情" aria-label="展开会话详情" aria-expanded="false">▾</button>
+            </span>
             <button id="refresh-button" class="icon-button" type="button" title="刷新" aria-label="刷新">↻</button>
             <button id="resume-button" class="command-button" type="button" hidden>继续 Agent</button>
             <button id="complete-button" class="command-button" type="button">结束并保留</button>
@@ -69,6 +69,15 @@
           <div><span>Provider</span><strong id="provider-label">—</strong></div>
           <div><span>模型</span><strong id="model-label">—</strong></div>
           <div><span>输入</span><strong id="typing-profile-label">平衡</strong></div>
+          <div><span>推理</span>
+            <select id="effort-live-select" class="effort-live-select" title="修改后在下一个工作周期生效">
+              <option value="">默认</option>
+              <option value="none">无</option>
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+            </select>
+          </div>
           <div><span>动作</span><strong id="action-label">0 / 60</strong></div>
           <div><span>运行</span><strong id="runtime-label">00:00</strong></div>
           <div><span>事件</span><strong id="event-count">0</strong></div>
@@ -174,7 +183,7 @@
                 <div class="playback-info">
                   <span id="playback-position">实时</span>
                 </div>
-                <button id="live-button" class="command-button" type="button">回到实时</button>
+                <button id="live-button" class="command-button" type="button">实时</button>
                 <button id="inspect-button" class="icon-button" type="button" title="查看当前事件" aria-label="查看当前事件">i</button>
               </div>
               <div class="control-actions">
@@ -215,12 +224,27 @@
             <option value="deepseek">DeepSeek</option>
           </select>
         </div>
+        <label class="cli-default-model-row" id="cli-default-model-row" hidden>
+          <input type="checkbox" id="cli-default-model" checked>
+          <span>使用 Codex CLI 默认模型（ChatGPT 订阅登录推荐）</span>
+        </label>
         <label for="model-input">模型覆盖</label>
         <input id="model-input" type="text" maxlength="200" placeholder="默认 gpt-5.6-luna">
-        <label for="api-key-input">API Key（<span id="api-key-name">OPENAI_API_KEY</span>）</label>
-        <input id="api-key-input" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="留空使用已保存的密钥">
-        <label for="base-url-input">Base URL（可选）</label>
-        <input id="base-url-input" type="url" maxlength="500" autocomplete="off" spellcheck="false" placeholder="留空使用默认地址">
+        <label for="effort-select">推理力度</label>
+        <select id="effort-select">
+          <option value="" selected>默认（跟随配置）</option>
+          <option value="none">无</option>
+          <option value="low">低</option>
+          <option value="medium">中</option>
+          <option value="high">高</option>
+        </select>
+        <div id="api-credential-fields">
+          <label for="api-key-input">API Key（<span id="api-key-name">OPENAI_API_KEY</span>）</label>
+          <input id="api-key-input" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="留空使用已保存的密钥">
+          <label for="base-url-input">Base URL（可选）</label>
+          <input id="base-url-input" type="url" maxlength="500" autocomplete="off" spellcheck="false" placeholder="留空使用默认地址">
+        </div>
+        <p id="api-key-hint" class="settings-note" hidden></p>
         <p id="api-key-hint" class="settings-note" hidden></p>
         <fieldset class="profile-fieldset">
           <legend>输入节奏</legend>

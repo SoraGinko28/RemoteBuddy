@@ -200,7 +200,6 @@ class CodexAppServerBackend:
             self._notify("initialized")
 
             thread_params: Dict[str, Any] = {
-                "model": model or self.config.model,
                 "cwd": str(private_cwd),
                 "approvalPolicy": "never",
                 "sandbox": "read-only",
@@ -211,6 +210,11 @@ class CodexAppServerBackend:
                 "environments": [],
                 "runtimeWorkspaceRoots": [],
             }
+            # An empty model defers to the Codex CLI's own configured default
+            # (the only workable choice for some ChatGPT-plan logins).
+            selected_model = model or self.config.model
+            if selected_model:
+                thread_params["model"] = selected_model
             if self.config.codex_dynamic_tools:
                 thread_params["dynamicTools"] = [
                     {
@@ -264,7 +268,6 @@ class CodexAppServerBackend:
         params: Dict[str, Any] = {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": turn_input}],
-            "model": model or self.config.model,
             "approvalPolicy": "never",
             "personality": "friendly",
             "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
@@ -275,6 +278,9 @@ class CodexAppServerBackend:
                 None if self.config.codex_dynamic_tools else allowed_message_types,
             ),
         }
+        selected_model = model or self.config.model
+        if selected_model:
+            params["model"] = selected_model
         if self.config.reasoning_effort != "none":
             params["effort"] = self.config.reasoning_effort
         self._interrupted = False
