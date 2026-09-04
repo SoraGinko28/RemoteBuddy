@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 from agent_protocol import (
     AgentAction,
+    AgentActionError,
     AgentBackend,
     AgentBackendError,
     AgentInterrupted,
@@ -48,6 +49,9 @@ from workspace_capture import (  # noqa: F401
 
 ACTION_LIMIT = 60
 CYCLE_LIMIT_SECONDS = 900.0
+# Consecutive undecodable/invalid model actions tolerated before the cycle
+# fails; each retry feeds the validation error back as an observation.
+MAX_INVALID_ACTION_RETRIES = 3
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
@@ -84,8 +88,8 @@ class InteractiveRunner:
         self._cycle_acknowledged = False
         self._last_action_was_chat = False
         self._last_terminal_evidence: Optional[str] = None
+        self._invalid_action_streak = 0
         self._dynamic_action_active = threading.Event()
-        self._interrupt_checked_monotonic = 0.0
         self._cycle_started_monotonic = time.monotonic()
         self._current_input_seq = self.store.last_event_sequence()
 
@@ -109,6 +113,7 @@ class InteractiveRunner:
         self._last_terminal_evidence = None
         self._include_agent_chat_once = False
         self._last_action_success = True
+        self._invalid_action_streak = 0
 
     @staticmethod
     def _latest_sequence(events: Sequence[Dict[str, Any]], default: int = 0) -> int:
@@ -422,8 +427,41 @@ class InteractiveRunner:
             except AgentBackendError as exc:
                 if self._cycle_elapsed() >= CYCLE_LIMIT_SECONDS - self._request_overhead_seconds():
                     self._cycle_timeout(request_id)
-                else:
-                    self._api_error(request_id, exc)
+                    return
+                if isinstance(exc, AgentActionError):
+                    # The model produced an invalid action (for example
+                    # ``type=command, command="none"``). That is correctable:
+                    # journal the rejection so the next observation carries
+                    # the reason, spend one action from the budget, and retry
+                    # instead of failing the whole cycle.
+                    with self.lock:
+                        self.store.refresh()
+                        self._check_stop()
+                        self._last_action_success = False
+                        self._invalid_action_streak += 1
+                        next_count = self.store.meeting.cycle_action_count + 1
+                        self.store.append_event(
+                            "action",
+                            "harness",
+                            "agent_thinking",
+                            content=str(exc),
+                            data={
+                                "action_id": request_id,
+                                "status": "rejected",
+                                "reason": "invalid_action",
+                            },
+                        )
+                        self.store.update(
+                            phase="agent_thinking",
+                            pending_action_id=None,
+                            cycle_action_count=next_count,
+                        )
+                        if next_count >= ACTION_LIMIT:
+                            self._wait_for_user("action_budget_exhausted")
+                            return
+                    if self._invalid_action_streak < MAX_INVALID_ACTION_RETRIES:
+                        continue
+                self._api_error(request_id, exc)
                 return
             finally:
                 capture_stop.set()
@@ -431,6 +469,7 @@ class InteractiveRunner:
 
             with self.lock:
                 self.store.refresh()
+                self._invalid_action_streak = 0
                 stale = self._is_stale(generation)
                 self.store.update(
                     last_response_id=response.response_id,
@@ -1235,13 +1274,10 @@ class InteractiveRunner:
 
     def _typing_should_interrupt(self, generation: int) -> bool:
         with self.lock:
-            # The 50 ms sleep loop calls this 20x/second; rate-limit the
-            # manifest reload to 10 Hz, which keeps the interrupt latency
-            # under the 200 ms responsiveness bound at half the I/O.
-            now = time.monotonic()
-            if now - self._interrupt_checked_monotonic >= 0.1:
-                self.store.refresh()
-                self._interrupt_checked_monotonic = now
+            # refresh() is an in-place manifest reload (a few KB of JSON), so
+            # checking on every 50 ms wake keeps the interrupt latency well
+            # under the 200 ms responsiveness bound without meaningful I/O.
+            self.store.refresh()
             self._check_stop()
             return (
                 self.store.meeting.request_generation != generation

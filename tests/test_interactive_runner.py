@@ -17,6 +17,7 @@ from interactive_runner import (
 )
 from typing_executor import _send_typing_plan
 from meeting_v2 import MeetingStore, utc_now
+from agent_protocol import AgentActionError
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
 
@@ -474,7 +475,12 @@ class InteractiveRunnerTest(unittest.TestCase):
         worker.join(1)
 
         self.assertFalse(worker.is_alive())
-        self.assertLess(time.monotonic() - requested_at, 0.2)
+        # The 50 ms typing sleep loop notices the request almost immediately;
+        # the remainder of this window is interrupt bookkeeping (C-c, screen
+        # capture, journal appends), each an fsync that can stall under disk
+        # load. Bound the full worker exit accordingly, not at the UX-facing
+        # stop-typing latency.
+        self.assertLess(time.monotonic() - requested_at, 0.5)
         self.assertEqual("", self.transport.pending_input)
         loaded = MeetingStore.load(self.root, "runner-demo")
         self.assertEqual("human_control", loaded.meeting.phase)
@@ -977,6 +983,45 @@ class InteractiveRunnerTest(unittest.TestCase):
         ).start()
         loaded = MeetingStore.load(self.root, "runner-demo")
         self.assertEqual(1, len(client.calls))
+        self.assertEqual("api_error", loaded.meeting.phase)
+        self.assertTrue(loaded.meeting.recovery_required)
+
+    def test_invalid_model_action_is_retried_with_feedback_then_recovers(self):
+        client = FakeClient(
+            [
+                make_action(),
+                AgentActionError("command action requires a real bash command line"),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Repository inspected."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        rejected = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "invalid_action"
+        ]
+        self.assertEqual(1, len(rejected))
+        self.assertIn("requires a real bash command line", rejected[0]["content"])
+        # The retry request's observation carries the rejection so the model
+        # can correct itself.
+        self.assertEqual(4, len(client.calls))
+        self.assertIn("requires a real bash command line", client.calls[2][2])
+
+    def test_consecutive_invalid_actions_still_fail_the_cycle(self):
+        client = FakeClient(
+            [make_action()]
+            + [AgentActionError(f"invalid action {index}") for index in range(3)]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual(4, len(client.calls))
         self.assertEqual("api_error", loaded.meeting.phase)
         self.assertTrue(loaded.meeting.recovery_required)
 

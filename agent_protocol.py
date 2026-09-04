@@ -116,6 +116,14 @@ class AgentProtocolError(AgentBackendError):
     pass
 
 
+class AgentActionError(AgentProtocolError):
+    """A model-authored action failed decoding or validation.
+
+    Unlike a hard protocol violation, this is correctable: the runner may
+    feed the error text back to the model and retry within the same cycle.
+    """
+
+
 @dataclass(frozen=True)
 class AgentAction:
     type: str
@@ -129,6 +137,22 @@ class AgentAction:
 
     @classmethod
     def from_dict(
+        cls,
+        payload: Dict[str, Any],
+        allowed_types: Optional[Sequence[str]] = None,
+        allowed_message_types: Optional[Sequence[str]] = None,
+    ) -> "AgentAction":
+        try:
+            return cls._validated_from_dict(payload, allowed_types, allowed_message_types)
+        except AgentActionError:
+            raise
+        except AgentProtocolError as exc:
+            # Everything raised while validating a model-authored action is
+            # correctable by the model; mark it so callers can retry.
+            raise AgentActionError(str(exc)) from exc
+
+    @classmethod
+    def _validated_from_dict(
         cls,
         payload: Dict[str, Any],
         allowed_types: Optional[Sequence[str]] = None,
@@ -185,7 +209,10 @@ class AgentAction:
                 # Relaxed policy: any bash command line is accepted except the
                 # deletion-class commands rejected by validate_shell_command.
                 if command == "none":
-                    raise AgentProtocolError("command action requires a command")
+                    raise AgentProtocolError(
+                        "command action requires a real bash command line; "
+                        "'none' is only the placeholder used by non-command actions"
+                    )
                 validate_shell_command(command)
                 if path:
                     raise AgentProtocolError("a bash command line does not accept a separate path")
@@ -628,6 +655,19 @@ def decode_action_text(
     allowed_message_types: Optional[Sequence[str]] = None,
 ) -> AgentAction:
     """Decode exactly one schema action, allowing identical gateway duplication."""
+    try:
+        return _decode_action_text(text, allowed_types, allowed_message_types)
+    except AgentActionError:
+        raise
+    except AgentProtocolError as exc:
+        raise AgentActionError(str(exc)) from exc
+
+
+def _decode_action_text(
+    text: str,
+    allowed_types: Optional[Sequence[str]] = None,
+    allowed_message_types: Optional[Sequence[str]] = None,
+) -> AgentAction:
     remaining = text.strip()
     if not remaining:
         raise AgentProtocolError("model output is not valid action JSON")
