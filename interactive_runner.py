@@ -1210,6 +1210,12 @@ class InteractiveRunner:
                 raise RunnerError("unsupported agent action")
             if self.action_settle_seconds > 0:
                 time.sleep(self.action_settle_seconds)
+            if action.type in {"vim_keys", "keystrokes"}:
+                pressed_enter = any(
+                    token.get("kind") == "key" and token.get("value") == "Enter"
+                    for token in action.keys
+                )
+                self._wait_for_vim_exit(pane_id, info.get("command", ""), bool(pressed_enter))
             with self.lock:
                 self.store.refresh()
                 self._check_stop()
@@ -1305,6 +1311,27 @@ class InteractiveRunner:
                 or self.store.meeting.control_owner != "agent"
                 or self.store.meeting.status != "running"
             )
+
+    def _wait_for_vim_exit(self, pane_id: str, foreground: str, pressed_enter: bool) -> None:
+        """Let a full-screen editor really exit before the closing frame.
+
+        When an action presses Enter inside Vim (e.g. ``:q``/``:wq``) the pane
+        needs a few hundred ms to drop back to the shell. Capturing while Vim
+        still owns the screen makes the model believe it is still open, so it
+        re-sends the quit key -- which then lands on the shell prompt as
+        ``command not found``. Wait until the foreground program leaves
+        vim/vi (bounded) so the next observation shows the settled shell.
+        """
+        if not (pressed_enter and foreground in {"vim", "vi"}):
+            return
+        for _attempt in range(20):
+            try:
+                current = self.transport.pane_info(pane_id)["command"]
+            except (RunnerError, TmuxError, OSError):
+                return
+            if current not in {"vim", "vi"}:
+                return
+            time.sleep(0.05)
 
     def _complete_action(self, action_id: str) -> None:
         self.store.append_event(
