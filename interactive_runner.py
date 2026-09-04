@@ -1210,12 +1210,12 @@ class InteractiveRunner:
                 raise RunnerError("unsupported agent action")
             if self.action_settle_seconds > 0:
                 time.sleep(self.action_settle_seconds)
-            if action.type in {"vim_keys", "keystrokes"}:
+            if action.type in {"vim_keys", "terminal_keys", "keystrokes"}:
                 pressed_enter = any(
                     token.get("kind") == "key" and token.get("value") == "Enter"
                     for token in action.keys
                 )
-                self._wait_for_vim_exit(pane_id, info.get("command", ""), bool(pressed_enter))
+                self._wait_for_pane_quiescence(pane_id, bool(pressed_enter))
             with self.lock:
                 self.store.refresh()
                 self._check_stop()
@@ -1312,26 +1312,32 @@ class InteractiveRunner:
                 or self.store.meeting.status != "running"
             )
 
-    def _wait_for_vim_exit(self, pane_id: str, foreground: str, pressed_enter: bool) -> None:
-        """Let a full-screen editor really exit before the closing frame.
+    def _wait_for_pane_quiescence(self, pane_id: str, pressed_enter: bool) -> None:
+        """Hold the closing capture until the pane's screen stops changing.
 
-        When an action presses Enter inside Vim (e.g. ``:q``/``:wq``) the pane
-        needs a few hundred ms to drop back to the shell. Capturing while Vim
-        still owns the screen makes the model believe it is still open, so it
-        re-sends the quit key -- which then lands on the shell prompt as
-        ``command not found``. Wait until the foreground program leaves
-        vim/vi (bounded) so the next observation shows the settled shell.
+        A key action ending in Enter can make the foreground program exit or
+        redraw asynchronously (an editor closing, a REPL prompt, a pager). If
+        the closing frame is captured mid-transition the model sees stale
+        state and may re-issue the key. This waits generically -- screen text
+        plus foreground command sampled 0.12s apart must agree twice -- with
+        no knowledge of any particular program, bounded to ~1.2s.
         """
-        if not (pressed_enter and foreground in {"vim", "vi"}):
+        if not pressed_enter:
             return
-        for _attempt in range(20):
+        previous = None
+        deadline = time.monotonic() + 1.2
+        while time.monotonic() < deadline:
             try:
-                current = self.transport.pane_info(pane_id)["command"]
+                signature = (
+                    self.transport.pane_info(pane_id)["command"],
+                    self.transport.capture_visible(pane_id),
+                )
             except (RunnerError, TmuxError, OSError):
                 return
-            if current not in {"vim", "vi"}:
+            if previous is not None and signature == previous:
                 return
-            time.sleep(0.05)
+            previous = signature
+            time.sleep(0.12)
 
     def _complete_action(self, action_id: str) -> None:
         self.store.append_event(
