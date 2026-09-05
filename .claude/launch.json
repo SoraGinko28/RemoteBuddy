@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "remotebuddy-web",
+      "runtimeExecutable": "/Users/bytedance/miniconda3/envs/remotebuddy/bin/python",
+      "runtimeArgs": ["web_v2.py"],
+      "port": 8765
+    }
+  ]
+}
