@@ -551,6 +551,41 @@ class InteractiveRunnerTest(unittest.TestCase):
             "deferred human takeover must record a terminal_control start",
         )
 
+    def test_screen_change_guard_rejects_stale_terminal_action(self):
+        pane_id = self.transport.create_workspace_session(
+            self.store.meeting.session_name,
+            self.store.workspace_path,
+        )
+        self.store.set_session(pane_id)
+        runner = InteractiveRunner(self.store, self.transport, object(), action_settle_seconds=0, typing_interval_seconds=0)
+        before = runner._pane_snapshot(pane_id)
+        self.assertIsNotNone(before)
+        runner._screen_before_think = before
+        # The screen changes while the model "thinks" (simulate by emitting
+        # pane output that changes the captured text).
+        self.transport.send_tokens(pane_id, [{"kind": "literal", "value": "change"}])
+        now = runner._pane_snapshot(pane_id)
+        self.assertNotEqual(before, now)
+        action = make_action("command", command="pwd", path="")
+        self.assertFalse(runner._reject_stale_action("req-a", "resp-a", action))
+        self.assertFalse(runner._reject_stale_action("req-b", "resp-b", action))
+        stopped = runner._reject_stale_action("req-c", "resp-c", action)
+        self.assertTrue(stopped, "three consecutive stale actions must stop the cycle")
+        events = self.store.events()
+        rejected = [
+            e for e in events
+            if e["kind"] == "action"
+            and e.get("data", {}).get("reason") == "screen_changed_before_exec"
+        ]
+        self.assertEqual(3, len(rejected))
+        self.assertEqual("waiting_for_user", self.store.meeting.phase)
+        reasons = [
+            e.get("data", {}).get("reason")
+            for e in self.store.events()
+            if e["kind"] == "state" and e.get("data", {}).get("reason")
+        ]
+        self.assertIn("screen_changed_repeatedly", reasons)
+
     def test_agent_uses_one_pane_and_done_waits_for_user(self):
         client = FakeClient(
             [
