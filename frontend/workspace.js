@@ -66,7 +66,7 @@ const labels = {
   message: { request: "请求", ack: "回应", progress: "进度", question: "问题", final: "结果" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
   score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
-  backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "claude-code": "Claude Code" },
+  backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
   agentState: { thinking: "思考中", acting: "操作中", idle: "待命中", error: "异常" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
@@ -2183,6 +2183,7 @@ async function loadHealth() {
     if (item.name === "tmux") return "未找到 tmux";
     if (item.name === "vim") return "未找到 Vim";
     if (item.name === "codex-app-server") return `Codex 后端不可用：${item.detail}`;
+    if (item.name === "trae-agent") return `Trae Agent 后端不可用：${item.detail}`;
     if (item.name === "claude-code") return `Claude Code 后端不可用：${item.detail}`;
     return "当前 Python 版本不受支持";
   });
@@ -2198,11 +2199,14 @@ function backendEntry(backend, provider) {
   return state.health?.backends?.[`${backend}/${provider}`] || null;
 }
 
-// codex-app-server authenticates via the local CLI login, so it stays
-// selectable even when its probe fails — the dialog then shows the real
-// reason (e.g. "Codex CLI is not logged in") instead of hiding the option.
+// The app-server CLIs (codex, traecli) authenticate via the local CLI
+// login, so they stay selectable even when their probe fails — the dialog
+// then shows the real reason (e.g. "not logged in") instead of hiding the
+// option.
+const CLI_LOGIN_BACKENDS = new Set(["codex-app-server", "trae-agent"]);
+
 function usableBackendEntry(item) {
-  return item.ok || item.needs_api_key || item.agent_backend === "codex-app-server";
+  return item.ok || item.needs_api_key || CLI_LOGIN_BACKENDS.has(item.agent_backend);
 }
 
 function syncBackendSelectors(preferCurrent = true) {
@@ -2236,12 +2240,12 @@ function syncBackendSelectors(preferCurrent = true) {
 
 function syncCliDefaultModel() {
   if (!el.cli_default_model_row) return;
-  const isCodex = el.backend_select.value === "codex-app-server";
-  el.cli_default_model_row.hidden = !isCodex;
-  const cliDefault = isCodex && el.cli_default_model.checked;
+  const isCliLogin = CLI_LOGIN_BACKENDS.has(el.backend_select.value);
+  el.cli_default_model_row.hidden = !isCliLogin;
+  const cliDefault = isCliLogin && el.cli_default_model.checked;
   el.model_input.disabled = cliDefault;
   if (cliDefault) {
-    el.model_input.placeholder = "由 Codex CLI 决定";
+    el.model_input.placeholder = el.backend_select.value === "trae-agent" ? "由 TraeCode CLI 决定" : "由 Codex CLI 决定";
   } else {
     const entry = backendEntry(el.backend_select.value, el.provider_select.value);
     el.model_input.placeholder = `默认 ${entry?.default_model || "由服务端决定"}`;
@@ -2252,14 +2256,17 @@ function updateCredentialFields() {
   if (!el.api_key_input) return;
   const entry = backendEntry(el.backend_select.value, el.provider_select.value);
   const provider = el.provider_select.value;
-  const isCodex = el.backend_select.value === "codex-app-server";
-  if (el.api_credential_fields) el.api_credential_fields.hidden = isCodex;
-  if (isCodex) {
-    // codex authenticates through the local CLI login; surface the probe's
-    // real failure reason instead of asking for an API key.
+  const backend = el.backend_select.value;
+  const isCliLogin = CLI_LOGIN_BACKENDS.has(backend);
+  if (el.api_credential_fields) el.api_credential_fields.hidden = isCliLogin;
+  if (isCliLogin) {
+    // These backends authenticate through the local CLI login; surface the
+    // probe's real failure reason instead of asking for an API key.
+    const cliName = backend === "trae-agent" ? "TraeCode CLI" : "Codex CLI";
+    const loginCmd = backend === "trae-agent" ? "traecli login" : "codex login";
     el.api_key_hint.textContent = entry && !entry.ok
-      ? `Codex 后端尚未就绪：${entry.detail || "未知原因"}。如未登录，请在终端运行 codex login。`
-      : "该组合使用本地 Codex CLI 登录（含 ChatGPT 订阅），无需 API Key。";
+      ? `${cliName} 后端尚未就绪：${entry.detail || "未知原因"}。如未登录，请在终端运行 ${loginCmd}。`
+      : `该组合使用本地 ${cliName} 登录，无需 API Key。`;
     el.api_key_hint.hidden = false;
     return;
   }
@@ -2491,7 +2498,7 @@ function bind() {
       const typingProfile = document.querySelector('input[name="typing-profile"]:checked')?.value || "balanced";
       // Empty string = follow the Codex CLI's own default model; null = the
       // server config's default.
-      const cliDefault = el.backend_select.value === "codex-app-server" && el.cli_default_model?.checked;
+      const cliDefault = CLI_LOGIN_BACKENDS.has(el.backend_select.value) && el.cli_default_model?.checked;
       const response = await api("/api/meetings", {
         method: "POST",
         body: JSON.stringify({

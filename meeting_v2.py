@@ -41,7 +41,7 @@ VALID_PHASES = {
 VALID_OWNERS = {"agent", "human", "none"}
 VALID_EVENT_KINDS = {"chat", "screen", "score", "action", "control", "state", "error"}
 VALID_SCORE_TAGS = {"competent", "incompetent"}
-VALID_AGENT_BACKENDS = {"responses", "codex-app-server", "claude-code"}
+VALID_AGENT_BACKENDS = {"responses", "codex-app-server", "claude-code", "trae-agent"}
 VALID_AGENT_PROVIDERS = {"openai", "deepseek"}
 # Mirrors the effort levels accepted by model_api_client; None on a meeting
 # means "follow the config.toml default".
@@ -179,6 +179,8 @@ class Meeting:
             raise ValueError("invalid agent provider")
         if values["agent_backend"] == "claude-code" and values["agent_provider"] != "deepseek":
             raise ValueError("claude-code requires deepseek provider")
+        if values["agent_backend"] == "trae-agent" and values["agent_provider"] != "openai":
+            raise ValueError("trae-agent requires openai provider")
         if values["typing_profile"] not in TYPING_PROFILES:
             raise ValueError("invalid typing profile")
         if values["reasoning_effort"] is not None and values["reasoning_effort"] not in VALID_REASONING_EFFORTS:
@@ -242,6 +244,8 @@ class MeetingStore:
             raise MeetingError("invalid agent provider")
         if agent_backend == "claude-code" and agent_provider != "deepseek":
             raise MeetingError("claude-code requires deepseek provider")
+        if agent_backend == "trae-agent" and agent_provider != "openai":
+            raise MeetingError("trae-agent requires openai provider")
         if typing_profile not in TYPING_PROFILES:
             raise MeetingError("invalid typing profile")
         if not isinstance(agent_ordinal, int) or isinstance(agent_ordinal, bool) or agent_ordinal < 0:

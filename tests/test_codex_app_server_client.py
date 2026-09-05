@@ -203,6 +203,43 @@ class CodexAppServerBackendTest(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.audit.read_text("utf-8").splitlines()]
 
+    def test_trae_backend_shares_protocol_without_stdio_flag(self):
+        # TraeCode CLI speaks the same app-server protocol but treats stdio as
+        # the default transport, so the spawn command must omit --stdio.
+        from codex_app_server_client import TraeAgentBackend
+
+        commands = []
+
+        def factory(command, cwd):
+            commands.append(list(command))
+            return self.process_factory(command, cwd)
+
+        backend = TraeAgentBackend(
+            self.config(),
+            codex_binary="fake-traecli",
+            process_factory=factory,
+        )
+        try:
+            session = backend.start_cycle(
+                "meeting-one",
+                "RemoteBuddy Skill",
+                "initial full local context",
+                event_callback=self.telemetry.append,
+            )
+            response = backend.next_action(
+                session,
+                "later delta",
+                allowed_types=("chat",),
+                allowed_message_types=("ack", "question"),
+            )
+        finally:
+            backend.close()
+        self.assertEqual([["fake-traecli", "app-server"]], commands)
+        self.assertEqual("thread-test", session)
+        self.assertEqual("ack", response.action.message_type)
+        self.assertEqual("trae-agent", backend.backend_name)
+        self.assertTrue(any(item.get("backend") == "trae-agent" for item in self.telemetry))
+
     def test_initialization_ephemeral_thread_and_structured_turn(self):
         backend = self.backend()
         try:

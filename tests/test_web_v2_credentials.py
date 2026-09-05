@@ -126,6 +126,8 @@ class WebV2CredentialsTest(unittest.TestCase):
         health = self.service.health()
         entry = health["backends"]["codex-app-server/openai"]
         self.assertFalse(entry["needs_api_key"])
+        trae = health["backends"]["trae-agent/openai"]
+        self.assertFalse(trae["needs_api_key"])
 
     def test_credentials_status_endpoint_shape(self):
         status = self.service.credentials_status()

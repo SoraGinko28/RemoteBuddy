@@ -167,6 +167,20 @@ class ModelApiConfigTest(unittest.TestCase):
         resolved = config.resolve("codex-app-server", "openai")
         self.assertEqual("codex-app-server", resolved.agent_backend)
 
+    def test_trae_agent_backend_pairs_with_openai_only(self):
+        self.write_config()
+        config = ModelApiConfig.load(self.root)
+        resolved = config.resolve("trae-agent", "openai")
+        self.assertEqual("trae-agent", resolved.agent_backend)
+        with self.assertRaisesRegex(ModelConfigError, "trae-agent"):
+            config.resolve("trae-agent", "deepseek")
+        # Like codex, trae authenticates via the CLI login: no key required.
+        (self.root / "auth.json").unlink()
+        keyless = ModelApiConfig.load(self.root)
+        self.assertEqual("", keyless.resolve("trae-agent", "openai").api_key)
+        # Empty model defers to the CLI default for trae as well.
+        self.assertEqual("", config.resolve("trae-agent", "openai", model="").model)
+
     def test_empty_model_is_codex_only_cli_default(self):
         self.write_config()
         config = ModelApiConfig.load(self.root)

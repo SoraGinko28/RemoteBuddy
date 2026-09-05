@@ -29,8 +29,10 @@ from agent_protocol import (
 )
 from codex_app_server_client import (
     CodexAppServerBackend,
+    TraeAgentBackend,
     CodexAppServerError,
     probe_codex_backend,
+    probe_trae_backend,
 )
 from claude_code_client import (
     ClaudeCodeBackend,
@@ -101,6 +103,7 @@ MAX_SCORE_COMMENT_BYTES = MAX_MESSAGE_BYTES
 BACKEND_COMBINATIONS = {
     ("responses", "openai"): "Responses API",
     ("codex-app-server", "openai"): "Codex App Server",
+    ("trae-agent", "openai"): "Trae Agent",
     ("claude-code", "deepseek"): "Claude Code + DeepSeek",
 }
 OVERRIDES_FILENAME = "overrides.json"
@@ -290,6 +293,7 @@ class MeetingWebService:
         self._store_cache: Dict[str, MeetingStore] = {}
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
+        self._trae_check_cache: Optional[Tuple[float, str, bool, str]] = None
 
     def _meeting_lock(self, meeting_id: str) -> threading.RLock:
         with self.lock:
@@ -315,6 +319,8 @@ class MeetingWebService:
             return self.client_factory(config)
         if config.agent_backend == "codex-app-server":
             return CodexAppServerBackend(config)
+        if config.agent_backend == "trae-agent":
+            return TraeAgentBackend(config)
         if config.agent_backend == "claude-code":
             return ClaudeCodeBackend(config)
         return OpenAIResponsesClient(config)
@@ -653,6 +659,7 @@ class MeetingWebService:
                 self._write_base_url_override(provider, base_url)
             self._backend_check_cache = None
             self._claude_check_cache = None
+            self._trae_check_cache = None
         return self.credentials_status()
 
     def _write_auth_key(self, provider: str, api_key: str) -> None:
@@ -721,6 +728,20 @@ class MeetingWebService:
         self._backend_check_cache = (time.monotonic(), cache_key, ok, detail)
         return ok, detail
 
+    def _probe_trae_config(self, config: ModelApiConfig) -> Tuple[bool, str]:
+        cache_key = f"{config.model}:{config.reasoning_effort}"
+        now = time.monotonic()
+        cached = self._trae_check_cache
+        if cached and cached[1] == cache_key and now - cached[0] < 10.0:
+            return cached[2], cached[3]
+        try:
+            detail = probe_trae_backend(config)
+            ok = True
+        except CodexAppServerError as exc:
+            ok, detail = False, str(exc)
+        self._trae_check_cache = (time.monotonic(), cache_key, ok, detail)
+        return ok, detail
+
     def _probe_claude_config(self, config: ModelApiConfig) -> Tuple[bool, str]:
         cache_key = f"{config.model}:{config.base_url}:{config.claude_binary}"
         now = time.monotonic()
@@ -761,6 +782,8 @@ class MeetingWebService:
             return
         if config.agent_backend == "codex-app-server":
             ok, detail = self._probe_codex_config(config)
+        elif config.agent_backend == "trae-agent":
+            ok, detail = self._probe_trae_config(config)
         elif config.agent_backend == "claude-code":
             ok, detail = self._probe_claude_config(config)
         else:
@@ -950,10 +973,10 @@ class MeetingWebService:
             if not isinstance(model, str):
                 raise WebError(400, "model must be a short string")
             if model == "":
-                # Empty string = "let the Codex CLI use its own default model"
-                # (needed for ChatGPT-plan logins); only codex supports it.
-                if backend != "codex-app-server":
-                    raise WebError(400, "empty model is only supported for codex-app-server")
+                # Empty string = "let the CLI use its own default model"
+                # (subscription logins); only the app-server CLIs support it.
+                if backend not in {"codex-app-server", "trae-agent"}:
+                    raise WebError(400, "empty model is only supported for codex-app-server or trae-agent")
             elif not MODEL_RE.fullmatch(model):
                 raise WebError(400, "model must be a short string")
         config = self._resolve_config(config, backend, provider, model)
@@ -966,7 +989,7 @@ class MeetingWebService:
         model = config.model
         if not isinstance(model, str) or not (
             MODEL_RE.fullmatch(model)
-            or (model == "" and config.agent_backend == "codex-app-server")
+            or (model == "" and config.agent_backend in {"codex-app-server", "trae-agent"})
         ):
             raise WebError(400, "model must be a short string")
         typing_profile = payload.get("typing_profile", "balanced")
@@ -1652,6 +1675,8 @@ class MeetingWebService:
                     ok, detail = True, resolved.model
                     if backend == "codex-app-server":
                         ok, detail = self._probe_codex_config(resolved)
+                    elif backend == "trae-agent":
+                        ok, detail = self._probe_trae_config(resolved)
                     elif backend == "claude-code":
                         ok, detail = self._probe_claude_config(resolved)
                     backends[key] = {
@@ -1666,7 +1691,7 @@ class MeetingWebService:
                         "has_api_key": has_api_key,
                         # codex-app-server authenticates via the local CLI
                         # login and never needs a stored key.
-                        "needs_api_key": not has_api_key and backend != "codex-app-server",
+                        "needs_api_key": not has_api_key and backend not in {"codex-app-server", "trae-agent"},
                         "required": key == selected_key,
                     }
                 except (ModelConfigError, ClaudeCodeError, CodexAppServerError) as exc:
@@ -1684,7 +1709,7 @@ class MeetingWebService:
                         ),
                         "auth_key_name": auth_key_name,
                         "has_api_key": has_api_key,
-                        "needs_api_key": not has_api_key and backend != "codex-app-server",
+                        "needs_api_key": not has_api_key and backend not in {"codex-app-server", "trae-agent"},
                         "required": key == selected_key,
                     }
             selected = backends.get(selected_key)
@@ -2133,10 +2158,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "responses": ("responses", "openai"),
             "codex": ("codex-app-server", "openai"),
             "codex-app-server": ("codex-app-server", "openai"),
+            "trae": ("trae-agent", "openai"),
+            "trae-agent": ("trae-agent", "openai"),
         }
         pair = aliases.get(args.harness)
         if pair is None:
-            parser.error("--harness must be one of: claude, responses, codex")
+            parser.error("--harness must be one of: claude, responses, codex, trae")
         default_backend, default_provider = pair
 
     service = MeetingWebService(

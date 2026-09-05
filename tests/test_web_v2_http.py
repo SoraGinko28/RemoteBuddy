@@ -288,6 +288,28 @@ class MeetingWebServiceTest(unittest.TestCase):
         with self.assertRaisesRegex(WebError, "finished"):
             self.service.set_reasoning_effort("effort-demo", {"reasoning_effort": "low"})
 
+    def test_trae_agent_meetings_start_and_support_cli_default_model(self):
+        store = self.service.start(
+            {
+                "message": "Trae backend trial.",
+                "meeting_id": "trae-default",
+                "agent_backend": "trae-agent",
+                "agent_provider": "openai",
+                "model": "",
+            }
+        )
+        self.wait_for_workers()
+        self.assertEqual("trae-agent", store.meeting.agent_backend)
+        self.assertEqual("", store.meeting.model)
+        with self.assertRaises(WebError):
+            self.service.start(
+                {
+                    "message": "Bad pair.",
+                    "agent_backend": "trae-agent",
+                    "agent_provider": "deepseek",
+                }
+            )
+
     def test_empty_model_uses_codex_cli_default(self):
         store = self.service.start(
             {

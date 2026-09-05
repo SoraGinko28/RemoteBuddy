@@ -93,6 +93,9 @@ class CodexAppServerBackend:
 
     backend_name = PROTOCOL_NAME
     stateful = True
+    # Subcommand + flags that put the CLI into stdio app-server mode.
+    app_server_command = ("app-server", "--stdio")
+    default_binary = "codex"
 
     def __init__(
         self,
@@ -102,7 +105,7 @@ class CodexAppServerBackend:
         process_factory: Callable[[Sequence[str], Path], Any] = _default_process_factory,
     ) -> None:
         self.config = config
-        self.codex_binary = codex_binary or shutil.which("codex") or "codex"
+        self.codex_binary = codex_binary or shutil.which(self.default_binary) or self.default_binary
         self._process_factory = process_factory
         self._process: Any = None
         self._temporary: Optional[tempfile.TemporaryDirectory] = None
@@ -167,7 +170,7 @@ class CodexAppServerBackend:
         private_cwd = Path(self._temporary.name).resolve()
         try:
             self._process = self._process_factory(
-                [self.codex_binary, "app-server", "--stdio"], private_cwd
+                [self.codex_binary, *self.app_server_command], private_cwd
             )
             if self._process.stdin is None or self._process.stdout is None:
                 raise CodexAppServerError("Codex App Server stdio is unavailable")
@@ -789,6 +792,65 @@ def probe_codex_backend(config: ModelApiConfig, timeout: float = 15.0) -> str:
         timeout=timeout,
     )
     backend = CodexAppServerBackend(config, codex_binary=binary)
+    try:
+        backend.start_cycle(
+            "remotebuddy-doctor",
+            "RemoteBuddy protocol handshake. Do not use tools or produce a model turn.",
+            "",
+            model=config.model,
+        )
+    finally:
+        backend.close()
+    return version
+
+
+class TraeAgentBackend(CodexAppServerBackend):
+    """TraeCode CLI backend.
+
+    The internal TraeCode CLI (``traecli``) implements the same Codex App
+    Server protocol (its schema bundle is literally
+    ``codex_app_server_protocol``): everything — initialize handshake,
+    ephemeral threads, structured turns, forbidden item filtering — is
+    inherited. Only the binary name differs and stdio is its default
+    transport, so the ``--stdio`` flag must be omitted.
+    """
+
+    backend_name = "trae-agent"
+    app_server_command = ("app-server",)
+    default_binary = "traecli"
+
+
+def _trae_binary(config: ModelApiConfig) -> Optional[str]:
+    harness = config.harness_profiles.get("trae-agent")
+    configured = harness.get("binary") if isinstance(harness, dict) else None
+    if configured:
+        expanded = os.path.expanduser(str(configured))
+        return expanded if os.path.isfile(expanded) else None
+    return shutil.which("traecli")
+
+
+def probe_trae_backend(config: ModelApiConfig, timeout: float = 15.0) -> str:
+    binary = _trae_binary(config)
+    if not binary:
+        raise CodexAppServerError("TraeCode CLI (traecli) is not installed")
+    try:
+        login = subprocess.run(
+            [binary, "login", "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=min(timeout, 10.0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CodexAppServerError("TraeCode CLI login status check failed") from exc
+    if login.returncode != 0:
+        raise CodexAppServerError("TraeCode CLI is not logged in")
+    version = check_codex_protocol(
+        binary,
+        dynamic_tools=config.codex_dynamic_tools,
+        timeout=timeout,
+    )
+    backend = TraeAgentBackend(config, codex_binary=binary)
     try:
         backend.start_cycle(
             "remotebuddy-doctor",

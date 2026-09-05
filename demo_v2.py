@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from codex_app_server_client import CodexAppServerError, probe_codex_backend
+from codex_app_server_client import CodexAppServerError, probe_codex_backend, probe_trae_backend
 from claude_code_client import ClaudeCodeError, probe_claude_backend
 from meeting_v2 import MeetingError, MeetingStore
 from model_api_client import ModelApiConfig, ModelConfigError
@@ -41,6 +41,12 @@ def doctor() -> bool:
                 checks.append(("codex-app-server", True, version))
             except CodexAppServerError as exc:
                 checks.append(("codex-app-server", False, str(exc)))
+        elif config.agent_backend == "trae-agent":
+            try:
+                version = probe_trae_backend(config)
+                checks.append(("trae-agent", True, version))
+            except CodexAppServerError as exc:
+                checks.append(("trae-agent", False, str(exc)))
         elif config.agent_backend == "claude-code":
             try:
                 version = probe_claude_backend(config)

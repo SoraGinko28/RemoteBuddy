@@ -243,6 +243,32 @@ class MeetingStoreV2Test(unittest.TestCase):
         self.assertEqual("openai", loaded.meeting.agent_provider)
         self.assertIsNone(loaded.meeting.agent_session_id)
 
+    def test_trae_agent_requires_openai_provider(self):
+        with self.assertRaisesRegex(MeetingError, "trae-agent requires openai"):
+            MeetingStore.create(
+                self.root,
+                "trae-bad-pair",
+                "hello",
+                self.skill,
+                "remotebuddy-trae-bad-pair",
+                "gpt-5.6-luna",
+                agent_backend="trae-agent",
+                agent_provider="deepseek",
+            )
+        store = MeetingStore.create(
+            self.root,
+            "trae-pair",
+            "hello",
+            self.skill,
+            "remotebuddy-trae-pair",
+            "",
+            agent_backend="trae-agent",
+            agent_provider="openai",
+        )
+        loaded = MeetingStore.load(self.root, "trae-pair")
+        self.assertEqual("trae-agent", loaded.meeting.agent_backend)
+        self.assertEqual("", loaded.meeting.model)
+
     def test_claude_deepseek_identity_is_persisted(self):
         store = MeetingStore.create(
             self.root,
