@@ -104,6 +104,29 @@ def normalize_agent_role_map(
     return normalized
 
 
+# -- @-mention (ADT: $at_user_name) ---------------------------------------
+
+_AT_NAME_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9_.-]*)")
+
+
+def mentioned_agent_names(content: str, role_map: Mapping[str, str]) -> list:
+    """Names mentioned with a leading ``@`` that are members of role_map.
+
+    Order follows the message text; duplicates are removed. ``@human`` or an
+    unknown name is simply not a mention of any member.
+    """
+    if not isinstance(content, str):
+        return []
+    seen = set()
+    result: list = []
+    for match in _AT_NAME_RE.finditer(content):
+        name = match.group(1)
+        if name in role_map and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
