@@ -1,0 +1,183 @@
+"""meeting_reviewer — one-turn reviewer (discriminator) that runs in its own
+Claude Code process and never touches the shared terminal.
+
+Why separate from InteractiveRunner: the runner's loop is written for the
+generator that OWNS the terminal (it gates on ``control_owner == its name``
+and drives tmux actions). A discriminator must not hold or act on the
+terminal; this module is a deliberately small, chat-only sibling that:
+
+- opens its own backend client (its own claude-code subprocess),
+- observes the meeting journal (conversation tail + latest screen),
+- is allowed to emit only ``chat`` / ``done`` actions (no terminal action
+  types are ever accepted),
+- appends its final comment to the journal under its own agent name,
+- restores the meeting to ``waiting_for_user`` so the generator can run next.
+
+Single-writer rule: callers only summon a reviewer while the meeting is idle
+(no generator turn in flight, no human takeover), so the shared phase field
+is never written by two agents at once.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+from typing import Any, Optional
+
+import meeting_v2 as m2
+from agent_protocol import AgentAction, AgentBackendError, AgentInterrupted
+
+REVIEWER_MAX_ROUNDS = 12
+REVIEWER_OBSERVATION = "Continue. Reply when you have a comment."
+
+REVIEWER_INSTRUCTIONS = (
+    "You are a reviewer in a shared-terminal coding session. You do NOT have "
+    "terminal access and must never issue terminal actions. Read the "
+    "conversation and the latest screen below, then answer concisely: state "
+    "what looks right and what looks wrong, and ask one sharp question if "
+    "anything is unclear. Reply in the same language as the human. End your "
+    "reply with a done action carrying the final text."
+)
+
+
+def build_reviewer_context(store: m2.MeetingStore, max_chat: int = 6) -> str:
+    """Human-readable context for the reviewer: recent chat + latest screen."""
+    lines: list = []
+    events = store.events()
+    chat = [e for e in events if e.get("kind") == "chat"]
+    for event in chat[-max_chat:]:
+        actor = event.get("actor", "?")
+        content = (event.get("content") or "").strip()
+        if content:
+            lines.append(f"{actor}: {content}")
+    screen = store.latest_screen() if hasattr(store, "latest_screen") else None
+    screen_text = ""
+    if isinstance(screen, dict):
+        content = screen.get("content") or ""
+        screen_text = content if isinstance(content, str) else ""
+    body = "\n".join(lines)
+    if screen_text:
+        screen_text = screen_text[-4000:]
+        body = f"{body}\n\n--- latest screen ---\n{screen_text}"
+    return body or "(empty conversation)"
+
+
+def _configured_timeout(client: Any) -> float:
+    config = getattr(client, "config", None)
+    if config is not None and hasattr(config, "request_timeout_seconds"):
+        try:
+            return float(getattr(config, "request_timeout_seconds"))
+        except (TypeError, ValueError):
+            pass
+    return 60.0
+
+
+def _record_state(store: m2.MeetingStore, agent_name: str, payload: dict) -> None:
+    try:
+        store.append_event("state", agent_name, store.meeting.phase, data={"reviewer": payload})
+    except Exception:  # noqa: BLE001  records are observational
+        pass
+
+
+def run_reviewer_turn(
+    store: m2.MeetingStore,
+    client: Any,
+    agent_name: str,
+    lock: Optional[threading.RLock] = None,
+    context: Optional[str] = None,
+) -> bool:
+    """Run one reviewer turn; append the final comment under agent_name.
+
+    Returns True when a final comment was recorded, False otherwise.
+    """
+    guard = lock or threading.RLock()
+    meeting_id = store.meeting.meeting_id
+    instructions = REVIEWER_INSTRUCTIONS
+    observation = context if context is not None else build_reviewer_context(store)
+    timeout = _configured_timeout(client)
+    session_id: Optional[str] = None
+
+    def settled() -> None:
+        try:
+            with guard:
+                store.refresh()
+                if store.meeting.phase == "agent_thinking":
+                    store.update(phase="waiting_for_user", control_owner="none",
+                                 pending_action_id=None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        with guard:
+            store.refresh()
+            store.update(phase="agent_thinking", control_owner="none")
+            store.append_event(
+                "action", agent_name, "agent_thinking",
+                data={"action_id": f"reviewer-{agent_name}", "status": "received"},
+            )
+            _record_state(store, agent_name, {"status": "started"})
+        start_cycle = getattr(client, "start_cycle", None)
+        if not callable(start_cycle):
+            raise m2.MeetingError("reviewer backend does not support start_cycle")
+        session_id = str(start_cycle(meeting_id, instructions, observation,
+                                     model=store.meeting.model, event_callback=None))
+        next_action = getattr(client, "next_action", None)
+        if not callable(next_action):
+            raise m2.MeetingError("reviewer backend does not support next_action")
+        for _round in range(REVIEWER_MAX_ROUNDS):
+            with guard:
+                store.refresh()
+                if store.meeting.status in {"completed", "failed", "interrupted"}:
+                    settled()
+                    return False
+            response = next_action(
+                session_id,
+                REVIEWER_OBSERVATION,
+                model=store.meeting.model,
+                allowed_types=("chat", "done"),
+                allowed_message_types=("ack", "progress", "question", "final"),
+                request_timeout_seconds=timeout,
+                action_handler=lambda action, metadata: {},
+            )
+            action: AgentAction = response.action
+            if action.type == "done":
+                with guard:
+                    store.refresh()
+                    store.append_chat(agent_name, action.content, "final")
+                    store.append_event(
+                        "action", agent_name, "agent_acting",
+                        data={"action_id": f"reviewer-{agent_name}",
+                              "status": "completed", "action": json.dumps({
+                                  "type": action.type, "message_type": action.message_type,
+                              })},
+                    )
+                    store.update(phase="waiting_for_user", control_owner="none",
+                                 pending_action_id=None)
+                    _record_state(store, agent_name, {"status": "done"})
+                return True
+            # chat ack / progress: keep listening for the final done action.
+            if action.type == "chat":
+                continue
+            settled()
+            return False
+        settled()
+        return False
+    except (AgentInterrupted,) as exc:
+        store.append_event("error", "harness", "reviewer_interrupted", content=str(exc))
+        settled()
+        return False
+    except (AgentBackendError, m2.MeetingError, OSError, ValueError) as exc:
+        try:
+            store.append_event("error", "harness", "reviewer_error", content=str(exc))
+        except Exception:  # noqa: BLE001
+            pass
+        settled()
+        return False
+    except Exception as exc:  # noqa: BLE001  last-resort trap keeps the thread alive
+        try:
+            store.append_event("error", "harness", "reviewer_error", content=f"unexpected: {exc!r}")
+        except Exception:  # noqa: BLE001
+            pass
+        settled()
+        return False
