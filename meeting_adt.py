@@ -225,6 +225,99 @@ __all__ += [
 ]
 
 
+# =====================================================================
+# G6：TerminalTextSegment / Color / Rgb / Style（屏幕样式层）
+# =====================================================================
+#
+# Style := Oneof | "bold" | "underline" | "italic" | "reverse" | "blink" | "dim"
+# Color := Oneof | $palette int(0..255) | $truecolor Rgb
+# Rgb   := DataClass r/g/b int 每个 0..255
+# TerminalTextSegment :=
+#     DataClass
+#   * $text str                    # 连续同属性文本；可含 \n
+#   * $fg / $bg Optional[Color]    # None = 终端默认前景/背景
+#   * $styles set[Style]           # 语义是集合，顺序无关
+#
+# 存储/JSON 表示：Style=字符串；Rgb={"r":..,"g":..,"b":..}；
+# palette 色={"palette":n}；truecolor 色={"r":..,"g":..,"b":..}。
+
+# Style 取值（顺序与 ADT 文档一致）
+STYLE_BOLD = "bold"
+STYLE_UNDERLINE = "underline"
+STYLE_ITALIC = "italic"
+STYLE_REVERSE = "reverse"
+STYLE_BLINK = "blink"
+STYLE_DIM = "dim"
+
+STYLE_NAMES: Final[frozenset[str]] = frozenset({
+    STYLE_BOLD,
+    STYLE_UNDERLINE,
+    STYLE_ITALIC,
+    STYLE_REVERSE,
+    STYLE_BLINK,
+    STYLE_DIM,
+})
+
+
+@dataclass(frozen=True)
+class Rgb:
+    """真彩色。"""
+    r: int
+    g: int
+    b: int
+
+    def __post_init__(self) -> None:
+        for name, value in (("r", self.r), ("g", self.g), ("b", self.b)):
+            if not 0 <= value <= 255:
+                raise ValueError(f"Rgb.{name} out of range: {value}")
+
+
+@dataclass(frozen=True)
+class PaletteColor:
+    """SGR 调色板下标 0..255。"""
+    index: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.index <= 255:
+            raise ValueError(f"palette index out of range: {self.index}")
+
+
+# Color := Oneof | $palette int | $truecolor Rgb
+Color = PaletteColor | Rgb
+
+
+@dataclass(frozen=True)
+class TerminalTextSegment:
+    text: str
+    fg: Optional[Color] = None
+    bg: Optional[Color] = None
+    styles: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        unknown = set(self.styles) - STYLE_NAMES
+        if unknown:
+            raise ValueError(f"unknown styles: {sorted(unknown)}")
+        for attr in ("fg", "bg"):
+            color = getattr(self, attr)
+            if color is not None and not isinstance(color, (PaletteColor, Rgb)):
+                raise TypeError(f"{attr} must be PaletteColor|Rgb|None, got {type(color).__name__}")
+
+
+__all__ += [
+    "STYLE_BOLD",
+    "STYLE_UNDERLINE",
+    "STYLE_ITALIC",
+    "STYLE_REVERSE",
+    "STYLE_BLINK",
+    "STYLE_DIM",
+    "STYLE_NAMES",
+    "Rgb",
+    "PaletteColor",
+    "TerminalTextSegment",
+]
+
+
+
 
 __all__ += [
     "concat_text_field_of_list",

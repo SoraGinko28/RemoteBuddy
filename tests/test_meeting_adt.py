@@ -79,6 +79,16 @@ class TestStreamNames:
             "assert_screen_rows_match_height",
             "assert_cursor_in_bounds",
             "assert_segments_valid",
+            "STYLE_BOLD",
+            "STYLE_UNDERLINE",
+            "STYLE_ITALIC",
+            "STYLE_REVERSE",
+            "STYLE_BLINK",
+            "STYLE_DIM",
+            "STYLE_NAMES",
+            "Rgb",
+            "PaletteColor",
+            "TerminalTextSegment",
         }
 
 
@@ -457,6 +467,106 @@ class TestAssertSegmentsValid:
         segs = [_styled("a"), _styled("b")]
         with pytest.raises(AssertionError):
             adt.assert_segments_valid(adt.ScreenCapture(terminal_text_content=segs))
+
+
+# =====================================================================
+# G6：TerminalTextSegment / Color / Rgb / Style
+# =====================================================================
+
+class TestStyle:
+    def test_style_names_exact_set(self) -> None:
+        assert adt.STYLE_NAMES == frozenset({
+            "bold", "underline", "italic", "reverse", "blink", "dim",
+        })
+
+    def test_style_constants_match_names(self) -> None:
+        assert adt.STYLE_BOLD == "bold"
+        assert adt.STYLE_UNDERLINE == "underline"
+        assert adt.STYLE_ITALIC == "italic"
+        assert adt.STYLE_REVERSE == "reverse"
+        assert adt.STYLE_BLINK == "blink"
+        assert adt.STYLE_DIM == "dim"
+
+
+class TestRgb:
+    def test_bounds_ok(self) -> None:
+        assert adt.Rgb(0, 0, 0) == adt.Rgb(0, 0, 0)
+        assert adt.Rgb(255, 255, 255).r == 255
+
+    @pytest.mark.parametrize("r,g,b", [
+        (-1, 0, 0), (256, 0, 0), (0, -1, 0), (0, 256, 0),
+        (0, 0, -1), (0, 0, 256), (1000, 0, 0),
+    ])
+    def test_out_of_range_raises(self, r: int, g: int, b: int) -> None:
+        with pytest.raises(ValueError, match="out of range"):
+            adt.Rgb(r, g, b)
+
+    def test_is_frozen(self) -> None:
+        rgb = adt.Rgb(1, 2, 3)
+        with pytest.raises(AttributeError):
+            rgb.r = 9  # type: ignore[misc]
+
+
+class TestPaletteColor:
+    def test_bounds_ok(self) -> None:
+        assert adt.PaletteColor(0).index == 0
+        assert adt.PaletteColor(255).index == 255
+
+    @pytest.mark.parametrize("index", [-1, 256, 1000])
+    def test_out_of_range_raises(self, index: int) -> None:
+        with pytest.raises(ValueError, match="palette index"):
+            adt.PaletteColor(index)
+
+
+class TestTerminalTextSegment:
+    def test_defaults_none_and_empty_styles(self) -> None:
+        seg = adt.TerminalTextSegment(text="hi")
+        assert seg.fg is None
+        assert seg.bg is None
+        assert seg.styles == frozenset()
+
+    def test_holds_colors(self) -> None:
+        fg = adt.PaletteColor(7)
+        bg = adt.Rgb(0, 0, 0)
+        seg = adt.TerminalTextSegment(text="x", fg=fg, bg=bg,
+                                      styles=frozenset({"bold", "dim"}))
+        assert seg.fg == fg
+        assert seg.bg == bg
+        assert seg.styles == frozenset({"dim", "bold"})  # 顺序无关
+
+    def test_text_may_contain_newline(self) -> None:
+        seg = adt.TerminalTextSegment(text="a\nb")
+        assert seg.text == "a\nb"
+
+    def test_unknown_style_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown styles"):
+            adt.TerminalTextSegment(text="x", styles=frozenset({"neon"}))
+
+    def test_bad_color_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="fg must be"):
+            adt.TerminalTextSegment(text="x", fg="red")  # type: ignore[arg-type]
+
+    def test_is_frozen(self) -> None:
+        seg = adt.TerminalTextSegment(text="x")
+        with pytest.raises(AttributeError):
+            seg.text = "y"  # type: ignore[misc]
+
+    def test_equality_by_value(self) -> None:
+        a = adt.TerminalTextSegment(text="x", styles=frozenset({"bold"}))
+        b = adt.TerminalTextSegment(text="x", styles=frozenset({"bold"}))
+        assert a == b
+
+    def test_fits_screen_capture_annotation(self) -> None:
+        # 真类型可直接放入 ScreenCapture.terminal_text_content
+        cap = adt.ScreenCapture(
+            screen_data="ab",
+            terminal_text_content=[adt.TerminalTextSegment(text="ab")],
+            screen_width=2,
+            screen_height=1,
+        )
+        adt.assert_screen_plain_matches(cap)
+        adt.assert_segments_valid(cap)
+
 
 
 
