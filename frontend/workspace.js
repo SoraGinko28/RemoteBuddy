@@ -319,8 +319,20 @@ function renderMeetingList() {
   }
 }
 
+// A live DOM selection must never be clobbered by a periodic redraw: the
+// 1s header tick and the event poll both rebuild text nodes, which would
+// collapse whatever the user is trying to select/copy (e.g. a meeting id
+// in the top bar). While a selection exists (or a pointer drag is in
+// progress) auto-redraws stand down; they resume on the next tick after
+// the selection is cleared.
+function hasLiveSelection() {
+  const selection = window.getSelection && window.getSelection();
+  return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
+}
+
 function renderHeader() {
   if (!state.snapshot) return;
+  if (state.pointerSelecting || hasLiveSelection()) return;
   const meeting = state.snapshot.meeting;
   el.meeting_title.textContent = meeting.meeting_id;
   if (el.agent_state) {
@@ -2467,6 +2479,7 @@ async function refreshSelected() {
   // Re-rendering replaces the chat/terminal DOM and would collapse an
   // in-progress text selection — the app's core scoring interaction.
   if (state.pointerSelecting || state.pendingSelection || state.evaluationSelection) return;
+  if (hasLiveSelection()) return; // 用户正在选中/复制：本 tick 放弃重绘
   renderAll();
 }
 
@@ -2707,6 +2720,19 @@ function bind() {
   // anywhere outside it -- including non-focusable surfaces like chat blank
   // space, where no focus event ever fires -- moves focus to <body> and stops
   // the cursor blink. After such a click, hand focus straight back to the
+  // Selectable-text surfaces must never lose focus to the terminal on
+  // pointerdown: the focus grab below is meant to restart the cursor blink,
+  // but stealing focus out from under a mousedown on chat text (or the
+  // header identity) also cancels native text selection before it can start
+  // (drag, double-click and Shift+arrows all die; copy returns nothing).
+  function isTextSelectionSurface(node) {
+    const selectors = [".message-content", ".session-identity", "#meeting-title",
+                       ".presence-strip", ".evaluation-excerpt"];
+    for (const selector of selectors) {
+      if (node && node.closest && node.closest(selector)) return true;
+    }
+    return false;
+  }
   // terminal; editable fields (chat composer, dialogs) are never touched, and
   // playback scrubbing (followLive false) leaves focus alone.
   document.addEventListener("pointerdown", (event) => {
@@ -2714,6 +2740,7 @@ function bind() {
     const target = event.target;
     if (el.terminal_screen && (target === el.terminal_screen || el.terminal_screen.contains(target))) return;
     if (isEditableFocusTarget(target)) return;
+    if (isTextSelectionSurface(target)) return;
     setTimeout(focusTerminalCursor, 0);
   }, true);
   el.selection_menu.addEventListener("pointerdown", (event) => event.stopPropagation());
