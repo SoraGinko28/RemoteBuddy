@@ -73,6 +73,12 @@ class TestStreamNames:
             "row_plain",
             "plain_of",
             "assert_screen_plain_matches",
+            "cell_width",
+            "seg_attrs",
+            "assert_screen_row_widths_fit",
+            "assert_screen_rows_match_height",
+            "assert_cursor_in_bounds",
+            "assert_segments_valid",
         }
 
 
@@ -191,14 +197,29 @@ class TestScreenCapture:
         assert "screen_data" in repr(adt.ScreenCapture())
 
 
-# 测试内最小的带 .text 段对象（TerminalTextSegment 在 G6 才定义）
+# 测试内最小的带样式段对象（TerminalTextSegment 在 G6 才定义真类型）
 class _Seg:
-    def __init__(self, text: str) -> None:
+    def __init__(
+        self,
+        text: str,
+        fg: object = None,
+        bg: object = None,
+        styles: frozenset = frozenset(),
+    ) -> None:
         self.text = text
+        self.fg = fg
+        self.bg = bg
+        self.styles = styles
 
 
 def _seg(text: str) -> _Seg:
     return _Seg(text)
+
+
+def _styled(text: str, fg: object = None, bg: object = None,
+            styles: frozenset = frozenset()) -> _Seg:
+    return _Seg(text, fg=fg, bg=bg, styles=styles)
+
 
 
 # =====================================================================
@@ -289,6 +310,154 @@ class TestAssertScreenPlainMatches:
         )
         with pytest.raises(AssertionError, match="2026-09-02 07:35:37"):
             adt.assert_screen_plain_matches(cap)
+
+
+# =====================================================================
+# G5：ScreenCapture 断言②-⑤ —— 宽度 / 行数 / 光标界内 / 段合法
+# =====================================================================
+
+class TestCellWidth:
+    def test_ascii_width_one(self) -> None:
+        assert adt.cell_width("hello") == 5
+
+    def test_cjk_width_two(self) -> None:
+        assert adt.cell_width("中文") == 4
+        assert adt.cell_width("a中b") == 4
+
+    def test_wide_and_fullwidth(self) -> None:
+        assert adt.cell_width("Ａ") == 2   # fullwidth A
+        assert adt.cell_width("ｱ") == 1    # halfwidth katakana 占 1 格
+        assert adt.cell_width("あ") == 2
+
+    def test_control_and_combining_zero_width(self) -> None:
+        assert adt.cell_width("\x00\x1b") == 0
+        assert adt.cell_width("e\u0301") == 1  # 组合重音不占格
+
+    def test_empty_row_zero(self) -> None:
+        assert adt.cell_width("") == 0
+
+    def test_space_width_one(self) -> None:
+        assert adt.cell_width("a b") == 3
+
+
+class TestAssertScreenRowWidthsFit:
+    def _cap(self, text: str, width: int) -> adt.ScreenCapture:
+        return adt.ScreenCapture(screen_data=text, terminal_text_content=[_seg(text)],
+                                 screen_width=width, screen_height=1)
+
+    def test_pass_when_fits_exactly(self) -> None:
+        adt.assert_screen_row_widths_fit(self._cap("ab", 2))
+
+    def test_pass_empty_row_with_width(self) -> None:
+        adt.assert_screen_row_widths_fit(self._cap("", 1))
+
+    def test_fail_overflow_ascii(self) -> None:
+        with pytest.raises(AssertionError, match="screen_width"):
+            adt.assert_screen_row_widths_fit(self._cap("abc", 2))
+
+    def test_fail_cjk_double_counted(self) -> None:
+        with pytest.raises(AssertionError, match="width 4"):
+            adt.assert_screen_row_widths_fit(self._cap("中文", 3))
+
+    def test_fail_one_bad_row_among_many(self) -> None:
+        cap = adt.ScreenCapture(
+            screen_data="ab\ncd\nxyz",
+            terminal_text_content=[_seg("ab\ncd\nxyz")],
+            screen_width=2,
+            screen_height=3,
+        )
+        with pytest.raises(AssertionError):
+            adt.assert_screen_row_widths_fit(cap)
+
+
+class TestAssertScreenRowsMatchHeight:
+    def test_pass_single_row(self) -> None:
+        cap = adt.ScreenCapture(screen_data="ab", screen_height=1)
+        adt.assert_screen_rows_match_height(cap)
+
+    def test_pass_three_rows(self) -> None:
+        cap = adt.ScreenCapture(screen_data="a\nb\nc", screen_height=3)
+        adt.assert_screen_rows_match_height(cap)
+
+    def test_pass_blank_rows_kept(self) -> None:
+        # 空行是 ""，split 后保留 → 行数仍等于 height
+        cap = adt.ScreenCapture(screen_data="a\n\nb", screen_height=3)
+        adt.assert_screen_rows_match_height(cap)
+
+    def test_fail_height_mismatch(self) -> None:
+        cap = adt.ScreenCapture(screen_data="a\nb", screen_height=3)
+        with pytest.raises(AssertionError, match="rows 2 != screen_height 3"):
+            adt.assert_screen_rows_match_height(cap)
+
+    def test_fail_screen_data_trailing_newline_adds_row(self) -> None:
+        # 尾随 \n 会 split 出空行 → 行数 +1（这正是 ADT "无尾随空行" 的约束动机）
+        cap = adt.ScreenCapture(screen_data="a\nb\n", screen_height=2)
+        with pytest.raises(AssertionError):
+            adt.assert_screen_rows_match_height(cap)
+
+
+class TestAssertCursorInBounds:
+    def test_pass_top_left(self) -> None:
+        cap = adt.ScreenCapture(cursor_x=0, cursor_y=0, screen_width=80, screen_height=24)
+        adt.assert_cursor_in_bounds(cap)
+
+    def test_pass_bottom_right_corner(self) -> None:
+        cap = adt.ScreenCapture(cursor_x=79, cursor_y=23, screen_width=80, screen_height=24)
+        adt.assert_cursor_in_bounds(cap)
+
+    def test_fail_x_equal_width(self) -> None:
+        cap = adt.ScreenCapture(cursor_x=80, cursor_y=0, screen_width=80, screen_height=24)
+        with pytest.raises(AssertionError, match="out of bounds"):
+            adt.assert_cursor_in_bounds(cap)
+
+    def test_fail_y_equal_height(self) -> None:
+        cap = adt.ScreenCapture(cursor_x=0, cursor_y=24, screen_width=80, screen_height=24)
+        with pytest.raises(AssertionError):
+            adt.assert_cursor_in_bounds(cap)
+
+    def test_fail_negative(self) -> None:
+        cap = adt.ScreenCapture(cursor_x=-1, cursor_y=0, screen_width=80, screen_height=24)
+        with pytest.raises(AssertionError):
+            adt.assert_cursor_in_bounds(cap)
+
+    def test_fail_zero_sized_screen_never_holds_cursor(self) -> None:
+        cap = adt.ScreenCapture(screen_width=0, screen_height=0)
+        with pytest.raises(AssertionError):
+            adt.assert_cursor_in_bounds(cap)
+
+
+class TestAssertSegmentsValid:
+    def test_pass_single_segment(self) -> None:
+        cap = adt.ScreenCapture(terminal_text_content=[_seg("a")])
+        adt.assert_segments_valid(cap)
+
+    def test_pass_adjacent_different_attrs(self) -> None:
+        segs = [_styled("a", fg="red"), _styled("b", fg="blue")]
+        adt.assert_segments_valid(adt.ScreenCapture(terminal_text_content=segs))
+
+    def test_pass_adjacent_diff_in_styles_only(self) -> None:
+        segs = [_styled("a", styles=frozenset({"bold"})),
+                _styled("b", styles=frozenset({"dim"}))]
+        adt.assert_segments_valid(adt.ScreenCapture(terminal_text_content=segs))
+
+    def test_pass_empty_segment_list(self) -> None:
+        adt.assert_segments_valid(adt.ScreenCapture(terminal_text_content=[]))
+
+    def test_fail_empty_text_segment(self) -> None:
+        segs = [_seg("a"), _seg("")]
+        with pytest.raises(AssertionError, match="empty segment at index 1"):
+            adt.assert_segments_valid(adt.ScreenCapture(terminal_text_content=segs))
+
+    def test_fail_adjacent_same_attrs(self) -> None:
+        segs = [_styled("a", fg="red"), _styled("b", fg="red")]
+        with pytest.raises(AssertionError, match="share attrs"):
+            adt.assert_segments_valid(adt.ScreenCapture(terminal_text_content=segs))
+
+    def test_fail_adjacent_same_attrs_bg_ignored_none_vs_none(self) -> None:
+        segs = [_styled("a"), _styled("b")]
+        with pytest.raises(AssertionError):
+            adt.assert_segments_valid(adt.ScreenCapture(terminal_text_content=segs))
+
 
 
 

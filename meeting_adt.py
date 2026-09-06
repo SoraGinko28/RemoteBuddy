@@ -139,6 +139,93 @@ def assert_screen_plain_matches(capture: ScreenCapture) -> None:
         )
 
 
+# =====================================================================
+# G5：ScreenCapture 断言②-⑤（宽度 / 行数 / 光标界内 / 段合法）
+# =====================================================================
+
+import unicodedata as _ucd  # noqa: E402
+import wcwidth as _wc  # noqa: E402
+
+
+def _char_cell_width(ch: str) -> int:
+    """单字符占格数：CJK(W/F)=2；控制符/零宽=0；其余=1。"""
+    if _ucd.category(ch) in ("Cc", "Cf", "Mn", "Me", "Zl", "Zp", "Cs"):
+        return 0
+    w = _wc.wcwidth(ch)
+    return w if w > 0 else 1 if w == 1 else 0
+
+
+def cell_width(row: str) -> int:
+    """终端显示宽度（格）。"""
+    return sum(_char_cell_width(ch) for ch in row)
+
+
+def seg_attrs(segment: "TerminalTextSegment") -> tuple:
+    """ADT Appendix：seg_attrs(seg) := (seg.fg, seg.bg, frozenset(seg.styles))"""
+    return (segment.fg, segment.bg, frozenset(segment.styles))
+
+
+def assert_screen_row_widths_fit(capture: ScreenCapture) -> None:
+    """Assert[{ all(cell_width(r) <= $screen_width
+                     for r in frame_rows(concat_text_field_of_list($terminal_text_content))) }]"""
+    text = concat_text_field_of_list(capture.terminal_text_content)
+    for row in frame_rows(text):
+        if cell_width(row) > capture.screen_width:
+            raise AssertionError(
+                f"row {row!r} (width {cell_width(row)}) exceeds screen_width "
+                f"{capture.screen_width} @ {capture.captured_at}"
+            )
+
+
+def assert_screen_rows_match_height(capture: ScreenCapture) -> None:
+    """Assert[{ len(frame_rows($screen_data)) == $screen_height }]"""
+    rows = len(frame_rows(capture.screen_data))
+    if rows != capture.screen_height:
+        raise AssertionError(
+            f"screen_data rows {rows} != screen_height {capture.screen_height} "
+            f"@ {capture.captured_at}"
+        )
+
+
+def assert_cursor_in_bounds(capture: ScreenCapture) -> None:
+    """Assert[{ 0 <= $cursor_y < $screen_height and 0 <= $cursor_x < $screen_width }]"""
+    if not (0 <= capture.cursor_y < capture.screen_height
+            and 0 <= capture.cursor_x < capture.screen_width):
+        raise AssertionError(
+            f"cursor ({capture.cursor_x},{capture.cursor_y}) out of bounds "
+            f"({capture.screen_width}x{capture.screen_height}) @ {capture.captured_at}"
+        )
+
+
+def assert_segments_valid(capture: ScreenCapture) -> None:
+    """段文本非空，且相邻段属性不同。
+
+    Assert[{ all(len(seg.text) > 0 for seg in $terminal_text_content) }]
+    Assert[{ ∀ i: seg_attrs($terminal_text_content[i])
+                  != seg_attrs($terminal_text_content[i + 1]) }]
+    """
+    segs = capture.terminal_text_content
+    for idx, seg in enumerate(segs):
+        if not seg.text:
+            raise AssertionError(f"empty segment at index {idx} @ {capture.captured_at}")
+        if idx > 0 and seg_attrs(seg) == seg_attrs(segs[idx - 1]):
+            raise AssertionError(
+                f"adjacent segments {idx - 1}/{idx} share attrs {seg_attrs(seg)} "
+                f"@ {capture.captured_at}"
+            )
+
+
+__all__ += [
+    "cell_width",
+    "seg_attrs",
+    "assert_screen_row_widths_fit",
+    "assert_screen_rows_match_height",
+    "assert_cursor_in_bounds",
+    "assert_segments_valid",
+]
+
+
+
 __all__ += [
     "concat_text_field_of_list",
     "frame_rows",
