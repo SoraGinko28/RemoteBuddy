@@ -1040,6 +1040,25 @@ class MeetingWebService:
             self.active_backends[meeting_id] = client
             worker.start()
 
+    def _summon_reviewer_after_idle(self, meeting_id: str, agent_name: str) -> None:
+        """Parked generator got interrupted: summon the reviewer once its
+        worker has actually exited, so the single-writer rule still holds."""
+
+        def wait_then_summon() -> None:
+            deadline = time.monotonic() + 120.0
+            while time.monotonic() < deadline:
+                if not self._job_alive(meeting_id) and not self._reviewer_busy(meeting_id):
+                    try:
+                        self._start_reviewer(meeting_id, agent_name)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return
+                time.sleep(0.2)
+
+        thread = threading.Thread(target=wait_then_summon, daemon=True,
+                                  name=f"summon-{agent_name}-{meeting_id}")
+        thread.start()
+
     def _reviewer_busy(self, meeting_id: str) -> bool:
         with self.lock:
             for name in list(self.reviewer_jobs.get(meeting_id, {})):
@@ -1286,15 +1305,30 @@ class MeetingWebService:
                 return self._resume_agent_from_human(meeting_id)
             # 2b routing: @mention summons the named non-generator member;
             # the generator is NOT woken for that message (single-writer rule).
+            # If the generator is mid-turn, interrupt it and summon the
+            # reviewer once it has parked, so the @mention is never answered
+            # by the wrong speaker.
             mentioned = mentioned_agent_names(message, store.meeting.effective_role_map)
             reviewer_targets = [n for n in mentioned if store.meeting.role_of(n) != "generator"]
             mentions_generator = any(store.meeting.role_of(n) == "generator" for n in mentioned)
             if reviewer_targets and not mentions_generator and delivery != "interrupt":
-                if (
-                    store.meeting.status not in TERMINAL_STATUSES
-                    and store.meeting.control_owner != "human"
-                ):
-                    self._start_reviewer(meeting_id, reviewer_targets[0])
+                if store.meeting.status not in TERMINAL_STATUSES and store.meeting.control_owner != "human":
+                    if self._job_alive(meeting_id) and not (
+                        store.meeting.phase == "waiting_for_user"
+                        and store.meeting.control_owner == "none"
+                        and store.meeting.pending_action_id is None
+                    ):
+                        self._interrupt_backend(meeting_id)
+                        store.bump_request_generation(
+                            failure=None,
+                            cycle_action_count=0,
+                            cycle_started_at=utc_now(),
+                        )
+                        store.update(phase="waiting_for_user", control_owner="none",
+                                     pending_action_id=None)
+                        self._summon_reviewer_after_idle(meeting_id, reviewer_targets[0])
+                    else:
+                        self._start_reviewer(meeting_id, reviewer_targets[0])
                     return store
             if delivery == "interrupt" or wake_agent:
                 store.bump_request_generation(
