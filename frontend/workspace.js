@@ -12,7 +12,7 @@ const HUMAN_TAKEOVER_FRAME_MS = 200;
 
 const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
-  "welcome", "session-view", "meeting-title", "agent-state", "agent-state-text", "status-badge", "owner-badge",
+  "welcome", "session-view", "meeting-title", "agent-states", "status-badge", "owner-badge",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
@@ -107,6 +107,53 @@ const AGENT_STATE_PHASES = {
 
 function agentStateForPhase(phase) {
   return AGENT_STATE_PHASES[phase] || "idle";
+}
+
+// Per-member state for the header chips. The generator follows terminal
+// ownership; every other member (discriminator/reviewer) is "active" while
+// the newest thinking/acting band in the timeline belongs to it.
+const IDLE_PHASE_BOUNDARY = new Set([
+  "created", "waiting_for_user", "human_control", "completion_proposed", "cycle_timeout", "api_error",
+]);
+
+function memberState(actor, meeting) {
+  const terminal = ["completed", "failed", "interrupted"].includes(meeting.status);
+  if (terminal) return "idle";
+  if (meeting.control_owner === actor) return agentStateForPhase(meeting.phase);
+  const timeline = state.timeline || [];
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index];
+    const phase = event?.phase;
+    if (event?.actor === actor) {
+      if (phase === "agent_thinking" || phase === "agent_acting") {
+        return phase === "agent_acting" ? "acting" : "thinking";
+      }
+      if (IDLE_PHASE_BOUNDARY.has(phase)) return "idle";
+      continue;
+    }
+    if (IDLE_PHASE_BOUNDARY.has(phase)) return "idle";
+    if (event?.actor === "harness" || !phase) continue;
+  }
+  return "idle";
+}
+
+function renderMemberStates(meeting) {
+  if (!el.agent_states) return;
+  const roles = (meeting.agent_name2role && Object.keys(meeting.agent_name2role).length)
+    ? meeting.agent_name2role
+    : { "agent": "generator" };
+  el.agent_states.replaceChildren();
+  for (const actor of Object.keys(roles)) {
+    const stateName = memberState(actor, meeting);
+    const chip = node("span", `agent-state ${stateName}`);
+    const dot = document.createElement("span");
+    dot.className = "agent-state-dot";
+    dot.setAttribute("aria-hidden", "true");
+    chip.append(dot, document.createTextNode(
+      `${actor} · ${labels.agentState[stateName] || "待命"}`));
+    el.agent_states.append(chip);
+  }
+  el.agent_states.hidden = false;
 }
 
 function eventDelay(event, queueLength = 0) {
@@ -335,11 +382,8 @@ function renderHeader() {
   if (state.pointerSelecting || hasLiveSelection()) return;
   const meeting = state.snapshot.meeting;
   el.meeting_title.textContent = meeting.meeting_id;
-  if (el.agent_state) {
-    const agentState = agentStateForPhase(meeting.phase);
-    el.agent_state_text.textContent = `${agentName(meeting)} · ${labels.agentState[agentState]}`;
-    el.agent_state.className = `agent-state ${agentState}`;
-    el.agent_state.hidden = false;
+  if (el.agent_states) {
+    renderMemberStates(meeting);
   }
   if (el.status_badge) {
     el.status_badge.textContent = labels.status[meeting.status] || meeting.status;

@@ -372,3 +372,7 @@ dialog::backdrop { background: rgb(20 24 22 / .45); }
   .terminal-meta { display: none; }
   .viewport-mode { margin-left: 0; }
 }
+
+/* Per-member status chips in the session header (multi-agent). */
+.agent-states { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; justify-content: flex-end; }
+.header-actions { flex-wrap: wrap; }
