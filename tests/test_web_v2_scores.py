@@ -23,7 +23,7 @@ class WebV2ScoreTest(unittest.TestCase):
             "test-model",
         )
         self.screen = self.store.append_screen("终端 😀通过", "bash", str(self.store.workspace_path))
-        self.agent_chat = self.store.append_chat("agent", "已检查 😀通过", "progress")
+        self.agent_chat = self.store.append_chat("actor", "已检查 😀通过", "progress")
         self.service = MeetingWebService(
             project_root=self.root,
             skill_path=self.skill,

@@ -45,7 +45,11 @@ VALID_OWNERS = {"agent", "human", "none"}
 # this invariant; additional agents join as discriminators).
 VALID_AGENT_ROLES = {"generator", "active_discriminator", "passive_discriminator"}
 HUMAN_USER = "human"
-DEFAULT_AGENT_NAME = "agent"
+# New meetings default their single generator to this readable name.
+DEFAULT_AGENT_NAME = "actor"
+# Pre-identity manifests recorded the lone agent as "agent"; loading them
+# keeps that exact name so historical records stay coherent.
+LEGACY_AGENT_NAME = "agent"
 VALID_EVENT_KINDS = {"chat", "screen", "score", "action", "control", "state", "error"}
 VALID_SCORE_TAGS = {"competent", "incompetent"}
 VALID_AGENT_BACKENDS = {"responses", "codex-app-server", "claude-code", "trae-agent"}
@@ -414,9 +418,9 @@ class MeetingStore:
         if meeting.meeting_id != meeting_id:
             raise MeetingError("meeting manifest id mismatch")
         # Legacy manifests have no role map: fall back to the single-agent
-        # default so pre-identity meetings keep their exact behavior.
+        # legacy name so pre-identity meetings keep their exact behavior.
         if not meeting.agent_name2role:
-            meeting.agent_name2role = {DEFAULT_AGENT_NAME: "generator"}
+            meeting.agent_name2role = {LEGACY_AGENT_NAME: "generator"}
         else:
             meeting.agent_name2role = normalize_agent_role_map(meeting.agent_name2role)
         store = cls(run_dir, meeting)

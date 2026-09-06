@@ -70,8 +70,8 @@ class MeetingStoreV2Test(unittest.TestCase):
             metadata={"planned_delay_ms": 120, "action_id": "action-1"},
         )
         duplicate = self.store.append_screen("screen A", "vim", str(self.store.workspace_path))
-        self.store.append_event("action", "agent", "agent_acting", content="not chat")
-        self.store.append_chat("agent", "I updated the note.", "final")
+        self.store.append_event("action", "actor", "agent_acting", content="not chat")
+        self.store.append_chat("actor", "I updated the note.", "final")
 
         self.assertIsNotNone(first)
         self.assertIsNone(duplicate)
@@ -138,12 +138,12 @@ class MeetingStoreV2Test(unittest.TestCase):
         first = MeetingStore.load(self.root, "workspace-demo")
         second = MeetingStore.load(self.root, "workspace-demo")
         first.update(status="running", phase="agent_thinking")
-        second.update(control_owner="agent")
+        second.update(control_owner="actor")
 
         loaded = MeetingStore.load(self.root, "workspace-demo")
         self.assertEqual("running", loaded.meeting.status)
         self.assertEqual("agent_thinking", loaded.meeting.phase)
-        self.assertEqual("agent", loaded.meeting.control_owner)
+        self.assertEqual("actor", loaded.meeting.control_owner)
 
     def test_atomic_manifest_failure_preserves_previous_file(self):
         before = self.store.manifest_path.read_text(encoding="utf-8")
