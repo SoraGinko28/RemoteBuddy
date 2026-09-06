@@ -37,6 +37,10 @@ _RELEASED_PHASES = {"agent_thinking", "waiting_for_user"}
 # 运营噪音 kind：不映射进五流
 _NOISE_KINDS = {"action", "state", "error"}
 
+# 非终端占有者 actor：harness 是 RemoteBuddy 自身，不构成 terminal_control 记录
+# （其 acquired 只是会话层接管，不改变「谁握着 tmux」的语义）
+_NON_OWNER_ACTORS = {"harness"}
+
 
 @dataclass
 class LoadSummary:
@@ -90,6 +94,24 @@ def _chat_message(event: dict) -> Optional[adt.ChatMessage]:
     )
 
 
+def _normalize_frame(content: str, height: int) -> str:
+    """把 journal 里保存的屏幕文本归一化为 ADT screen_data。
+
+    规则（ADT：screen_data 逐行右去尾空格、无尾随空行、行数==height）：
+      1. 每行 rstrip(' ')；
+      2. 末尾整行空行剥掉（无尾随空行）；
+      3. 不足 height 行时空行补足 —— 终端满帧是 height 行，
+         journal 常省略底部空行，投影为满帧记录。
+    返回行数恰为 height 的文本。
+    """
+    rows = [r.rstrip(" ") for r in content.split("\n")]
+    while rows and rows[-1] == "":
+        rows.pop()
+    if len(rows) < height:
+        rows.extend([""] * (height - len(rows)))
+    return "\n".join(rows[:height])
+
+
 def _screen_capture(event: dict) -> Optional[adt.ScreenCapture]:
     content = event.get("content")
     if not isinstance(content, str) or not content:
@@ -98,13 +120,16 @@ def _screen_capture(event: dict) -> Optional[adt.ScreenCapture]:
     if time is None:
         return None
     data = event.get("data") or {}
+    height = int(data.get("pane_height", 0) or 0)
+    width = int(data.get("pane_width", 0) or 0)
+    screen_data = _normalize_frame(content, height) if height > 0 else content
     return adt.ScreenCapture(
-        screen_data=content,
-        terminal_text_content=[adt.TerminalTextSegment(text=content)],
+        screen_data=screen_data,
+        terminal_text_content=[adt.TerminalTextSegment(text=screen_data)],
         cursor_x=int(data.get("cursor_x", 0) or 0),
         cursor_y=int(data.get("cursor_y", 0) or 0),
-        screen_width=int(data.get("pane_width", 0) or 0),
-        screen_height=int(data.get("pane_height", 0) or 0),
+        screen_width=width,
+        screen_height=height,
         captured_at=time,
     )
 
@@ -124,11 +149,13 @@ def _terminal_controls(events: list[dict]) -> "list[adt.TerminalControl]":
         if time is None:
             continue
         actor = event.get("actor")
+        if actor in _NON_OWNER_ACTORS:
+            continue  # harness 非终端占有者，不落记录
         user_name = adt.HUMAN_USER_NAME if actor == "human" else actor or ""
         if not user_name:
             continue
         controls.append(adt.TerminalControl(user_name=user_name, start_time=time))
-    controls.sort(key=lambda c: c.start_time or adt._dt.datetime.min)
+    controls.sort(key=lambda c: c.start_time or _dt.datetime.min)
     return controls
 
 
