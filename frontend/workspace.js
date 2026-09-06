@@ -319,8 +319,20 @@ function renderMeetingList() {
   }
 }
 
+// A live DOM selection must never be clobbered by a periodic redraw: the
+// 1s header tick and the event poll both rebuild text nodes, which would
+// collapse whatever the user is trying to select/copy (e.g. a meeting id
+// in the top bar). While a selection exists (or a pointer drag is in
+// progress) auto-redraws stand down; they resume on the next tick after
+// the selection is cleared.
+function hasLiveSelection() {
+  const selection = window.getSelection && window.getSelection();
+  return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
+}
+
 function renderHeader() {
   if (!state.snapshot) return;
+  if (state.pointerSelecting || hasLiveSelection()) return;
   const meeting = state.snapshot.meeting;
   el.meeting_title.textContent = meeting.meeting_id;
   if (el.agent_state) {
@@ -2460,6 +2472,7 @@ async function refreshSelected() {
   // Re-rendering replaces the chat/terminal DOM and would collapse an
   // in-progress text selection — the app's core scoring interaction.
   if (state.pointerSelecting || state.pendingSelection || state.evaluationSelection) return;
+  if (hasLiveSelection()) return; // 用户正在选中/复制：本 tick 放弃重绘
   renderAll();
 }
 
