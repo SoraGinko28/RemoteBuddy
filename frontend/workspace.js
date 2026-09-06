@@ -116,10 +116,41 @@ const IDLE_PHASE_BOUNDARY = new Set([
   "created", "waiting_for_user", "human_control", "completion_proposed", "cycle_timeout", "api_error",
 ]);
 
+// If a terminal owner claims to be thinking/acting but authored no event for
+// this long, the worker is likely orphaned (state parked after a crash);
+// stop reporting a live turn.
+const STALE_BAND_MS = 180_000;
+
+function latestBandTime(actor) {
+  const timeline = state.timeline || [];
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index];
+    const phase = event?.phase;
+    if (event?.actor === actor) {
+      if (phase === "agent_thinking" || phase === "agent_acting") {
+        const stamp = Date.parse(event.captured_at || "");
+        return Number.isFinite(stamp) ? stamp : 0;
+      }
+      if (IDLE_PHASE_BOUNDARY.has(phase)) return 0;
+      continue;
+    }
+    if (IDLE_PHASE_BOUNDARY.has(phase)) return 0;
+    if (event?.actor === "harness" || !phase) continue;
+  }
+  return 0;
+}
+
 function memberState(actor, meeting) {
   const terminal = ["completed", "failed", "interrupted"].includes(meeting.status);
   if (terminal) return "idle";
-  if (meeting.control_owner === actor) return agentStateForPhase(meeting.phase);
+  if (meeting.control_owner === actor) {
+    const stateName = agentStateForPhase(meeting.phase);
+    if ((stateName === "thinking" || stateName === "acting")
+        && Date.now() - latestBandTime(actor) > STALE_BAND_MS) {
+      return "error";  // parked/orphaned: no live turn for minutes
+    }
+    return stateName;
+  }
   // A non-owner member is busy only while nobody owns the terminal (reviewer
   // turns run with control_owner "none") AND the meeting is mid-turn AND the
   // newest thinking/acting band in the timeline belongs to that member.
