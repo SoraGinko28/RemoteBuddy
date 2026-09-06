@@ -99,6 +99,56 @@ class ScreenCapture:
     captured_at: Optional[_dt.datetime] = None
 
 
+# =====================================================================
+# G4：ScreenCapture 断言①—— plain_of(segments) == screen_data
+# =====================================================================
+#
+# ADT Appendix helper（照抄 MEETING_ADT.md，名字不改）：
+#   frame_rows(s) := s.split('\n')
+#   row_plain(row) := row.rstrip(' ')
+#   concat_text_field_of_list(list) := ''.join(seg.text for seg in list)
+#   plain_of(list) := '\n'.join(row_plain(r)
+#                               for r in frame_rows(concat_text_field_of_list(list)))
+#
+# 断言函数统一签名：接收记录，违规抛 AssertionError（带 captured_at 定位），
+# 通过则静默返回 None——供 G13 校验器收集违规清单。
+
+def concat_text_field_of_list(segments: "list[TerminalTextSegment]") -> str:
+    return "".join(seg.text for seg in segments)
+
+
+def frame_rows(text: str) -> "list[str]":
+    return text.split("\n")
+
+
+def row_plain(row: str) -> str:
+    return row.rstrip(" ")
+
+
+def plain_of(segments: "list[TerminalTextSegment]") -> str:
+    return "\n".join(row_plain(r) for r in frame_rows(concat_text_field_of_list(segments)))
+
+
+def assert_screen_plain_matches(capture: ScreenCapture) -> None:
+    """Assert[{ plain_of($terminal_text_content) == $screen_data }]"""
+    if plain_of(capture.terminal_text_content) != capture.screen_data:
+        raise AssertionError(
+            f"plain_of(terminal_text_content) != screen_data @ {capture.captured_at}: "
+            f"segments => {plain_of(capture.terminal_text_content)!r}, "
+            f"screen_data => {capture.screen_data!r}"
+        )
+
+
+__all__ += [
+    "concat_text_field_of_list",
+    "frame_rows",
+    "row_plain",
+    "plain_of",
+    "assert_screen_plain_matches",
+]
+
+
+
 __all__ += [
     "ScreenCapture",
 ]

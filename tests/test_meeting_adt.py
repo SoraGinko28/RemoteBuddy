@@ -68,6 +68,11 @@ class TestStreamNames:
             "AgentRole",
             "agent_role_from_name",
             "ScreenCapture",
+            "concat_text_field_of_list",
+            "frame_rows",
+            "row_plain",
+            "plain_of",
+            "assert_screen_plain_matches",
         }
 
 
@@ -194,5 +199,96 @@ class _Seg:
 
 def _seg(text: str) -> _Seg:
     return _Seg(text)
+
+
+# =====================================================================
+# G4：ScreenCapture 断言① —— plain_of == screen_data
+# =====================================================================
+
+class TestPlainHelpers:
+    def test_concat_empty(self) -> None:
+        assert adt.concat_text_field_of_list([]) == ""
+
+    def test_concat_single_and_many(self) -> None:
+        assert adt.concat_text_field_of_list([_seg("ab")]) == "ab"
+        assert adt.concat_text_field_of_list([_seg("ab"), _seg("cd")]) == "abcd"
+
+    def test_concat_preserves_newlines_inside_segment(self) -> None:
+        # 单段内可含 \n（跨行背景色不断开）
+        assert adt.concat_text_field_of_list([_seg("a\nb")]) == "a\nb"
+
+    def test_frame_rows_splits_on_newline(self) -> None:
+        assert adt.frame_rows("") == [""]
+        assert adt.frame_rows("ab\nc") == ["ab", "c"]
+        assert adt.frame_rows("ab\nc\n") == ["ab", "c", ""]
+
+    def test_row_plain_strips_only_trailing_spaces(self) -> None:
+        assert adt.row_plain("ab  ") == "ab"
+        assert adt.row_plain("  ab") == "  ab"   # 前导空格保留
+        assert adt.row_plain("  ab  ") == "  ab"
+        assert adt.row_plain("   ") == ""
+        assert adt.row_plain("") == ""
+
+    def test_plain_of_basic(self) -> None:
+        assert adt.plain_of([]) == ""
+        assert adt.plain_of([_seg("hello")]) == "hello"
+
+    def test_plain_of_trims_row_ends_across_segments(self) -> None:
+        assert adt.plain_of([_seg("ab  \nc ")]) == "ab\nc"
+
+    def test_plain_of_segments_across_newline_boundary(self) -> None:
+        # 段1 以空格收尾、段2 以 \n 开头 → 行内合并后该行右去尾空格
+        assert adt.plain_of([_seg("ab  "), _seg("\nc ")]) == "ab\nc"
+
+
+class TestAssertScreenPlainMatches:
+    def test_pass_simple(self) -> None:
+        cap = adt.ScreenCapture(screen_data="hello", terminal_text_content=[_seg("hello")])
+        assert adt.assert_screen_plain_matches(cap) is None
+
+    def test_pass_multirow_multiseg(self) -> None:
+        cap = adt.ScreenCapture(
+            screen_data="ab\nc",
+            terminal_text_content=[_seg("ab"), _seg("\nc")],
+        )
+        adt.assert_screen_plain_matches(cap)
+
+    def test_pass_when_segment_has_trailing_space_trimmed(self) -> None:
+        # screen_data 已右去尾空格：段里有尾空格也须通过
+        cap = adt.ScreenCapture(screen_data="hi", terminal_text_content=[_seg("hi  ")])
+        adt.assert_screen_plain_matches(cap)
+
+    def test_pass_empty_both(self) -> None:
+        adt.assert_screen_plain_matches(adt.ScreenCapture())
+
+    def test_fail_text_differs(self) -> None:
+        cap = adt.ScreenCapture(screen_data="hello", terminal_text_content=[_seg("helo")])
+        with pytest.raises(AssertionError, match="plain_of"):
+            adt.assert_screen_plain_matches(cap)
+
+    def test_fail_missing_newline(self) -> None:
+        cap = adt.ScreenCapture(screen_data="a\nb", terminal_text_content=[_seg("ab")])
+        with pytest.raises(AssertionError):
+            adt.assert_screen_plain_matches(cap)
+
+    def test_fail_empty_segments_but_data_present(self) -> None:
+        cap = adt.ScreenCapture(screen_data="a", terminal_text_content=[])
+        with pytest.raises(AssertionError):
+            adt.assert_screen_plain_matches(cap)
+
+    def test_fail_extra_trailing_newline(self) -> None:
+        # screen_data 无尾随空行：段文本末尾多一个 \n 必须判违规
+        cap = adt.ScreenCapture(screen_data="a", terminal_text_content=[_seg("a\n")])
+        with pytest.raises(AssertionError):
+            adt.assert_screen_plain_matches(cap)
+
+    def test_error_message_carries_timestamp(self) -> None:
+        moment = _datetime(2026, 9, 2, 7, 35, 37, 684000)
+        cap = adt.ScreenCapture(
+            screen_data="a", terminal_text_content=[_seg("b")], captured_at=moment
+        )
+        with pytest.raises(AssertionError, match="2026-09-02 07:35:37"):
+            adt.assert_screen_plain_matches(cap)
+
 
 
