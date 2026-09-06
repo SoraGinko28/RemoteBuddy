@@ -715,6 +715,236 @@ __all__ += [
 ]
 
 
+# =====================================================================
+# G10：Keystroke / TerminalControl（按键流与控制流）
+# =====================================================================
+#
+# KeystrokeStr := Oneof | $text str | $ctrl str | $rest ($millisecond int)
+# Keystroke := DataClass
+#   * $data KeystrokeStr
+#   * $user_name UserName
+#   * $stroke_time datetime
+# TerminalControl := DataClass
+#   * $tmux_window_name str
+#   * $tmux_pane int
+#   * $user_name UserName
+#   * $start_time datetime
+#   * Assert[{ user_name == $human 或 role(user_name)==$generator }]   # terminal_capable
+#   * Appendix[{ owner_at(t) := 含 t 的控制区间的 user_name；区间由 start_time 界定 }]
+#   * Assert[{ ∀ keystroke k：owner_at(k.stroke_time) == k.user_name }]
+#
+# 对照真 journal 的 control 事件（actor/phase/data.status=acquired|released）：
+#   - 现 journal 无 tmux_window_name/pane → 记入 mapping：acquired 即区间起点，
+#     user_name=actor（human→$human）；release 事件只推进区间，不落记录；
+#     tmux 名/格取自 meeting.json（G12 loader 填）。
+#   - 现 journal 无逐键事件 → keystroke 流为空流（同 score 处理）。
+#
+# 落盘 JSON：
+#   KeystrokeStr: {"text": s} | {"ctrl": s} | {"rest": {"millisecond": n}}
+#   Keystroke: {"data": ..., "user_name": u, "stroke_time": iso}
+#   TerminalControl: {"tmux_window_name": w, "tmux_pane": p,
+#                     "user_name": u, "start_time": iso}
+
+@dataclass(frozen=True)
+class TextKey:
+    text: str
+
+
+@dataclass(frozen=True)
+class CtrlKey:
+    ctrl: str
+
+
+@dataclass(frozen=True)
+class RestKey:
+    millisecond: int
+
+
+KeystrokeStr = TextKey | CtrlKey | RestKey
+
+
+@dataclass
+class Keystroke:
+    data: KeystrokeStr
+    user_name: str
+    stroke_time: _dt.datetime
+
+
+@dataclass
+class TerminalControl:
+    tmux_window_name: str = ""
+    tmux_pane: int = 0
+    user_name: str = ""
+    start_time: Optional[_dt.datetime] = None
+
+
+@dataclass
+class KeystrokeStreamChunk:
+    stream_name: str = KEYSTROKE_STREAM_NAME
+    chunks: list[Keystroke] = field(default_factory=list)
+
+
+@dataclass
+class TerminalControlStreamChunk:
+    stream_name: str = TERMINAL_CONTROL_STREAM_NAME
+    chunks: list[TerminalControl] = field(default_factory=list)
+
+
+def keystroke_str_to_dict(key: KeystrokeStr) -> dict:
+    if isinstance(key, TextKey):
+        return {"text": key.text}
+    if isinstance(key, CtrlKey):
+        return {"ctrl": key.ctrl}
+    if isinstance(key, RestKey):
+        return {"rest": {"millisecond": key.millisecond}}
+    raise TypeError(f"unknown keystroke str: {type(key).__name__}")
+
+
+def keystroke_str_from_dict(payload: dict) -> KeystrokeStr:
+    if "text" in payload:
+        return TextKey(text=payload["text"])
+    if "ctrl" in payload:
+        return CtrlKey(ctrl=payload["ctrl"])
+    if "rest" in payload:
+        return RestKey(millisecond=payload["rest"]["millisecond"])
+    raise ValueError(f"unknown keystroke str json: {payload!r}")
+
+
+def keystroke_to_dict(key: Keystroke) -> dict:
+    return {
+        "data": keystroke_str_to_dict(key.data),
+        "user_name": key.user_name,
+        "stroke_time": _iso_format(key.stroke_time),
+    }
+
+
+def keystroke_from_dict(payload: dict) -> Keystroke:
+    return Keystroke(
+        data=keystroke_str_from_dict(payload["data"]),
+        user_name=payload["user_name"],
+        stroke_time=_iso_parse(payload["stroke_time"]),
+    )
+
+
+def terminal_control_to_dict(control: TerminalControl) -> dict:
+    return {
+        "tmux_window_name": control.tmux_window_name,
+        "tmux_pane": control.tmux_pane,
+        "user_name": control.user_name,
+        "start_time": _iso_format(control.start_time) if control.start_time else None,
+    }
+
+
+def terminal_control_from_dict(payload: dict) -> TerminalControl:
+    start = payload.get("start_time")
+    return TerminalControl(
+        tmux_window_name=payload.get("tmux_window_name", ""),
+        tmux_pane=payload.get("tmux_pane", 0),
+        user_name=payload.get("user_name", ""),
+        start_time=_iso_parse(start) if isinstance(start, str) else None,
+    )
+
+
+def keystroke_stream_chunk_to_dict(chunk: KeystrokeStreamChunk) -> dict:
+    return {
+        "stream_name": chunk.stream_name,
+        "chunks": [keystroke_to_dict(k) for k in chunk.chunks],
+    }
+
+
+def keystroke_stream_chunk_from_dict(payload: dict) -> KeystrokeStreamChunk:
+    if payload.get("stream_name") != KEYSTROKE_STREAM_NAME:
+        raise ValueError(f"not a keystroke chunk: {payload.get('stream_name')!r}")
+    return KeystrokeStreamChunk(
+        stream_name=payload["stream_name"],
+        chunks=[keystroke_from_dict(k) for k in payload["chunks"]],
+    )
+
+
+def terminal_control_stream_chunk_to_dict(chunk: TerminalControlStreamChunk) -> dict:
+    return {
+        "stream_name": chunk.stream_name,
+        "chunks": [terminal_control_to_dict(c) for c in chunk.chunks],
+    }
+
+
+def terminal_control_stream_chunk_from_dict(payload: dict) -> TerminalControlStreamChunk:
+    if payload.get("stream_name") != TERMINAL_CONTROL_STREAM_NAME:
+        raise ValueError(f"not a terminal_control chunk: {payload.get('stream_name')!r}")
+    return TerminalControlStreamChunk(
+        stream_name=payload["stream_name"],
+        chunks=[terminal_control_from_dict(c) for c in payload["chunks"]],
+    )
+
+
+def owner_at(moment: _dt.datetime,
+             controls: "list[TerminalControl]") -> Optional[str]:
+    """Appendix owner_at(t)：最后一个 start_time <= t 的区间的 user_name；
+    区间按 start_time 排，半开 [start, next_start)；无区间覆盖返回 None。"""
+    owner: Optional[str] = None
+    for control in sorted(controls, key=lambda c: c.start_time
+                          if c.start_time is not None else _dt.datetime.min):
+        if control.start_time is not None and control.start_time <= moment:
+            owner = control.user_name
+        else:
+            break
+    return owner
+
+
+def terminal_capable(user_name: str, role_of: object) -> bool:
+    """terminal_capable := { $human() } ∪ { a | role(a)==$generator }"""
+    if is_human(user_name):
+        return True
+    role = role_of(user_name) if callable(role_of) else None
+    return role == AgentRole.GENERATOR
+
+
+def assert_terminal_control_capable(control: TerminalControl, role_of: object) -> None:
+    """Assert[{ user_name == $human 或 role==$generator }]"""
+    if not terminal_capable(control.user_name, role_of):
+        raise AssertionError(
+            f"terminal_control owner {control.user_name!r} not terminal_capable "
+            f"@ {control.start_time}"
+        )
+
+
+def assert_keystroke_owner_matches(keystroke: Keystroke,
+                                   controls: "list[TerminalControl]") -> None:
+    """Assert[{ ∀ k：owner_at(k.stroke_time) == k.user_name }]"""
+    owner = owner_at(keystroke.stroke_time, controls)
+    if owner != keystroke.user_name:
+        raise AssertionError(
+            f"keystroke owner {keystroke.user_name!r} != owner_at {owner!r} "
+            f"@ {keystroke.stroke_time}"
+        )
+
+
+__all__ += [
+    "TextKey",
+    "CtrlKey",
+    "RestKey",
+    "Keystroke",
+    "TerminalControl",
+    "KeystrokeStreamChunk",
+    "TerminalControlStreamChunk",
+    "keystroke_str_to_dict",
+    "keystroke_str_from_dict",
+    "keystroke_to_dict",
+    "keystroke_from_dict",
+    "terminal_control_to_dict",
+    "terminal_control_from_dict",
+    "keystroke_stream_chunk_to_dict",
+    "keystroke_stream_chunk_from_dict",
+    "terminal_control_stream_chunk_to_dict",
+    "terminal_control_stream_chunk_from_dict",
+    "owner_at",
+    "terminal_capable",
+    "assert_terminal_control_capable",
+    "assert_keystroke_owner_matches",
+]
+
+
+
 
 
 __all__ += [

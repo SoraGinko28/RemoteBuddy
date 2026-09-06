@@ -120,6 +120,27 @@ class TestStreamNames:
             "score_stream_chunk_from_dict",
             "score_summon_chained",
             "assert_score_summon_chained",
+            "TextKey",
+            "CtrlKey",
+            "RestKey",
+            "Keystroke",
+            "TerminalControl",
+            "KeystrokeStreamChunk",
+            "TerminalControlStreamChunk",
+            "keystroke_str_to_dict",
+            "keystroke_str_from_dict",
+            "keystroke_to_dict",
+            "keystroke_from_dict",
+            "terminal_control_to_dict",
+            "terminal_control_from_dict",
+            "keystroke_stream_chunk_to_dict",
+            "keystroke_stream_chunk_from_dict",
+            "terminal_control_stream_chunk_to_dict",
+            "terminal_control_stream_chunk_from_dict",
+            "owner_at",
+            "terminal_capable",
+            "assert_terminal_control_capable",
+            "assert_keystroke_owner_matches",
         }
 
 
@@ -1025,6 +1046,197 @@ class TestSummonChained:
         msg = _score(judge="passive_bot")
         with pytest.raises(AssertionError, match="not summon_chained"):
             adt.assert_score_summon_chained(msg, self._role_of(self._role_map()), None)
+
+
+# =====================================================================
+# G10：Keystroke / TerminalControl（按键流与控制流）
+# =====================================================================
+
+class TestKeystrokeStrCodec:
+    @pytest.mark.parametrize("key,json", [
+        (adt.TextKey("a"), {"text": "a"}),
+        (adt.CtrlKey("^C"), {"ctrl": "^C"}),
+        (adt.RestKey(120), {"rest": {"millisecond": 120}}),
+    ])
+    def test_roundtrip(self, key: adt.KeystrokeStr, json: dict) -> None:
+        assert adt.keystroke_str_to_dict(key) == json
+        assert adt.keystroke_str_from_dict(json) == key
+
+    def test_from_dict_unknown_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown keystroke str"):
+            adt.keystroke_str_from_dict({"key": "x"})
+
+    def test_to_dict_unknown_raises(self) -> None:
+        with pytest.raises(TypeError, match="unknown keystroke str"):
+            adt.keystroke_str_to_dict("a")  # type: ignore[arg-type]
+
+
+class TestKeystrokeCodec:
+    def _key(self) -> adt.Keystroke:
+        return adt.Keystroke(
+            data=adt.TextKey("h"),
+            user_name="agent-1",
+            stroke_time=_datetime(2026, 9, 2, 7, 35, 40, tzinfo=_dt_timezone.utc),
+        )
+
+    def test_roundtrip(self) -> None:
+        assert adt.keystroke_from_dict(adt.keystroke_to_dict(self._key())) == self._key()
+
+    def test_json_shape(self) -> None:
+        payload = adt.keystroke_to_dict(self._key())
+        assert payload == {
+            "data": {"text": "h"},
+            "user_name": "agent-1",
+            "stroke_time": "2026-09-02T07:35:40Z",
+        }
+
+    def test_human_keystroke_roundtrip(self) -> None:
+        key = adt.Keystroke(data=adt.RestKey(50), user_name=adt.HUMAN_USER_NAME,
+                            stroke_time=_dt_now())
+        assert adt.keystroke_from_dict(adt.keystroke_to_dict(key)) == key
+
+
+class TestTerminalControlCodec:
+    def _control(self) -> adt.TerminalControl:
+        return adt.TerminalControl(
+            tmux_window_name="w0",
+            tmux_pane=0,
+            user_name=adt.HUMAN_USER_NAME,
+            start_time=_datetime(2026, 9, 2, 7, 35, 40, tzinfo=_dt_timezone.utc),
+        )
+
+    def test_roundtrip(self) -> None:
+        ctl = self._control()
+        assert adt.terminal_control_from_dict(adt.terminal_control_to_dict(ctl)) == ctl
+
+    def test_json_shape(self) -> None:
+        payload = adt.terminal_control_to_dict(self._control())
+        assert payload["tmux_window_name"] == "w0"
+        assert payload["tmux_pane"] == 0
+        assert payload["user_name"] == "$human"
+
+    def test_empty_start_time_roundtrip(self) -> None:
+        ctl = adt.TerminalControl(user_name="a")
+        assert adt.terminal_control_from_dict(adt.terminal_control_to_dict(ctl)) == ctl
+
+
+class TestChunkCodecs:
+    def test_keystroke_chunk_roundtrip(self) -> None:
+        chunk = adt.KeystrokeStreamChunk(chunks=[
+            adt.Keystroke(data=adt.TextKey("x"), user_name="a", stroke_time=_dt_now()),
+        ])
+        assert adt.keystroke_stream_chunk_from_dict(
+            adt.keystroke_stream_chunk_to_dict(chunk)) == chunk
+
+    def test_keystroke_chunk_empty_stream(self) -> None:
+        chunk = adt.KeystrokeStreamChunk()
+        assert adt.keystroke_stream_chunk_from_dict(
+            adt.keystroke_stream_chunk_to_dict(chunk)) == chunk
+        assert chunk.chunks == []
+
+    def test_terminal_control_chunk_roundtrip(self) -> None:
+        chunk = adt.TerminalControlStreamChunk(chunks=[
+            adt.TerminalControl(user_name="a", start_time=_dt_now()),
+        ])
+        assert adt.terminal_control_stream_chunk_from_dict(
+            adt.terminal_control_stream_chunk_to_dict(chunk)) == chunk
+
+    def test_default_stream_names(self) -> None:
+        assert adt.KeystrokeStreamChunk().stream_name == "keystroke"
+        assert adt.TerminalControlStreamChunk().stream_name == "terminal_control"
+
+    def test_wrong_stream_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="not a keystroke chunk"):
+            adt.keystroke_stream_chunk_from_dict({"stream_name": "chat", "chunks": []})
+        with pytest.raises(ValueError, match="not a terminal_control chunk"):
+            adt.terminal_control_stream_chunk_from_dict(
+                {"stream_name": "chat", "chunks": []})
+
+
+class TestOwnerAt:
+    def _control(self, t: _datetime, user: str) -> adt.TerminalControl:
+        return adt.TerminalControl(user_name=user, start_time=t)
+
+    def test_returns_owner_of_covering_interval(self) -> None:
+        t1 = _datetime(2026, 9, 2, 7, 0, 0, tzinfo=_dt_timezone.utc)
+        t2 = _datetime(2026, 9, 2, 8, 0, 0, tzinfo=_dt_timezone.utc)
+        controls = [self._control(t1, "alice"), self._control(t2, adt.HUMAN_USER_NAME)]
+        mid = _datetime(2026, 9, 2, 7, 30, 0, tzinfo=_dt_timezone.utc)
+        assert adt.owner_at(mid, controls) == "alice"
+        late = _datetime(2026, 9, 2, 8, 30, 0, tzinfo=_dt_timezone.utc)
+        assert adt.owner_at(late, controls) == "$human"
+
+    def test_before_first_interval_returns_none(self) -> None:
+        t1 = _datetime(2026, 9, 2, 7, 0, 0, tzinfo=_dt_timezone.utc)
+        early = _datetime(2026, 9, 2, 6, 0, 0, tzinfo=_dt_timezone.utc)
+        assert adt.owner_at(early, [self._control(t1, "a")]) is None
+
+    def test_exact_start_time_is_included(self) -> None:
+        t1 = _datetime(2026, 9, 2, 7, 0, 0, tzinfo=_dt_timezone.utc)
+        assert adt.owner_at(t1, [self._control(t1, "a")]) == "a"
+
+    def test_no_controls_returns_none(self) -> None:
+        assert adt.owner_at(_dt_now(), []) is None
+
+    def test_unsorted_input_still_works(self) -> None:
+        t1 = _datetime(2026, 9, 2, 7, 0, 0, tzinfo=_dt_timezone.utc)
+        t2 = _datetime(2026, 9, 2, 8, 0, 0, tzinfo=_dt_timezone.utc)
+        controls = [self._control(t2, "b"), self._control(t1, "a")]
+        mid = _datetime(2026, 9, 2, 7, 30, 0, tzinfo=_dt_timezone.utc)
+        assert adt.owner_at(mid, controls) == "a"
+
+
+class TestTerminalCapable:
+    def _role_of(self):
+        return lambda name: {
+            "gen": adt.AgentRole.GENERATOR,
+            "act": adt.AgentRole.ACTIVE_DISCRIMINATOR,
+            "pas": adt.AgentRole.PASSIVE_DISCRIMINATOR,
+        }.get(name)
+
+    def test_human_capable(self) -> None:
+        assert adt.terminal_capable(adt.HUMAN_USER_NAME, self._role_of()) is True
+
+    def test_generator_capable(self) -> None:
+        assert adt.terminal_capable("gen", self._role_of()) is True
+
+    def test_discriminators_not_capable(self) -> None:
+        assert adt.terminal_capable("act", self._role_of()) is False
+        assert adt.terminal_capable("pas", self._role_of()) is False
+
+    def test_unknown_agent_not_capable(self) -> None:
+        assert adt.terminal_capable("stranger", self._role_of()) is False
+
+    def test_assert_passes_and_fails(self) -> None:
+        role_of = self._role_of()
+        adt.assert_terminal_control_capable(
+            adt.TerminalControl(user_name="gen"), role_of)
+        with pytest.raises(AssertionError, match="not terminal_capable"):
+            adt.assert_terminal_control_capable(
+                adt.TerminalControl(user_name="act"), role_of)
+
+
+class TestAssertKeystrokeOwnerMatches:
+    def test_pass_within_interval(self) -> None:
+        t0 = _datetime(2026, 9, 2, 7, 0, 0, tzinfo=_dt_timezone.utc)
+        t1 = _datetime(2026, 9, 2, 7, 0, 5, tzinfo=_dt_timezone.utc)
+        controls = [adt.TerminalControl(user_name="alice", start_time=t0)]
+        key = adt.Keystroke(data=adt.TextKey("x"), user_name="alice", stroke_time=t1)
+        adt.assert_keystroke_owner_matches(key, controls)
+
+    def test_fail_without_interval(self) -> None:
+        key = adt.Keystroke(data=adt.TextKey("x"), user_name="alice",
+                            stroke_time=_dt_now())
+        with pytest.raises(AssertionError, match="owner_at None"):
+            adt.assert_keystroke_owner_matches(key, [])
+
+    def test_fail_owner_mismatch(self) -> None:
+        t0 = _datetime(2026, 9, 2, 7, 0, 0, tzinfo=_dt_timezone.utc)
+        controls = [adt.TerminalControl(user_name="bob", start_time=t0)]
+        key = adt.Keystroke(data=adt.TextKey("x"), user_name="alice", stroke_time=t0)
+        with pytest.raises(AssertionError, match="bob"):
+            adt.assert_keystroke_owner_matches(key, controls)
+
 
 
 
