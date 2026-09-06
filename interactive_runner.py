@@ -53,6 +53,10 @@ CYCLE_LIMIT_SECONDS = 900.0
 # Consecutive undecodable/invalid model actions tolerated before the cycle
 # fails; each retry feeds the validation error back as an observation.
 MAX_INVALID_ACTION_RETRIES = 3
+# If the model repeats the exact same dynamic action this many times without
+# a usable result, park the turn instead of looping ("not every dynamic tool
+# completes; once the threshold is hit, move on").
+DYNAMIC_STALL_LIMIT = 3
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
@@ -98,6 +102,8 @@ class InteractiveRunner:
         self._dynamic_action_active = threading.Event()
         self._cycle_started_monotonic = time.monotonic()
         self._current_input_seq = self.store.last_event_sequence()
+        self._stall_fingerprint: Optional[tuple] = None
+        self._stall_streak = 0
 
     @property
     def agent_name(self) -> str:
@@ -110,6 +116,25 @@ class InteractiveRunner:
         byte-for-byte unchanged.
         """
         return self.store.meeting.generator_name()
+
+    @staticmethod
+    def _dynamic_action_fingerprint(action: AgentAction) -> Optional[tuple]:
+        """Stable identity of a dynamic action for stall detection.
+
+        Request/response ids are excluded: identical repeated attempts must
+        compare equal.
+        """
+        if not isinstance(action, AgentAction):
+            return None
+        return (
+            action.type,
+            action.message_type,
+            action.command,
+            action.path,
+            action.content[:80],
+            repr(action.keys)[:80],
+            action.delay_ms,
+        )
 
     def _is_stale(self, generation: int) -> bool:
         """The request no longer speaks for the current cycle or control state."""
@@ -515,6 +540,30 @@ class InteractiveRunner:
                     continue
 
                 if response.executed:
+                    # Dynamic tools are not guaranteed to return a usable
+                    # result. If the model repeats the same action over and
+                    # over with nothing to show, stop treating the turn as
+                    # alive: park at waiting after a small threshold instead
+                    # of burning the action budget in a stall loop.
+                    fingerprint = self._dynamic_action_fingerprint(response.action)
+                    if fingerprint and fingerprint == self._stall_fingerprint:
+                        self._stall_streak += 1
+                    else:
+                        self._stall_fingerprint = fingerprint
+                        self._stall_streak = 1
+                    if self._stall_streak >= DYNAMIC_STALL_LIMIT:
+                        with self.lock:
+                            self.store.refresh()
+                            self.store.append_event(
+                                "action", "harness", self.store.meeting.phase,
+                                data={"action_id": request_id, "status": "stalled",
+                                      "reason": "repeated_dynamic_tool_without_result",
+                                      "repeats": self._stall_streak},
+                            )
+                        self._stall_fingerprint = None
+                        self._stall_streak = 0
+                        self._wait_for_user("dynamic_tool_stalled")
+                        return
                     if self.store.meeting.phase != "agent_thinking":
                         return
                     continue
