@@ -668,8 +668,18 @@ function renderChat() {
       const timeEl = node("time", "", fmtTime(event.captured_at));
       timeEl.title = "跳转到相近终端画面";
       timeEl.addEventListener("click", () => jumpToChatTime(event));
+      const meetingSnapshot = state.snapshot?.meeting;
+      const roles = meetingSnapshot?.agent_name2role;
+      // human = 你; the default generator speaks as the legacy "agent" and
+      // keeps its friendly Agent1 label; any other role-map member shows its
+      // own name so multi-agent turns are distinguishable in the transcript.
+      const speaker = event.actor === "human"
+        ? "你"
+        : (event.actor === "agent" || !roles || !(event.actor in roles))
+          ? agentName(meetingSnapshot)
+          : event.actor;
       head.append(
-        node("strong", "", event.actor === "human" ? "你" : agentName(state.snapshot?.meeting)),
+        node("strong", "", speaker),
         node("span", `message-type ${event.message_type || ""}`, labels.message[event.message_type] || "消息"),
         timeEl,
       );
