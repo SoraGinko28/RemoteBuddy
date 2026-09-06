@@ -540,6 +540,15 @@ class InteractiveRunner:
                     continue
 
                 if response.executed:
+                    # Model-declared fire-and-forget: this action's output is
+                    # not needed, so do not wait for a result and never count
+                    # repeats of it as a stall.
+                    if not getattr(response.action, "result_needed", True):
+                        self._stall_fingerprint = None
+                        self._stall_streak = 0
+                        if self.store.meeting.phase != "agent_thinking":
+                            return
+                        continue
                     # Dynamic tools are not guaranteed to return a usable
                     # result. If the model repeats the same action over and
                     # over with nothing to show, stop treating the turn as
