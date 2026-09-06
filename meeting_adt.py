@@ -424,6 +424,171 @@ def chat_stream_chunk_from_dict(payload: dict) -> ChatStreamChunk:
     )
 
 
+# =====================================================================
+# G8：ContentReference 三件套 + resolve()
+# =====================================================================
+#
+# TextRegion := DataClass $start int $end int
+# ScreenReference := $capture_time datetime $stream_name str $region TextRegion
+# ChatReference   := $msg_time datetime $user_name UserName $region TextRegion
+# ScoreReference  := $judge_time datetime $judge_name UserName
+# ContentReference := Oneof | $screen_ref | $chat_ref | $score_ref
+#
+# 存储设计：引用只存键（时间+user/stream），不落目标内容副本；
+# resolve 靠同会流内按键查找，找不到/多解都算引用坏链（抛错，供校验收集）。
+#
+# 落盘 JSON（Oneof 用单键信封区分）：
+#   {"screen_ref": {"capture_time": iso, "stream_name": s, "region": {start,end}}}
+#   {"chat_ref":   {"msg_time": iso, "user_name": u, "region": {start,end}}}
+#   {"score_ref":  {"judge_time": iso, "judge_name": u}}
+
+@dataclass(frozen=True)
+class TextRegion:
+    start: int
+    end: int
+
+    def __post_init__(self) -> None:
+        if self.start < 0 or self.end < self.start:
+            raise ValueError(f"invalid region [{self.start},{self.end})")
+
+
+@dataclass(frozen=True)
+class ScreenReference:
+    capture_time: _dt.datetime
+    stream_name: str
+    region: TextRegion
+
+
+@dataclass(frozen=True)
+class ChatReference:
+    msg_time: _dt.datetime
+    user_name: str
+    region: TextRegion
+
+
+@dataclass(frozen=True)
+class ScoreReference:
+    judge_time: _dt.datetime
+    judge_name: str
+
+
+ContentReference = ScreenReference | ChatReference | ScoreReference
+
+
+def text_region_to_dict(region: TextRegion) -> dict:
+    return {"start": region.start, "end": region.end}
+
+
+def text_region_from_dict(payload: dict) -> TextRegion:
+    return TextRegion(start=payload["start"], end=payload["end"])
+
+
+def content_reference_to_dict(reference: ContentReference) -> dict:
+    if isinstance(reference, ScreenReference):
+        return {"screen_ref": {
+            "capture_time": _iso_format(reference.capture_time),
+            "stream_name": reference.stream_name,
+            "region": text_region_to_dict(reference.region),
+        }}
+    if isinstance(reference, ChatReference):
+        return {"chat_ref": {
+            "msg_time": _iso_format(reference.msg_time),
+            "user_name": reference.user_name,
+            "region": text_region_to_dict(reference.region),
+        }}
+    if isinstance(reference, ScoreReference):
+        return {"score_ref": {
+            "judge_time": _iso_format(reference.judge_time),
+            "judge_name": reference.judge_name,
+        }}
+    raise TypeError(f"unknown content reference: {type(reference).__name__}")
+
+
+def content_reference_from_dict(payload: dict) -> ContentReference:
+    if "screen_ref" in payload:
+        inner = payload["screen_ref"]
+        return ScreenReference(
+            capture_time=_iso_parse(inner["capture_time"]),
+            stream_name=inner["stream_name"],
+            region=text_region_from_dict(inner["region"]),
+        )
+    if "chat_ref" in payload:
+        inner = payload["chat_ref"]
+        return ChatReference(
+            msg_time=_iso_parse(inner["msg_time"]),
+            user_name=inner["user_name"],
+            region=text_region_from_dict(inner["region"]),
+        )
+    if "score_ref" in payload:
+        inner = payload["score_ref"]
+        return ScoreReference(
+            judge_time=_iso_parse(inner["judge_time"]),
+            judge_name=inner["judge_name"],
+        )
+    raise ValueError(f"unknown content reference json: {payload!r}")
+
+
+def _resolve_matches(matches: list, what: str) -> object:
+    if not matches:
+        raise LookupError(f"dangling reference: no {what} found")
+    if len(matches) > 1:
+        raise ValueError(f"ambiguous reference: {len(matches)} {what} matched")
+    return matches[0]
+
+
+def resolve_screen_reference(reference: ScreenReference,
+                             screen_captures: "list[ScreenCapture]") -> ScreenCapture:
+    """ScreenReference.resolve：captured_at == capture_time。"""
+    matches = [c for c in screen_captures if c.captured_at == reference.capture_time]
+    return _resolve_matches(matches, "screen capture")  # type: ignore[return-value]
+
+
+def resolve_chat_reference(reference: ChatReference,
+                           chat_messages: "list[ChatMessage]") -> ChatMessage:
+    """ChatReference.resolve：time == msg_time ∧ user_name == 引用者。"""
+    matches = [m for m in chat_messages
+               if m.time == reference.msg_time and m.user_name == reference.user_name]
+    return _resolve_matches(matches, "chat message")  # type: ignore[return-value]
+
+
+def resolve_score_reference(reference: ScoreReference,
+                            score_messages: "list[ScoreMessage]") -> "ScoreMessage":
+    """ScoreReference.resolve：judge_name ∧ time == judge_time（ScoreMessage 在 G9 定义）。"""
+    matches = [m for m in score_messages
+               if m.judge_name == reference.judge_name and m.time == reference.judge_time]
+    return _resolve_matches(matches, "score message")  # type: ignore[return-value]
+
+
+def resolve_content_reference(reference: ContentReference,
+                              screen_captures: "list[ScreenCapture]",
+                              chat_messages: "list[ChatMessage]",
+                              score_messages: "list[ScoreMessage]") -> object:
+    if isinstance(reference, ScreenReference):
+        return resolve_screen_reference(reference, screen_captures)
+    if isinstance(reference, ChatReference):
+        return resolve_chat_reference(reference, chat_messages)
+    if isinstance(reference, ScoreReference):
+        return resolve_score_reference(reference, score_messages)
+    raise TypeError(f"unknown content reference: {type(reference).__name__}")
+
+
+__all__ += [
+    "TextRegion",
+    "ScreenReference",
+    "ChatReference",
+    "ScoreReference",
+    "text_region_to_dict",
+    "text_region_from_dict",
+    "content_reference_to_dict",
+    "content_reference_from_dict",
+    "resolve_screen_reference",
+    "resolve_chat_reference",
+    "resolve_score_reference",
+    "resolve_content_reference",
+]
+
+
+
 __all__ += [
     "RawMessage",
     "AtUserMessage",

@@ -99,6 +99,18 @@ class TestStreamNames:
             "chat_message_from_dict",
             "chat_stream_chunk_to_dict",
             "chat_stream_chunk_from_dict",
+            "TextRegion",
+            "ScreenReference",
+            "ChatReference",
+            "ScoreReference",
+            "text_region_to_dict",
+            "text_region_from_dict",
+            "content_reference_to_dict",
+            "content_reference_from_dict",
+            "resolve_screen_reference",
+            "resolve_chat_reference",
+            "resolve_score_reference",
+            "resolve_content_reference",
         }
 
 
@@ -703,6 +715,178 @@ class TestChatStreamChunkCodec:
 
     def test_default_stream_name_is_chat(self) -> None:
         assert adt.ChatStreamChunk().stream_name == "chat"
+
+
+# =====================================================================
+# G8：ContentReference 三件套 + resolve()
+# =====================================================================
+
+class TestTextRegion:
+    def test_basic(self) -> None:
+        assert adt.TextRegion(0, 5) == adt.TextRegion(0, 5)
+
+    def test_empty_region_ok(self) -> None:
+        assert adt.TextRegion(3, 3).start == 3
+
+    def test_negative_start_raises(self) -> None:
+        with pytest.raises(ValueError, match="invalid region"):
+            adt.TextRegion(-1, 5)
+
+    def test_end_before_start_raises(self) -> None:
+        with pytest.raises(ValueError):
+            adt.TextRegion(5, 2)
+
+    def test_roundtrip_dict(self) -> None:
+        assert adt.text_region_from_dict(adt.text_region_to_dict(adt.TextRegion(1, 9))) \
+            == adt.TextRegion(1, 9)
+
+
+class TestContentReferenceCodec:
+    def _screen_ref(self) -> adt.ScreenReference:
+        return adt.ScreenReference(
+            capture_time=_datetime(2026, 9, 2, 7, 35, 37, 684000, tzinfo=_dt_timezone.utc),
+            stream_name="screen",
+            region=adt.TextRegion(0, 5),
+        )
+
+    def _chat_ref(self) -> adt.ChatReference:
+        return adt.ChatReference(
+            msg_time=_datetime(2026, 9, 2, 7, 35, 41, 328000, tzinfo=_dt_timezone.utc),
+            user_name="alice",
+            region=adt.TextRegion(2, 8),
+        )
+
+    def _score_ref(self) -> adt.ScoreReference:
+        return adt.ScoreReference(
+            judge_time=_datetime(2026, 9, 2, 7, 35, 41, 328000, tzinfo=_dt_timezone.utc),
+            judge_name="bob",
+        )
+
+    def test_screen_roundtrip(self) -> None:
+        ref = self._screen_ref()
+        assert adt.content_reference_from_dict(adt.content_reference_to_dict(ref)) == ref
+
+    def test_chat_roundtrip(self) -> None:
+        ref = self._chat_ref()
+        assert adt.content_reference_from_dict(adt.content_reference_to_dict(ref)) == ref
+
+    def test_score_roundtrip(self) -> None:
+        ref = self._score_ref()
+        assert adt.content_reference_from_dict(adt.content_reference_to_dict(ref)) == ref
+
+    def test_screen_json_envelope(self) -> None:
+        payload = adt.content_reference_to_dict(self._screen_ref())
+        assert set(payload) == {"screen_ref"}
+        assert payload["screen_ref"]["region"] == {"start": 0, "end": 5}
+        assert payload["screen_ref"]["stream_name"] == "screen"
+
+    def test_chat_json_envelope(self) -> None:
+        payload = adt.content_reference_to_dict(self._chat_ref())
+        assert set(payload) == {"chat_ref"}
+        assert payload["chat_ref"]["user_name"] == "alice"
+
+    def test_score_json_envelope(self) -> None:
+        payload = adt.content_reference_to_dict(self._score_ref())
+        assert set(payload) == {"score_ref"}
+        assert payload["score_ref"]["judge_name"] == "bob"
+
+    def test_from_dict_no_kind_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown content reference"):
+            adt.content_reference_from_dict({"foo": {}})
+
+    def test_to_dict_unknown_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="unknown content reference"):
+            adt.content_reference_to_dict("nope")  # type: ignore[arg-type]
+
+    def test_score_ref_has_no_region_field(self) -> None:
+        # ADT：score_ref 只有 judge_time/judge_name
+        assert not hasattr(self._score_ref(), "region")
+
+
+class TestResolveScreen:
+    def _capture(self, moment: _datetime) -> adt.ScreenCapture:
+        return adt.ScreenCapture(screen_data="ab\ncd", screen_width=2, screen_height=2,
+                                 captured_at=moment)
+
+    def test_found(self) -> None:
+        t = _datetime(2026, 9, 2, 7, 35, 37, 684000, tzinfo=_dt_timezone.utc)
+        ref = adt.ScreenReference(capture_time=t, stream_name="screen",
+                                  region=adt.TextRegion(0, 1))
+        cap = self._capture(t)
+        assert adt.resolve_screen_reference(ref, [self._capture(_dt_now()), cap]) is cap
+
+    def test_not_found_raises_lookup(self) -> None:
+        ref = adt.ScreenReference(capture_time=_dt_now(), stream_name="screen",
+                                  region=adt.TextRegion(0, 1))
+        with pytest.raises(LookupError, match="dangling"):
+            adt.resolve_screen_reference(ref, [])
+
+    def test_duplicate_timestamps_raise_ambiguous(self) -> None:
+        t = _dt_now()
+        ref = adt.ScreenReference(capture_time=t, stream_name="screen",
+                                  region=adt.TextRegion(0, 1))
+        with pytest.raises(ValueError, match="ambiguous"):
+            adt.resolve_screen_reference(ref, [self._capture(t), self._capture(t)])
+
+
+class TestResolveChat:
+    def test_found(self) -> None:
+        t = _datetime(2026, 9, 2, 7, 35, 41, 328000, tzinfo=_dt_timezone.utc)
+        msg = adt.ChatMessage(user_name="alice", time=t, message=[adt.RawMessage(text="x")])
+        ref = adt.ChatReference(msg_time=t, user_name="alice", region=adt.TextRegion(0, 1))
+        assert adt.resolve_chat_reference(ref, [msg]) is msg
+
+    def test_wrong_user_does_not_match(self) -> None:
+        t = _dt_now()
+        msg = adt.ChatMessage(user_name="alice", time=t)
+        ref = adt.ChatReference(msg_time=t, user_name="bob", region=adt.TextRegion(0, 1))
+        with pytest.raises(LookupError):
+            adt.resolve_chat_reference(ref, [msg])
+
+    def test_wrong_time_does_not_match(self) -> None:
+        msg = adt.ChatMessage(user_name="alice", time=_dt_now())
+        ref = adt.ChatReference(msg_time=_dt_now(), user_name="alice",
+                                region=adt.TextRegion(0, 1))
+        with pytest.raises(LookupError):
+            adt.resolve_chat_reference(ref, [msg])
+
+
+class TestResolveScore:
+    def _stub_score(self, judge_name: str, moment: _datetime) -> object:
+        # ScoreMessage 在 G9 才定义：这里用最小鸭子对象
+        return type("ScoreStub", (), {"judge_name": judge_name, "time": moment})()
+
+    def test_found(self) -> None:
+        t = _dt_now()
+        ref = adt.ScoreReference(judge_time=t, judge_name="bob")
+        stub = self._stub_score("bob", t)
+        assert adt.resolve_score_reference(ref, [stub]) is stub
+
+    def test_wrong_name_raises_lookup(self) -> None:
+        ref = adt.ScoreReference(judge_time=_dt_now(), judge_name="bob")
+        with pytest.raises(LookupError):
+            adt.resolve_score_reference(ref, [self._stub_score("carol", ref.judge_time)])
+
+
+class TestResolveDispatch:
+    def test_dispatches_screen(self) -> None:
+        t = _dt_now()
+        ref = adt.ScreenReference(capture_time=t, stream_name="screen",
+                                  region=adt.TextRegion(0, 1))
+        cap = adt.ScreenCapture(captured_at=t)
+        result = adt.resolve_content_reference(ref, [cap], [], [])
+        assert result is cap
+
+    def test_dispatches_chat(self) -> None:
+        t = _dt_now()
+        msg = adt.ChatMessage(user_name="u", time=t)
+        ref = adt.ChatReference(msg_time=t, user_name="u", region=adt.TextRegion(0, 1))
+        assert adt.resolve_content_reference(ref, [], [msg], []) is msg
+
+    def test_rejects_unknown(self) -> None:
+        with pytest.raises(TypeError, match="unknown content reference"):
+            adt.resolve_content_reference("x", [], [], [])  # type: ignore[arg-type]
+
 
 
 # 测试辅助：UTC aware 的 now
