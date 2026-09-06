@@ -141,6 +141,21 @@ class TestStreamNames:
             "terminal_capable",
             "assert_terminal_control_capable",
             "assert_keystroke_owner_matches",
+            "ScreenStreamChunk",
+            "StreamChunk",
+            "terminal_text_segment_to_dict",
+            "terminal_text_segment_from_dict",
+            "screen_capture_to_dict",
+            "screen_capture_from_dict",
+            "screen_stream_chunk_to_dict",
+            "screen_stream_chunk_from_dict",
+            "stream_chunk_to_dict",
+            "stream_chunk_from_dict",
+            "MeetingData",
+            "user_names_of_meeting_data",
+            "assert_role_map_keys_in_user_names",
+            "meeting_data_to_dict",
+            "meeting_data_from_dict",
         }
 
 
@@ -1236,6 +1251,188 @@ class TestAssertKeystrokeOwnerMatches:
         key = adt.Keystroke(data=adt.TextKey("x"), user_name="alice", stroke_time=t0)
         with pytest.raises(AssertionError, match="bob"):
             adt.assert_keystroke_owner_matches(key, controls)
+
+
+# =====================================================================
+# G11：ScreenStreamChunk + MeetingData（会议记录本体）
+# =====================================================================
+
+class TestScreenCaptureCodec:
+    def _capture(self) -> adt.ScreenCapture:
+        return adt.ScreenCapture(
+            screen_data="ab",
+            terminal_text_content=[
+                adt.TerminalTextSegment(text="a", fg=adt.PaletteColor(7)),
+                adt.TerminalTextSegment(
+                    text="b", fg=adt.Rgb(1, 2, 3), styles=frozenset({"bold", "dim"})),
+            ],
+            cursor_x=1, cursor_y=0, screen_width=2, screen_height=1,
+            captured_at=_datetime(2026, 9, 2, 7, 35, 37, 684000, tzinfo=_dt_timezone.utc),
+        )
+
+    def test_roundtrip_full(self) -> None:
+        cap = self._capture()
+        assert adt.screen_capture_from_dict(adt.screen_capture_to_dict(cap)) == cap
+
+    def test_json_shape(self) -> None:
+        payload = adt.screen_capture_to_dict(self._capture())
+        assert payload["screen_data"] == "ab"
+        assert payload["terminal_text_content"][0]["fg"] == {"palette": 7}
+        assert payload["terminal_text_content"][1]["fg"] == {"r": 1, "g": 2, "b": 3}
+        assert payload["terminal_text_content"][1]["styles"] == ["bold", "dim"]
+        assert payload["cursor_x"] == 1
+        assert payload["captured_at"].endswith("Z")
+
+    def test_roundtrip_empty_segments_and_no_time(self) -> None:
+        cap = adt.ScreenCapture(screen_data="")
+        assert adt.screen_capture_from_dict(adt.screen_capture_to_dict(cap)) == cap
+
+
+class TestTerminalTextSegmentCodec:
+    def test_roundtrip_all_color_variants(self) -> None:
+        for fg in (None, adt.PaletteColor(0), adt.PaletteColor(255),
+                   adt.Rgb(0, 0, 0), adt.Rgb(255, 128, 1)):
+            seg = adt.TerminalTextSegment(text="x", fg=fg, bg=None,
+                                          styles=frozenset({"reverse"}))
+            assert adt.terminal_text_segment_from_dict(
+                adt.terminal_text_segment_to_dict(seg)) == seg
+
+    def test_color_codec_unknown_raises(self) -> None:
+        with pytest.raises(KeyError):
+            adt._color_from_dict({"hue": 3})
+
+
+class TestScreenStreamChunkCodec:
+    def test_roundtrip(self) -> None:
+        chunk = adt.ScreenStreamChunk(
+            stream_name="screen",
+            owner_user_name="agent-1",
+            chunks=[adt.ScreenCapture(screen_data="a", captured_at=_dt_now())],
+        )
+        assert adt.screen_stream_chunk_from_dict(
+            adt.screen_stream_chunk_to_dict(chunk)) == chunk
+
+    def test_default_stream_name_is_screen(self) -> None:
+        assert adt.ScreenStreamChunk().stream_name == "screen"
+
+    def test_rejects_wrong_stream_name(self) -> None:
+        with pytest.raises(ValueError, match="not a screen chunk"):
+            adt.screen_stream_chunk_from_dict({"stream_name": "chat", "chunks": []})
+
+
+class TestStreamChunkDispatch:
+    def _sample_chunk_for(self, stream_name: str) -> adt.StreamChunk:
+        now = _dt_now()
+        return {
+            "screen": adt.ScreenStreamChunk(owner_user_name="a",
+                                            chunks=[adt.ScreenCapture(captured_at=now)]),
+            "chat": adt.ChatStreamChunk(chunks=[adt.ChatMessage(user_name="a", time=now)]),
+            "score": adt.ScoreStreamChunk(chunks=[adt.ScoreMessage(tag="t")]),
+            "keystroke": adt.KeystrokeStreamChunk(chunks=[
+                adt.Keystroke(data=adt.TextKey("x"), user_name="a", stroke_time=now)]),
+            "terminal_control": adt.TerminalControlStreamChunk(chunks=[
+                adt.TerminalControl(user_name="a", start_time=now)]),
+        }[stream_name]
+
+    @pytest.mark.parametrize("stream_name", adt.STREAM_NAMES)
+    def test_each_stream_roundtrips_through_generic_codec(
+            self, stream_name: str) -> None:
+        chunk = self._sample_chunk_for(stream_name)
+        restored = adt.stream_chunk_from_dict(adt.stream_chunk_to_dict(chunk))
+        assert type(restored) is type(chunk)
+        assert restored == chunk
+
+    def test_unknown_stream_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown stream_name"):
+            adt.stream_chunk_from_dict({"stream_name": "brainwaves", "chunks": []})
+
+    def test_to_dict_unknown_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="unknown stream chunk"):
+            adt.stream_chunk_to_dict("nope")  # type: ignore[arg-type]
+
+
+class TestUserNames:
+    def test_collects_from_all_five_streams(self) -> None:
+        now = _dt_now()
+        data = adt.MeetingData(
+            sorted_stream_chunks=[
+                adt.ScreenStreamChunk(owner_user_name="screen-owner"),
+                adt.ChatStreamChunk(chunks=[adt.ChatMessage(user_name="chat-user",
+                                                            time=now)]),
+                adt.ScoreStreamChunk(chunks=[adt.ScoreMessage(tag="t",
+                                                              judge_name="judge")]),
+                adt.KeystrokeStreamChunk(chunks=[adt.Keystroke(
+                    data=adt.TextKey("x"), user_name="typer", stroke_time=now)]),
+                adt.TerminalControlStreamChunk(chunks=[adt.TerminalControl(
+                    user_name=adt.HUMAN_USER_NAME, start_time=now)]),
+            ],
+        )
+        assert adt.user_names_of_meeting_data(data) == {
+            "screen-owner", "chat-user", "judge", "typer", "$human",
+        }
+
+    def test_empty_meeting_has_no_names(self) -> None:
+        assert adt.user_names_of_meeting_data(adt.MeetingData()) == set()
+
+
+class TestMeetingData:
+    def _sample(self) -> adt.MeetingData:
+        now = _dt_now()
+        return adt.MeetingData(
+            meeting_uid="m-1",
+            meeting_name="demo",
+            agent_name2role={
+                "alice": adt.AgentRole.GENERATOR,
+                "bob": adt.AgentRole.PASSIVE_DISCRIMINATOR,
+            },
+            sorted_stream_chunks=[
+                adt.ScreenStreamChunk(owner_user_name="alice",
+                                      chunks=[adt.ScreenCapture(captured_at=now)]),
+                adt.ChatStreamChunk(chunks=[
+                    adt.ChatMessage(user_name="alice", time=now,
+                                    message=[adt.RawMessage(text="hi")]),
+                    adt.ChatMessage(user_name="bob", time=now,
+                                    message=[adt.RawMessage(text="ok")]),
+                ]),
+            ],
+        )
+
+    def test_roundtrip_full(self) -> None:
+        data = self._sample()
+        assert adt.meeting_data_from_dict(adt.meeting_data_to_dict(data)) == data
+
+    def test_json_shape(self) -> None:
+        payload = adt.meeting_data_to_dict(self._sample())
+        assert payload["meeting_uid"] == "m-1"
+        assert payload["agent_name2role"] == {
+            "alice": "$generator",
+            "bob": "$passive_discriminator",
+        }
+        assert [c["stream_name"] for c in payload["sorted_stream_chunks"]] == \
+            ["screen", "chat"]
+
+    def test_missing_key_raises(self) -> None:
+        with pytest.raises(ValueError, match="missing key"):
+            adt.meeting_data_from_dict({"meeting_uid": "m-1"})
+
+    def test_empty_meeting_roundtrip(self) -> None:
+        data = adt.MeetingData(meeting_uid="m0", meeting_name="")
+        assert adt.meeting_data_from_dict(adt.meeting_data_to_dict(data)) == data
+
+    def test_role_map_assert_passes(self) -> None:
+        adt.assert_role_map_keys_in_user_names(self._sample())
+
+    def test_role_map_assert_fails_for_unknown_agent(self) -> None:
+        data = self._sample()
+        data.agent_name2role["ghost"] = adt.AgentRole.GENERATOR
+        with pytest.raises(AssertionError, match="ghost"):
+            adt.assert_role_map_keys_in_user_names(data)
+
+    def test_human_never_needs_role_entry(self) -> None:
+        # human 由 is_human 识别，不入 agent_name2role
+        data = self._sample()
+        adt.assert_role_map_keys_in_user_names(data)
+
 
 
 

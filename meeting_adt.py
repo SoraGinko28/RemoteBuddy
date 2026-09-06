@@ -944,6 +944,242 @@ __all__ += [
 ]
 
 
+# =====================================================================
+# G11：屏幕 chunk 容器 + MeetingData（会议记录本体）
+# =====================================================================
+#
+# ScreenStreamChunk := DataClass
+#   * $stream_name str
+#   * $owner_user_name UserName
+#   * $chunks list[ScreenCapture]
+#
+# MeetingData := DataClass
+#   * $meeting_uid str
+#   * $meeting_name str
+#   * $sorted_stream_chunks list[StreamChunk]   # 流内/跨流均按时间排序
+#   * $agent_name2role dict[str, AgentRole]
+#   * Appendix[{
+#       user_names := 从各 chunk 收集所有出现的 UserName
+#                      (screen.owner / chat.user_name / score.judge_name /
+#                       keystroke.user_name / terminal_control.user_name)
+#     }]
+#   * Assert[{ keys($agent_name2role) ⊆ user_names(本记录) }]
+#
+# 存储设计（会议清单）：
+#   - agent_name2role 只增不减：join 加入，冻结后固化；绝不原地改。
+#   - 冻结 = 会议记录只读；增量只 append 到 events.jsonl。
+#   - 清单 JSON（流 chunk 用 stream_name 区分）：
+#     {"meeting_uid":..., "meeting_name":..., "agent_name2role":{名: "$generator"...},
+#      "sorted_stream_chunks":[{stream_name:"screen",...}|{stream_name:"chat",...}|...]}
+
+@dataclass
+class ScreenStreamChunk:
+    stream_name: str = SCREEN_STREAM_NAME
+    owner_user_name: str = ""
+    chunks: list[ScreenCapture] = field(default_factory=list)
+
+
+StreamChunk = (ScreenStreamChunk | ChatStreamChunk | ScoreStreamChunk
+               | KeystrokeStreamChunk | TerminalControlStreamChunk)
+
+
+def _color_to_dict(color: Optional[Color]) -> Optional[dict]:
+    if color is None:
+        return None
+    if isinstance(color, PaletteColor):
+        return {"palette": color.index}
+    return {"r": color.r, "g": color.g, "b": color.b}
+
+
+def _color_from_dict(payload: Optional[dict]) -> Optional[Color]:
+    if payload is None:
+        return None
+    if "palette" in payload:
+        return PaletteColor(payload["palette"])
+    return Rgb(payload["r"], payload["g"], payload["b"])
+
+
+def terminal_text_segment_to_dict(segment: TerminalTextSegment) -> dict:
+    return {
+        "text": segment.text,
+        "fg": _color_to_dict(segment.fg),
+        "bg": _color_to_dict(segment.bg),
+        "styles": sorted(segment.styles),
+    }
+
+
+def terminal_text_segment_from_dict(payload: dict) -> TerminalTextSegment:
+    return TerminalTextSegment(
+        text=payload["text"],
+        fg=_color_from_dict(payload.get("fg")),
+        bg=_color_from_dict(payload.get("bg")),
+        styles=frozenset(payload.get("styles", [])),
+    )
+
+
+def screen_capture_to_dict(capture: ScreenCapture) -> dict:
+    return {
+        "screen_data": capture.screen_data,
+        "terminal_text_content": [
+            terminal_text_segment_to_dict(s) for s in capture.terminal_text_content
+        ],
+        "cursor_x": capture.cursor_x,
+        "cursor_y": capture.cursor_y,
+        "screen_width": capture.screen_width,
+        "screen_height": capture.screen_height,
+        "captured_at": _iso_format(capture.captured_at) if capture.captured_at else None,
+    }
+
+
+def screen_capture_from_dict(payload: dict) -> ScreenCapture:
+    captured_at = payload.get("captured_at")
+    return ScreenCapture(
+        screen_data=payload.get("screen_data", ""),
+        terminal_text_content=[
+            terminal_text_segment_from_dict(s) for s in payload.get("terminal_text_content", [])
+        ],
+        cursor_x=payload.get("cursor_x", 0),
+        cursor_y=payload.get("cursor_y", 0),
+        screen_width=payload.get("screen_width", 0),
+        screen_height=payload.get("screen_height", 0),
+        captured_at=_iso_parse(captured_at) if isinstance(captured_at, str) else None,
+    )
+
+
+def screen_stream_chunk_to_dict(chunk: ScreenStreamChunk) -> dict:
+    return {
+        "stream_name": chunk.stream_name,
+        "owner_user_name": chunk.owner_user_name,
+        "chunks": [screen_capture_to_dict(c) for c in chunk.chunks],
+    }
+
+
+def screen_stream_chunk_from_dict(payload: dict) -> ScreenStreamChunk:
+    if payload.get("stream_name") != SCREEN_STREAM_NAME:
+        raise ValueError(f"not a screen chunk: {payload.get('stream_name')!r}")
+    return ScreenStreamChunk(
+        stream_name=payload["stream_name"],
+        owner_user_name=payload.get("owner_user_name", ""),
+        chunks=[screen_capture_from_dict(c) for c in payload.get("chunks", [])],
+    )
+
+
+def stream_chunk_to_dict(chunk: StreamChunk) -> dict:
+    if isinstance(chunk, ScreenStreamChunk):
+        return screen_stream_chunk_to_dict(chunk)
+    if isinstance(chunk, ChatStreamChunk):
+        return chat_stream_chunk_to_dict(chunk)
+    if isinstance(chunk, ScoreStreamChunk):
+        return score_stream_chunk_to_dict(chunk)
+    if isinstance(chunk, KeystrokeStreamChunk):
+        return keystroke_stream_chunk_to_dict(chunk)
+    if isinstance(chunk, TerminalControlStreamChunk):
+        return terminal_control_stream_chunk_to_dict(chunk)
+    raise TypeError(f"unknown stream chunk: {type(chunk).__name__}")
+
+
+_STREAM_CHUNK_NAMES = frozenset(STREAM_NAMES)
+
+
+def stream_chunk_from_dict(payload: dict) -> StreamChunk:
+    stream_name = payload.get("stream_name")
+    if stream_name not in _STREAM_CHUNK_NAMES:
+        raise ValueError(f"unknown stream_name {stream_name!r}")
+    if stream_name == SCREEN_STREAM_NAME:
+        return screen_stream_chunk_from_dict(payload)
+    if stream_name == CHAT_STREAM_NAME:
+        return chat_stream_chunk_from_dict(payload)
+    if stream_name == SCORE_STREAM_NAME:
+        return score_stream_chunk_from_dict(payload)
+    if stream_name == KEYSTROKE_STREAM_NAME:
+        return keystroke_stream_chunk_from_dict(payload)
+    return terminal_control_stream_chunk_from_dict(payload)
+
+
+@dataclass
+class MeetingData:
+    meeting_uid: str = ""
+    meeting_name: str = ""
+    agent_name2role: dict = field(default_factory=dict)  # dict[str, AgentRole]
+    sorted_stream_chunks: list = field(default_factory=list)  # list[StreamChunk]
+
+
+def user_names_of_meeting_data(data: MeetingData) -> set[str]:
+    """Appendix user_names：收集流中出现的所有 UserName。"""
+    names: set[str] = set()
+    for chunk in data.sorted_stream_chunks:
+        if isinstance(chunk, ScreenStreamChunk):
+            if chunk.owner_user_name:
+                names.add(chunk.owner_user_name)
+        elif isinstance(chunk, ChatStreamChunk):
+            names.update(m.user_name for m in chunk.chunks)
+        elif isinstance(chunk, ScoreStreamChunk):
+            names.update(m.judge_name for m in chunk.chunks)
+        elif isinstance(chunk, KeystrokeStreamChunk):
+            names.update(k.user_name for k in chunk.chunks)
+        elif isinstance(chunk, TerminalControlStreamChunk):
+            names.update(c.user_name for c in chunk.chunks)
+    return names
+
+
+def assert_role_map_keys_in_user_names(data: MeetingData) -> None:
+    """Assert[{ keys($agent_name2role) ⊆ user_names(本记录) }]"""
+    user_names = user_names_of_meeting_data(data)
+    missing = sorted(set(data.agent_name2role) - user_names)
+    if missing:
+        raise AssertionError(
+            f"role map keys not in user_names: {missing}; "
+            f"user_names={sorted(user_names)}"
+        )
+
+
+def meeting_data_to_dict(data: MeetingData) -> dict:
+    return {
+        "meeting_uid": data.meeting_uid,
+        "meeting_name": data.meeting_name,
+        "agent_name2role": {
+            name: role.value for name, role in data.agent_name2role.items()
+        },
+        "sorted_stream_chunks": [stream_chunk_to_dict(c) for c in data.sorted_stream_chunks],
+    }
+
+
+def meeting_data_from_dict(payload: dict) -> MeetingData:
+    try:
+        uid = payload["meeting_uid"]
+        name = payload["meeting_name"]
+        roles = payload["agent_name2role"]
+        chunks = [stream_chunk_from_dict(c) for c in payload["sorted_stream_chunks"]]
+    except KeyError as exc:
+        raise ValueError(f"meeting data missing key {exc.args[0]}") from exc
+    return MeetingData(
+        meeting_uid=uid,
+        meeting_name=name,
+        agent_name2role={n: agent_role_from_name(v) for n, v in roles.items()},
+        sorted_stream_chunks=chunks,
+    )
+
+
+__all__ += [
+    "ScreenStreamChunk",
+    "StreamChunk",
+    "terminal_text_segment_to_dict",
+    "terminal_text_segment_from_dict",
+    "screen_capture_to_dict",
+    "screen_capture_from_dict",
+    "screen_stream_chunk_to_dict",
+    "screen_stream_chunk_from_dict",
+    "stream_chunk_to_dict",
+    "stream_chunk_from_dict",
+    "MeetingData",
+    "user_names_of_meeting_data",
+    "assert_role_map_keys_in_user_names",
+    "meeting_data_to_dict",
+    "meeting_data_from_dict",
+]
+
+
+
 
 
 
