@@ -26,10 +26,13 @@ import time
 from typing import Any, Optional
 
 import meeting_v2 as m2
-from agent_protocol import AgentAction, AgentBackendError, AgentInterrupted
+from agent_protocol import AgentAction, AgentActionError, AgentBackendError, AgentInterrupted
 
 REVIEWER_MAX_ROUNDS = 12
 REVIEWER_OBSERVATION = "Continue. Reply when you have a comment."
+# Sentinel returned when the backend ended the turn after a rejected action:
+# callers may retry with a fresh process.
+REVIEWER_RETRY = ("retry",)
 
 REVIEWER_INSTRUCTIONS = (
     "You are a reviewer in a shared-terminal coding session. You do NOT have "
@@ -38,6 +41,14 @@ REVIEWER_INSTRUCTIONS = (
     "what looks right and what looks wrong, and ask one sharp question if "
     "anything is unclear. Reply in the same language as the human. End your "
     "reply with a done action carrying the final text."
+)
+
+REVIEWER_INSTRUCTIONS_RETRY = (
+    "You are a reviewer without terminal access. You may ONLY reply in prose: "
+    "do not call any tool, do not read files, do not propose commands, do not "
+    "use the terminal. Your previous attempt was rejected for attempting a "
+    "terminal action. Reply with a chat ack and finish with a done action "
+    "carrying your final prose comment."
 )
 
 
@@ -86,14 +97,16 @@ def run_reviewer_turn(
     agent_name: str,
     lock: Optional[threading.RLock] = None,
     context: Optional[str] = None,
+    instructions: Optional[str] = None,
 ) -> bool:
     """Run one reviewer turn; append the final comment under agent_name.
 
-    Returns True when a final comment was recorded, False otherwise.
+    Returns True when a final comment was recorded, False otherwise, or
+    REVIEWER_RETRY when the backend ended after a rejected action.
     """
     guard = lock or threading.RLock()
     meeting_id = store.meeting.meeting_id
-    instructions = REVIEWER_INSTRUCTIONS
+    instructions = instructions or REVIEWER_INSTRUCTIONS
     observation = context if context is not None else build_reviewer_context(store)
     timeout = _configured_timeout(client)
     session_id: Optional[str] = None
@@ -131,15 +144,35 @@ def run_reviewer_turn(
                 if store.meeting.status in {"completed", "failed", "interrupted"}:
                     settled()
                     return False
-            response = next_action(
-                session_id,
-                REVIEWER_OBSERVATION,
-                model=store.meeting.model,
-                allowed_types=("chat", "done"),
-                allowed_message_types=("ack", "progress", "question", "final"),
-                request_timeout_seconds=timeout,
-                action_handler=lambda action, metadata: {},
-            )
+            try:
+                response = next_action(
+                    session_id,
+                    observation,
+                    model=store.meeting.model,
+                    allowed_types=("chat", "done"),
+                    allowed_message_types=("ack", "progress", "question", "final"),
+                    request_timeout_seconds=timeout,
+                    action_handler=lambda action, metadata: {},
+                )
+            except AgentActionError as exc:
+                try:
+                    with guard:
+                        store.refresh()
+                        store.append_event(
+                            "action", "harness", "agent_thinking", content=str(exc),
+                            data={"action_id": f"reviewer-{agent_name}",
+                                  "status": "rejected",
+                                  "reason": "terminal_action_not_allowed"},
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+                observation = (
+                    "Your previous action was rejected: you must not issue "
+                    "terminal actions. Reply with a chat ack, or a done action "
+                    "carrying your final comment."
+                )
+                continue
+            observation = REVIEWER_OBSERVATION
             action: AgentAction = response.action
             if action.type == "done":
                 with guard:
@@ -156,7 +189,24 @@ def run_reviewer_turn(
                                  pending_action_id=None)
                     _record_state(store, agent_name, {"status": "done"})
                 return True
-            # chat ack / progress: keep listening for the final done action.
+            # chat ack / progress / question: a substantive message is the
+            # reviewer's comment -- record it and finish. Tiny acknowledgments
+            # ("ok", "I will look") are noise; keep listening.
+            if action.type == "chat" and len((action.content or "").strip()) >= 20:
+                with guard:
+                    store.refresh()
+                    store.append_chat(agent_name, action.content, "final")
+                    store.append_event(
+                        "action", agent_name, "agent_acting",
+                        data={"action_id": f"reviewer-{agent_name}",
+                              "status": "completed", "action": json.dumps({
+                                  "type": action.type, "message_type": action.message_type,
+                              })},
+                    )
+                    store.update(phase="waiting_for_user", control_owner="none",
+                                 pending_action_id=None)
+                    _record_state(store, agent_name, {"status": "comment"})
+                return True
             if action.type == "chat":
                 continue
             settled()
@@ -168,8 +218,12 @@ def run_reviewer_turn(
         settled()
         return False
     except (AgentBackendError, m2.MeetingError, OSError, ValueError) as exc:
+        text = str(exc)
+        if "rejected" in text:
+            settled()
+            return REVIEWER_RETRY
         try:
-            store.append_event("error", "harness", "reviewer_error", content=str(exc))
+            store.append_event("error", "harness", "reviewer_error", content=text)
         except Exception:  # noqa: BLE001
             pass
         settled()

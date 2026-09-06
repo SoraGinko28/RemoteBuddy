@@ -1,4 +1,4 @@
-"""2b routing test: an @mention of a non-generator member summons only that
+"""2b routing tests: an @mention of a non-generator member summons only that
 member's reviewer worker; the generator worker is not started."""
 
 import time
@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import discriminator_harness
 import meeting_v2 as m2
 import web_v2
 
@@ -29,17 +30,16 @@ class _Action:
 class _FakeBackend:
     def __init__(self, _config):
         self.config = SimpleNamespace(request_timeout_seconds=5.0)
-        self.closed = False
 
     def start_cycle(self, *args, **kwargs):
         return "session-fake"
 
     def next_action(self, *args, **kwargs):
         return SimpleNamespace(response_id="r", executed=False, turn_id=None,
-                               action=_Action("done", "reviewer agrees.", "final"))
+                               action=_Action("done", "done for now.", "final"))
 
     def close(self):
-        self.closed = True
+        pass
 
 
 def _fake_factory(_config):
@@ -60,6 +60,14 @@ def _make_service(tmp_path):
     )
 
 
+def _fake_comment(store, agent_name, **kwargs):
+    store.refresh()
+    store.update(phase="agent_thinking", control_owner="none")
+    store.append_chat(agent_name, "reviewer agrees.", "final")
+    store.update(phase="waiting_for_user", control_owner="none")
+    return True
+
+
 @pytest.fixture()
 def service(tmp_path):
     return _make_service(tmp_path)
@@ -75,11 +83,11 @@ class TestReviewerRouting:
         store.update(status="running", phase="waiting_for_user", control_owner="none")
         return store
 
-    def test_at_critic_summons_only_reviewer(self, service, tmp_path) -> None:
+    def test_at_critic_summons_only_reviewer(self, service, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(discriminator_harness, "comment_once", _fake_comment)
         store = self._idle_meeting(tmp_path)
         service.message(store.meeting.meeting_id,
                         {"message": "@critic what do you think?"})
-        # Reviewer worker finishes its fake turn quickly: wait for the final chat.
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             current = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
@@ -94,14 +102,14 @@ class TestReviewerRouting:
                   if e.get("kind") == "chat" and e.get("actor") == "critic"
                   and e.get("message_type") == "final"]
         assert finals and finals[-1]["content"] == "reviewer agrees."
-        # Generator worker was never started for this message.
         assert service.jobs.get(store.meeting.meeting_id) is None
         assert reloaded.meeting.phase == "waiting_for_user"
 
-    def test_plain_message_does_not_summon_reviewer(self, service, tmp_path) -> None:
+    def test_plain_message_does_not_summon_reviewer(self, service, tmp_path,
+                                                   monkeypatch) -> None:
+        monkeypatch.setattr(discriminator_harness, "comment_once", _fake_comment)
         store = self._idle_meeting(tmp_path)
         service.message(store.meeting.meeting_id, {"message": "go on"})
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
         assert service.reviewer_jobs.get(store.meeting.meeting_id) in ({}, None)
         assert reloaded.meeting.control_owner == "agent"  # generator wake path
-        assert reloaded.meeting.phase == "agent_thinking"

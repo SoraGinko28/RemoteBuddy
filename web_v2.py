@@ -56,7 +56,7 @@ from meeting_v2 import (
     sha256_text,
     utc_now,
 )
-import meeting_reviewer
+import discriminator_harness
 from references import reference_from_event
 from model_api_client import (
     MODEL_RE,
@@ -1056,22 +1056,49 @@ class MeetingWebService:
         """
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
+
+            def trace(action: str, reason: str = "") -> None:
+                try:
+                    store.append_event(
+                        "state", "harness", store.meeting.phase,
+                        data={"reviewer_routing": {"agent_name": agent_name,
+                                                   "action": action, "reason": reason}},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
             if store.meeting.status in TERMINAL_STATUSES:
+                trace("skip", "terminal_status")
                 return
             if store.meeting.control_owner == "human":
+                trace("skip", "human_control")
                 return
             role = store.meeting.role_of(agent_name)
             if not role or role == "generator":
+                trace("skip", "not_a_discriminator")
                 return
-            if self._job_alive(meeting_id) or self._reviewer_busy(meeting_id):
+            if self._reviewer_busy(meeting_id):
+                trace("skip", "reviewer_busy")
                 return
-            config = self._config_for_store(store)
-            client = self._make_backend(config)
-            with self.lock:
-                self.reviewer_jobs.setdefault(meeting_id, {})[agent_name] = threading.current_thread()
+            # The generator worker parks in waiting_for_user between turns but
+            # keeps its job slot; that is idle, not busy. Only a generator
+            # mid-turn (thinking/acting/queued) blocks a reviewer summon.
+            generator_actively_running = (
+                self._job_alive(meeting_id)
+                and not (
+                    store.meeting.status == "running"
+                    and store.meeting.phase == "waiting_for_user"
+                    and store.meeting.control_owner == "none"
+                    and store.meeting.pending_action_id is None
+                )
+            )
+            if generator_actively_running:
+                trace("skip", "generator_job_busy")
+                return
+            trace("start", "ok")
             thread = threading.Thread(
                 target=self._reviewer_worker,
-                args=(meeting_id, agent_name, client),
+                args=(meeting_id, agent_name),
                 name=f"reviewer-{agent_name}-{meeting_id}",
                 daemon=True,
             )
@@ -1079,29 +1106,29 @@ class MeetingWebService:
                 self.reviewer_jobs.setdefault(meeting_id, {})[agent_name] = thread
             thread.start()
 
-    def _reviewer_worker(self, meeting_id: str, agent_name: str, client: Any) -> None:
-        try:
-            store = self.load_store(meeting_id)
-            meeting_reviewer.run_reviewer_turn(store, client, agent_name)
-        except Exception as exc:  # noqa: BLE001  worker must never die silently
+    def _reviewer_worker(self, meeting_id: str, agent_name: str) -> None:
+        attempts = 0
+        while True:
+            attempts += 1
             try:
                 store = self.load_store(meeting_id)
-                store.append_event(
-                    "error", "harness", "reviewer_worker_error", content=f"{exc!r}"
+                outcome = discriminator_harness.comment_once(
+                    store, agent_name, retry=attempts > 1
                 )
-            except Exception:  # noqa: BLE001
-                pass
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
+            except Exception as exc:  # noqa: BLE001  worker must never die silently
+                outcome = False
                 try:
-                    close()
-                except Exception:
+                    self.load_store(meeting_id).append_event(
+                        "error", "harness", "reviewer_worker_error", content=f"{exc!r}"
+                    )
+                except Exception:  # noqa: BLE001
                     pass
-            with self.lock:
-                jobs = self.reviewer_jobs.get(meeting_id)
-                if jobs and jobs.get(agent_name) is threading.current_thread():
-                    jobs.pop(agent_name, None)
+            if outcome or attempts >= 2:
+                break
+        with self.lock:
+            jobs = self.reviewer_jobs.get(meeting_id)
+            if jobs and jobs.get(agent_name) is threading.current_thread():
+                jobs.pop(agent_name, None)
 
     def _worker(
         self,
