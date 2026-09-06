@@ -588,6 +588,134 @@ __all__ += [
 ]
 
 
+# =====================================================================
+# G9：ScoreMessage / ScoreStreamChunk（评分流）
+# =====================================================================
+#
+# ScoreMessage := DataClass
+#   * $tag str
+#   * $score Optional[float]
+#   * $comment Optional[str]
+#   * $judge_name UserName
+#   * $time datetime
+#   * $reference ContentReference
+#   * Appendix[{
+#       summon_chained := role($judge_name) != $passive_discriminator
+#                         ∨ 该消息的 $reference 可解析到一条召唤它的消息
+#     }]
+#   * Assert[{ summon_chained }]
+#
+# 真 journal 目前无 score 事件 → 空流表示：ScoreStreamChunk(chunks=[])。
+# 落盘 JSON：{"tag": s, "score": float|null, "comment": str|null,
+#             "judge_name": u, "time": iso, "reference": <ContentReference JSON>}
+
+@dataclass
+class ScoreMessage:
+    tag: str
+    score: Optional[float] = None
+    comment: Optional[str] = None
+    judge_name: str = ""
+    time: Optional[_dt.datetime] = None
+    reference: Optional[ContentReference] = None
+
+
+@dataclass
+class ScoreStreamChunk:
+    stream_name: str = SCORE_STREAM_NAME
+    chunks: list[ScoreMessage] = field(default_factory=list)
+
+
+def score_message_to_dict(message: ScoreMessage) -> dict:
+    payload: dict = {
+        "tag": message.tag,
+        "score": message.score,
+        "comment": message.comment,
+        "judge_name": message.judge_name,
+        "time": _iso_format(message.time) if message.time is not None else None,
+    }
+    if message.reference is not None:
+        payload["reference"] = content_reference_to_dict(message.reference)
+    return payload
+
+
+def score_message_from_dict(payload: dict) -> ScoreMessage:
+    if "tag" not in payload:
+        raise ValueError(f"score message missing tag: {payload!r}")
+    reference = None
+    if "reference" in payload and payload["reference"] is not None:
+        reference = content_reference_from_dict(payload["reference"])
+    time = payload.get("time")
+    return ScoreMessage(
+        tag=payload["tag"],
+        score=payload.get("score"),
+        comment=payload.get("comment"),
+        judge_name=payload.get("judge_name", ""),
+        time=_iso_parse(time) if isinstance(time, str) else None,
+        reference=reference,
+    )
+
+
+def score_stream_chunk_to_dict(chunk: ScoreStreamChunk) -> dict:
+    return {
+        "stream_name": chunk.stream_name,
+        "chunks": [score_message_to_dict(m) for m in chunk.chunks],
+    }
+
+
+def score_stream_chunk_from_dict(payload: dict) -> ScoreStreamChunk:
+    if payload.get("stream_name") != SCORE_STREAM_NAME:
+        raise ValueError(f"not a score chunk: {payload.get('stream_name')!r}")
+    return ScoreStreamChunk(
+        stream_name=payload["stream_name"],
+        chunks=[score_message_from_dict(m) for m in payload["chunks"]],
+    )
+
+
+def score_summon_chained(message: ScoreMessage,
+                         role_of: object,
+                         referenced_message: Optional[object]) -> bool:
+    """Appendix summon_chained 的可判定版本。
+
+    角色判定委托给调用方注入的 role_of（MeetingData.agent_name2role 查询），
+    referenced_message 为按 reference resolve 到的目标消息（无引用则 None）。
+    passive 判定：须引用可解析到含 @judge 的召唤消息。
+    """
+    role = role_of(message.judge_name) if callable(role_of) else None
+    if role != AgentRole.PASSIVE_DISCRIMINATOR:
+        return True  # generator / active / 非 agent(如 human) 无需被召唤
+    if referenced_message is None:
+        return False
+    mention = getattr(referenced_message, "message", None)
+    if mention is None:
+        return False
+    return any(isinstance(p, AtUserMessage) and p.user_name == message.judge_name
+               for p in mention)
+
+
+def assert_score_summon_chained(message: ScoreMessage,
+                                role_of: object,
+                                referenced_message: Optional[object]) -> None:
+    """Assert[{ summon_chained }]"""
+    if not score_summon_chained(message, role_of, referenced_message):
+        raise AssertionError(
+            f"passive judge {message.judge_name!r} not summon_chained @ {message.time}: "
+            f"reference resolves to no summoning mention"
+        )
+
+
+__all__ += [
+    "ScoreMessage",
+    "ScoreStreamChunk",
+    "score_message_to_dict",
+    "score_message_from_dict",
+    "score_stream_chunk_to_dict",
+    "score_stream_chunk_from_dict",
+    "score_summon_chained",
+    "assert_score_summon_chained",
+]
+
+
+
 
 __all__ += [
     "RawMessage",

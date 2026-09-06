@@ -1,6 +1,7 @@
 """meeting_adt 测试：随目标链 G1–G14 每颗一个分区，分区内覆盖边界与失败路径。"""
 
 from datetime import datetime as _datetime, timezone as _dt_timezone
+from typing import Optional
 
 import pytest
 
@@ -111,6 +112,14 @@ class TestStreamNames:
             "resolve_chat_reference",
             "resolve_score_reference",
             "resolve_content_reference",
+            "ScoreMessage",
+            "ScoreStreamChunk",
+            "score_message_to_dict",
+            "score_message_from_dict",
+            "score_stream_chunk_to_dict",
+            "score_stream_chunk_from_dict",
+            "score_summon_chained",
+            "assert_score_summon_chained",
         }
 
 
@@ -886,6 +895,137 @@ class TestResolveDispatch:
     def test_rejects_unknown(self) -> None:
         with pytest.raises(TypeError, match="unknown content reference"):
             adt.resolve_content_reference("x", [], [], [])  # type: ignore[arg-type]
+
+
+# =====================================================================
+# G9：ScoreMessage / ScoreStreamChunk / summon_chained
+# =====================================================================
+
+def _score_ref_into(judge: str, moment: _datetime) -> adt.ScoreReference:
+    return adt.ScoreReference(judge_time=moment, judge_name=judge)
+
+
+def _score(tag: str = "correctness", judge: str = "bob",
+           moment: Optional[_datetime] = None,
+           reference: Optional[adt.ContentReference] = None) -> adt.ScoreMessage:
+    return adt.ScoreMessage(
+        tag=tag, score=0.8, comment="ok", judge_name=judge,
+        time=moment or _dt_now(), reference=reference,
+    )
+
+
+class TestScoreMessageCodec:
+    def test_roundtrip_full(self) -> None:
+        msg = _score(reference=_score_ref_into("bob", _dt_now()))
+        assert adt.score_message_from_dict(adt.score_message_to_dict(msg)) == msg
+
+    def test_roundtrip_without_optional_parts(self) -> None:
+        msg = adt.ScoreMessage(tag="style")
+        assert adt.score_message_from_dict(adt.score_message_to_dict(msg)) == msg
+
+    def test_json_shape(self) -> None:
+        moment = _datetime(2026, 9, 2, 8, 0, 0, tzinfo=_dt_timezone.utc)
+        payload = adt.score_message_to_dict(_score(judge="bob", moment=moment))
+        assert payload["tag"] == "correctness"
+        assert payload["score"] == 0.8
+        assert payload["comment"] == "ok"
+        assert payload["judge_name"] == "bob"
+        assert payload["time"] == "2026-09-02T08:00:00Z"
+        assert "reference" not in payload  # 无引用时不写键
+
+    def test_json_none_score(self) -> None:
+        payload = adt.score_message_to_dict(adt.ScoreMessage(tag="t"))
+        assert payload["score"] is None
+        assert payload["time"] is None
+
+    def test_missing_tag_raises(self) -> None:
+        with pytest.raises(ValueError, match="missing tag"):
+            adt.score_message_from_dict({"score": 0.5})
+
+    def test_human_judge_roundtrip(self) -> None:
+        msg = adt.ScoreMessage(tag="t", judge_name=adt.HUMAN_USER_NAME)
+        assert adt.score_message_from_dict(adt.score_message_to_dict(msg)) == msg
+
+
+class TestScoreStreamChunkCodec:
+    def test_empty_chunk_is_the_empty_stream_repr(self) -> None:
+        # 真 journal 无 score 事件 → 空 chunks 即空流表示
+        chunk = adt.ScoreStreamChunk()
+        assert adt.score_stream_chunk_from_dict(adt.score_stream_chunk_to_dict(chunk)) == chunk
+        assert chunk.chunks == []
+
+    def test_roundtrip_nonempty(self) -> None:
+        chunk = adt.ScoreStreamChunk(chunks=[_score(), _score(tag="clarity")])
+        assert adt.score_stream_chunk_from_dict(adt.score_stream_chunk_to_dict(chunk)) == chunk
+
+    def test_default_stream_name_is_score(self) -> None:
+        assert adt.ScoreStreamChunk().stream_name == "score"
+
+    def test_rejects_wrong_stream_name(self) -> None:
+        with pytest.raises(ValueError, match="not a score chunk"):
+            adt.score_stream_chunk_from_dict({"stream_name": "chat", "chunks": []})
+
+
+class TestSummonChained:
+    def _role_map(self) -> dict:
+        return {
+            "generator_bot": adt.AgentRole.GENERATOR,
+            "active_bot": adt.AgentRole.ACTIVE_DISCRIMINATOR,
+            "passive_bot": adt.AgentRole.PASSIVE_DISCRIMINATOR,
+        }
+
+    def _role_of(self, role_map: dict):
+        return lambda name: role_map.get(name) if name in role_map else None
+
+    def _mention_msg(self, judge: str) -> adt.ChatMessage:
+        return adt.ChatMessage(
+            user_name="someone", time=_dt_now(),
+            message=[adt.RawMessage(text="please review "),
+                     adt.AtUserMessage(user_name=judge)],
+        )
+
+    def test_generator_never_needs_summon(self) -> None:
+        msg = _score(judge="generator_bot", reference=None)
+        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is True
+
+    def test_active_never_needs_summon(self) -> None:
+        msg = _score(judge="active_bot", reference=None)
+        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is True
+
+    def test_human_judge_not_passive_so_chained(self) -> None:
+        msg = _score(judge=adt.HUMAN_USER_NAME)
+        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is True
+
+    def test_passive_with_resolvable_summon_mention_chained(self) -> None:
+        msg = _score(judge="passive_bot")
+        mention = self._mention_msg("passive_bot")
+        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), mention) is True
+
+    def test_passive_no_reference_not_chained(self) -> None:
+        msg = _score(judge="passive_bot", reference=None)
+        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is False
+
+    def test_passive_reference_to_non_summon_message_not_chained(self) -> None:
+        msg = _score(judge="passive_bot")
+        other = adt.ChatMessage(user_name="x", time=_dt_now(),
+                                message=[adt.RawMessage(text="no mention")])
+        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), other) is False
+
+    def test_passive_reference_to_mention_of_other_judge_not_chained(self) -> None:
+        msg = _score(judge="passive_bot")
+        mention_other = self._mention_msg("generator_bot")
+        assert adt.score_summon_chained(msg, self._role_of(self._role_map()),
+                                        mention_other) is False
+
+    def test_assert_passes_for_generator(self) -> None:
+        msg = _score(judge="generator_bot")
+        assert adt.assert_score_summon_chained(msg, self._role_of(self._role_map()), None) is None
+
+    def test_assert_fails_for_unsummoned_passive(self) -> None:
+        msg = _score(judge="passive_bot")
+        with pytest.raises(AssertionError, match="not summon_chained"):
+            adt.assert_score_summon_chained(msg, self._role_of(self._role_map()), None)
+
 
 
 
