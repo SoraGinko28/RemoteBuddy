@@ -39,4 +39,38 @@ __all__ = [
     "KEYSTROKE_STREAM_NAME",
     "TERMINAL_CONTROL_STREAM_NAME",
     "STREAM_NAMES",
+    "HUMAN_USER_NAME",
+    "is_human",
+    "AgentRole",
+    "agent_role_from_name",
 ]
+
+
+# =====================================================================
+# G2：UserName / AgentRole（记录层命名）
+# =====================================================================
+#
+# UserName := Oneof | $agent_name str | $human ()
+# 存储/JSON 表示：agent 用其名字字符串；human 用保留哨兵 "$human"。
+# "$human" 是保留字：任何 agent 名不得等于它（is_human 即为判定）。
+
+HUMAN_USER_NAME: Final[str] = "$human"
+
+
+def is_human(user_name: str) -> bool:
+    """UserName 是否为 $human 哨兵（agent 名永不为 True）。"""
+    return user_name == HUMAN_USER_NAME
+
+
+# AgentRole := Oneof | $generator | $active_discriminator | $passive_discriminator
+# 存储/JSON 表示：枚举名 -> 带 $ 前缀的字符串，与 role map JSON 一一对应。
+class AgentRole(Enum):
+    GENERATOR = "$generator"
+    ACTIVE_DISCRIMINATOR = "$active_discriminator"
+    PASSIVE_DISCRIMINATOR = "$passive_discriminator"
+
+
+def agent_role_from_name(role_name: str) -> AgentRole:
+    """按 JSON 字符串还原 AgentRole；未知或非字符串抛 ValueError。"""
+    return AgentRole(role_name)
+

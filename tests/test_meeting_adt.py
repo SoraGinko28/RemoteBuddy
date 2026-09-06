@@ -54,7 +54,6 @@ class TestStreamNames:
             assert getattr(adt, attr) is not None
 
     def test_public_exports_only_expected_names(self) -> None:
-        # 模块暂时只导出流名常量：防止意外把内部名当公共 API
         assert set(adt.__all__) == {
             "SCREEN_STREAM_NAME",
             "CHAT_STREAM_NAME",
@@ -62,4 +61,68 @@ class TestStreamNames:
             "KEYSTROKE_STREAM_NAME",
             "TERMINAL_CONTROL_STREAM_NAME",
             "STREAM_NAMES",
+            "HUMAN_USER_NAME",
+            "is_human",
+            "AgentRole",
+            "agent_role_from_name",
         }
+
+
+# =====================================================================
+# G2：UserName / AgentRole
+# =====================================================================
+
+class TestUserName:
+    def test_human_sentinel_value(self) -> None:
+        assert adt.HUMAN_USER_NAME == "$human"
+
+    def test_is_human_true_for_sentinel(self) -> None:
+        assert adt.is_human("$human") is True
+
+    def test_is_human_false_for_agent_names(self) -> None:
+        for name in ("alice", "agent-1", "Alice@provider", "x", "$humanity"):
+            assert adt.is_human(name) is False
+
+    def test_is_human_false_for_empty_and_role_names(self) -> None:
+        assert adt.is_human("") is False
+        assert adt.is_human("$generator") is False
+        assert adt.is_human("$active_discriminator") is False
+        assert adt.is_human("$passive_discriminator") is False
+
+
+class TestAgentRole:
+    def test_members_exactly_three(self) -> None:
+        assert set(adt.AgentRole) == {
+            adt.AgentRole.GENERATOR,
+            adt.AgentRole.ACTIVE_DISCRIMINATOR,
+            adt.AgentRole.PASSIVE_DISCRIMINATOR,
+        }
+
+    def test_json_values_match_adt_names(self) -> None:
+        assert adt.AgentRole.GENERATOR.value == "$generator"
+        assert adt.AgentRole.ACTIVE_DISCRIMINATOR.value == "$active_discriminator"
+        assert adt.AgentRole.PASSIVE_DISCRIMINATOR.value == "$passive_discriminator"
+
+    def test_role_names_never_collide_with_human_sentinel(self) -> None:
+        for role in adt.AgentRole:
+            assert role.value != adt.HUMAN_USER_NAME
+
+    def test_from_name_roundtrip_every_member(self) -> None:
+        for role in adt.AgentRole:
+            assert adt.agent_role_from_name(role.value) is role
+            # 值 -> 枚举 -> 值 无损
+            assert adt.agent_role_from_name(adt.agent_role_from_name(role.value).value) is role
+
+    @pytest.mark.parametrize("bad", [
+        "", "$root", "generator", "GENERATOR", "$generator ", " $generator",
+        "$active", "$passive", "active_discriminator",
+    ])
+    def test_from_name_rejects_unknown_strings(self, bad: str) -> None:
+        with pytest.raises(ValueError):
+            adt.agent_role_from_name(bad)
+
+    @pytest.mark.parametrize("bad", [None, 3, 3.5, ["$generator"], {"$generator"}])
+    def test_from_name_rejects_non_strings(self, bad: object) -> None:
+        with pytest.raises((TypeError, ValueError)):
+            adt.agent_role_from_name(bad)  # type: ignore[arg-type]
+
