@@ -2713,6 +2713,19 @@ function bind() {
   // anywhere outside it -- including non-focusable surfaces like chat blank
   // space, where no focus event ever fires -- moves focus to <body> and stops
   // the cursor blink. After such a click, hand focus straight back to the
+  // Selectable-text surfaces must never lose focus to the terminal on
+  // pointerdown: the focus grab below is meant to restart the cursor blink,
+  // but stealing focus out from under a mousedown on chat text (or the
+  // header identity) also cancels native text selection before it can start
+  // (drag, double-click and Shift+arrows all die; copy returns nothing).
+  function isTextSelectionSurface(node) {
+    const selectors = [".message-content", ".session-identity", "#meeting-title",
+                       ".presence-strip", ".evaluation-excerpt"];
+    for (const selector of selectors) {
+      if (node && node.closest && node.closest(selector)) return true;
+    }
+    return false;
+  }
   // terminal; editable fields (chat composer, dialogs) are never touched, and
   // playback scrubbing (followLive false) leaves focus alone.
   document.addEventListener("pointerdown", (event) => {
@@ -2720,6 +2733,7 @@ function bind() {
     const target = event.target;
     if (el.terminal_screen && (target === el.terminal_screen || el.terminal_screen.contains(target))) return;
     if (isEditableFocusTarget(target)) return;
+    if (isTextSelectionSurface(target)) return;
     setTimeout(focusTerminalCursor, 0);
   }, true);
   el.selection_menu.addEventListener("pointerdown", (event) => event.stopPropagation());
