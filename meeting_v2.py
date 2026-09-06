@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import MISSING, asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
 
 from typing_policy import TYPING_POLICY_VERSION, TYPING_PROFILES
 from references import reference_from_event
@@ -39,6 +39,13 @@ VALID_PHASES = {
     "interrupted",
 }
 VALID_OWNERS = {"agent", "human", "none"}
+# Agent roles follow the Meeting ADT (agent_name2role). "human" is reserved
+# and never appears as an agent name. A meeting always has exactly one
+# generator agent that owns the shared terminal (multi-agent slices keep
+# this invariant; additional agents join as discriminators).
+VALID_AGENT_ROLES = {"generator", "active_discriminator", "passive_discriminator"}
+HUMAN_USER = "human"
+DEFAULT_AGENT_NAME = "agent"
 VALID_EVENT_KINDS = {"chat", "screen", "score", "action", "control", "state", "error"}
 VALID_SCORE_TAGS = {"competent", "incompetent"}
 VALID_AGENT_BACKENDS = {"responses", "codex-app-server", "claude-code", "trae-agent"}
@@ -59,6 +66,42 @@ class UnsupportedMeetingError(MeetingError):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+# -- agent identity helpers -------------------------------------------------
+
+def normalize_agent_role_map(
+    role_map: Optional[Mapping[str, str]],
+    *,
+    require_generator: bool = True,
+) -> Dict[str, str]:
+    """Validate and normalize the ADT agent_name2role map.
+
+    Rules:
+    - keys are non-empty agent names; ``"human"`` is reserved and may not be
+      an agent name;
+    - values must be a member of VALID_AGENT_ROLES;
+    - a meeting keeps at least one ``generator`` (the shared-terminal owner).
+    An empty/None map falls back to the legacy single agent
+    ``{DEFAULT_AGENT_NAME: "generator"}`` so pre-identity meetings behave
+    exactly as before.
+    """
+    if not role_map:
+        return {DEFAULT_AGENT_NAME: "generator"}
+    if not isinstance(role_map, Mapping):
+        raise MeetingError("agent_name2role must be a mapping of name -> role")
+    normalized: Dict[str, str] = {}
+    for name, role in role_map.items():
+        if not isinstance(name, str) or not name.strip():
+            raise MeetingError("agent names must be non-empty strings")
+        if name == HUMAN_USER:
+            raise MeetingError('"human" is reserved and cannot be an agent name')
+        if not isinstance(role, str) or role not in VALID_AGENT_ROLES:
+            raise MeetingError(f"invalid agent role {role!r} for {name!r}")
+        normalized[name.strip()] = role
+    if require_generator and "generator" not in set(normalized.values()):
+        raise MeetingError("meeting requires exactly one generator agent")
+    return normalized
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -152,12 +195,31 @@ class Meeting:
     typing_profile: str = "balanced"
     typing_policy_version: str = TYPING_POLICY_VERSION
     agent_ordinal: int = 0
+    # ADT agent_name2role: single source of who is in the meeting and with
+    # which role. Append-only at join time; see MeetingStore.add_agent_role.
+    # The legacy default ({DEFAULT_AGENT_NAME: "generator"}) keeps every
+    # pre-identity meeting behaving exactly as before.
+    agent_name2role: Dict[str, str] = field(default_factory=dict)
     reasoning_effort: Optional[str] = None
     schema_version: int = SCHEMA_VERSION
     mode: str = MEETING_MODE
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    @property
+    def effective_role_map(self) -> Dict[str, str]:
+        """agent_name2role with the legacy fallback applied when empty."""
+        return self.agent_name2role or {DEFAULT_AGENT_NAME: "generator"}
+
+    def agent_names(self) -> Set[str]:
+        return set(self.effective_role_map)
+
+    def role_of(self, agent_name: str) -> Optional[str]:
+        return self.effective_role_map.get(agent_name)
+
+    def is_agent_name(self, agent_name: str) -> bool:
+        return agent_name in self.agent_names()
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "Meeting":
@@ -233,11 +295,13 @@ class MeetingStore:
         agent_provider: str = "openai",
         agent_ordinal: int = 0,
         reasoning_effort: Optional[str] = None,
+        agent_name2role: Optional[Mapping[str, str]] = None,
     ) -> "MeetingStore":
         if not isinstance(initial_message, str) or not initial_message.strip():
             raise MeetingError("initial message must be non-empty")
         if len(initial_message.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise MeetingError(f"initial message exceeds {MAX_MESSAGE_BYTES} bytes")
+        roles = normalize_agent_role_map(agent_name2role)
         if agent_backend not in VALID_AGENT_BACKENDS:
             raise MeetingError("invalid agent backend")
         if agent_provider not in VALID_AGENT_PROVIDERS:
@@ -285,6 +349,7 @@ class MeetingStore:
             agent_provider=agent_provider,
             typing_profile=typing_profile,
             agent_ordinal=agent_ordinal,
+            agent_name2role=roles,
             reasoning_effort=reasoning_effort,
             cycle_started_at=now,
         )
@@ -314,11 +379,45 @@ class MeetingStore:
             raise MeetingError(f"invalid meeting manifest: {meeting_id}") from exc
         if meeting.meeting_id != meeting_id:
             raise MeetingError("meeting manifest id mismatch")
+        # Legacy manifests have no role map: fall back to the single-agent
+        # default so pre-identity meetings keep their exact behavior.
+        if not meeting.agent_name2role:
+            meeting.agent_name2role = {DEFAULT_AGENT_NAME: "generator"}
+        else:
+            meeting.agent_name2role = normalize_agent_role_map(meeting.agent_name2role)
         store = cls(run_dir, meeting)
         store._contained_path(meeting.workspace)
         for relative in meeting.streams.values():
             store._contained_path(relative)
         return store
+
+    def add_agent_role(self, agent_name: str, role: str) -> "Meeting":
+        """Join an agent to the meeting (ADT: role map is append-only).
+
+        Rules:
+        - ``agent_name`` must be non-empty and never ``"human"``;
+        - ``role`` must be a member of VALID_AGENT_ROLES;
+        - an existing agent's role is immutable: re-joining with the same
+          role is a no-op, re-joining with a different role raises.
+        """
+        if not isinstance(agent_name, str) or not agent_name.strip():
+            raise MeetingError("agent name must be non-empty")
+        if agent_name == HUMAN_USER:
+            raise MeetingError('"human" is reserved and cannot be an agent name')
+        if not isinstance(role, str) or role not in VALID_AGENT_ROLES:
+            raise MeetingError(f"invalid agent role {role!r}")
+        with self._exclusive_state():
+            current = self.meeting.effective_role_map
+            existing = current.get(agent_name)
+            if existing is not None:
+                if existing != role:
+                    raise MeetingError(
+                        f"role of agent {agent_name!r} is immutable (already {existing!r})"
+                    )
+                return self.meeting
+            self.meeting.agent_name2role = {**current, agent_name: role}
+            self._write_manifest()
+        return self.meeting
 
     @staticmethod
     def peek_schema(manifest_path: Path) -> Optional[int]:
@@ -555,8 +654,8 @@ class MeetingStore:
         reference: Optional[Dict[str, Any]] = None,
         references: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        if actor not in {"human", "agent"}:
-            raise MeetingError("chat actor must be human or agent")
+        if not (actor == HUMAN_USER or actor in self.meeting.agent_names()):
+            raise MeetingError("chat actor must be human or a meeting agent")
         if message_type not in {"request", "ack", "progress", "question", "final"}:
             raise MeetingError("invalid chat message type")
         if not isinstance(content, str) or not content.strip():
@@ -670,8 +769,10 @@ class MeetingStore:
         start_time marks the boundary. Stored as a ``control`` event so the
         Agent-visible journal shape does not grow new kinds.
         """
-        if user_name not in {"human", "agent"}:
-            raise MeetingError("terminal control user_name must be human or agent")
+        # ADT terminal_capable: only the human or the generator agent may
+        # own the shared pane; discriminators never hold the terminal.
+        if not (user_name == HUMAN_USER or self.meeting.role_of(user_name) == "generator"):
+            raise MeetingError("terminal control user_name must be human or the generator agent")
         pane = self.meeting.pane_id or ""
         digits = pane.lstrip("%")
         tmux_pane: Optional[int] = int(digits) if digits.isdigit() else None
