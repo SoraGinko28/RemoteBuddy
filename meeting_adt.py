@@ -317,6 +317,128 @@ __all__ += [
 ]
 
 
+# =====================================================================
+# G7：ChatMessage / ChatStreamChunk（聊天流）
+# =====================================================================
+#
+# ChatMessage := DataClass
+#   * $message list[$raw_msg str | $at_user_name UserName | $reference ContentReference]
+#   * $user_name UserName
+#   * $time datetime
+#
+# 对照真 journal 的 chat 事件（actor/content/captured_at）落盘映射：
+#   - user_name：actor=="human" → "$human"；否则 actor 即 agent 名。
+#   - time：captured_at（UTC，带 Z 后缀，ISO8601）。
+#   - message：当前 journal 只有纯文本 content → [{"raw": content}]；
+#     @点名/引用元素在 G8 加 {"at_user_name"|"ref"}。
+#   - phase/message_type 是运行噪音，不属 ADT，不落 ChatMessage。
+#
+# ChatMessage 落盘 JSON：
+#   {"user_name": <str>, "time": <ISO8601>, "message": [part_json, ...]}
+#   part_json := {"raw": str} | {"at_user_name": str} | {"ref": {...G8}}
+# ChatStreamChunk 落盘 JSON：
+#   {"stream_name": "chat", "chunks": [ChatMessage_json, ...]}
+
+def _iso_parse(text: str) -> _dt.datetime:
+    return _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def _iso_format(moment: _dt.datetime) -> str:
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=_dt.timezone.utc)
+    return moment.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(frozen=True)
+class RawMessage:
+    """$raw_msg str。"""
+    text: str
+
+
+@dataclass(frozen=True)
+class AtUserMessage:
+    """$at_user_name UserName。"""
+    user_name: str
+
+
+ChatMessagePart = RawMessage | AtUserMessage
+
+
+@dataclass
+class ChatMessage:
+    user_name: str
+    time: _dt.datetime
+    message: list[ChatMessagePart] = field(default_factory=list)
+
+
+@dataclass
+class ChatStreamChunk:
+    stream_name: str = CHAT_STREAM_NAME
+    chunks: list[ChatMessage] = field(default_factory=list)
+
+
+def chat_part_to_dict(part: ChatMessagePart) -> dict:
+    if isinstance(part, RawMessage):
+        return {"raw": part.text}
+    if isinstance(part, AtUserMessage):
+        return {"at_user_name": part.user_name}
+    raise TypeError(f"unknown chat part: {type(part).__name__}")
+
+
+def chat_part_from_dict(payload: dict) -> ChatMessagePart:
+    if "raw" in payload:
+        return RawMessage(text=payload["raw"])
+    if "at_user_name" in payload:
+        return AtUserMessage(user_name=payload["at_user_name"])
+    raise ValueError(f"unknown chat part json: {payload!r}")
+
+
+def chat_message_to_dict(message: ChatMessage) -> dict:
+    return {
+        "user_name": message.user_name,
+        "time": _iso_format(message.time),
+        "message": [chat_part_to_dict(p) for p in message.message],
+    }
+
+
+def chat_message_from_dict(payload: dict) -> ChatMessage:
+    try:
+        user_name = payload["user_name"]
+        time = _iso_parse(payload["time"])
+        parts = [chat_part_from_dict(p) for p in payload["message"]]
+    except KeyError as exc:
+        raise ValueError(f"chat message missing key {exc.args[0]}: {payload!r}") from exc
+    return ChatMessage(user_name=user_name, time=time, message=parts)
+
+
+def chat_stream_chunk_to_dict(chunk: ChatStreamChunk) -> dict:
+    return {"stream_name": chunk.stream_name, "chunks": [chat_message_to_dict(m) for m in chunk.chunks]}
+
+
+def chat_stream_chunk_from_dict(payload: dict) -> ChatStreamChunk:
+    if payload.get("stream_name") != CHAT_STREAM_NAME:
+        raise ValueError(f"not a chat chunk: {payload.get('stream_name')!r}")
+    return ChatStreamChunk(
+        stream_name=payload["stream_name"],
+        chunks=[chat_message_from_dict(m) for m in payload["chunks"]],
+    )
+
+
+__all__ += [
+    "RawMessage",
+    "AtUserMessage",
+    "ChatMessage",
+    "ChatStreamChunk",
+    "chat_part_to_dict",
+    "chat_part_from_dict",
+    "chat_message_to_dict",
+    "chat_message_from_dict",
+    "chat_stream_chunk_to_dict",
+    "chat_stream_chunk_from_dict",
+]
+
+
+
 
 
 __all__ += [

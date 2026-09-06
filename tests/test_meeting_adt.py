@@ -1,6 +1,6 @@
 """meeting_adt 测试：随目标链 G1–G14 每颗一个分区，分区内覆盖边界与失败路径。"""
 
-from datetime import datetime as _datetime
+from datetime import datetime as _datetime, timezone as _dt_timezone
 
 import pytest
 
@@ -89,6 +89,16 @@ class TestStreamNames:
             "Rgb",
             "PaletteColor",
             "TerminalTextSegment",
+            "RawMessage",
+            "AtUserMessage",
+            "ChatMessage",
+            "ChatStreamChunk",
+            "chat_part_to_dict",
+            "chat_part_from_dict",
+            "chat_message_to_dict",
+            "chat_message_from_dict",
+            "chat_stream_chunk_to_dict",
+            "chat_stream_chunk_from_dict",
         }
 
 
@@ -566,6 +576,139 @@ class TestTerminalTextSegment:
         )
         adt.assert_screen_plain_matches(cap)
         adt.assert_segments_valid(cap)
+
+
+# =====================================================================
+# G7：ChatMessage / ChatStreamChunk（含落盘 JSON 往返）
+# =====================================================================
+
+class TestTimeCodec:
+    def test_iso_parse_z_suffix(self) -> None:
+        moment = adt._iso_parse("2026-09-02T07:35:37.684Z")
+        assert moment.year == 2026
+        assert moment.microsecond == 684000
+        assert moment.tzinfo is not None
+
+    def test_iso_format_roundtrip_utc(self) -> None:
+        moment = adt._iso_parse("2026-09-02T07:35:37.684Z")
+        assert adt._iso_format(moment) == "2026-09-02T07:35:37.684000Z"
+
+    def test_iso_format_naive_becomes_utc(self) -> None:
+        moment = _datetime(2026, 9, 2, 7, 35, 37)
+        assert adt._iso_format(moment).endswith("Z")
+
+    def test_iso_roundtrip_preserves_microseconds(self) -> None:
+        moment = _datetime(2026, 9, 2, 7, 35, 37, 123456, tzinfo=_dt_timezone.utc)
+        assert adt._iso_parse(adt._iso_format(moment)) == moment
+
+
+class TestChatPartCodec:
+    def test_raw_roundtrip(self) -> None:
+        part = adt.RawMessage(text="hello")
+        assert adt.chat_part_from_dict(adt.chat_part_to_dict(part)) == part
+
+    def test_at_roundtrip_human(self) -> None:
+        part = adt.AtUserMessage(user_name=adt.HUMAN_USER_NAME)
+        assert adt.chat_part_from_dict(adt.chat_part_to_dict(part)) == part
+
+    def test_at_roundtrip_agent(self) -> None:
+        part = adt.AtUserMessage(user_name="bob")
+        assert adt.chat_part_from_dict(adt.chat_part_to_dict(part)) == part
+
+    def test_at_json_key(self) -> None:
+        assert adt.chat_part_to_dict(adt.AtUserMessage(user_name="bob")) == {
+            "at_user_name": "bob",
+        }
+
+    def test_from_dict_unknown_part_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown chat part"):
+            adt.chat_part_from_dict({"mention": "bob"})
+
+    def test_to_dict_unknown_object_raises(self) -> None:
+        with pytest.raises(TypeError, match="unknown chat part"):
+            adt.chat_part_to_dict("raw-string")  # type: ignore[arg-type]
+
+
+class TestChatMessageCodec:
+    def _message(self) -> adt.ChatMessage:
+        return adt.ChatMessage(
+            user_name="alice",
+            time=_datetime(2026, 9, 2, 7, 35, 41, 328000, tzinfo=_dt_timezone.utc),
+            message=[
+                adt.RawMessage(text="hi "),
+                adt.AtUserMessage(user_name="bob"),
+                adt.RawMessage(text=" look here"),
+            ],
+        )
+
+    def test_roundtrip_full(self) -> None:
+        msg = self._message()
+        assert adt.chat_message_from_dict(adt.chat_message_to_dict(msg)) == msg
+
+    def test_json_shape(self) -> None:
+        payload = adt.chat_message_to_dict(self._message())
+        assert payload["user_name"] == "alice"
+        assert payload["time"].startswith("2026-09-02T07:35:41.328")
+        assert payload["time"].endswith("Z")
+        assert payload["message"] == [
+            {"raw": "hi "},
+            {"at_user_name": "bob"},
+            {"raw": " look here"},
+        ]
+
+    def test_human_user_name_encoded(self) -> None:
+        msg = adt.ChatMessage(user_name=adt.HUMAN_USER_NAME, time=_dt_now(),
+                              message=[adt.RawMessage(text="x")])
+        assert adt.chat_message_to_dict(msg)["user_name"] == "$human"
+
+    def test_empty_message_list(self) -> None:
+        msg = adt.ChatMessage(user_name="a", time=_dt_now())
+        assert adt.chat_message_from_dict(adt.chat_message_to_dict(msg)) == msg
+
+    def test_missing_key_raises(self) -> None:
+        with pytest.raises(ValueError, match="missing key"):
+            adt.chat_message_from_dict({"user_name": "a", "time": "2026-09-02T07:35:37Z"})
+
+    def test_bad_time_raises(self) -> None:
+        with pytest.raises(ValueError):
+            adt.chat_message_from_dict(
+                {"user_name": "a", "time": "not-a-time", "message": []}
+            )
+
+
+class TestChatStreamChunkCodec:
+    def _chunk(self) -> adt.ChatStreamChunk:
+        return adt.ChatStreamChunk(
+            stream_name=adt.CHAT_STREAM_NAME,
+            chunks=[
+                adt.ChatMessage(user_name="alice", time=_dt_now(),
+                                message=[adt.RawMessage(text="a")]),
+                adt.ChatMessage(user_name=adt.HUMAN_USER_NAME, time=_dt_now(),
+                                message=[adt.AtUserMessage(user_name="alice")]),
+            ],
+        )
+
+    def test_roundtrip(self) -> None:
+        chunk = self._chunk()
+        assert adt.chat_stream_chunk_from_dict(adt.chat_stream_chunk_to_dict(chunk)) == chunk
+
+    def test_json_shape(self) -> None:
+        payload = adt.chat_stream_chunk_to_dict(self._chunk())
+        assert payload["stream_name"] == "chat"
+        assert len(payload["chunks"]) == 2
+
+    def test_from_dict_rejects_wrong_stream_name(self) -> None:
+        with pytest.raises(ValueError, match="not a chat chunk"):
+            adt.chat_stream_chunk_from_dict({"stream_name": "screen", "chunks": []})
+
+    def test_default_stream_name_is_chat(self) -> None:
+        assert adt.ChatStreamChunk().stream_name == "chat"
+
+
+# 测试辅助：UTC aware 的 now
+def _dt_now() -> _datetime:
+    return _datetime.now(tz=_dt_timezone.utc)
+
 
 
 
