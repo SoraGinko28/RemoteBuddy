@@ -104,6 +104,29 @@ def normalize_agent_role_map(
     return normalized
 
 
+# -- @-mention (ADT: $at_user_name) ---------------------------------------
+
+_AT_NAME_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9_.-]*)")
+
+
+def mentioned_agent_names(content: str, role_map: Mapping[str, str]) -> list:
+    """Names mentioned with a leading ``@`` that are members of role_map.
+
+    Order follows the message text; duplicates are removed. ``@human`` or an
+    unknown name is simply not a mention of any member.
+    """
+    if not isinstance(content, str):
+        return []
+    seen = set()
+    result: list = []
+    for match in _AT_NAME_RE.finditer(content):
+        name = match.group(1)
+        if name in role_map and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -220,6 +243,17 @@ class Meeting:
 
     def is_agent_name(self, agent_name: str) -> bool:
         return agent_name in self.agent_names()
+
+    def generator_name(self) -> str:
+        """Name of the generator agent (the shared-terminal owner/worker).
+
+        Today every meeting has exactly one generator; the default role map
+        names it DEFAULT_AGENT_NAME ("agent"), keeping legacy behavior.
+        """
+        for name, role in self.effective_role_map.items():
+            if role == "generator":
+                return name
+        return DEFAULT_AGENT_NAME  # unreachable under validation; safe fallback
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "Meeting":
@@ -936,7 +970,9 @@ class MeetingStore:
                 raise MeetingError(f"invalid meeting status: {value}")
             if key == "phase" and value not in VALID_PHASES:
                 raise MeetingError(f"invalid meeting phase: {value}")
-            if key == "control_owner" and value not in VALID_OWNERS:
+            if key == "control_owner" and not (
+                value in {"human", "none"} or self.meeting.is_agent_name(value)
+            ):
                 raise MeetingError(f"invalid control owner: {value}")
             if key == "typing_profile" and value not in TYPING_PROFILES:
                 raise MeetingError("invalid typing profile")

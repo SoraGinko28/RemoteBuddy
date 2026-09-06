@@ -134,6 +134,10 @@ class AgentAction:
     keys: Sequence[Dict[str, str]]
     delay_ms: int
     references: Sequence[Dict[str, Any]] = ()
+    # Model-declared: when False the action's output is not needed for the
+    # next step ("fire and forget") -- the runner must not wait for a result
+    # nor count repeats of it as a stall.
+    result_needed: bool = True
 
     @classmethod
     def from_dict(
@@ -159,7 +163,7 @@ class AgentAction:
         allowed_message_types: Optional[Sequence[str]] = None,
     ) -> "AgentAction":
         required = {"type", "message_type", "content", "command", "path", "keys", "delay_ms"}
-        if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - {"references"}:
+        if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - {"references", "result_needed"}:
             raise AgentProtocolError("model action has unexpected fields")
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
@@ -186,6 +190,15 @@ class AgentAction:
             raise AgentProtocolError("keys must be an array")
         keys = normalize_model_key_tokens(keys)
         references = normalize_reference_tokens(payload.get("references", []))
+        raw_result_needed = payload.get("result_needed", True)
+        if isinstance(raw_result_needed, bool):
+            result_needed = raw_result_needed
+        elif raw_result_needed in (0, 1):
+            result_needed = bool(raw_result_needed)
+        elif isinstance(raw_result_needed, str) and raw_result_needed.strip().lower() in {"true", "false"}:
+            result_needed = raw_result_needed.strip().lower() == "true"
+        else:
+            raise AgentProtocolError("result_needed must be a boolean")
 
         if action_type == "chat":
             if message_type not in {"ack", "progress", "question"} or not content.strip():
@@ -236,6 +249,7 @@ class AgentAction:
             tuple(keys),
             delay_ms,
             tuple(references),
+            result_needed,
         )
 
 
@@ -926,6 +940,13 @@ def action_json_schema(
         )
     if not variants:
         raise ValueError("action schema has no valid variants")
+    # Optional model-declared flag: false means the action's output is not
+    # needed for the next step (runner must not wait for a result).
+    for variant in variants:
+        variant["properties"]["result_needed"] = {
+            "type": "boolean",
+            "description": "False when this action needs no result to continue.",
+        }
     return {
         "type": "object",
         "additionalProperties": False,

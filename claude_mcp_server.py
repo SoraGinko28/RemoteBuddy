@@ -114,6 +114,10 @@ async def run() -> None:
                 # Keep the pre-reference bridge shape for callers that did not
                 # attach quotes; AgentAction treats the field as optional.
                 normalized_action.pop("references", None)
+            if action.result_needed:
+                # Default True stays off the wire; only an explicit false
+                # ("no result needed") is transmitted.
+                normalized_action.pop("result_needed", None)
             normalized = {"action": normalized_action}
             result = await asyncio.to_thread(_bridge_call, normalized)
         except (AgentProtocolError, BridgeError, OSError, ValueError) as exc:

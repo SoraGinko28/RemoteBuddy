@@ -12,7 +12,7 @@ const HUMAN_TAKEOVER_FRAME_MS = 200;
 
 const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
-  "welcome", "session-view", "meeting-title", "agent-state", "agent-state-text", "status-badge", "owner-badge",
+  "welcome", "session-view", "meeting-title", "agent-states", "status-badge", "owner-badge",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
@@ -107,6 +107,91 @@ const AGENT_STATE_PHASES = {
 
 function agentStateForPhase(phase) {
   return AGENT_STATE_PHASES[phase] || "idle";
+}
+
+// Per-member state for the header chips. The generator follows terminal
+// ownership; every other member (discriminator/reviewer) is "active" while
+// the newest thinking/acting band in the timeline belongs to it.
+const IDLE_PHASE_BOUNDARY = new Set([
+  "created", "waiting_for_user", "human_control", "completion_proposed", "cycle_timeout", "api_error",
+]);
+
+// If a terminal owner claims to be thinking/acting but authored no event for
+// this long, the worker is likely orphaned (state parked after a crash);
+// stop reporting a live turn.
+const STALE_BAND_MS = 180_000;
+
+function latestBandTime(actor) {
+  const timeline = state.timeline || [];
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index];
+    const phase = event?.phase;
+    if (event?.actor === actor) {
+      if (phase === "agent_thinking" || phase === "agent_acting") {
+        const stamp = Date.parse(event.captured_at || "");
+        return Number.isFinite(stamp) ? stamp : 0;
+      }
+      if (IDLE_PHASE_BOUNDARY.has(phase)) return 0;
+      continue;
+    }
+    if (IDLE_PHASE_BOUNDARY.has(phase)) return 0;
+    if (event?.actor === "harness" || !phase) continue;
+  }
+  return 0;
+}
+
+function memberState(actor, meeting) {
+  const terminal = ["completed", "failed", "interrupted"].includes(meeting.status);
+  if (terminal) return "idle";
+  if (meeting.control_owner === actor) {
+    const stateName = agentStateForPhase(meeting.phase);
+    if ((stateName === "thinking" || stateName === "acting")
+        && Date.now() - latestBandTime(actor) > STALE_BAND_MS) {
+      return "error";  // parked/orphaned: no live turn for minutes
+    }
+    return stateName;
+  }
+  // A non-owner member is busy only while nobody owns the terminal (reviewer
+  // turns run with control_owner "none") AND the meeting is mid-turn AND the
+  // newest thinking/acting band in the timeline belongs to that member.
+  // Whenever the meeting has parked (waiting etc.) or a terminal owner holds
+  // the turn, every non-owner member is idle.
+  if (meeting.control_owner !== "none") return "idle";
+  if (!["agent_thinking", "agent_acting"].includes(meeting.phase)) return "idle";
+  const timeline = state.timeline || [];
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index];
+    const phase = event?.phase;
+    if (event?.actor === actor) {
+      if (phase === "agent_thinking" || phase === "agent_acting") {
+        return phase === "agent_acting" ? "acting" : "thinking";
+      }
+      if (IDLE_PHASE_BOUNDARY.has(phase)) return "idle";
+      continue;
+    }
+    if (IDLE_PHASE_BOUNDARY.has(phase)) return "idle";
+    if (event?.actor === "harness" || !phase) continue;
+  }
+  return "idle";
+}
+
+function renderMemberStates(meeting) {
+  if (!el.agent_states) return;
+  const roles = (meeting.agent_name2role && Object.keys(meeting.agent_name2role).length)
+    ? meeting.agent_name2role
+    : { "agent": "generator" };
+  el.agent_states.replaceChildren();
+  for (const actor of Object.keys(roles)) {
+    const stateName = memberState(actor, meeting);
+    const chip = node("span", `agent-state ${stateName}`);
+    const dot = document.createElement("span");
+    dot.className = "agent-state-dot";
+    dot.setAttribute("aria-hidden", "true");
+    chip.append(dot, document.createTextNode(
+      `${actor} · ${labels.agentState[stateName] || "待命"}`));
+    el.agent_states.append(chip);
+  }
+  el.agent_states.hidden = false;
 }
 
 function eventDelay(event, queueLength = 0) {
@@ -335,11 +420,8 @@ function renderHeader() {
   if (state.pointerSelecting || hasLiveSelection()) return;
   const meeting = state.snapshot.meeting;
   el.meeting_title.textContent = meeting.meeting_id;
-  if (el.agent_state) {
-    const agentState = agentStateForPhase(meeting.phase);
-    el.agent_state_text.textContent = `${agentName(meeting)} · ${labels.agentState[agentState]}`;
-    el.agent_state.className = `agent-state ${agentState}`;
-    el.agent_state.hidden = false;
+  if (el.agent_states) {
+    renderMemberStates(meeting);
   }
   if (el.status_badge) {
     el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
@@ -668,8 +750,14 @@ function renderChat() {
       const timeEl = node("time", "", fmtTime(event.captured_at));
       timeEl.title = "跳转到相近终端画面";
       timeEl.addEventListener("click", () => jumpToChatTime(event));
+      const meetingSnapshot = state.snapshot?.meeting;
+      // Show the record's own speaker names: human = 你, every agent (and
+      // future role-map member) labels by its actor name as recorded.
+      const speaker = event.actor === "human"
+        ? "你"
+        : (event.actor || agentName(meetingSnapshot));
       head.append(
-        node("strong", "", event.actor === "human" ? "你" : agentName(state.snapshot?.meeting)),
+        node("strong", "", speaker),
         node("span", `message-type ${event.message_type || ""}`, labels.message[event.message_type] || "消息"),
         timeEl,
       );

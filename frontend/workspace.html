@@ -49,12 +49,10 @@
           <div class="session-identity">
             <h1 id="meeting-title">—</h1>
             <p id="failure-message" class="failure-message" hidden></p>
+            <button id="session-more-button" class="session-more-button identity-toggle" type="button" title="展开会话详情" aria-label="展开会话详情" aria-expanded="false">▾</button>
           </div>
           <div class="header-actions">
-            <span id="agent-state" class="agent-state" hidden>
-              <span class="agent-state-dot" aria-hidden="true"></span><span id="agent-state-text"></span>
-              <button id="session-more-button" class="session-more-button" type="button" title="展开会话详情" aria-label="展开会话详情" aria-expanded="false">▾</button>
-            </span>
+            <div id="agent-states" class="agent-states" hidden></div>
             <button id="refresh-button" class="icon-button" type="button" title="刷新" aria-label="刷新">↻</button>
             <button id="resume-button" class="command-button" type="button" hidden>继续 Agent</button>
             <button id="complete-button" class="command-button" type="button">结束并保留</button>

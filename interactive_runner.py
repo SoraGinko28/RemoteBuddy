@@ -53,6 +53,10 @@ CYCLE_LIMIT_SECONDS = 900.0
 # Consecutive undecodable/invalid model actions tolerated before the cycle
 # fails; each retry feeds the validation error back as an observation.
 MAX_INVALID_ACTION_RETRIES = 3
+# If the model repeats the exact same dynamic action this many times without
+# a usable result, park the turn instead of looping ("not every dynamic tool
+# completes; once the threshold is hit, move on").
+DYNAMIC_STALL_LIMIT = 3
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
@@ -98,6 +102,39 @@ class InteractiveRunner:
         self._dynamic_action_active = threading.Event()
         self._cycle_started_monotonic = time.monotonic()
         self._current_input_seq = self.store.last_event_sequence()
+        self._stall_fingerprint: Optional[tuple] = None
+        self._stall_streak = 0
+
+    @property
+    def agent_name(self) -> str:
+        """The identity this worker acts under (its generator role name).
+
+        One worker = the meeting's generator agent; everything this runner
+        writes to the journal (chat actor, action actor, terminal ownership)
+        uses this name instead of the hard-coded legacy name. With the default
+        role map the value equals DEFAULT_AGENT_NAME, so legacy behavior is
+        byte-for-byte unchanged.
+        """
+        return self.store.meeting.generator_name()
+
+    @staticmethod
+    def _dynamic_action_fingerprint(action: AgentAction) -> Optional[tuple]:
+        """Stable identity of a dynamic action for stall detection.
+
+        Request/response ids are excluded: identical repeated attempts must
+        compare equal.
+        """
+        if not isinstance(action, AgentAction):
+            return None
+        return (
+            action.type,
+            action.message_type,
+            action.command,
+            action.path,
+            action.content[:80],
+            repr(action.keys)[:80],
+            action.delay_ms,
+        )
 
     def _is_stale(self, generation: int) -> bool:
         """The request no longer speaks for the current cycle or control state."""
@@ -105,7 +142,7 @@ class InteractiveRunner:
             self.store.stop_requested()
             or self.store.meeting.request_generation != generation
             or self.store.meeting.control_requested == "human"
-            or self.store.meeting.control_owner != "agent"
+            or self.store.meeting.control_owner != self.agent_name
         )
 
     def _reset_cycle_state(self) -> None:
@@ -150,7 +187,7 @@ class InteractiveRunner:
                 self.store.update(
                     status="running",
                     phase="agent_thinking",
-                    control_owner="agent",
+                    control_owner=self.agent_name,
                     conversation_id=session_id,
                     agent_backend=backend_name,
                     agent_session_id=session_id,
@@ -201,7 +238,7 @@ class InteractiveRunner:
                 changes: Dict[str, Any] = {
                     "status": "running",
                     "phase": "agent_thinking",
-                    "control_owner": "agent",
+                    "control_owner": self.agent_name,
                     "control_requested": None,
                     "failure": None,
                     "recovery_required": False,
@@ -328,7 +365,7 @@ class InteractiveRunner:
                     self.store.update(**changes)
                 self.store.append_event(
                     "state",
-                    "agent",
+                    self.agent_name,
                     self.store.meeting.phase,
                     data={"agent_protocol": allowed},
                 )
@@ -344,7 +381,7 @@ class InteractiveRunner:
                 self._check_stop()
                 if self._honor_control_request():
                     return
-                if self.store.meeting.control_owner != "agent" or self.store.meeting.status != "running":
+                if self.store.meeting.control_owner != self.agent_name or self.store.meeting.status != "running":
                     return
                 capture_workspace(self.store, self.transport)
                 if self.store.meeting.pane_id:
@@ -381,7 +418,7 @@ class InteractiveRunner:
                 self.store.update(phase="agent_thinking", pending_action_id=request_id)
                 self.store.append_event(
                     "action",
-                    "agent",
+                    self.agent_name,
                     "agent_thinking",
                     data={"action_id": request_id, "status": "request_started", "input_seq": latest_sequence},
                 )
@@ -417,7 +454,7 @@ class InteractiveRunner:
                     self.store.update(pending_action_id=None)
                     self.store.append_event(
                         "action",
-                        "agent",
+                        self.agent_name,
                         self.store.meeting.phase,
                         data={"action_id": request_id, "status": "superseded", "interrupted": True},
                     )
@@ -427,7 +464,7 @@ class InteractiveRunner:
                             return
                         if bool(getattr(self.client, "restart_on_interrupt", False)):
                             return
-                        if self.store.meeting.control_owner == "agent":
+                        if self.store.meeting.control_owner == self.agent_name:
                             continue
                         return
                 self._api_error(request_id, exc)
@@ -488,7 +525,7 @@ class InteractiveRunner:
                 if stale:
                     self.store.append_event(
                         "action",
-                        "agent",
+                        self.agent_name,
                         self.store.meeting.phase,
                         data={
                             "action_id": request_id,
@@ -503,6 +540,39 @@ class InteractiveRunner:
                     continue
 
                 if response.executed:
+                    # Model-declared fire-and-forget: this action's output is
+                    # not needed, so do not wait for a result and never count
+                    # repeats of it as a stall.
+                    if not getattr(response.action, "result_needed", True):
+                        self._stall_fingerprint = None
+                        self._stall_streak = 0
+                        if self.store.meeting.phase != "agent_thinking":
+                            return
+                        continue
+                    # Dynamic tools are not guaranteed to return a usable
+                    # result. If the model repeats the same action over and
+                    # over with nothing to show, stop treating the turn as
+                    # alive: park at waiting after a small threshold instead
+                    # of burning the action budget in a stall loop.
+                    fingerprint = self._dynamic_action_fingerprint(response.action)
+                    if fingerprint and fingerprint == self._stall_fingerprint:
+                        self._stall_streak += 1
+                    else:
+                        self._stall_fingerprint = fingerprint
+                        self._stall_streak = 1
+                    if self._stall_streak >= DYNAMIC_STALL_LIMIT:
+                        with self.lock:
+                            self.store.refresh()
+                            self.store.append_event(
+                                "action", "harness", self.store.meeting.phase,
+                                data={"action_id": request_id, "status": "stalled",
+                                      "reason": "repeated_dynamic_tool_without_result",
+                                      "repeats": self._stall_streak},
+                            )
+                        self._stall_fingerprint = None
+                        self._stall_streak = 0
+                        self._wait_for_user("dynamic_tool_stalled")
+                        return
                     if self.store.meeting.phase != "agent_thinking":
                         return
                     continue
@@ -557,7 +627,7 @@ class InteractiveRunner:
 
                 self.store.append_event(
                     "action",
-                    "agent",
+                    self.agent_name,
                     "agent_acting",
                     data={
                         "action_id": request_id,
@@ -600,7 +670,7 @@ class InteractiveRunner:
                     self.store.refresh()
                     if (
                         self.store.meeting.status != "running"
-                        or self.store.meeting.control_owner != "agent"
+                        or self.store.meeting.control_owner != self.agent_name
                         or self.store.meeting.phase not in {"agent_thinking", "agent_acting"}
                     ):
                         return
@@ -850,7 +920,7 @@ class InteractiveRunner:
             if stale:
                 self.store.append_event(
                     "action",
-                    "agent",
+                    self.agent_name,
                     self.store.meeting.phase,
                     data={"action_id": action_id, "status": "superseded", "interrupted": True},
                 )
@@ -885,7 +955,7 @@ class InteractiveRunner:
                 }
             self.store.append_event(
                 "action",
-                "agent",
+                self.agent_name,
                 "agent_acting",
                 data={
                     "action_id": action_id,
@@ -945,7 +1015,7 @@ class InteractiveRunner:
             return {
                 "success": self._last_action_success,
                 "content": json.dumps(result, ensure_ascii=False),
-                "pause": should_pause or self.store.meeting.control_owner != "agent",
+                "pause": should_pause or self.store.meeting.control_owner != self.agent_name,
             }
 
     def _observation(
@@ -960,7 +1030,7 @@ class InteractiveRunner:
                 continue
             if (
                 event.get("kind") == "chat"
-                and event.get("actor") == "agent"
+                and event.get("actor") == self.agent_name
                 and not self._include_agent_chat_once
             ):
                 continue
@@ -1096,7 +1166,7 @@ class InteractiveRunner:
             self._last_action_success = True
             self.store.append_event(
                 "action",
-                "agent",
+                self.agent_name,
                 "agent_acting",
                 data={
                     "action_id": action_id,
@@ -1107,7 +1177,7 @@ class InteractiveRunner:
             if action.type == "chat":
                 chat_references = self._resolved_action_references(action)
                 self.store.append_chat(
-                    "agent",
+                    self.agent_name,
                     action.content,
                     action.message_type,
                     references=chat_references or None,
@@ -1123,7 +1193,7 @@ class InteractiveRunner:
             if action.type == "done":
                 done_references = self._resolved_action_references(action)
                 self.store.append_chat(
-                    "agent", action.content, "final", references=done_references or None
+                    self.agent_name, action.content, "final", references=done_references or None
                 )
                 self._complete_action(action_id)
                 self.store.update(phase="completion_proposed", control_owner="none")
@@ -1281,9 +1351,9 @@ class InteractiveRunner:
                 )
                 if self._honor_control_request():
                     return True
-                if self.store.meeting.status == "running" and self.store.meeting.control_owner == "agent":
+                if self.store.meeting.status == "running" and self.store.meeting.control_owner == self.agent_name:
                     self.store.update(phase="agent_thinking")
-                return self.store.meeting.control_owner != "agent"
+                return self.store.meeting.control_owner != self.agent_name
         except (RunnerError, TmuxError) as exc:
             with self.lock:
                 self.store.refresh()
@@ -1327,7 +1397,7 @@ class InteractiveRunner:
             return (
                 self.store.meeting.request_generation != generation
                 or self.store.meeting.control_requested == "human"
-                or self.store.meeting.control_owner != "agent"
+                or self.store.meeting.control_owner != self.agent_name
                 or self.store.meeting.status != "running"
             )
 

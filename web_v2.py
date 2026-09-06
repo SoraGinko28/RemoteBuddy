@@ -54,9 +54,11 @@ from meeting_v2 import (
     MeetingError,
     MeetingStore,
     UnsupportedMeetingError,
+    mentioned_agent_names,
     sha256_text,
     utc_now,
 )
+import discriminator_harness
 from references import reference_from_event
 from model_api_client import (
     MODEL_RE,
@@ -280,6 +282,7 @@ class MeetingWebService:
         self.csrf_token = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
+        self.reviewer_jobs: Dict[str, Dict[str, threading.Thread]] = {}
         self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool]] = {}
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
@@ -953,6 +956,7 @@ class MeetingWebService:
             "agent_backend",
             "agent_provider",
             "reasoning_effort",
+            "agent_name2role",
         }
         if unexpected:
             raise WebError(400, "unexpected meeting fields: " + ", ".join(sorted(unexpected)))
@@ -1007,10 +1011,13 @@ class MeetingWebService:
                 agent_backend=config.agent_backend,
                 typing_profile=typing_profile,
                 agent_provider=config.agent_provider,
-                # Ordinals are reserved for future multi-agent meetings; the
-                # single agent of every conversation is always Agent1.
+                # The generator agent drives the terminal. Additional role
+                # members (discriminators) are declared through
+                # agent_name2role and are summoned by @mention at runtime;
+                # they never hold terminal control.
                 agent_ordinal=1,
                 reasoning_effort=reasoning_effort,
+                agent_name2role=payload.get("agent_name2role"),
             )
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
@@ -1055,6 +1062,115 @@ class MeetingWebService:
             self.jobs[meeting_id] = worker
             self.active_backends[meeting_id] = client
             worker.start()
+
+    def _summon_reviewer_after_idle(self, meeting_id: str, agent_name: str) -> None:
+        """Parked generator got interrupted: summon the reviewer once its
+        worker has actually exited, so the single-writer rule still holds."""
+
+        def wait_then_summon() -> None:
+            deadline = time.monotonic() + 120.0
+            while time.monotonic() < deadline:
+                if not self._job_alive(meeting_id) and not self._reviewer_busy(meeting_id):
+                    try:
+                        self._start_reviewer(meeting_id, agent_name)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return
+                time.sleep(0.2)
+
+        thread = threading.Thread(target=wait_then_summon, daemon=True,
+                                  name=f"summon-{agent_name}-{meeting_id}")
+        thread.start()
+
+    def _reviewer_busy(self, meeting_id: str) -> bool:
+        with self.lock:
+            for name in list(self.reviewer_jobs.get(meeting_id, {})):
+                thread = self.reviewer_jobs[meeting_id][name]
+                if thread and thread.is_alive():
+                    return True
+        return False
+
+    def _start_reviewer(self, meeting_id: str, agent_name: str) -> None:
+        """Summon a non-generator member in its own Claude Code process.
+
+        Refuses when the generator worker is busy or the human owns the
+        terminal, preserving the single-writer rule.
+        """
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+
+            def trace(action: str, reason: str = "") -> None:
+                try:
+                    store.append_event(
+                        "state", "harness", store.meeting.phase,
+                        data={"reviewer_routing": {"agent_name": agent_name,
+                                                   "action": action, "reason": reason}},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            if store.meeting.status in TERMINAL_STATUSES:
+                trace("skip", "terminal_status")
+                return
+            if store.meeting.control_owner == "human":
+                trace("skip", "human_control")
+                return
+            role = store.meeting.role_of(agent_name)
+            if not role or role == "generator":
+                trace("skip", "not_a_discriminator")
+                return
+            if self._reviewer_busy(meeting_id):
+                trace("skip", "reviewer_busy")
+                return
+            # The generator worker parks in waiting_for_user between turns but
+            # keeps its job slot; that is idle, not busy. Only a generator
+            # mid-turn (thinking/acting/queued) blocks a reviewer summon.
+            generator_actively_running = (
+                self._job_alive(meeting_id)
+                and not (
+                    store.meeting.status == "running"
+                    and store.meeting.phase == "waiting_for_user"
+                    and store.meeting.control_owner == "none"
+                    and store.meeting.pending_action_id is None
+                )
+            )
+            if generator_actively_running:
+                trace("skip", "generator_job_busy")
+                return
+            trace("start", "ok")
+            thread = threading.Thread(
+                target=self._reviewer_worker,
+                args=(meeting_id, agent_name),
+                name=f"reviewer-{agent_name}-{meeting_id}",
+                daemon=True,
+            )
+            with self.lock:
+                self.reviewer_jobs.setdefault(meeting_id, {})[agent_name] = thread
+            thread.start()
+
+    def _reviewer_worker(self, meeting_id: str, agent_name: str) -> None:
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                store = self.load_store(meeting_id)
+                outcome = discriminator_harness.comment_once(
+                    store, agent_name, retry=attempts > 1
+                )
+            except Exception as exc:  # noqa: BLE001  worker must never die silently
+                outcome = False
+                try:
+                    self.load_store(meeting_id).append_event(
+                        "error", "harness", "reviewer_worker_error", content=f"{exc!r}"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            if outcome or attempts >= 2:
+                break
+        with self.lock:
+            jobs = self.reviewer_jobs.get(meeting_id)
+            if jobs and jobs.get(agent_name) is threading.current_thread():
+                jobs.pop(agent_name, None)
 
     def _worker(
         self,
@@ -1210,6 +1326,33 @@ class MeetingWebService:
                 # instruction: hand control back AND resume the Agent with it.
                 self._sync_human_pipe(store)
                 return self._resume_agent_from_human(meeting_id)
+            # 2b routing: @mention summons the named non-generator member;
+            # the generator is NOT woken for that message (single-writer rule).
+            # If the generator is mid-turn, interrupt it and summon the
+            # reviewer once it has parked, so the @mention is never answered
+            # by the wrong speaker.
+            mentioned = mentioned_agent_names(message, store.meeting.effective_role_map)
+            reviewer_targets = [n for n in mentioned if store.meeting.role_of(n) != "generator"]
+            mentions_generator = any(store.meeting.role_of(n) == "generator" for n in mentioned)
+            if reviewer_targets and not mentions_generator and delivery != "interrupt":
+                if store.meeting.status not in TERMINAL_STATUSES and store.meeting.control_owner != "human":
+                    if self._job_alive(meeting_id) and not (
+                        store.meeting.phase == "waiting_for_user"
+                        and store.meeting.control_owner == "none"
+                        and store.meeting.pending_action_id is None
+                    ):
+                        self._interrupt_backend(meeting_id)
+                        store.bump_request_generation(
+                            failure=None,
+                            cycle_action_count=0,
+                            cycle_started_at=utc_now(),
+                        )
+                        store.update(phase="waiting_for_user", control_owner="none",
+                                     pending_action_id=None)
+                        self._summon_reviewer_after_idle(meeting_id, reviewer_targets[0])
+                    else:
+                        self._start_reviewer(meeting_id, reviewer_targets[0])
+                    return store
             if delivery == "interrupt" or wake_agent:
                 store.bump_request_generation(
                     failure=None,
@@ -1222,7 +1365,7 @@ class MeetingWebService:
                 self._interrupt_backend(meeting_id)
             if wake_agent or delivery == "interrupt":
                 config = self._config_for_store(store)
-                store.update(status="running", phase="agent_thinking", control_owner="agent")
+                store.update(status="running", phase="agent_thinking", control_owner=store.meeting.generator_name())
                 self._ensure_worker(
                     store,
                     config,
@@ -1318,14 +1461,14 @@ class MeetingWebService:
         fresh_conversation = store.meeting.recovery_required
         store.bump_request_generation(
             phase="agent_thinking",
-            control_owner="agent",
+            control_owner=store.meeting.generator_name(),
             control_requested=None,
             cycle_action_count=0,
             cycle_started_at=utc_now(),
             status="running",
         )
         store.append_event("control", "human", "agent_thinking", data={"status": "released"})
-        store.note_terminal_control("agent")
+        store.note_terminal_control(store.meeting.generator_name())
         self._sync_human_pipe(store)
         self._ensure_worker(
             store,
@@ -1615,7 +1758,7 @@ class MeetingWebService:
             store.bump_request_generation(
                 status="running",
                 phase="agent_thinking",
-                control_owner="agent",
+                control_owner=store.meeting.generator_name(),
                 failure=None,
                 cycle_action_count=0,
                 cycle_started_at=utc_now(),
