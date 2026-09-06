@@ -120,6 +120,13 @@ function memberState(actor, meeting) {
   const terminal = ["completed", "failed", "interrupted"].includes(meeting.status);
   if (terminal) return "idle";
   if (meeting.control_owner === actor) return agentStateForPhase(meeting.phase);
+  // A non-owner member is busy only while nobody owns the terminal (reviewer
+  // turns run with control_owner "none") AND the meeting is mid-turn AND the
+  // newest thinking/acting band in the timeline belongs to that member.
+  // Whenever the meeting has parked (waiting etc.) or a terminal owner holds
+  // the turn, every non-owner member is idle.
+  if (meeting.control_owner !== "none") return "idle";
+  if (!["agent_thinking", "agent_acting"].includes(meeting.phase)) return "idle";
   const timeline = state.timeline || [];
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
     const event = timeline[index];
