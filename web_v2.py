@@ -1199,7 +1199,7 @@ class MeetingWebService:
                 self._interrupt_backend(meeting_id)
             if wake_agent or delivery == "interrupt":
                 config = self._config_for_store(store)
-                store.update(status="running", phase="agent_thinking", control_owner="agent")
+                store.update(status="running", phase="agent_thinking", control_owner=store.meeting.generator_name())
                 self._ensure_worker(
                     store,
                     config,
@@ -1295,14 +1295,14 @@ class MeetingWebService:
         fresh_conversation = store.meeting.recovery_required
         store.bump_request_generation(
             phase="agent_thinking",
-            control_owner="agent",
+            control_owner=store.meeting.generator_name(),
             control_requested=None,
             cycle_action_count=0,
             cycle_started_at=utc_now(),
             status="running",
         )
         store.append_event("control", "human", "agent_thinking", data={"status": "released"})
-        store.note_terminal_control("agent")
+        store.note_terminal_control(store.meeting.generator_name())
         self._sync_human_pipe(store)
         self._ensure_worker(
             store,
@@ -1592,7 +1592,7 @@ class MeetingWebService:
             store.bump_request_generation(
                 status="running",
                 phase="agent_thinking",
-                control_owner="agent",
+                control_owner=store.meeting.generator_name(),
                 failure=None,
                 cycle_action_count=0,
                 cycle_started_at=utc_now(),

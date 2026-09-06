@@ -48,6 +48,37 @@ class TestDefaults:
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
         assert reloaded.meeting.agent_name2role == {"agent": "generator"}
 
+    def test_generator_name_default(self, store) -> None:
+        assert store.meeting.generator_name() == "agent"
+
+    def test_generator_name_explicit(self) -> None:
+        meeting = m2.Meeting(
+            meeting_id="m", status="created", phase="created",
+            created_at="t", updated_at="t", session_name="s",
+            session_state="x", pane_id=None, workspace="w",
+            streams={}, model="m",
+            agent_name2role={"coder": "generator", "critic": "passive_discriminator"},
+        )
+        assert meeting.generator_name() == "coder"
+
+
+class TestNamedControlOwner:
+    def test_control_owner_accepts_generator_name(self, store) -> None:
+        store.update(control_owner="agent")
+        assert store.meeting.control_owner == "agent"
+
+    def test_control_owner_accepts_any_member_name(self, store, tmp_path) -> None:
+        store2 = m2.MeetingStore.create(
+            tmp_path, "m-owner", "hi", SKILL, "s", model="m",
+            agent_name2role={"coder": "generator", "critic": "passive_discriminator"},
+        )
+        store2.update(control_owner="coder")
+        assert store2.meeting.control_owner == "coder"
+
+    def test_control_owner_rejects_stranger(self, store) -> None:
+        with pytest.raises(m2.MeetingError, match="invalid control owner"):
+            store.update(control_owner="stranger")
+
 
 class TestExplicitRoles:
     def test_multi_agent_roles_roundtrip(self, tmp_path) -> None:

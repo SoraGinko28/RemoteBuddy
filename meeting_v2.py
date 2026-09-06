@@ -221,6 +221,17 @@ class Meeting:
     def is_agent_name(self, agent_name: str) -> bool:
         return agent_name in self.agent_names()
 
+    def generator_name(self) -> str:
+        """Name of the generator agent (the shared-terminal owner/worker).
+
+        Today every meeting has exactly one generator; the default role map
+        names it DEFAULT_AGENT_NAME ("agent"), keeping legacy behavior.
+        """
+        for name, role in self.effective_role_map.items():
+            if role == "generator":
+                return name
+        return DEFAULT_AGENT_NAME  # unreachable under validation; safe fallback
+
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "Meeting":
         if payload.get("schema_version") != SCHEMA_VERSION or payload.get("mode") != MEETING_MODE:
@@ -932,7 +943,9 @@ class MeetingStore:
                 raise MeetingError(f"invalid meeting status: {value}")
             if key == "phase" and value not in VALID_PHASES:
                 raise MeetingError(f"invalid meeting phase: {value}")
-            if key == "control_owner" and value not in VALID_OWNERS:
+            if key == "control_owner" and not (
+                value in {"human", "none"} or self.meeting.is_agent_name(value)
+            ):
                 raise MeetingError(f"invalid control owner: {value}")
             if key == "typing_profile" and value not in TYPING_PROFILES:
                 raise MeetingError("invalid typing profile")
