@@ -1,22 +1,30 @@
-"""e2e_user_path — RemoteBuddy「真实用户路径」端到端实测。
+"""e2e_user_path — end-to-end test of RemoteBuddy's real user path.
 
-目的（回应：重构/加固必须实测对最终用户的影响，不许自嗨）：
-  以真 agent + 真 tmux + 真 HTTP 开一场会，把「用户」全程走一遍：
-    human 发话 → agent 干活（终端画面/动作）→ human 接管 → 真键盘输入回显
-    → 交还 → 收尾；
-  并对这场会留下的 journal 断言「用户可感知的不变量」：
-    1. 接管/交还的控制事件成对、时序与 owner 正确（前端接管的依据）；
-    2. 用户输入的动作事件 received→started（键击簿记），且回显出现在后续画面；
-    3. 事件 seq 严格递增、caputured_at 不倒退（回放排序依赖）；
-    4. 这份真记录过 meeting_validate：0 违规（G 链校验器对真用户数据的验收）；
-    5. 会话期间 agent 确实在工作（screen/action 事件出现、agent 有回话）。
+Purpose (in response to the rule that refactoring/hardening must be verified
+against real end-user impact, no self-delusion):
+  run a real meeting with a real agent, real tmux, and real HTTP, and walk the
+  whole "user" journey end to end:
+    human speaks → agent works (terminal frames/actions) → human takes over →
+    real keystrokes are echoed → hand back → wrap up;
+  then assert the "user-observable invariants" on the journal left behind by
+  that meeting:
+    1. takeover/hand-back control events pair up, with correct order and owner
+       (what frontend takeover relies on);
+    2. action events from the user's input go received → started (keystroke
+       bookkeeping), and the echo shows up in subsequent frames;
+    3. event seq strictly increases and captured_at never goes backwards
+       (replay ordering depends on this);
+    4. this real record passes meeting_validate with 0 violations (acceptance of
+       real user data by the G-chain validator);
+    5. the agent was actually working during the session (screen/action events
+       appeared, and the agent replied).
 
-用法：
-  python e2e_user_path.py            # 跑一次真会并断言，失败退出码非 0
-  python e2e_user_path.py --keep     # 跑完保留 runs 目录便于复查
-输出：stdout 一段 JSON 摘要；可用 MEETING_E2E.md 复述。
+Usage:
+  python e2e_user_path.py            # run one real meeting and assert; exit code non-zero on failure
+  python e2e_user_path.py --keep     # keep the runs dir afterwards for review
+Output: a JSON summary on stdout; can be retold as MEETING_E2E.md.
 
-真实成本提示：会消耗模型 API 额度与几分钟时间；这是刻意为之。
+Real-cost warning: it spends model API quota and a few minutes; this is deliberate.
 """
 
 from __future__ import annotations
@@ -44,7 +52,7 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 CSRF_HEADER = "X-RemoteBuddy-CSRF"
-START_MESSAGE = "列出当前目录内容（ls -la），然后回复 DONE_E2E_7E3。不要写文件。"
+START_MESSAGE = "List the current directory contents (ls -la), then reply DONE_E2E_7E3. Do not write any files."
 HUMAN_ECHO_MARKER = "E2E_MARKER_9182"
 POLL_STEP_S = 1.0
 AGENT_FIRST_REPLY_TIMEOUT_S = 240
@@ -57,7 +65,7 @@ class E2EFailure(AssertionError):
 
 class LiveUserPath:
     def __init__(self, project_root: Path) -> None:
-        import meeting_v2  # noqa: F401  触发模块初始化
+        import meeting_v2  # noqa: F401  trigger module initialization
         import web_v2
 
         self.project_root = project_root
@@ -75,7 +83,7 @@ class LiveUserPath:
         self.csrf = ""
         self.meeting_id = ""
 
-    # ---- HTTP helpers（真实 socket，等价浏览器发请求）----
+    # ---- HTTP helpers (real sockets, equivalent to browser requests) ----
 
     def _request(self, method: str, path: str, payload=None) -> dict:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
@@ -147,7 +155,7 @@ def _wait_until(deadline_s: float, label: str, predicate) -> dict:
                 return result
         except E2EFailure:
             raise
-        except Exception as exc:  # noqa: BLE001 网络抖动重试
+        except Exception as exc:  # noqa: BLE001 retry on flaky network
             print(f"  retry {label}: {exc!r}")
         time.sleep(POLL_STEP_S)
     raise E2EFailure(f"timeout waiting for {label}")
@@ -175,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             results["agent_task"] = START_MESSAGE
             print(f"started meeting {meeting_id} on :{live.port}", flush=True)
 
-            # -- M2: agent 开始干活：出现 agent 回话 + screen/action 事件 --
+            # -- M2: agent starts working: agent chat + screen/action events appear --
             def agent_working() -> dict:
                 events = live.events()["events"]
                 kinds = {e.get("kind") for e in events}
@@ -199,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"agent replied; chats={len(agent_chats)} screens="
                   f"{results['screen_events_by_first_reply']}", flush=True)
 
-            # -- M2b: 等 agent 这一轮干完回到 waiting，再让用户接管（idle 接管）--
+            # -- M2b: wait for the agent's cycle to end (back to waiting), then let the user take over (idle takeover) --
             _wait_until(time.monotonic() + AGENT_FIRST_REPLY_TIMEOUT_S,
                         "agent cycle to finish",
                         lambda: live.snapshot_meeting()
@@ -207,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                         else {})
             print("agent idle; user may take over", flush=True)
 
-            # -- M3: 用户接管：acquire 后控制事件成对、owner=human --
+            # -- M3: user takes over: after acquire, control events pair up with owner=human --
             t_acquire = time.monotonic()
             live.acquire()
             results["acquire_latency_ms"] = round((time.monotonic() - t_acquire) * 1000)
@@ -222,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
                         acquired)
             print("user owns terminal", flush=True)
 
-            # -- M4: 用户真输入并等回显 --
+            # -- M4: user types real input and waits for the echo --
             live.terminal_input_bytes(f"echo {HUMAN_ECHO_MARKER}\n")
 
             def echo_seen() -> dict:
@@ -244,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
             results["human_action_statuses"] = sorted(statuses)
             print("user input echoed on screen", flush=True)
 
-            # -- M5: 交还（idle 接管 → 回到 waiting）--
+            # -- M5: hand back (idle takeover → back to waiting) --
             live.release()
 
             def released() -> dict:
@@ -257,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
                         released)
             print("control released back", flush=True)
 
-            # -- 收尾：停止服务；冻结 journal 后做静态断言 --
+            # -- wrap up: stop the service; freeze the journal, then run static assertions --
             live.stop()
             time.sleep(1.0)
             journal_dir = next((tmp_root / "runs").glob(f"{meeting_id}"), None)
@@ -270,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"journal frozen: {journal_dir} ({results['total_events']} events)",
                   flush=True)
 
-            # 断言块（用户可感知不变量）
+            # assertion block (user-observable invariants)
             seqs = [e.get("seq") for e in full_events]
             if seqs != sorted(seqs) or len(set(seqs)) != len(seqs):
                 failed.append("seq must be strictly increasing & unique")
@@ -302,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
             if HUMAN_ECHO_MARKER not in frames_text:
                 failed.append("user-typed marker missing from journal frames")
 
-            # G 链校验器对真记录的验收
+            # G-chain validator acceptance of the real record
             import meeting_validate as validator
             report, summary = validator.validate_run_dir(journal_dir)
             results["validator_violations"] = report.count
@@ -312,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
                 failed.append(
                     f"validator violations on real journal: {report.count}")
 
-            # snapshot 的 owner/phase 终态
+            # snapshot's final owner/phase state
             final_meeting = live.snapshot_meeting()
             results["final_status"] = final_meeting.get("status")
             if final_meeting.get("control_owner") not in ("none", None):

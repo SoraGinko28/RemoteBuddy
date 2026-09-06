@@ -1,4 +1,5 @@
-"""meeting_validate 测试：每条 Assert 的命中与放行、跨 chunk 判定、排序、汇总。"""
+"""Tests for meeting_validate: firing and passing of every Assert,
+cross-chunk checks, ordering, and summaries."""
 
 import datetime as _dt
 from datetime import timezone as _dt_timezone
@@ -71,7 +72,7 @@ class TestScreenAsserts:
         assert "row_widths_fit" in report.by_assert()
 
     def test_cjk_width_overflow_recorded(self) -> None:
-        capture = _valid_screen(text="中文", width=3)
+        capture = _valid_screen(text="\u4e2d\u6587", width=3)
         report = self._report_for(capture)
         assert "row_widths_fit" in report.by_assert()
 
@@ -187,7 +188,8 @@ class TestScoreSummon:
                                 region=adt.TextRegion(0, 1))
         score_chunk = adt.ScoreStreamChunk(chunks=[self._score("pas", ref)])
         chat_chunk = adt.ChatStreamChunk(chunks=[chat])
-        # sorted_stream_chunks 须按时间升序：chat(07:00:02) 在 score(07:00:03) 前
+        # sorted_stream_chunks must be ascending in time: chat (07:00:02)
+        # precedes score (07:00:03)
         meeting = self._meeting_with([chat_chunk, score_chunk], roles)
         report = validator.validate_meeting_data(meeting)
         assert report.ok, report.violations
@@ -244,7 +246,7 @@ class TestOrdering:
     def test_chunks_list_out_of_order_flagged(self) -> None:
         early = self._chats([_later(1)])
         late = self._chats([_later(5)])
-        # 故意乱序：late 在 early 前
+        # deliberately out of order: late before early
         meeting = _meeting([late, early])
         report = validator.validate_meeting_data(meeting)
         assert "chunks_start_time_ascending" in report.by_assert()

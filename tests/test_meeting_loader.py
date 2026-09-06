@@ -1,4 +1,5 @@
-"""meeting_loader 测试：events.jsonl kind↔五流投影。"""
+"""Tests for meeting_loader: projecting events.jsonl kinds onto the five
+streams."""
 
 import datetime as _dt
 import json
@@ -81,7 +82,8 @@ class TestMapping:
                          if isinstance(c, adt.ScreenStreamChunk)]
         assert len(screen_chunks) == 1
         capture = screen_chunks[0].chunks[0]
-        # 归一化：内容不足 height 时补空行 → 满帧 24 行
+        # normalization: when content has fewer than height rows, blank rows
+        # are padded to a full frame of 24 rows
         assert len(capture.screen_data.split("\n")) == 24
         assert capture.screen_data.startswith("ab\ncd\n")
         assert capture.cursor_x == 1
@@ -92,7 +94,9 @@ class TestMapping:
         assert summary.mapped["screen"] == 1
 
     def test_screen_normalized_rows_right_trimmed(self, tmp_path) -> None:
-        # 归一化：行尾空格剥掉；内容行不足 height 时底部补空行到满帧
+        # normalization: trailing spaces are stripped from rows; when the
+        # content rows fall short of height, blank rows are padded at the
+        # bottom to a full frame
         content = "ab  \ncd "
         events = [_ev(1, "screen", "2026-09-02T07:35:37.890Z", content=content,
                       data={"cursor_x": 0, "cursor_y": 0, "pane_width": 4,
@@ -103,7 +107,7 @@ class TestMapping:
                    if isinstance(c, adt.ScreenStreamChunk)][0].chunks[0]
         assert capture.screen_data == "ab\ncd\n"
         assert capture.screen_height == 3
-        # 归一化后必须满足 ADT 帧断言
+        # after normalization the ADT frame asserts must hold
         adt.assert_screen_rows_match_height(capture)
         adt.assert_screen_plain_matches(capture)
         adt.assert_screen_row_widths_fit(capture)
@@ -175,7 +179,7 @@ class TestMapping:
         ]
         run_dir = _write_run(tmp_path, events)
         meeting, _ = loader.load_meeting_data_from_run(run_dir)
-        # 出现过的 agent 都进了 role map → 断言必须过
+        # every agent that appeared is in the role map -> the assert must pass
         adt.assert_role_map_keys_in_user_names(meeting)
 
     def test_screen_owner_splits_on_human_takeover(self, tmp_path) -> None:

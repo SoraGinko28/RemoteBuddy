@@ -1,13 +1,13 @@
-"""Meeting ADT — RemoteBuddy 会议模型的能力层定义。
+"""Meeting ADT - the capability-layer definition of RemoteBuddy's meeting model.
 
-设计初衷（定稿于 MEETING_ADT.md，本模块是它的可执行规格）：
-- ADT 只描述能力层；本模块是存储 schema 的唯一源，存储按切片融进各类型，
-  不另设 schema 文件。
-- 数据层（复制/快照/去重/索引）不在 ADT；确有需要时在具体目标内现场评估。
-- 冻结后不可变；增量只 append，绝不原地改。
-- 类型改动必须与 ADT 文档一致；文档先行。
+Design intent (finalized in MEETING_ADT.md; this module is its executable spec):
+- The ADT only describes the capability layer; this module is the single source of the storage schema, sliced into each type,
+  with no separate schema file.
+- Data-layer machinery (replication/snapshot/dedup/indexing) is outside the ADT; assess it on the spot in the concrete goal only when actually needed.
+- Once frozen, data is immutable; increments only append, never mutate in place.
+- Type changes must stay consistent with the ADT document; the document leads.
 
-流顺序固定：screen/chat/score/keystroke/terminal_control（回放与校验共用）。
+Stream order is fixed: screen/chat/score/keystroke/terminal_control (shared by replay and validation).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final, Optional
 
-# 流名：ADT 五流，顺序固定，不得增删改（含顺序）。
+# Stream names: the ADT's five streams, order fixed; do not add, remove, or reorder them.
 SCREEN_STREAM_NAME = "screen"
 CHAT_STREAM_NAME = "chat"
 SCORE_STREAM_NAME = "score"
@@ -47,23 +47,23 @@ __all__ = [
 
 
 # =====================================================================
-# G2：UserName / AgentRole（记录层命名）
+# G2: UserName / AgentRole (record-layer naming)
 # =====================================================================
 #
 # UserName := Oneof | $agent_name str | $human ()
-# 存储/JSON 表示：agent 用其名字字符串；human 用保留哨兵 "$human"。
-# "$human" 是保留字：任何 agent 名不得等于它（is_human 即为判定）。
+# Storage/JSON representation: an agent is stored as its name string; human as the reserved "$human" sentinel.
+# "$human" is reserved: no agent name may equal it (is_human is the predicate).
 
 HUMAN_USER_NAME: Final[str] = "$human"
 
 
 def is_human(user_name: str) -> bool:
-    """UserName 是否为 $human 哨兵（agent 名永不为 True）。"""
+    """Whether the UserName is the $human sentinel (agent names never are)."""
     return user_name == HUMAN_USER_NAME
 
 
 # AgentRole := Oneof | $generator | $active_discriminator | $passive_discriminator
-# 存储/JSON 表示：枚举名 -> 带 $ 前缀的字符串，与 role map JSON 一一对应。
+# Storage/JSON representation: enum name -> "$"-prefixed string, one-to-one with the role map JSON.
 class AgentRole(Enum):
     GENERATOR = "$generator"
     ACTIVE_DISCRIMINATOR = "$active_discriminator"
@@ -71,22 +71,22 @@ class AgentRole(Enum):
 
 
 def agent_role_from_name(role_name: str) -> AgentRole:
-    """按 JSON 字符串还原 AgentRole；未知或非字符串抛 ValueError。"""
+    """Rebuild an AgentRole from a JSON string; unknown or non-string input raises ValueError."""
     return AgentRole(role_name)
 
 
 # =====================================================================
-# G3：ScreenCapture（屏幕流记录；纯字段层）
+# G3: ScreenCapture (screen-stream record; pure field layer)
 # =====================================================================
 #
 # ScreenCapture := DataClass
-#   * $screen_data str                   # 纯文本；逐行右去尾部空格
-#   * $terminal_text_content list[TerminalTextSegment]   # 带样式段；G6 定义
-#   * $cursor_x / $cursor_y int          # 格坐标 0 起
+#   * $screen_data str                   # plain text; rows right-trimmed of trailing spaces
+#   * $terminal_text_content list[TerminalTextSegment]   # styled segments; defined in G6
+#   * $cursor_x / $cursor_y int          # cell coordinates, 0-based
 #   * $screen_width / $screen_height int
 #   * $captured_at datetime
 #
-# 本目标只定义字段（不变量在 G4/G5 以断言函数实现，不塞进 dataclass）。
+# This goal only defines fields (invariants are implemented in G4/G5 as assert functions, not baked into the dataclass).
 
 @dataclass
 class ScreenCapture:
@@ -100,18 +100,18 @@ class ScreenCapture:
 
 
 # =====================================================================
-# G4：ScreenCapture 断言①—— plain_of(segments) == screen_data
+# G4: ScreenCapture assertion #1 -- plain_of(segments) == screen_data
 # =====================================================================
 #
-# ADT Appendix helper（照抄 MEETING_ADT.md，名字不改）：
+# ADT Appendix helpers (copied verbatim from MEETING_ADT.md; names unchanged):
 #   frame_rows(s) := s.split('\n')
 #   row_plain(row) := row.rstrip(' ')
 #   concat_text_field_of_list(list) := ''.join(seg.text for seg in list)
 #   plain_of(list) := '\n'.join(row_plain(r)
 #                               for r in frame_rows(concat_text_field_of_list(list)))
 #
-# 断言函数统一签名：接收记录，违规抛 AssertionError（带 captured_at 定位），
-# 通过则静默返回 None——供 G13 校验器收集违规清单。
+# Assert functions share one signature: take a record, raise AssertionError on violation (locating it via captured_at),
+# and silently return None on success -- feeding the violation manifest collected by the G13 validator.
 
 def concat_text_field_of_list(segments: "list[TerminalTextSegment]") -> str:
     return "".join(seg.text for seg in segments)
@@ -140,7 +140,7 @@ def assert_screen_plain_matches(capture: ScreenCapture) -> None:
 
 
 # =====================================================================
-# G5：ScreenCapture 断言②-⑤（宽度 / 行数 / 光标界内 / 段合法）
+# G5: ScreenCapture assertions #2-#5 (width / row count / cursor in bounds / segment validity)
 # =====================================================================
 
 import unicodedata as _ucd  # noqa: E402
@@ -148,7 +148,7 @@ import wcwidth as _wc  # noqa: E402
 
 
 def _char_cell_width(ch: str) -> int:
-    """单字符占格数：CJK(W/F)=2；控制符/零宽=0；其余=1。"""
+    """Cells a single character occupies: CJK (W/F) = 2; control/zero-width = 0; otherwise 1."""
     if _ucd.category(ch) in ("Cc", "Cf", "Mn", "Me", "Zl", "Zp", "Cs"):
         return 0
     w = _wc.wcwidth(ch)
@@ -156,12 +156,12 @@ def _char_cell_width(ch: str) -> int:
 
 
 def cell_width(row: str) -> int:
-    """终端显示宽度（格）。"""
+    """Terminal display width, in cells."""
     return sum(_char_cell_width(ch) for ch in row)
 
 
 def seg_attrs(segment: "TerminalTextSegment") -> tuple:
-    """ADT Appendix：seg_attrs(seg) := (seg.fg, seg.bg, frozenset(seg.styles))"""
+    """ADT Appendix: seg_attrs(seg) := (seg.fg, seg.bg, frozenset(seg.styles))"""
     return (segment.fg, segment.bg, frozenset(segment.styles))
 
 
@@ -198,7 +198,7 @@ def assert_cursor_in_bounds(capture: ScreenCapture) -> None:
 
 
 def assert_segments_valid(capture: ScreenCapture) -> None:
-    """段文本非空，且相邻段属性不同。
+    """Segment texts are non-empty, and adjacent segments differ in attributes.
 
     Assert[{ all(len(seg.text) > 0 for seg in $terminal_text_content) }]
     Assert[{ ∀ i: seg_attrs($terminal_text_content[i])
@@ -226,22 +226,22 @@ __all__ += [
 
 
 # =====================================================================
-# G6：TerminalTextSegment / Color / Rgb / Style（屏幕样式层）
+# G6: TerminalTextSegment / Color / Rgb / Style (screen style layer)
 # =====================================================================
 #
 # Style := Oneof | "bold" | "underline" | "italic" | "reverse" | "blink" | "dim"
 # Color := Oneof | $palette int(0..255) | $truecolor Rgb
-# Rgb   := DataClass r/g/b int 每个 0..255
+# Rgb   := DataClass r/g/b int each in 0..255
 # TerminalTextSegment :=
 #     DataClass
-#   * $text str                    # 连续同属性文本；可含 \n
-#   * $fg / $bg Optional[Color]    # None = 终端默认前景/背景
-#   * $styles set[Style]           # 语义是集合，顺序无关
+#   * $text str                    # consecutive text sharing identical attributes; may contain \n
+#   * $fg / $bg Optional[Color]    # None = terminal default foreground/background
+#   * $styles set[Style]           # semantically a set; order-independent
 #
-# 存储/JSON 表示：Style=字符串；Rgb={"r":..,"g":..,"b":..}；
-# palette 色={"palette":n}；truecolor 色={"r":..,"g":..,"b":..}。
+# Storage/JSON representation: Style = string; Rgb = {"r":..,"g":..,"b":..};
+# palette color = {"palette":n}; truecolor color = {"r":..,"g":..,"b":..}.
 
-# Style 取值（顺序与 ADT 文档一致）
+# Style values (order matches the ADT document)
 STYLE_BOLD = "bold"
 STYLE_UNDERLINE = "underline"
 STYLE_ITALIC = "italic"
@@ -261,7 +261,7 @@ STYLE_NAMES: Final[frozenset[str]] = frozenset({
 
 @dataclass(frozen=True)
 class Rgb:
-    """真彩色。"""
+    """Truecolor."""
     r: int
     g: int
     b: int
@@ -274,7 +274,7 @@ class Rgb:
 
 @dataclass(frozen=True)
 class PaletteColor:
-    """SGR 调色板下标 0..255。"""
+    """SGR palette index, 0..255."""
     index: int
 
     def __post_init__(self) -> None:
@@ -318,7 +318,7 @@ __all__ += [
 
 
 # =====================================================================
-# G7：ChatMessage / ChatStreamChunk（聊天流）
+# G7: ChatMessage / ChatStreamChunk (chat stream)
 # =====================================================================
 #
 # ChatMessage := DataClass
@@ -326,17 +326,17 @@ __all__ += [
 #   * $user_name UserName
 #   * $time datetime
 #
-# 对照真 journal 的 chat 事件（actor/content/captured_at）落盘映射：
-#   - user_name：actor=="human" → "$human"；否则 actor 即 agent 名。
-#   - time：captured_at（UTC，带 Z 后缀，ISO8601）。
-#   - message：当前 journal 只有纯文本 content → [{"raw": content}]；
-#     @点名/引用元素在 G8 加 {"at_user_name"|"ref"}。
-#   - phase/message_type 是运行噪音，不属 ADT，不落 ChatMessage。
+# Persistence mapping for real-journal chat events (actor/content/captured_at):
+#   - user_name: actor == "human" -> "$human"; otherwise the actor is the agent name.
+#   - time: captured_at (UTC, with a "Z" suffix, ISO8601).
+#   - message: the journal only carries plain-text content today -> [{"raw": content}];
+#     @-mention / reference elements gain {"at_user_name" | "ref"} in G8.
+#   - phase/message_type is runtime noise, not part of the ADT, and is not persisted on ChatMessage.
 #
-# ChatMessage 落盘 JSON：
+# ChatMessage persisted JSON:
 #   {"user_name": <str>, "time": <ISO8601>, "message": [part_json, ...]}
 #   part_json := {"raw": str} | {"at_user_name": str} | {"ref": {...G8}}
-# ChatStreamChunk 落盘 JSON：
+# ChatStreamChunk persisted JSON:
 #   {"stream_name": "chat", "chunks": [ChatMessage_json, ...]}
 
 def _iso_parse(text: str) -> _dt.datetime:
@@ -351,13 +351,13 @@ def _iso_format(moment: _dt.datetime) -> str:
 
 @dataclass(frozen=True)
 class RawMessage:
-    """$raw_msg str。"""
+    """$raw_msg str."""
     text: str
 
 
 @dataclass(frozen=True)
 class AtUserMessage:
-    """$at_user_name UserName。"""
+    """$at_user_name UserName."""
     user_name: str
 
 
@@ -425,7 +425,7 @@ def chat_stream_chunk_from_dict(payload: dict) -> ChatStreamChunk:
 
 
 # =====================================================================
-# G8：ContentReference 三件套 + resolve()
+# G8: the three ContentReference variants + resolve()
 # =====================================================================
 #
 # TextRegion := DataClass $start int $end int
@@ -434,10 +434,10 @@ def chat_stream_chunk_from_dict(payload: dict) -> ChatStreamChunk:
 # ScoreReference  := $judge_time datetime $judge_name UserName
 # ContentReference := Oneof | $screen_ref | $chat_ref | $score_ref
 #
-# 存储设计：引用只存键（时间+user/stream），不落目标内容副本；
-# resolve 靠同会流内按键查找，找不到/多解都算引用坏链（抛错，供校验收集）。
+# Storage design: references store keys only (time + user/stream), never a copy of the referenced content;
+# resolve() looks the key up in the same meeting's streams; no match or several matches both count as a dangling reference (raised, for validation to collect).
 #
-# 落盘 JSON（Oneof 用单键信封区分）：
+# Persisted JSON (the Oneof is disambiguated by a single-key envelope):
 #   {"screen_ref": {"capture_time": iso, "stream_name": s, "region": {start,end}}}
 #   {"chat_ref":   {"msg_time": iso, "user_name": u, "region": {start,end}}}
 #   {"score_ref":  {"judge_time": iso, "judge_name": u}}
@@ -538,14 +538,14 @@ def _resolve_matches(matches: list, what: str) -> object:
 
 def resolve_screen_reference(reference: ScreenReference,
                              screen_captures: "list[ScreenCapture]") -> ScreenCapture:
-    """ScreenReference.resolve：captured_at == capture_time。"""
+    """ScreenReference.resolve: captured_at == capture_time."""
     matches = [c for c in screen_captures if c.captured_at == reference.capture_time]
     return _resolve_matches(matches, "screen capture")  # type: ignore[return-value]
 
 
 def resolve_chat_reference(reference: ChatReference,
                            chat_messages: "list[ChatMessage]") -> ChatMessage:
-    """ChatReference.resolve：time == msg_time ∧ user_name == 引用者。"""
+    """ChatReference.resolve: match time == msg_time and user_name == the referenced user."""
     matches = [m for m in chat_messages
                if m.time == reference.msg_time and m.user_name == reference.user_name]
     return _resolve_matches(matches, "chat message")  # type: ignore[return-value]
@@ -553,7 +553,7 @@ def resolve_chat_reference(reference: ChatReference,
 
 def resolve_score_reference(reference: ScoreReference,
                             score_messages: "list[ScoreMessage]") -> "ScoreMessage":
-    """ScoreReference.resolve：judge_name ∧ time == judge_time（ScoreMessage 在 G9 定义）。"""
+    """ScoreReference.resolve: match judge_name and time == judge_time (ScoreMessage is defined in G9)."""
     matches = [m for m in score_messages
                if m.judge_name == reference.judge_name and m.time == reference.judge_time]
     return _resolve_matches(matches, "score message")  # type: ignore[return-value]
@@ -589,7 +589,7 @@ __all__ += [
 
 
 # =====================================================================
-# G9：ScoreMessage / ScoreStreamChunk（评分流）
+# G9: ScoreMessage / ScoreStreamChunk (score stream)
 # =====================================================================
 #
 # ScoreMessage := DataClass
@@ -601,12 +601,12 @@ __all__ += [
 #   * $reference ContentReference
 #   * Appendix[{
 #       summon_chained := role($judge_name) != $passive_discriminator
-#                         ∨ 该消息的 $reference 可解析到一条召唤它的消息
+#                         or the message's $reference resolves to a message that summoned it
 #     }]
 #   * Assert[{ summon_chained }]
 #
-# 真 journal 目前无 score 事件 → 空流表示：ScoreStreamChunk(chunks=[])。
-# 落盘 JSON：{"tag": s, "score": float|null, "comment": str|null,
+# The real journal has no score events today -> the absent stream is an empty stream: ScoreStreamChunk(chunks=[]).
+# Persisted JSON: {"tag": s, "score": float|null, "comment": str|null,
 #             "judge_name": u, "time": iso, "reference": <ContentReference JSON>}
 
 @dataclass
@@ -674,15 +674,15 @@ def score_stream_chunk_from_dict(payload: dict) -> ScoreStreamChunk:
 def score_summon_chained(message: ScoreMessage,
                          role_of: object,
                          referenced_message: Optional[object]) -> bool:
-    """Appendix summon_chained 的可判定版本。
+    """A decidable version of the Appendix's summon_chained.
 
-    角色判定委托给调用方注入的 role_of（MeetingData.agent_name2role 查询），
-    referenced_message 为按 reference resolve 到的目标消息（无引用则 None）。
-    passive 判定：须引用可解析到含 @judge 的召唤消息。
+    Role lookup is delegated to the caller-injected role_of (a MeetingData.agent_name2role query),
+    referenced_message is the message the reference resolves to (None when there is no reference).
+    passive check: chained only when the reference resolves to a summoning message that mentions @judge.
     """
     role = role_of(message.judge_name) if callable(role_of) else None
     if role != AgentRole.PASSIVE_DISCRIMINATOR:
-        return True  # generator / active / 非 agent(如 human) 无需被召唤
+        return True  # generator / active / non-agent (e.g. human) never needs a summon
     if referenced_message is None:
         return False
     mention = getattr(referenced_message, "message", None)
@@ -716,7 +716,7 @@ __all__ += [
 
 
 # =====================================================================
-# G10：Keystroke / TerminalControl（按键流与控制流）
+# G10: Keystroke / TerminalControl (keystroke and control streams)
 # =====================================================================
 #
 # KeystrokeStr := Oneof | $text str | $ctrl str | $rest ($millisecond int)
@@ -729,17 +729,17 @@ __all__ += [
 #   * $tmux_pane int
 #   * $user_name UserName
 #   * $start_time datetime
-#   * Assert[{ user_name == $human 或 role(user_name)==$generator }]   # terminal_capable
-#   * Appendix[{ owner_at(t) := 含 t 的控制区间的 user_name；区间由 start_time 界定 }]
-#   * Assert[{ ∀ keystroke k：owner_at(k.stroke_time) == k.user_name }]
+#   * Assert[{ user_name == $human or role(user_name)==$generator }]   # terminal_capable
+#   * Appendix[{ owner_at(t) := the user_name of the control interval containing t; intervals are delimited by start_time }]
+#   * Assert[{ ∀ keystroke k: owner_at(k.stroke_time) == k.user_name }]
 #
-# 对照真 journal 的 control 事件（actor/phase/data.status=acquired|released）：
-#   - 现 journal 无 tmux_window_name/pane → 记入 mapping：acquired 即区间起点，
-#     user_name=actor（human→$human）；release 事件只推进区间，不落记录；
-#     tmux 名/格取自 meeting.json（G12 loader 填）。
-#   - 现 journal 无逐键事件 → keystroke 流为空流（同 score 处理）。
+# Persistence mapping for real-journal control events (actor/phase/data.status=acquired|released):
+#   - The journal has no tmux_window_name/pane today -> record them via a mapping: acquired starts an interval,
+#     user_name=actor (human -> $human); a release event only advances the interval and persists no record;
+#     tmux names/panes come from meeting.json (filled in by the G12 loader).
+#   - The journal has no per-keystroke events today -> the keystroke stream is an empty stream (handled like score).
 #
-# 落盘 JSON：
+# Persisted JSON:
 #   KeystrokeStr: {"text": s} | {"ctrl": s} | {"rest": {"millisecond": n}}
 #   Keystroke: {"data": ..., "user_name": u, "stroke_time": iso}
 #   TerminalControl: {"tmux_window_name": w, "tmux_pane": p,
@@ -879,8 +879,8 @@ def terminal_control_stream_chunk_from_dict(payload: dict) -> TerminalControlStr
 
 def owner_at(moment: _dt.datetime,
              controls: "list[TerminalControl]") -> Optional[str]:
-    """Appendix owner_at(t)：最后一个 start_time <= t 的区间的 user_name；
-    区间按 start_time 排，半开 [start, next_start)；无区间覆盖返回 None。"""
+    """Appendix owner_at(t): the user_name of the last interval whose start_time <= t;
+    intervals are sorted by start_time and half-open [start, next_start); returns None when no interval covers t."""
     owner: Optional[str] = None
     for control in sorted(controls, key=lambda c: c.start_time
                           if c.start_time is not None else _dt.datetime.min):
@@ -900,7 +900,7 @@ def terminal_capable(user_name: str, role_of: object) -> bool:
 
 
 def assert_terminal_control_capable(control: TerminalControl, role_of: object) -> None:
-    """Assert[{ user_name == $human 或 role==$generator }]"""
+    """Assert[{ user_name == $human or role==$generator }]"""
     if not terminal_capable(control.user_name, role_of):
         raise AssertionError(
             f"terminal_control owner {control.user_name!r} not terminal_capable "
@@ -910,7 +910,7 @@ def assert_terminal_control_capable(control: TerminalControl, role_of: object) -
 
 def assert_keystroke_owner_matches(keystroke: Keystroke,
                                    controls: "list[TerminalControl]") -> None:
-    """Assert[{ ∀ k：owner_at(k.stroke_time) == k.user_name }]"""
+    """Assert[{ ∀ k: owner_at(k.stroke_time) == k.user_name }]"""
     owner = owner_at(keystroke.stroke_time, controls)
     if owner != keystroke.user_name:
         raise AssertionError(
@@ -945,7 +945,7 @@ __all__ += [
 
 
 # =====================================================================
-# G11：屏幕 chunk 容器 + MeetingData（会议记录本体）
+# G11: screen chunk containers + MeetingData (the meeting record proper)
 # =====================================================================
 #
 # ScreenStreamChunk := DataClass
@@ -956,20 +956,20 @@ __all__ += [
 # MeetingData := DataClass
 #   * $meeting_uid str
 #   * $meeting_name str
-#   * $sorted_stream_chunks list[StreamChunk]   # 流内/跨流均按时间排序
+#   * $sorted_stream_chunks list[StreamChunk]   # time-ordered within and across streams
 #   * $agent_name2role dict[str, AgentRole]
 #   * Appendix[{
-#       user_names := 从各 chunk 收集所有出现的 UserName
+#       user_names := every UserName appearing across all chunks
 #                      (screen.owner / chat.user_name / score.judge_name /
 #                       keystroke.user_name / terminal_control.user_name)
 #     }]
-#   * Assert[{ keys($agent_name2role) ⊆ user_names(本记录) }]
+#   * Assert[{ keys($agent_name2role) ⊆ user_names(this record) }]
 #
-# 存储设计（会议清单）：
-#   - agent_name2role 只增不减：join 加入，冻结后固化；绝不原地改。
-#   - 冻结 = 会议记录只读；增量只 append 到 events.jsonl。
-#   - 清单 JSON（流 chunk 用 stream_name 区分）：
-#     {"meeting_uid":..., "meeting_name":..., "agent_name2role":{名: "$generator"...},
+# Storage design (meeting manifest):
+#   - agent_name2role only grows: added on join, fixed once frozen; never modified in place.
+#   - Frozen = the meeting record is read-only; increments only append to events.jsonl.
+#   - Manifest JSON (stream chunks are told apart by stream_name):
+#     {"meeting_uid":..., "meeting_name":..., "agent_name2role":{name: "$generator"...},
 #      "sorted_stream_chunks":[{stream_name:"screen",...}|{stream_name:"chat",...}|...]}
 
 @dataclass
@@ -1105,7 +1105,7 @@ class MeetingData:
 
 
 def user_names_of_meeting_data(data: MeetingData) -> set[str]:
-    """Appendix user_names：收集流中出现的所有 UserName。"""
+    """Appendix user_names: collect every UserName that appears in the streams."""
     names: set[str] = set()
     for chunk in data.sorted_stream_chunks:
         if isinstance(chunk, ScreenStreamChunk):
@@ -1123,7 +1123,7 @@ def user_names_of_meeting_data(data: MeetingData) -> set[str]:
 
 
 def assert_role_map_keys_in_user_names(data: MeetingData) -> None:
-    """Assert[{ keys($agent_name2role) ⊆ user_names(本记录) }]"""
+    """Assert[{ keys($agent_name2role) ⊆ user_names(this record) }]"""
     user_names = user_names_of_meeting_data(data)
     missing = sorted(set(data.agent_name2role) - user_names)
     if missing:

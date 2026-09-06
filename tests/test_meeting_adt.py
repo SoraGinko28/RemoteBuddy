@@ -1,4 +1,4 @@
-"""meeting_adt 测试：随目标链 G1–G14 每颗一个分区，分区内覆盖边界与失败路径。"""
+"""Tests for meeting_adt: one section per goal in the G1-G14 goal chain, covering edge cases and failure paths within each section."""
 
 from datetime import datetime as _datetime, timezone as _dt_timezone
 from typing import Optional
@@ -9,7 +9,7 @@ import meeting_adt as adt
 
 
 # =====================================================================
-# G1：五流常量
+# G1: the five stream constants
 # =====================================================================
 
 class TestStreamNames:
@@ -160,7 +160,7 @@ class TestStreamNames:
 
 
 # =====================================================================
-# G2：UserName / AgentRole
+# G2: UserName / AgentRole
 # =====================================================================
 
 class TestUserName:
@@ -201,7 +201,7 @@ class TestAgentRole:
     def test_from_name_roundtrip_every_member(self) -> None:
         for role in adt.AgentRole:
             assert adt.agent_role_from_name(role.value) is role
-            # 值 -> 枚举 -> 值 无损
+            # value -> enum -> value round-trips losslessly
             assert adt.agent_role_from_name(adt.agent_role_from_name(role.value).value) is role
 
     @pytest.mark.parametrize("bad", [
@@ -219,7 +219,7 @@ class TestAgentRole:
 
 
 # =====================================================================
-# G3：ScreenCapture 纯字段层
+# G3: ScreenCapture pure field layer
 # =====================================================================
 
 class TestScreenCapture:
@@ -258,7 +258,7 @@ class TestScreenCapture:
         assert b.terminal_text_content == []
 
     def test_zero_geometry_is_allowed_at_field_level(self) -> None:
-        # 0 尺寸/光标在此层合法；界内性由 G5 断言负责
+        # zero geometry / cursor is legal at this layer; staying in bounds is the G5 asserts' job
         cap = adt.ScreenCapture()
         assert (cap.cursor_x, cap.cursor_y) == (0, 0)
         assert (cap.screen_width, cap.screen_height) == (0, 0)
@@ -274,7 +274,7 @@ class TestScreenCapture:
         assert "screen_data" in repr(adt.ScreenCapture())
 
 
-# 测试内最小的带样式段对象（TerminalTextSegment 在 G6 才定义真类型）
+# minimal styled-segment object used by tests (the real TerminalTextSegment type is only defined in G6)
 class _Seg:
     def __init__(
         self,
@@ -300,7 +300,7 @@ def _styled(text: str, fg: object = None, bg: object = None,
 
 
 # =====================================================================
-# G4：ScreenCapture 断言① —— plain_of == screen_data
+# G4: ScreenCapture assertion #1 -- plain_of == screen_data
 # =====================================================================
 
 class TestPlainHelpers:
@@ -312,7 +312,7 @@ class TestPlainHelpers:
         assert adt.concat_text_field_of_list([_seg("ab"), _seg("cd")]) == "abcd"
 
     def test_concat_preserves_newlines_inside_segment(self) -> None:
-        # 单段内可含 \n（跨行背景色不断开）
+        # one segment may contain \n (background color spans rows without breaking)
         assert adt.concat_text_field_of_list([_seg("a\nb")]) == "a\nb"
 
     def test_frame_rows_splits_on_newline(self) -> None:
@@ -322,7 +322,7 @@ class TestPlainHelpers:
 
     def test_row_plain_strips_only_trailing_spaces(self) -> None:
         assert adt.row_plain("ab  ") == "ab"
-        assert adt.row_plain("  ab") == "  ab"   # 前导空格保留
+        assert adt.row_plain("  ab") == "  ab"   # leading spaces are preserved
         assert adt.row_plain("  ab  ") == "  ab"
         assert adt.row_plain("   ") == ""
         assert adt.row_plain("") == ""
@@ -335,7 +335,7 @@ class TestPlainHelpers:
         assert adt.plain_of([_seg("ab  \nc ")]) == "ab\nc"
 
     def test_plain_of_segments_across_newline_boundary(self) -> None:
-        # 段1 以空格收尾、段2 以 \n 开头 → 行内合并后该行右去尾空格
+        # segment 1 ends with spaces, segment 2 starts with \n -> after joining on the row, trailing spaces are right-trimmed
         assert adt.plain_of([_seg("ab  "), _seg("\nc ")]) == "ab\nc"
 
 
@@ -352,7 +352,7 @@ class TestAssertScreenPlainMatches:
         adt.assert_screen_plain_matches(cap)
 
     def test_pass_when_segment_has_trailing_space_trimmed(self) -> None:
-        # screen_data 已右去尾空格：段里有尾空格也须通过
+        # screen_data is already right-trimmed, so trailing spaces inside the segment must still pass
         cap = adt.ScreenCapture(screen_data="hi", terminal_text_content=[_seg("hi  ")])
         adt.assert_screen_plain_matches(cap)
 
@@ -375,7 +375,7 @@ class TestAssertScreenPlainMatches:
             adt.assert_screen_plain_matches(cap)
 
     def test_fail_extra_trailing_newline(self) -> None:
-        # screen_data 无尾随空行：段文本末尾多一个 \n 必须判违规
+        # screen_data has no trailing blank row: one extra trailing \n in the segment text must be a violation
         cap = adt.ScreenCapture(screen_data="a", terminal_text_content=[_seg("a\n")])
         with pytest.raises(AssertionError):
             adt.assert_screen_plain_matches(cap)
@@ -390,7 +390,7 @@ class TestAssertScreenPlainMatches:
 
 
 # =====================================================================
-# G5：ScreenCapture 断言②-⑤ —— 宽度 / 行数 / 光标界内 / 段合法
+# G5: ScreenCapture assertions #2-#5 -- width / row count / cursor in bounds / segment validity
 # =====================================================================
 
 class TestCellWidth:
@@ -398,17 +398,17 @@ class TestCellWidth:
         assert adt.cell_width("hello") == 5
 
     def test_cjk_width_two(self) -> None:
-        assert adt.cell_width("中文") == 4
-        assert adt.cell_width("a中b") == 4
+        assert adt.cell_width("\u4e2d\u6587") == 4
+        assert adt.cell_width("a\u4e2db") == 4
 
     def test_wide_and_fullwidth(self) -> None:
-        assert adt.cell_width("Ａ") == 2   # fullwidth A
-        assert adt.cell_width("ｱ") == 1    # halfwidth katakana 占 1 格
+        assert adt.cell_width("\uff21") == 2   # fullwidth A
+        assert adt.cell_width("\uff71") == 1    # halfwidth katakana takes 1 cell
         assert adt.cell_width("あ") == 2
 
     def test_control_and_combining_zero_width(self) -> None:
         assert adt.cell_width("\x00\x1b") == 0
-        assert adt.cell_width("e\u0301") == 1  # 组合重音不占格
+        assert adt.cell_width("e\u0301") == 1  # combining accent takes no cell
 
     def test_empty_row_zero(self) -> None:
         assert adt.cell_width("") == 0
@@ -434,7 +434,7 @@ class TestAssertScreenRowWidthsFit:
 
     def test_fail_cjk_double_counted(self) -> None:
         with pytest.raises(AssertionError, match="width 4"):
-            adt.assert_screen_row_widths_fit(self._cap("中文", 3))
+            adt.assert_screen_row_widths_fit(self._cap("\u4e2d\u6587", 3))
 
     def test_fail_one_bad_row_among_many(self) -> None:
         cap = adt.ScreenCapture(
@@ -457,7 +457,7 @@ class TestAssertScreenRowsMatchHeight:
         adt.assert_screen_rows_match_height(cap)
 
     def test_pass_blank_rows_kept(self) -> None:
-        # 空行是 ""，split 后保留 → 行数仍等于 height
+        # blank rows are "" and survive split -> the row count still equals height
         cap = adt.ScreenCapture(screen_data="a\n\nb", screen_height=3)
         adt.assert_screen_rows_match_height(cap)
 
@@ -467,7 +467,7 @@ class TestAssertScreenRowsMatchHeight:
             adt.assert_screen_rows_match_height(cap)
 
     def test_fail_screen_data_trailing_newline_adds_row(self) -> None:
-        # 尾随 \n 会 split 出空行 → 行数 +1（这正是 ADT "无尾随空行" 的约束动机）
+        # a trailing \n splits into an extra blank row -> count +1 (exactly the motivation behind the ADT's "no trailing blank row" rule)
         cap = adt.ScreenCapture(screen_data="a\nb\n", screen_height=2)
         with pytest.raises(AssertionError):
             adt.assert_screen_rows_match_height(cap)
@@ -537,7 +537,7 @@ class TestAssertSegmentsValid:
 
 
 # =====================================================================
-# G6：TerminalTextSegment / Color / Rgb / Style
+# G6: TerminalTextSegment / Color / Rgb / Style
 # =====================================================================
 
 class TestStyle:
@@ -599,7 +599,7 @@ class TestTerminalTextSegment:
                                       styles=frozenset({"bold", "dim"}))
         assert seg.fg == fg
         assert seg.bg == bg
-        assert seg.styles == frozenset({"dim", "bold"})  # 顺序无关
+        assert seg.styles == frozenset({"dim", "bold"})  # order-independent
 
     def test_text_may_contain_newline(self) -> None:
         seg = adt.TerminalTextSegment(text="a\nb")
@@ -624,7 +624,7 @@ class TestTerminalTextSegment:
         assert a == b
 
     def test_fits_screen_capture_annotation(self) -> None:
-        # 真类型可直接放入 ScreenCapture.terminal_text_content
+        # the real type can be placed directly into ScreenCapture.terminal_text_content
         cap = adt.ScreenCapture(
             screen_data="ab",
             terminal_text_content=[adt.TerminalTextSegment(text="ab")],
@@ -636,7 +636,7 @@ class TestTerminalTextSegment:
 
 
 # =====================================================================
-# G7：ChatMessage / ChatStreamChunk（含落盘 JSON 往返）
+# G7: ChatMessage / ChatStreamChunk (incl. persisted-JSON round-trips)
 # =====================================================================
 
 class TestTimeCodec:
@@ -763,7 +763,7 @@ class TestChatStreamChunkCodec:
 
 
 # =====================================================================
-# G8：ContentReference 三件套 + resolve()
+# G8: the three ContentReference variants + resolve()
 # =====================================================================
 
 class TestTextRegion:
@@ -844,7 +844,7 @@ class TestContentReferenceCodec:
             adt.content_reference_to_dict("nope")  # type: ignore[arg-type]
 
     def test_score_ref_has_no_region_field(self) -> None:
-        # ADT：score_ref 只有 judge_time/judge_name
+        # ADT: score_ref carries only judge_time/judge_name
         assert not hasattr(self._score_ref(), "region")
 
 
@@ -898,7 +898,7 @@ class TestResolveChat:
 
 class TestResolveScore:
     def _stub_score(self, judge_name: str, moment: _datetime) -> object:
-        # ScoreMessage 在 G9 才定义：这里用最小鸭子对象
+        # ScoreMessage is only defined in G9: use a minimal duck-typed object here
         return type("ScoreStub", (), {"judge_name": judge_name, "time": moment})()
 
     def test_found(self) -> None:
@@ -934,7 +934,7 @@ class TestResolveDispatch:
 
 
 # =====================================================================
-# G9：ScoreMessage / ScoreStreamChunk / summon_chained
+# G9: ScoreMessage / ScoreStreamChunk / summon_chained
 # =====================================================================
 
 def _score_ref_into(judge: str, moment: _datetime) -> adt.ScoreReference:
@@ -967,7 +967,7 @@ class TestScoreMessageCodec:
         assert payload["comment"] == "ok"
         assert payload["judge_name"] == "bob"
         assert payload["time"] == "2026-09-02T08:00:00Z"
-        assert "reference" not in payload  # 无引用时不写键
+        assert "reference" not in payload  # key omitted when there is no reference
 
     def test_json_none_score(self) -> None:
         payload = adt.score_message_to_dict(adt.ScoreMessage(tag="t"))
@@ -985,7 +985,7 @@ class TestScoreMessageCodec:
 
 class TestScoreStreamChunkCodec:
     def test_empty_chunk_is_the_empty_stream_repr(self) -> None:
-        # 真 journal 无 score 事件 → 空 chunks 即空流表示
+        # the real journal has no score events -> empty chunks are the empty-stream representation
         chunk = adt.ScoreStreamChunk()
         assert adt.score_stream_chunk_from_dict(adt.score_stream_chunk_to_dict(chunk)) == chunk
         assert chunk.chunks == []
@@ -1064,7 +1064,7 @@ class TestSummonChained:
 
 
 # =====================================================================
-# G10：Keystroke / TerminalControl（按键流与控制流）
+# G10: Keystroke / TerminalControl (keystroke and control streams)
 # =====================================================================
 
 class TestKeystrokeStrCodec:
@@ -1254,7 +1254,7 @@ class TestAssertKeystrokeOwnerMatches:
 
 
 # =====================================================================
-# G11：ScreenStreamChunk + MeetingData（会议记录本体）
+# G11: ScreenStreamChunk + MeetingData (the meeting record proper)
 # =====================================================================
 
 class TestScreenCaptureCodec:
@@ -1429,7 +1429,7 @@ class TestMeetingData:
             adt.assert_role_map_keys_in_user_names(data)
 
     def test_human_never_needs_role_entry(self) -> None:
-        # human 由 is_human 识别，不入 agent_name2role
+        # humans are identified by is_human and never need an agent_name2role entry
         data = self._sample()
         adt.assert_role_map_keys_in_user_names(data)
 
@@ -1438,7 +1438,7 @@ class TestMeetingData:
 
 
 
-# 测试辅助：UTC aware 的 now
+# test helper: a UTC-aware now
 def _dt_now() -> _datetime:
     return _datetime.now(tz=_dt_timezone.utc)
 

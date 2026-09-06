@@ -1,20 +1,26 @@
-"""meeting_validate — 把 MeetingData 上全部 ADT Assert 跑一遍，产出违规清单。
+"""meeting_validate — run every ADT Assert over a MeetingData and produce a
+violation list.
 
-设计初衷：
-- 只收集 Assert（数据不变量），违规即「记录不符合 ADT」，一条一条记下来，
-  不中断、不修改数据。
-- Hint（回应提醒 / 链顶 human 等）是运营策略，不是数据不变量：
-  本模块不拦，留 hints 扩展位。
-- 每条违规给 [流 / 时间 / 断言名 / 原因]，供报告与 G14 全量审计。
+Design intent:
+- Collect only Asserts (data invariants); a violation means a record does not
+  conform to the ADT. Record them one by one, without interrupting or
+  modifying data.
+- Hints (reply reminders / chain-head human, etc.) are operational policy, not
+  data invariants: this module does not block on them and keeps a hints
+  extension slot.
+- Each violation carries [stream / time / assert name / reason], for reports
+  and the G14 full audit.
 
-覆盖的 Assert（对齐 MEETING_ADT.md / meeting_adt.py）：
-  screen            plain_of==screen_data / 行宽≤width / 行数==height /
-                    cursor 界内 / 段非空且相邻属性异
-  terminal_control  owner ∈ terminal_capable（human 或 generator）
-  keystroke         owner_at(stroke_time)==user_name
-  score             summon_chained（passive 须被 @ 召唤）
-  meeting           keys(agent_name2role) ⊆ user_names
-  ordering          chunk 内记录按时间非降；sorted_stream_chunks 按首记录非降
+Asserts covered (aligned with MEETING_ADT.md / meeting_adt.py):
+  screen            plain_of == screen_data / row width <= width /
+                    row count == height / cursor within bounds / segments
+                    non-empty and adjacent attributes distinct
+  terminal_control  owner in terminal_capable (human or generator)
+  keystroke         owner_at(stroke_time) == user_name
+  score             summon_chained (a passive must be summoned via an @)
+  meeting           keys(agent_name2role) subset of user_names
+  ordering          records within a chunk are non-decreasing in time;
+                    sorted_stream_chunks are non-decreasing by first record
 """
 
 from __future__ import annotations
@@ -30,9 +36,9 @@ import meeting_loader as loader
 @dataclass
 class Violation:
     stream_name: str
-    at: str            # 记录时间（ISO），无则 "n/a"
-    assert_name: str   # Assert 的名字
-    reason: str        # 违规原因（断言函数抛出的消息）
+    at: str            # record time (ISO); "n/a" when absent
+    assert_name: str   # name of the Assert
+    reason: str        # violation reason (the message raised by the assert function)
 
 
 @dataclass
@@ -94,11 +100,11 @@ def _check(report: ValidationReport, stream_name: str, moment: Optional[object],
 def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
     report = ValidationReport(meeting_uid=meeting.meeting_uid)
 
-    # ---- 全局：role map keys ⊆ user_names ----
+    # ---- global: role map keys ⊆ user_names ----
     _check(report, "meeting", None, "role_map_keys_in_user_names",
            lambda: adt.assert_role_map_keys_in_user_names(meeting))
 
-    # ---- 收集 keystroke/control/chat/score 供跨 chunk 判定 ----
+    # ---- collect keystroke/control/chat/score records for cross-chunk checks ----
     controls: list[adt.TerminalControl] = []
     chat_messages: list[adt.ChatMessage] = []
     score_messages: list[adt.ScoreMessage] = []
@@ -112,7 +118,7 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
 
     role_of = lambda name: meeting.agent_name2role.get(name)  # noqa: E731
 
-    # ---- 逐流逐记录跑记录级 Assert ----
+    # ---- run record-level Asserts over each stream, record by record ----
     for chunk in meeting.sorted_stream_chunks:
         if isinstance(chunk, adt.ScreenStreamChunk):
             _validate_screen_chunk(report, chunk)
@@ -134,11 +140,11 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
                        lambda m=message, r=referenced: adt.assert_score_summon_chained(
                            m, role_of, r))
 
-        # ---- ordering：chunk 内记录时间非降 ----
+        # ---- ordering: records within a chunk are non-decreasing in time ----
         _check(report, _chunk_stream_name(chunk), None, "records_time_ascending",
                lambda c=chunk: _assert_records_ascending(c))
 
-    # ---- ordering：sorted_stream_chunks 按首记录时间非降 ----
+    # ---- ordering: sorted_stream_chunks are non-decreasing by first-record time ----
     _check(report, "meeting", None, "chunks_start_time_ascending",
            lambda: _assert_chunks_ascending(meeting.sorted_stream_chunks))
 
@@ -147,7 +153,8 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
 
 def _resolve_score_reference(message: adt.ScoreMessage,
                              chat_messages: "list[adt.ChatMessage]"):
-    """summon_chained 判定用的引用解析：只关心 chat_ref 是否指向一条召唤消息。"""
+    """Reference resolution used by the summon_chained check: only whether
+    chat_ref points at a summoning message."""
     reference = message.reference
     if reference is None:
         return None
@@ -156,7 +163,7 @@ def _resolve_score_reference(message: adt.ScoreMessage,
             return adt.resolve_chat_reference(reference, chat_messages)
         except (LookupError, ValueError):
             return None
-    return None  # screen/score 引用不能证明被召唤
+    return None  # a screen/score reference cannot prove a summon
 
 
 def _validate_screen_chunk(report: ValidationReport, chunk: adt.ScreenStreamChunk) -> None:
@@ -203,7 +210,7 @@ def _assert_chunks_ascending(chunks: list) -> None:
 
 
 def validate_run_dir(run_dir: Path) -> tuple[ValidationReport, loader.LoadSummary]:
-    """加载 + 校验一次，供 G14 全量审计与 CLI 用。"""
+    """Load and validate once, for the G14 full audit and the CLI."""
     meeting, summary = loader.load_meeting_data_from_run(run_dir)
     report = validate_meeting_data(meeting)
     return report, summary

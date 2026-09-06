@@ -1,4 +1,4 @@
-"""meeting_audit 测试：审计入口与报告渲染。"""
+"""Tests for meeting_audit: audit entry point and report rendering."""
 
 import json
 
@@ -33,7 +33,7 @@ class TestAuditRuns:
             json.dumps(chat) + "\n" + json.dumps(screen) + "\n", encoding="utf-8")
         meeting, summary = loader.load_meeting_data_from_run(run_dir)
         assert summary.mapped["screen"] == 1
-        # 归一化后帧断言通过
+        # frame assertions pass after normalization
         from meeting_validate import validate_meeting_data
         report = validate_meeting_data(meeting)
         assert report.ok, report.violations
@@ -42,7 +42,7 @@ class TestAuditRuns:
     def test_audit_marks_run_ok(self, tmp_path) -> None:
         import meeting_audit as audit
         run_dir = self._write_run(tmp_path)
-        # 把 run 放进一个 runs/ 根目录
+        # put the run under a runs/ root directory
         runs_root = tmp_path / "runs"
         runs_root.mkdir()
         (runs_root / run_dir.name).symlink_to(run_dir, target_is_directory=True)
@@ -58,7 +58,7 @@ class TestAuditRuns:
              "violations": 0, "by_assert": {}, "ok": True, "error": None},
         ])
         assert "r1" in markdown
-        assert "结论" in markdown
+        assert "Conclusion" in markdown
         assert "| 2 |" in markdown
 
     def test_audit_missing_dir_raises(self, tmp_path) -> None:

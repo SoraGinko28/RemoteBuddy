@@ -1,23 +1,37 @@
-"""meeting_loader — 把 runs/<meeting_id>/ 真 journal 装载成 MeetingData。
+"""meeting_loader — load the real journal under runs/<meeting_id>/ into a MeetingData.
 
-设计初衷（对齐 MEETING_ADT.md + meeting_adt.py）：
-- 只做「events.jsonl + meeting.json → MeetingData」的投影，只读不改 journal。
-- ADT 五流 = 能力层；loader 是存储格式切片的一部分：
-  kind↔五流映射表是存储格式的核心，字段不符处留给校验器报、再回改。
-- 不在地层做任何复制/去重/索引：loader 保持朴素顺序读取。
+Design intent (aligned with MEETING_ADT.md + meeting_adt.py):
+- Project only "events.jsonl + meeting.json -> MeetingData"; read-only, the
+  journal is never modified.
+- The ADT five streams are the capability layer; the loader is one slice of
+  the storage format:
+  the kind-to-stream mapping is the core of the storage format; field
+  mismatches are left for the validator to report, then fixed afterward.
+- No copying / dedup / indexing at the persistence layer: the loader stays a
+  plain sequential reader.
 
-kind ↔ 五流映射（对照 runs/20260902-153537-7f1bea）：
-  chat                    -> 聊天流 ChatMessage（content 即文本，actor→UserName）
-  screen                  -> 屏幕流 ScreenCapture（content 即画面纯文本）
-  control (acquired)      -> 控制流 TerminalControl（human 接管区间起点）
-  action / state / error  -> 不映射（运营噪音，非五流内容）
-  keystroke / score       -> 现 journal 无事件 → 空流（语义上允许缺流）
+kind-to-stream mapping (see runs/20260902-153537-7f1bea):
+  chat                    -> chat stream ChatMessage (content is the text;
+                             actor -> user_name)
+  screen                  -> screen stream ScreenCapture (content is the
+                             plain frame text)
+  control (acquired)      -> terminal-control stream TerminalControl (start
+                             of a human takeover interval)
+  action / state / error  -> not mapped (operational noise, not part of the
+                             five streams)
+  keystroke / score       -> the current journal has no such events ->
+                             empty stream (a missing stream is semantically
+                             allowed)
 
-已知局限（留给校验报告标注，不改 journal）：
-  - 现 journal 无逐键事件、无评分事件、无 role 元数据；
-    agent_name2role 只能按「出现的 agent 都是 generator」推断（单 agent 会议成立）。
-  - control 事件只含 acquired/released，无 tmux 窗格信息：
-    TerminalControl 记 tmux_window_name/pane 为空缺，由拥有 pane 的运行方补。
+Known limitations (surfaced in validation reports; the journal is never
+modified):
+  - The current journal has no keystroke events, no score events, and no
+    role metadata;
+    agent_name2role can only be inferred on the assumption that every agent
+    that appears is a generator (valid for single-agent meetings).
+  - control events carry only acquired/released, with no tmux pane info:
+    TerminalControl records tmux_window_name/pane as missing; they are to be
+    filled in by the runner that owns the pane.
 """
 
 from __future__ import annotations
@@ -30,34 +44,36 @@ from typing import Optional
 
 import meeting_adt as adt
 
-# 控制事件 phase 里判定 acquired/released 的取值
+# phase values on control events that determine acquired/released
 _ACQUIRED_PHASES = {"human_control"}
 _RELEASED_PHASES = {"agent_thinking", "waiting_for_user"}
 
-# 运营噪音 kind：不映射进五流
+# Operational-noise kinds: never mapped into the five streams
 _NOISE_KINDS = {"action", "state", "error"}
 
-# 非终端占有者 actor：harness 是 RemoteBuddy 自身，不构成 terminal_control 记录
-# （其 acquired 只是会话层接管，不改变「谁握着 tmux」的语义）
+# Non-terminal-owner actors: the harness is RemoteBuddy itself and does not
+# produce a terminal_control record (its acquired is only a session-level
+# takeover; it does not change "who holds the tmux")
 _NON_OWNER_ACTORS = {"harness"}
 
 
 @dataclass
 class LoadSummary:
-    """一次装载的计数摘要（供打印/测试断言）。"""
+    """Counting summary of one load (for printing / test assertions)."""
 
     event_total: int = 0
-    mapped: dict = field(default_factory=dict)  # stream_name -> record 数
+    mapped: dict = field(default_factory=dict)  # stream_name -> record count
     skipped_noise: int = 0
     skipped_unrecognized: int = 0
     skipped_malformed: int = 0
 
 
 def _role_map_from_events(events: list[dict], manifest: dict) -> dict:
-    """推断 agent_name2role。
+    """Infer agent_name2role.
 
-    现 journal 无角色元数据：凡出现过的非 human agent 一律推断为 generator
-    （单 agent 会议的 tmux 拥有者）。$human 永不入 role map。
+    The current journal carries no role metadata: every non-human agent that
+    appears is inferred to be a generator (the tmux owner in a single-agent
+    meeting). $human never enters the role map.
     """
     agents: set[str] = set()
     for event in events:
@@ -95,14 +111,16 @@ def _chat_message(event: dict) -> Optional[adt.ChatMessage]:
 
 
 def _normalize_frame(content: str, height: int) -> str:
-    """把 journal 里保存的屏幕文本归一化为 ADT screen_data。
+    """Normalize the screen text saved in the journal into ADT screen_data.
 
-    规则（ADT：screen_data 逐行右去尾空格、无尾随空行、行数==height）：
-      1. 每行 rstrip(' ')；
-      2. 末尾整行空行剥掉（无尾随空行）；
-      3. 不足 height 行时空行补足 —— 终端满帧是 height 行，
-         journal 常省略底部空行，投影为满帧记录。
-    返回行数恰为 height 的文本。
+    Rules (per ADT: each screen_data row is right-trimmed, there are no
+    trailing blank rows, and the row count == height):
+      1. rstrip(' ') on every row;
+      2. drop all-blank rows at the end (no trailing blank rows);
+      3. when there are fewer than height rows, pad blank rows to a full
+         frame — a full terminal frame is height rows, and the journal often
+         omits the bottom blank rows, so the projection is a full-frame record.
+    Returns text with exactly height rows.
     """
     rows = [r.rstrip(" ") for r in content.split("\n")]
     while rows and rows[-1] == "":
@@ -150,7 +168,7 @@ def _terminal_controls(events: list[dict]) -> "list[adt.TerminalControl]":
             continue
         actor = event.get("actor")
         if actor in _NON_OWNER_ACTORS:
-            continue  # harness 非终端占有者，不落记录
+            continue  # the harness is not a terminal owner; keep no record
         user_name = adt.HUMAN_USER_NAME if actor == "human" else actor or ""
         if not user_name:
             continue
@@ -162,9 +180,11 @@ def _terminal_controls(events: list[dict]) -> "list[adt.TerminalControl]":
 def _screen_owner_runs(screens: "list[adt.ScreenCapture]",
                        controls: "list[adt.TerminalControl]",
                        default_owner: str) -> "list[adt.ScreenStreamChunk]":
-    """按连续同 owner 把屏幕流切成 chunk。
+    """Split the screen stream into chunks of consecutive captures with the
+    same owner.
 
-    owner(t)：落在某 human 接管区间内 => $human；否则默认 generator agent。
+    owner(t): falls inside a human takeover interval => $human; otherwise the
+    default generator agent.
     """
     spans: list[tuple] = []
     for control in controls:
@@ -191,7 +211,8 @@ def _screen_owner_runs(screens: "list[adt.ScreenCapture]",
 
 
 def load_meeting_data_from_run(run_dir: Path) -> tuple[adt.MeetingData, LoadSummary]:
-    """从 runs/<id> 装载 MeetingData；缺文件时抛 FileNotFoundError。"""
+    """Load a MeetingData from runs/<id>; raise FileNotFoundError when files
+    are missing."""
     run_dir = Path(run_dir)
     manifest_path = run_dir / "meeting.json"
     events_path = run_dir / "streams" / "events.jsonl"
@@ -213,7 +234,7 @@ def load_meeting_data_from_run(run_dir: Path) -> tuple[adt.MeetingData, LoadSumm
             try:
                 events.append(json.loads(line))
             except json.JSONDecodeError:
-                pass  # 坏行：算进 total，不计入 events
+                pass  # malformed line: counted in total, not in events
     events.sort(key=lambda e: e.get("seq", 0))
 
     summary = LoadSummary(event_total=event_total)
@@ -252,7 +273,8 @@ def load_meeting_data_from_run(run_dir: Path) -> tuple[adt.MeetingData, LoadSumm
     if controls:
         chunks.append(adt.TerminalControlStreamChunk(
             stream_name=adt.TERMINAL_CONTROL_STREAM_NAME, chunks=controls))
-    # score / keystroke 无事件 → 缺流（空流语义等价，不落 chunk）
+    # No score / keystroke events -> the streams are absent (semantically
+    # equivalent to an empty stream; no chunk is emitted)
     chunks.sort(key=_chunk_start_time)
 
     meeting = adt.MeetingData(
