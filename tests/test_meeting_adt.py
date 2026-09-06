@@ -1,5 +1,7 @@
 """meeting_adt 测试：随目标链 G1–G14 每颗一个分区，分区内覆盖边界与失败路径。"""
 
+from datetime import datetime as _datetime
+
 import pytest
 
 import meeting_adt as adt
@@ -65,6 +67,7 @@ class TestStreamNames:
             "is_human",
             "AgentRole",
             "agent_role_from_name",
+            "ScreenCapture",
         }
 
 
@@ -125,4 +128,71 @@ class TestAgentRole:
     def test_from_name_rejects_non_strings(self, bad: object) -> None:
         with pytest.raises((TypeError, ValueError)):
             adt.agent_role_from_name(bad)  # type: ignore[arg-type]
+
+
+# =====================================================================
+# G3：ScreenCapture 纯字段层
+# =====================================================================
+
+class TestScreenCapture:
+    def test_defaults(self) -> None:
+        cap = adt.ScreenCapture()
+        assert cap.screen_data == ""
+        assert cap.terminal_text_content == []
+        assert cap.cursor_x == 0
+        assert cap.cursor_y == 0
+        assert cap.screen_width == 0
+        assert cap.screen_height == 0
+        assert cap.captured_at is None
+
+    def test_holds_all_fields(self) -> None:
+        moment = _datetime(2026, 9, 2, 7, 35, 37, 684000)
+        cap = adt.ScreenCapture(
+            screen_data="ab\nc",
+            terminal_text_content=[_seg("ab\nc")],
+            cursor_x=3,
+            cursor_y=2,
+            screen_width=80,
+            screen_height=24,
+            captured_at=moment,
+        )
+        assert cap.screen_data == "ab\nc"
+        assert cap.terminal_text_content[0].text == "ab\nc"
+        assert (cap.cursor_x, cap.cursor_y) == (3, 2)
+        assert (cap.screen_width, cap.screen_height) == (80, 24)
+        assert cap.captured_at == moment
+
+    def test_default_list_independent_per_instance(self) -> None:
+        a, b = adt.ScreenCapture(), adt.ScreenCapture()
+        a.terminal_text_content.append(_seg("x"))
+        assert len(a.terminal_text_content) == 1
+        assert a.terminal_text_content[0].text == "x"
+        assert b.terminal_text_content == []
+
+    def test_zero_geometry_is_allowed_at_field_level(self) -> None:
+        # 0 尺寸/光标在此层合法；界内性由 G5 断言负责
+        cap = adt.ScreenCapture()
+        assert (cap.cursor_x, cap.cursor_y) == (0, 0)
+        assert (cap.screen_width, cap.screen_height) == (0, 0)
+
+    def test_is_dataclass_with_equality(self) -> None:
+        a = adt.ScreenCapture(screen_data="s", screen_width=80)
+        b = adt.ScreenCapture(screen_data="s", screen_width=80)
+        assert a == b
+        c = adt.ScreenCapture(screen_data="t", screen_width=80)
+        assert a != c
+
+    def test_repr_contains_fields(self) -> None:
+        assert "screen_data" in repr(adt.ScreenCapture())
+
+
+# 测试内最小的带 .text 段对象（TerminalTextSegment 在 G6 才定义）
+class _Seg:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+def _seg(text: str) -> _Seg:
+    return _Seg(text)
+
 

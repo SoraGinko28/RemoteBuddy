@@ -74,3 +74,33 @@ def agent_role_from_name(role_name: str) -> AgentRole:
     """按 JSON 字符串还原 AgentRole；未知或非字符串抛 ValueError。"""
     return AgentRole(role_name)
 
+
+# =====================================================================
+# G3：ScreenCapture（屏幕流记录；纯字段层）
+# =====================================================================
+#
+# ScreenCapture := DataClass
+#   * $screen_data str                   # 纯文本；逐行右去尾部空格
+#   * $terminal_text_content list[TerminalTextSegment]   # 带样式段；G6 定义
+#   * $cursor_x / $cursor_y int          # 格坐标 0 起
+#   * $screen_width / $screen_height int
+#   * $captured_at datetime
+#
+# 本目标只定义字段（不变量在 G4/G5 以断言函数实现，不塞进 dataclass）。
+
+@dataclass
+class ScreenCapture:
+    screen_data: str = ""
+    terminal_text_content: "list[TerminalTextSegment]" = field(default_factory=list)
+    cursor_x: int = 0
+    cursor_y: int = 0
+    screen_width: int = 0
+    screen_height: int = 0
+    captured_at: Optional[_dt.datetime] = None
+
+
+__all__ += [
+    "ScreenCapture",
+]
+
+
