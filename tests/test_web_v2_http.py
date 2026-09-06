@@ -501,13 +501,13 @@ class MeetingWebServiceTest(unittest.TestCase):
             MeetingStore.load(self.root, "control-message").meeting.control_owner,
         )
         store = self.service.message("control-message", {"message": "接管结束，继续改 README"})
-        self.assertEqual("agent", store.meeting.control_owner)
+        self.assertEqual("actor", store.meeting.control_owner)
         loaded = MeetingStore.load(self.root, "control-message")
         controls = [
             e for e in loaded.events()
             if e["kind"] == "control" and e.get("data", {}).get("status") == "terminal_control"
         ]
-        self.assertEqual("agent", controls[-1]["data"]["user_name"])
+        self.assertEqual("actor", controls[-1]["data"]["user_name"])
         self.wait_for_workers()
         self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
         chats = MeetingStore.load(self.root, "control-message").chat_messages()
@@ -569,7 +569,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         store = MeetingStore.load(self.root, "restart-demo")
         store.update(
             phase="agent_acting",
-            control_owner="agent",
+            control_owner="actor",
             pending_action_id="unknown-action",
             conversation_id="old-conversation",
         )
@@ -587,7 +587,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(RecordingRunner.instances[-1].resume_modes[-1])
 
         loaded = MeetingStore.load(self.root, "restart-demo")
-        loaded.update(phase="agent_thinking", control_owner="agent")
+        loaded.update(phase="agent_thinking", control_owner="actor")
         # A mid-turn meeting with no live worker is an orphaned Agent, so
         # acquire hands the terminal over immediately instead of waiting.
         store = restarted.acquire("restart-demo")

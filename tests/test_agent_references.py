@@ -152,7 +152,7 @@ class AgentReferenceRunnerTest(unittest.TestCase):
         ack = next(
             event
             for event in loaded.chat_messages()
-            if event["actor"] == "agent" and event["message_type"] == "ack"
+            if event["actor"] == "actor" and event["message_type"] == "ack"
         )
         references = ack["data"]["references"]
         self.assertEqual(1, len(references))
@@ -196,7 +196,7 @@ class AgentReferenceRunnerTest(unittest.TestCase):
         acks = [
             event
             for event in loaded.chat_messages()
-            if event["actor"] == "agent" and event["message_type"] == "ack"
+            if event["actor"] == "actor" and event["message_type"] == "ack"
         ]
         self.assertEqual(1, len(acks))
         self.assertNotIn("references", acks[0]["data"])

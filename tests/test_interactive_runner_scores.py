@@ -22,7 +22,7 @@ class InteractiveRunnerScoreIsolationTest(unittest.TestCase):
             skill = root / "SKILL.md"
             skill.write_text("skill", encoding="utf-8")
             store = MeetingStore.create(root, "isolation", "hello", skill, "session", "model")
-            agent_chat = store.append_chat("agent", "hello back", "ack")
+            agent_chat = store.append_chat("actor", "hello back", "ack")
             score = store.append_score(
                 "competent",
                 "Judge Only",

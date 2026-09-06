@@ -1130,7 +1130,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             pending_action_id="unresolved-action",
             recovery_required=True,
         )
-        self.store.append_chat("agent", "Earlier visible result.", "progress")
+        self.store.append_chat("actor", "Earlier visible result.", "progress")
         client = FakeClient(
             [
                 make_action(

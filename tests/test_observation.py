@@ -25,7 +25,7 @@ class BoundedHistoryTest(unittest.TestCase):
         events = [
             record(1),
             record(2, kind="score", actor="human", content="secret annotation"),
-            record(3, kind="action", actor="agent", content=""),
+            record(3, kind="action", actor="actor", content=""),
         ]
         records = InteractiveRunner._bounded_history(events)
         self.assertEqual([1, 3], [item["seq"] for item in records])
@@ -86,7 +86,7 @@ class ObservationTest(unittest.TestCase):
             "test-model",
         )
         self.store.append_screen("visible screen", "bash", str(self.store.workspace_path))
-        self.store.append_chat("agent", "Working on it.", "progress")
+        self.store.append_chat("actor", "Working on it.", "progress")
 
     def tearDown(self):
         self.temporary.cleanup()

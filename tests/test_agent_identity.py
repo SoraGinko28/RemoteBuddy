@@ -1,7 +1,7 @@
 """Agent identity (slice 1): agent_name2role persistence and membership rules.
 
 Goal: named agents + a single-source role map on the Meeting manifest,
-keeping the legacy single agent ("agent"/generator) byte-for-byte compatible.
+keeping the legacy single agent ("actor"/generator) byte-for-byte compatible.
 """
 
 import json
@@ -35,21 +35,21 @@ class TestDefaults:
 
     def test_helpers_see_default_agent(self, store) -> None:
         assert store.meeting.agent_names() == {m2.DEFAULT_AGENT_NAME}
-        assert store.meeting.role_of("agent") == "generator"
-        assert store.meeting.is_agent_name("agent")
+        assert store.meeting.role_of("actor") == "generator"
+        assert store.meeting.is_agent_name("actor")
         assert not store.meeting.is_agent_name("human")
         assert store.meeting.is_agent_name("human") is False
 
     def test_manifest_persists_role_map(self, store) -> None:
         payload = json.loads((store.run_dir / "meeting.json").read_text(encoding="utf-8"))
-        assert payload["agent_name2role"] == {"agent": "generator"}
+        assert payload["agent_name2role"] == {"actor": "generator"}
 
     def test_reload_keeps_roles(self, store, tmp_path) -> None:
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
-        assert reloaded.meeting.agent_name2role == {"agent": "generator"}
+        assert reloaded.meeting.agent_name2role == {"actor": "generator"}
 
     def test_generator_name_default(self, store) -> None:
-        assert store.meeting.generator_name() == "agent"
+        assert store.meeting.generator_name() == "actor"
 
     def test_generator_name_explicit(self) -> None:
         meeting = m2.Meeting(
@@ -64,8 +64,8 @@ class TestDefaults:
 
 class TestNamedControlOwner:
     def test_control_owner_accepts_generator_name(self, store) -> None:
-        store.update(control_owner="agent")
-        assert store.meeting.control_owner == "agent"
+        store.update(control_owner="actor")
+        assert store.meeting.control_owner == "actor"
 
     def test_control_owner_accepts_any_member_name(self, store, tmp_path) -> None:
         store2 = m2.MeetingStore.create(
@@ -82,17 +82,17 @@ class TestNamedControlOwner:
 
 class TestMentions:
     def test_mentions_only_role_members_in_order(self) -> None:
-        roles = {"agent": "generator", "critic": "active_discriminator"}
+        roles = {"actor": "generator", "critic": "active_discriminator"}
         assert m2.mentioned_agent_names("@critic please look", roles) == ["critic"]
 
     def test_unknown_and_human_ignored(self) -> None:
-        roles = {"agent": "generator", "critic": "passive_discriminator"}
+        roles = {"actor": "generator", "critic": "passive_discriminator"}
         assert m2.mentioned_agent_names("@stranger @human hi", roles) == []
 
     def test_multiple_mentions_deduplicated(self) -> None:
-        roles = {"agent": "generator", "critic": "passive_discriminator"}
+        roles = {"actor": "generator", "critic": "passive_discriminator"}
         assert m2.mentioned_agent_names("@critic a @critic b", roles) == ["critic"]
-        assert m2.mentioned_agent_names("@critic and @agent", roles) == ["critic", "agent"]
+        assert m2.mentioned_agent_names("@critic and @actor", roles) == ["critic", "actor"]
 
     def test_mention_boundaries(self) -> None:
         roles = {"critic": "passive_discriminator"}
@@ -127,10 +127,10 @@ class TestValidation:
     @pytest.mark.parametrize("roles", [
         None,
         {},
-        {"agent": "generator"},
+        {"actor": "generator"},
     ])
     def test_none_or_empty_falls_back(self, roles) -> None:
-        assert m2.normalize_agent_role_map(roles) == {"agent": "generator"}
+        assert m2.normalize_agent_role_map(roles) == {"actor": "generator"}
 
     @pytest.mark.parametrize("bad", [
         {"human": "generator"},
@@ -154,18 +154,18 @@ class TestAppendMembership:
     def test_chat_allows_any_role_member(self, store) -> None:
         store.add_agent_role("critic", "passive_discriminator")
         store.add_agent_role("coder", "generator")  # second generator not needed but legal
-        store.append_chat("agent", "working", "ack")
+        store.append_chat("actor", "working", "ack")
         store.append_chat("critic", "reviewing", "ack")
         store.append_chat("human", "please", "request")
         kinds = [e["actor"] for e in store.events() if e["kind"] == "chat"]
-        assert kinds[-3:] == ["agent", "critic", "human"]
+        assert kinds[-3:] == ["actor", "critic", "human"]
 
     def test_chat_rejects_unknown_actor(self, store) -> None:
         with pytest.raises(m2.MeetingError, match="human or a meeting agent"):
             store.append_chat("stranger", "hi", "ack")
 
     def test_terminal_control_allows_generator_and_human(self, store) -> None:
-        store.note_terminal_control("agent")
+        store.note_terminal_control("actor")
         store.note_terminal_control("human")
         ok = [e for e in store.events() if e["kind"] == "control"]
         assert len(ok) == 2
@@ -183,7 +183,7 @@ class TestJoinAgent:
         store.add_agent_role("critic", "passive_discriminator")
         assert store.meeting.agent_name2role["critic"] == "passive_discriminator"
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
-        assert reloaded.meeting.agent_name2role == {"agent": "generator",
+        assert reloaded.meeting.agent_name2role == {"actor": "generator",
                                                     "critic": "passive_discriminator"}
         store.append_chat("critic", "noted", "ack")  # now a member
 
@@ -211,4 +211,5 @@ class TestLegacyManifestLoad:
         payload.pop("agent_name2role")
         manifest.write_text(json.dumps(payload), encoding="utf-8")
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
+        # pre-identity manifests stay on the legacy name
         assert reloaded.meeting.agent_name2role == {"agent": "generator"}
