@@ -118,6 +118,7 @@ def _finals(events, actor: str) -> list:
 
 
 def main() -> int:
+    freeze = "--stop" in sys.argv[1:]
     live = _Live()
     failed = []
     summary = {}
@@ -168,13 +169,18 @@ def main() -> int:
         if not report.ok:
             failed.append(f"validator violations: {report.count}")
     finally:
-        live.stop()
-        time.sleep(1.0)
+        if freeze:
+            live.stop()
+            time.sleep(1.0)
+        # keep-live (default): leave the meeting running/waiting so the user
+        # can keep chatting and taking over; freeze only with --stop.
         live.shutdown()
 
     summary["passed"] = not failed
     summary["failures"] = failed
     summary["run_dir"] = f"runs/{summary.get('meeting_id','')}"
+    summary["kept_live"] = not freeze
+    summary["hint"] = "kept live: open it in the UI to keep chatting; use --stop to freeze (archive)."
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if not failed else 1
 
