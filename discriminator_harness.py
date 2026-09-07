@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import meeting_v2 as m2
-from meeting_reviewer import REVIEWER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS_RETRY, build_reviewer_context
+from meeting_reviewer import REVIEWER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS_RETRY
 
 REPO = Path(__file__).resolve().parent
 MODEL_API = REPO / "model_api"
@@ -32,6 +32,172 @@ CONFIG_FILE = MODEL_API / "config.toml"
 DEFAULT_PROVIDER = "deepseek"  # anthropic-messages wire, no tools
 MAX_TOKENS = 2000
 TIMEOUT_SECONDS = 180.0
+# --------------------------------------------------------------------------
+# Rich observation context: the reviewer must be able to tell WHO typed WHAT
+# and WHAT actually happened on screen, not just see the latest chat tail.
+# --------------------------------------------------------------------------
+
+MAX_SCREEN_FRAMES = 8
+FRAME_CHAR_CAP = 1400
+TYPING_LINES = 60
+CHAT_LINES = 20
+
+def _actor_label(store: m2.MeetingStore, actor: Any) -> str:
+    if actor == "human":
+        return "human(you)"
+    roles = store.meeting.agent_name2role or {}
+    role = roles.get(actor) if isinstance(actor, str) else None
+    return f"{actor}[{role or 'participant'}]"
+
+
+def _hms(event: dict) -> str:
+    stamp = event.get("captured_at") or ""
+    return stamp[11:19] if isinstance(stamp, str) and len(stamp) >= 19 else "??:??:??"
+
+
+def _decode_hex(text: Any) -> str:
+    if not isinstance(text, str):
+        return ""
+    try:
+        raw = bytes.fromhex(text)
+    except (ValueError, TypeError):
+        return ""
+    out = []
+    for byte in raw:
+        ch = chr(byte)
+        out.append(ch if 32 <= byte < 127 or ch in "\n\r\t" else "?")
+    return "".join(out).replace("\n", " ")
+
+
+def _action_summary(data: dict) -> str:
+    action = data.get("action")
+    if isinstance(action, dict):
+        kind = action.get("type", "?")
+        if action.get("command"):
+            return f"type:command {action.get('command')[:80]}"
+        if action.get("content"):
+            return f"{kind}: {str(action.get('content'))[:120]}"
+        keys = action.get("keys")
+        if isinstance(keys, list) and keys:
+            parts = []
+            for key in keys[:12]:
+                if isinstance(key, dict):
+                    if key.get("kind") == "literal":
+                        parts.append(str(key.get("value", "")))
+                    else:
+                        parts.append(f"<{key.get('value', 'key')}>")
+            return f"type:keys {''.join(parts)[:120]}"
+        return kind
+    input_payload = data.get("input")
+    if isinstance(input_payload, dict) and input_payload.get("bytes"):
+        decoded = _decode_hex(input_payload.get("bytes"))
+        return f"typed: {decoded[:120]}"
+    if data.get("bytes"):
+        return f"typed: {_decode_hex(data.get('bytes'))[:120]}"
+    return ""
+
+
+def build_reviewer_observation(store: m2.MeetingStore) -> str:
+    """Structured transcript: chat, who typed what, terminal ownership,
+    and past screen frames with per-frame change hints."""
+    events = store.events()
+    sections: list = []
+
+    # --- chat --------------------------------------------------------------
+    chats = [e for e in events if e.get("kind") == "chat"]
+    chat_lines = []
+    for event in chats[-CHAT_LINES:]:
+        content = (event.get("content") or "").strip()
+        if content:
+            chat_lines.append(f"[{_hms(event)}] {_actor_label(store, event.get('actor'))}: {content[:300]}")
+    sections.append("=== conversation ===" + ("" if chat_lines else " (none)")
+                    + "\n" + "\n".join(chat_lines) if chat_lines else "=== conversation === (none)")
+
+    # --- who typed what -----------------------------------------------------
+    typing = []
+    seen = set()
+    for event in events:
+        if event.get("kind") != "action":
+            continue
+        actor = event.get("actor")
+        if actor in ("harness", "workspace"):
+            continue
+        data = event.get("data") or {}
+        summary = _action_summary(data)
+        if not summary:
+            continue
+        dedupe_key = data.get("action_id") or data.get("response_id")
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        typing.append(f"[{_hms(event)}] {_actor_label(store, actor)} {summary}")
+    sections.append("=== who typed what (recent actions) ==="
+                    + ("" if typing else " (no typing captured)")
+                    + "\n" + "\n".join(typing[-TYPING_LINES:]))
+
+    # --- terminal ownership -------------------------------------------------
+    owners = []
+    for event in events:
+        if event.get("kind") != "control":
+            continue
+        data = event.get("data") or {}
+        user = data.get("user_name")
+        if not user and (data.get("status") in ("acquired", "released")):
+            user = "human" if data.get("status") == "acquired" else None
+        if user:
+            owners.append(f"[{_hms(event)}] terminal -> {_actor_label(store, user)}")
+    if owners:
+        sections.append("=== terminal ownership ===" + "\n" + "\n".join(owners[-16:]))
+
+    # --- past screens with change hints -------------------------------------
+    frames = [e for e in events if e.get("kind") == "screen" and isinstance(e.get("content"), str)]
+    if frames:
+        chosen = frames if len(frames) <= MAX_SCREEN_FRAMES else [
+            frames[i] for i in range(0, len(frames), max(1, len(frames) // MAX_SCREEN_FRAMES))
+        ][:MAX_SCREEN_FRAMES]
+        frame_parts = []
+        previous = None
+        for index, frame in enumerate(chosen):
+            text = frame.get("content") or ""
+            text = text[:FRAME_CHAR_CAP]
+            label = f"[screen {_hms(frame)}]"
+            frame_parts.append(f"{label} (frame {index + 1}/{len(chosen)})")
+            frame_parts.append(text)
+            if previous is not None:
+                import difflib
+                differ = difflib.SequenceMatcher(None, previous.split("\n"), text.split("\n"))
+                removed = []
+                added = []
+                for tag, i1, i2, j1, j2 in differ.get_opcodes():
+                    if tag in ("delete", "replace"):
+                        removed.extend(previous.split("\n")[i1:i2])
+                    if tag in ("insert", "replace"):
+                        added.extend(text.split("\n")[j1:j2])
+                if removed or added:
+                    frame_parts.append(f"  changes vs previous: removed {len(removed)} line(s), added {len(added)} line(s)")
+                    if removed:
+                        frame_parts.append("  removed first lines: " + " | ".join(r.strip()[:60] for r in removed[:4]))
+                    if added:
+                        frame_parts.append("  added first lines:   " + " | ".join(a.strip()[:60] for a in added[:4]))
+            previous = text
+        sections.append("=== past screen frames (who/why visible here) ==="
+                        + "\n" + "\n".join(frame_parts))
+
+    return "\n".join(sections)
+
+
+def build_actor_instruction_block(store: m2.MeetingStore) -> str:
+    """The generator operates under a skill/instruction file; the reviewer
+    needs the same instructions to judge whether the actor followed them."""
+    try:
+        path = store.runtime_skill_path
+        if not path.is_file():
+            return ""
+        text = path.read_text(encoding="utf-8")
+        return text[:4000]
+    except Exception:  # noqa: BLE001
+        return ""
+
 
 PERSONA = (
     "You are a reviewer (discriminator) in a shared-terminal coding session. "
@@ -148,9 +314,12 @@ def comment_once(
         base_url = provider.get("base_url") or "https://api.deepseek.com/anthropic"
         api_key = _read_api_key()
         instructions = REVIEWER_INSTRUCTIONS_RETRY if retry else REVIEWER_INSTRUCTIONS
-        context = build_reviewer_context(store)
+        context = build_reviewer_observation(store)
+        actor_rules = build_actor_instruction_block(store)
         system = f"{persona}\n\n{instructions}"
-        user = f"Conversation and latest screen:\n{context}"
+        if actor_rules:
+            system += "\n\n===== the generator actor operates under these instructions (know them so you can judge it fairly) =====\n" + actor_rules
+        user = context
         with guard:
             store.refresh()
             store.update(phase="agent_thinking", control_owner="none")
