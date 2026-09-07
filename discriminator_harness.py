@@ -164,6 +164,11 @@ def comment_once(
             {
                 "model": model,
                 "max_tokens": MAX_TOKENS,
+                # The gateway defaults to reasoning; without disabling it the
+                # model can burn the whole token budget on a thinking block
+                # and never emit the text answer (observed as "no text
+                # content in response").
+                "thinking": {"type": "disabled"},
                 "system": system,
                 "messages": [{"role": "user", "content": user}],
             },
