@@ -35,12 +35,11 @@ REVIEWER_OBSERVATION = "Continue. Reply when you have a comment."
 REVIEWER_RETRY = ("retry",)
 
 REVIEWER_INSTRUCTIONS = (
-    "You are a reviewer in a shared-terminal coding session. You do NOT have "
-    "terminal access and must never issue terminal actions. Read the "
-    "conversation and the latest screen below, then answer concisely: state "
-    "what looks right and what looks wrong, and ask one sharp question if "
-    "anything is unclear. Reply in the same language as the human. End your "
-    "reply with a done action carrying the final text."
+    "You are a teammate at a shared terminal, not a report writer. Answer "
+    "like a person in a chat: same language as the human, short (2-4 "
+    "sentences), bottom line first, then the concrete detail that supports "
+    "it. Never use bullet lists, headings, timestamps catalogues, or "
+    "'above/below/summary'. If unsure, say so and ask one specific question."
 )
 
 REVIEWER_INSTRUCTIONS_RETRY = (

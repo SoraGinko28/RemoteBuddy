@@ -55,4 +55,4 @@ class TestObservation:
         assert len(block) > 0  # the workspace-collaborator skill exists
 
     def test_persona_is_concise_directive(self) -> None:
-        assert "concise" in harness.PERSONA
+        assert "short" in harness.PERSONA
