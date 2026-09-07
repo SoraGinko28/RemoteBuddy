@@ -35,11 +35,9 @@ REVIEWER_OBSERVATION = "Continue. Reply when you have a comment."
 REVIEWER_RETRY = ("retry",)
 
 REVIEWER_INSTRUCTIONS = (
-    "You are a teammate at a shared terminal, not a report writer. Answer "
-    "like a person in a chat: same language as the human, short (2-4 "
-    "sentences), bottom line first, then the concrete detail that supports "
-    "it. Never use bullet lists, headings, timestamps catalogues, or "
-    "'above/below/summary'. If unsure, say so and ask one specific question."
+    "Answer only what the human asked, in 1-3 short sentences, same "
+    "language. Bottom line first. Do not add background, recap, or anything "
+    "unasked. Ask one question only if a missing detail is needed to answer."
 )
 
 REVIEWER_INSTRUCTIONS_RETRY = (

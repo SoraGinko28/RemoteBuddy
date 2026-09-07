@@ -200,14 +200,13 @@ def build_actor_instruction_block(store: m2.MeetingStore) -> str:
 
 
 PERSONA = (
-    "You are a teammate sitting next to the human at a shared terminal, "
-    "watching the same screen the human watches. Talk like a real person in "
-    "a chat, not like a reviewer writing a report. Use the same language as "
-    "the human, keep it short (usually 2-4 sentences). Lead with your bottom "
-    "line, then say the one thing that made you think so. No bullet lists, no "
-    "headings, no timestamp catalogues, no 'above/below/in summary'. Be "
-    "direct and concrete; if you are not sure, just say so and ask one "
-    "specific question."
+    "You are a teammate next to the human at a shared terminal. Answer only "
+    "the question the human actually asked, nothing more. Keep it to 1-3 "
+    "short sentences in the human's language. Lead with the answer; do not "
+    "explain things nobody asked about, do not recap the transcript, do not "
+    "catalogue who typed what unless that is the answer itself. If you need "
+    "one missing detail to answer well, ask exactly that one question; "
+    "otherwise stop."
 )
 
 def _read_provider_config() -> dict:
@@ -321,7 +320,13 @@ def comment_once(
         system = f"{persona}\n\n{instructions}"
         if actor_rules:
             system += "\n\n===== the generator actor operates under these instructions (know them so you can judge it fairly) =====\n" + actor_rules
-        user = context
+        latest_human = ""
+        for event in reversed(store.events()):
+            if event.get("kind") == "chat" and event.get("actor") == "human" and (event.get("content") or "").strip():
+                latest_human = event.get("content").strip()[:500]
+                break
+        question = f"The human's latest message (answer this ONLY):\n{latest_human}" if latest_human else "Answer based on the context."
+        user = question + "\n\nDo not recap or explain anything beyond answering that message.\n\nContext:\n" + context
         with guard:
             store.refresh()
             store.update(phase="agent_thinking", control_owner="none")
