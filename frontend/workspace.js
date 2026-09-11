@@ -2792,6 +2792,19 @@ function bind() {
   document.addEventListener("pointerdown", (event) => {
     if (el.selection_menu.contains(event.target)) return;
     hideSelectionMenu();
+    // A terminal selection lives inside xterm rather than the DOM, so it
+    // survives this click: focus returns to the terminal, the selection-change
+    // re-check still finds that selection and the menu pops straight back. Any
+    // click outside the terminal is a dismissal, so drop the selection too.
+    const inTerminal = el.terminal_screen
+      && (event.target === el.terminal_screen || el.terminal_screen.contains(event.target));
+    if (!inTerminal && terminalEngine) {
+      try {
+        terminalEngine.term?.clearSelection?.();
+      } catch (_error) {
+        // Clearing a selection must never break the click that asked for it.
+      }
+    }
     // Do not clear the browser selection when the user is clicking inside a
     // selectable source. Double/triple-click selection depends on the browser
     // preserving and extending the previous selection across rapid clicks.
