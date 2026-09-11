@@ -30,23 +30,30 @@ def store(tmp_path):
 
 
 class TestDefaults:
-    def test_create_defaults_to_legacy_single_agent(self, store) -> None:
-        assert store.meeting.agent_name2role == {m2.DEFAULT_AGENT_NAME: "generator"}
+    def test_create_defaults_to_the_default_team(self, store) -> None:
+        # The reviewer ships with every new meeting: it only runs when the
+        # human @-mentions it, so a second member costs nothing up front.
+        assert store.meeting.agent_name2role == {
+            m2.DEFAULT_AGENT_NAME: "generator",
+            m2.DEFAULT_DISCRIMINATOR_NAME: "passive_discriminator",
+        }
 
-    def test_helpers_see_default_agent(self, store) -> None:
-        assert store.meeting.agent_names() == {m2.DEFAULT_AGENT_NAME}
+    def test_helpers_see_default_team(self, store) -> None:
+        assert store.meeting.agent_names() == {m2.DEFAULT_AGENT_NAME,
+                                               m2.DEFAULT_DISCRIMINATOR_NAME}
         assert store.meeting.role_of("actor") == "generator"
+        assert store.meeting.role_of("critic") == "passive_discriminator"
         assert store.meeting.is_agent_name("actor")
         assert not store.meeting.is_agent_name("human")
-        assert store.meeting.is_agent_name("human") is False
+        assert store.meeting.generator_name() == "actor"
 
     def test_manifest_persists_role_map(self, store) -> None:
         payload = json.loads((store.run_dir / "meeting.json").read_text(encoding="utf-8"))
-        assert payload["agent_name2role"] == {"actor": "generator"}
+        assert payload["agent_name2role"] == dict(m2.DEFAULT_AGENT_ROLE_MAP)
 
     def test_reload_keeps_roles(self, store, tmp_path) -> None:
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
-        assert reloaded.meeting.agent_name2role == {"actor": "generator"}
+        assert reloaded.meeting.agent_name2role == dict(m2.DEFAULT_AGENT_ROLE_MAP)
 
     def test_generator_name_default(self, store) -> None:
         assert store.meeting.generator_name() == "actor"
@@ -124,13 +131,14 @@ class TestExplicitRoles:
 
 
 class TestValidation:
-    @pytest.mark.parametrize("roles", [
-        None,
-        {},
-        {"actor": "generator"},
-    ])
-    def test_none_or_empty_falls_back(self, roles) -> None:
-        assert m2.normalize_agent_role_map(roles) == {"actor": "generator"}
+    @pytest.mark.parametrize("roles", [None, {}])
+    def test_none_or_empty_falls_back_to_the_default_team(self, roles) -> None:
+        assert m2.normalize_agent_role_map(roles) == dict(m2.DEFAULT_AGENT_ROLE_MAP)
+
+    def test_explicit_solo_generator_is_kept(self) -> None:
+        # A caller that asks for one agent gets one agent; the reviewer is a
+        # default, not a requirement.
+        assert m2.normalize_agent_role_map({"actor": "generator"}) == {"actor": "generator"}
 
     @pytest.mark.parametrize("bad", [
         {"human": "generator"},
@@ -171,9 +179,11 @@ class TestAppendMembership:
         assert len(ok) == 2
 
     def test_terminal_control_rejects_discriminator_or_stranger(self, store) -> None:
-        store.add_agent_role("critic", "active_discriminator")
+        store.add_agent_role("auditor", "active_discriminator")
         with pytest.raises(m2.MeetingError, match="human or the generator"):
-            store.note_terminal_control("critic")
+            store.note_terminal_control("auditor")
+        with pytest.raises(m2.MeetingError, match="human or the generator"):
+            store.note_terminal_control("critic")  # the default reviewer, still not the writer
         with pytest.raises(m2.MeetingError, match="human or the generator"):
             store.note_terminal_control("stranger")
 

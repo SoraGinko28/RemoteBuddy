@@ -47,6 +47,14 @@ VALID_AGENT_ROLES = {"generator", "active_discriminator", "passive_discriminator
 HUMAN_USER = "human"
 # New meetings default their single generator to this readable name.
 DEFAULT_AGENT_NAME = "actor"
+# A new meeting already has its reviewer on the member list. The reviewer is
+# lazy (it only runs when the human @-mentions it) and can never own the shared
+# terminal, so the second participant costs nothing until it is asked for.
+DEFAULT_DISCRIMINATOR_NAME = "critic"
+DEFAULT_AGENT_ROLE_MAP = {
+    DEFAULT_AGENT_NAME: "generator",
+    DEFAULT_DISCRIMINATOR_NAME: "passive_discriminator",
+}
 # Pre-identity manifests recorded the lone agent as "agent"; loading them
 # keeps that exact name so historical records stay coherent.
 LEGACY_AGENT_NAME = "agent"
@@ -86,12 +94,12 @@ def normalize_agent_role_map(
       an agent name;
     - values must be a member of VALID_AGENT_ROLES;
     - a meeting keeps at least one ``generator`` (the shared-terminal owner).
-    An empty/None map falls back to the legacy single agent
-    ``{DEFAULT_AGENT_NAME: "generator"}`` so pre-identity meetings behave
-    exactly as before.
+    An empty/None map falls back to the default team: the ``actor`` generator
+    plus the lazy ``critic`` reviewer. Pre-identity manifests never reach this
+    path — the loader pins them to the legacy single agent ``agent``.
     """
     if not role_map:
-        return {DEFAULT_AGENT_NAME: "generator"}
+        return dict(DEFAULT_AGENT_ROLE_MAP)
     if not isinstance(role_map, Mapping):
         raise MeetingError("agent_name2role must be a mapping of name -> role")
     normalized: Dict[str, str] = {}
@@ -224,8 +232,8 @@ class Meeting:
     agent_ordinal: int = 0
     # ADT agent_name2role: single source of who is in the meeting and with
     # which role. Append-only at join time; see MeetingStore.add_agent_role.
-    # The legacy default ({DEFAULT_AGENT_NAME: "generator"}) keeps every
-    # pre-identity meeting behaving exactly as before.
+    # An empty map means "not recorded": new meetings get DEFAULT_AGENT_ROLE_MAP
+    # at creation, and pre-identity manifests stay on the legacy single agent.
     agent_name2role: Dict[str, str] = field(default_factory=dict)
     reasoning_effort: Optional[str] = None
     schema_version: int = SCHEMA_VERSION
@@ -236,8 +244,8 @@ class Meeting:
 
     @property
     def effective_role_map(self) -> Dict[str, str]:
-        """agent_name2role with the legacy fallback applied when empty."""
-        return self.agent_name2role or {DEFAULT_AGENT_NAME: "generator"}
+        """agent_name2role with the default team applied when it is empty."""
+        return self.agent_name2role or dict(DEFAULT_AGENT_ROLE_MAP)
 
     def agent_names(self) -> Set[str]:
         return set(self.effective_role_map)
