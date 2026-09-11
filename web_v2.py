@@ -317,6 +317,33 @@ class MeetingWebService:
             worker = self.jobs.get(meeting_id)
             return bool((worker and worker.is_alive()) or meeting_id in self.queued_jobs)
 
+    def _terminal_alive(self, store: MeetingStore) -> bool:
+        """Whether the meeting's tmux session and pane still exist.
+
+        A meeting outlives its terminal when the session is killed outside
+        RemoteBuddy. Control operations that would drive the pane must check
+        this first: discovering it halfway through used to fail the meeting.
+        """
+        if store.meeting.session_state == "stopped":
+            return False
+        pane_id = store.meeting.pane_id
+        if not pane_id:
+            # The workspace session is created by the first agent cycle, so a
+            # meeting that never had a pane is not a meeting without a terminal.
+            return True
+        transport = self._transport()
+        try:
+            if not transport.session_exists(store.meeting.session_name):
+                return False
+            return str(transport.pane_info(pane_id).get("dead", "0")) == "0"
+        except (TmuxError, OSError):
+            return False
+
+    def _require_terminal(self, store: MeetingStore, action: str) -> None:
+        """Refuse an action that needs a terminal the meeting no longer has."""
+        if not self._terminal_alive(store):
+            raise WebError(410, f"terminal session is gone; cannot {action}")
+
     def _make_backend(self, config: ModelApiConfig) -> AgentBackend:
         if self.client_factory is not None:
             return self.client_factory(config)
@@ -1238,22 +1265,28 @@ class MeetingWebService:
                         try:
                             capture_workspace(store, transport)
                         except (RunnerError, TmuxError, OSError) as exc:
-                            store.append_event("error", "harness", "failed", content=str(exc))
-                            try:
-                                session_state = (
-                                    "retained"
-                                    if transport.session_exists(store.meeting.session_name)
-                                    else "stopped"
+                            store.append_event("error", "harness", "human_control", content=str(exc))
+                            if self._terminal_alive(store):
+                                # The workspace is still there, so this is a
+                                # genuine capture failure: fail the meeting.
+                                store.update(
+                                    status="failed",
+                                    phase="failed",
+                                    control_owner="none",
+                                    failure=str(exc),
                                 )
-                            except (TmuxError, OSError):
-                                session_state = store.meeting.session_state
-                            store.update(
-                                status="failed",
-                                phase="failed",
-                                control_owner="none",
-                                failure=str(exc),
-                                session_state=session_state,
-                            )
+                            else:
+                                # The terminal went away under the human's
+                                # hands: park the meeting instead of failing a
+                                # run nobody could have driven any further.
+                                store.update(
+                                    phase="waiting_for_user",
+                                    control_owner="none",
+                                    control_requested=None,
+                                    pending_action_id=None,
+                                    failure=None,
+                                )
+                                store.mark_session_stopped()
                             self._sync_human_pipe(store)
                             return
                     elif store.meeting.control_requested != "human":
@@ -1324,6 +1357,7 @@ class MeetingWebService:
             if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
                 # A chat while the human holds the terminal is an explicit
                 # instruction: hand control back AND resume the Agent with it.
+                self._require_terminal(store, "hand control back")
                 self._sync_human_pipe(store)
                 return self._resume_agent_from_human(meeting_id)
             # 2b routing: @mention summons the named non-generator member;
@@ -1354,6 +1388,7 @@ class MeetingWebService:
                         self._start_reviewer(meeting_id, reviewer_targets[0])
                     return store
             if delivery == "interrupt" or wake_agent:
+                self._require_terminal(store, "run the agent")
                 store.bump_request_generation(
                     failure=None,
                     cycle_action_count=0,
@@ -1407,6 +1442,9 @@ class MeetingWebService:
             store = self.load_store(meeting_id)
             if store.meeting.status in TERMINAL_STATUSES:
                 raise WebError(409, "meeting is already finished")
+            # Refuse before touching any state: taking over a pane that no
+            # longer exists used to fail the whole meeting afterwards.
+            self._require_terminal(store, "take over")
             if store.meeting.control_owner == "human":
                 return store
             orphaned_agent = self._orphaned_agent(store, meeting_id)
@@ -1749,6 +1787,7 @@ class MeetingWebService:
             orphaned_agent = self._orphaned_agent(store, meeting_id)
             if store.meeting.phase not in RESUMABLE_PHASES and not orphaned_agent:
                 raise WebError(409, "Agent can resume only while waiting or after an API error")
+            self._require_terminal(store, "resume the agent")
             config = self._config_for_store(store)
             fresh_conversation = (
                 store.meeting.phase in {"api_error", "cycle_timeout", "completion_proposed"}
