@@ -340,9 +340,16 @@ class MeetingWebService:
             return False
 
     def _require_terminal(self, store: MeetingStore, action: str) -> None:
-        """Refuse an action that needs a terminal the meeting no longer has."""
-        if not self._terminal_alive(store):
-            raise WebError(410, f"terminal session is gone; cannot {action}")
+        """Refuse an action that needs a terminal the meeting no longer has.
+
+        The refusal also records what the probe just learned: the session is
+        gone, so the meeting must stop offering terminal operations.
+        """
+        if self._terminal_alive(store):
+            return
+        if store.meeting.session_state != "stopped":
+            store.mark_session_stopped()
+        raise WebError(410, f"terminal session is gone; cannot {action}")
 
     def _make_backend(self, config: ModelApiConfig) -> AgentBackend:
         if self.client_factory is not None:

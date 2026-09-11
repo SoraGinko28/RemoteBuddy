@@ -382,6 +382,8 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(before.phase, after.phase)
         self.assertEqual(before.status, after.status)
         self.assertEqual(before.control_owner, after.control_owner)
+        # The refusal records the discovery so the UI stops offering takeover.
+        self.assertEqual("stopped", after.session_state)
         self.wait_for_workers()
 
     def test_terminal_input_requires_human_control(self):
