@@ -898,6 +898,7 @@ def action_json_schema(
         delay: Optional[Dict[str, Any]] = None,
         references: bool = False,
         command_schema: Optional[Dict[str, Any]] = None,
+        message_description: str = "",
     ) -> Dict[str, Any]:
         return {
             "type": "object",
@@ -905,7 +906,11 @@ def action_json_schema(
             "required": required,
             "properties": {
                 "type": {"type": "string", "enum": [action_type]},
-                "message_type": {"type": "string", "enum": list(action_messages)},
+                "message_type": {
+                    "type": "string",
+                    "enum": list(action_messages),
+                    **({"description": message_description} if message_description else {}),
+                },
                 "content": {"type": "string", **({"minLength": 1} if content else {"enum": [""]})},
                 "command": command_schema or {"type": "string", "enum": list(commands)},
                 "path": {
@@ -941,7 +946,21 @@ def action_json_schema(
     if "chat" in action_types:
         messages = [value for value in ("ack", "progress", "question") if value in message_types]
         if messages:
-            variants.append(branch("chat", messages, ("none",), content=True, references=True))
+            variants.append(
+                branch(
+                    "chat",
+                    messages,
+                    ("none",),
+                    content=True,
+                    references=True,
+                    message_description=(
+                        "ack: you are about to do something, or you acknowledge the "
+                        "human. progress: only for work that is already done and "
+                        "visible on the terminal Screen. question: you are handing "
+                        "control back to the human and stopping this turn."
+                    ),
+                )
+            )
     if "done" in action_types and "final" in message_types:
         variants.append(branch("done", ("final",), ("none",), content=True, references=True))
     if "command" in action_types and "none" in message_types:
