@@ -2359,7 +2359,9 @@ async function handleSelectionAction(action) {
     hideSelectionMenu();
     clearBrowserSelection();
     el.message_input.focus();
-    toast(added ? `已添加引用（共 ${state.references.length} 个）` : "这个引用已经添加");
+    // The reference card above the composer already shows the quote; a toast
+    // on top of it only covers the controls the user is about to use.
+    if (!added) toast("这个引用已经添加");
     return;
   }
 }
