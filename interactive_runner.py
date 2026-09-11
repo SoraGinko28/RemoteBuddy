@@ -60,7 +60,7 @@ DYNAMIC_STALL_LIMIT = 3
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
-TEST_MARKER_RE = re.compile(r"(?:[A-Z][A-Z0-9 _-]{0,80} )?TESTS PASSED")
+MESSAGE_TYPES = ("none", "ack", "progress", "question", "final")
 
 
 
@@ -90,8 +90,6 @@ class InteractiveRunner:
         self.typing_interval_seconds = typing_interval_seconds
         self._include_agent_chat_once = False
         self._last_action_success = True
-        self._cycle_acknowledged = False
-        self._last_action_was_chat = False
         self._last_terminal_evidence: Optional[str] = None
         # Compare-and-execute guard: the screen snapshot the model saw when it
         # started thinking vs. the snapshot right before its action runs. If
@@ -151,8 +149,6 @@ class InteractiveRunner:
         ``_last_terminal_evidence`` in particular gates progress messages on
         work done "in this cycle"; a reused runner must not inherit it.
         """
-        self._cycle_acknowledged = False
-        self._last_action_was_chat = False
         self._last_terminal_evidence = None
         self._include_agent_chat_once = False
         self._last_action_success = True
@@ -641,9 +637,6 @@ class InteractiveRunner:
                     pending_action_id=request_id,
                     cycle_action_count=self.store.meeting.cycle_action_count + 1,
                 )
-                if not self._cycle_acknowledged:
-                    self._cycle_acknowledged = True
-                self._last_action_was_chat = response.action.type == "chat"
             should_pause = self._execute(
                 request_id,
                 response.action,
@@ -690,7 +683,13 @@ class InteractiveRunner:
                     return
 
     def _phase_constraints(self) -> Tuple[Optional[Sequence[str]], Optional[Sequence[str]], bool]:
-        first_action = not self._cycle_acknowledged
+        """What the pane structurally allows now, and whether the cycle must close.
+
+        The runner constrains only what is physically possible in the shared
+        pane (you cannot drive Vim from a shell prompt). How the Agent talks to
+        the human — when to acknowledge, when to answer in one line, when to
+        report a result — belongs to the Skill, not to the harness.
+        """
         elapsed = self._cycle_elapsed()
         configured_timeout = float(
             getattr(getattr(self.client, "config", None), "request_timeout_seconds", 60.0)
@@ -700,48 +699,23 @@ class InteractiveRunner:
             self.store.meeting.cycle_action_count >= ACTION_LIMIT - 1
             or remaining <= configured_timeout
         )
-        if first_action:
-            return ("chat",), ("ack",), budget_final
         command = (self.store.meeting.current_command or "").lower()
         if budget_final:
             if command in SHELL_COMMANDS:
-                return ("chat", "done"), ("progress", "question", "final"), True
-            return ("chat",), ("progress", "question"), True
-        message_types = ("none", "progress", "question", "final")
-        allow_chat = not self._last_action_was_chat
+                return ("chat", "done"), MESSAGE_TYPES, True
+            return ("chat",), MESSAGE_TYPES, True
         if command in SHELL_COMMANDS:
-            types = (
-                ("chat", "command", "done", "observe", "keystrokes")
-                if allow_chat
-                else ("command", "done", "observe", "keystrokes")
-            )
-            return types, message_types if allow_chat else ("none", "final"), False
+            return ("chat", "command", "done", "observe", "keystrokes"), MESSAGE_TYPES, False
         if command in {"vim", "vi"}:
-            types = (
-                ("chat", "vim_keys", "keystrokes", "observe")
-                if allow_chat
-                else ("vim_keys", "keystrokes", "observe")
-            )
-            return types, message_types if allow_chat else ("none",), False
+            return ("chat", "vim_keys", "keystrokes", "observe"), MESSAGE_TYPES, False
         if command.startswith("python"):
-            types = (
-                ("chat", "terminal_keys", "keystrokes", "observe")
-                if allow_chat
-                else ("terminal_keys", "keystrokes", "observe")
-            )
-            return types, message_types if allow_chat else ("none",), False
+            return ("chat", "terminal_keys", "keystrokes", "observe"), MESSAGE_TYPES, False
         if command:
             # Any other foreground program launched by a relaxed bash command:
             # the Agent may type into it (including C-c) or observe, keeping
             # every interaction inside the shared pane.
-            types = (
-                ("chat", "terminal_keys", "keystrokes", "observe")
-                if allow_chat
-                else ("terminal_keys", "keystrokes", "observe")
-            )
-            return types, message_types if allow_chat else ("none",), False
-        types = ("chat", "observe") if allow_chat else ("observe",)
-        return types, message_types if allow_chat else ("none",), False
+            return ("chat", "terminal_keys", "keystrokes", "observe"), MESSAGE_TYPES, False
+        return ("chat", "observe"), MESSAGE_TYPES, False
 
     def _cycle_elapsed(self) -> float:
         return max(0.0, time.monotonic() - self._cycle_started_monotonic)
@@ -860,28 +834,19 @@ class InteractiveRunner:
                 if self._last_terminal_evidence is None:
                     raise AgentProtocolError(
                         "progress requires a completed Vim edit, Python run, or "
-                        "keystrokes/terminal-input action in this cycle; if you only "
-                        "need to hand control back, use chat message_type=question"
+                        "keystrokes/terminal-input action in this cycle; send a plain "
+                        "chat or observe instead when there is nothing new to report"
                     )
             if action.type == "done":
+                # Claiming completion is the Agent's call, guided by the Skill
+                # and confirmed by the human; only a message that arrived while
+                # the turn was in flight blocks it.
                 pending_human = [
                     event for event in self.store.events_after(self._current_input_seq)
                     if event.get("kind") == "chat" and event.get("actor") == "human"
                 ]
                 if pending_human:
                     raise AgentProtocolError("cannot propose completion while a new human message is pending")
-                screen = (self.store.latest_screen() or {}).get("content", "")
-                marker_lines = [
-                    line.strip()
-                    for line in screen.splitlines()
-                    if TEST_MARKER_RE.fullmatch(line.strip())
-                ]
-                if not marker_lines:
-                    raise AgentProtocolError(
-                        "TESTS PASSED marker not present as an independent line in the latest "
-                        "terminal Screen; without such a marker, hand control back with chat "
-                        "message_type=question instead of done"
-                    )
         except AgentProtocolError as exc:
             current_command = (self.store.meeting.current_command or "unknown").lower()
             raise AgentProtocolError(
@@ -972,9 +937,6 @@ class InteractiveRunner:
                 cycle_action_count=self.store.meeting.cycle_action_count + 1,
                 agent_turn_id=metadata.get("turn_id") or self.store.meeting.agent_turn_id,
             )
-            if not self._cycle_acknowledged:
-                self._cycle_acknowledged = True
-            self._last_action_was_chat = action.type == "chat"
         try:
             should_pause = self._execute(
                 action_id,
