@@ -162,9 +162,34 @@ class AgentAction:
         allowed_types: Optional[Sequence[str]] = None,
         allowed_message_types: Optional[Sequence[str]] = None,
     ) -> "AgentAction":
-        required = {"type", "message_type", "content", "command", "path", "keys", "delay_ms"}
-        if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - {"references", "result_needed"}:
-            raise AgentProtocolError("model action has unexpected fields")
+        optional = {"message_type", "content", "command", "path", "keys", "delay_ms"}
+        allowed = {"type", "references", "result_needed"} | optional
+        payload = unwrap_action_envelope(payload)
+        if not isinstance(payload, dict):
+            raise AgentProtocolError("model action must be a JSON object")
+        # Name the offending fields: this text goes back to the model as a
+        # correction hint, and different model families invent different keys.
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise AgentProtocolError("model action has unexpected fields: " + ", ".join(unknown))
+        # Every action but chat and done carries message_type "none", so an
+        # omission there is unambiguous; chat and done must say what they mean.
+        if "message_type" not in payload and payload.get("type") not in {"chat", "done"}:
+            payload["message_type"] = "none"
+        missing = sorted(field for field in ("type", "message_type") if field not in payload)
+        if missing:
+            raise AgentProtocolError("model action is missing fields: " + ", ".join(missing))
+        # Models routinely omit the fields an action does not use; fill in the
+        # schema's "unused" values here. The per-type checks below still reject
+        # actions that genuinely need a value they left out.
+        payload = {
+            "content": "",
+            "command": "none",
+            "path": "",
+            "keys": [],
+            "delay_ms": 0,
+            **payload,
+        }
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
             raise AgentProtocolError("model action type is invalid")
@@ -172,7 +197,10 @@ class AgentAction:
             raise AgentProtocolError("model action is not allowed in the current phase")
         message_type = payload["message_type"]
         if message_type not in {"none", "ack", "progress", "question", "final"}:
-            raise AgentProtocolError("model message type is invalid")
+            raise AgentProtocolError(
+                "model message type is invalid: expected none, ack, progress, "
+                "question, or final"
+            )
         if allowed_message_types is not None and message_type not in set(allowed_message_types):
             raise AgentProtocolError("model message type is not allowed in the current phase")
         content = payload["content"]
@@ -677,6 +705,25 @@ def decode_action_text(
         raise AgentActionError(str(exc)) from exc
 
 
+def unwrap_action_envelope(payload: Any) -> Any:
+    """Flatten the ``action`` wrapper some models put around their action.
+
+    A gateway may hand the action over inside a one-key envelope, and a model
+    copying that shape from its own tool schema can either wrap it twice or
+    split its fields between the envelope and the wrapped object. No valid
+    action uses ``action`` as a key, so merging is unambiguous.
+    """
+    for _ in range(3):
+        if not isinstance(payload, dict):
+            return payload
+        inner = payload.get("action")
+        if not isinstance(inner, dict):
+            return payload
+        outer = {key: value for key, value in payload.items() if key != "action"}
+        payload = {**inner, **outer}
+    return payload
+
+
 def _decode_action_text(
     text: str,
     allowed_types: Optional[Sequence[str]] = None,
@@ -698,9 +745,7 @@ def _decode_action_text(
         raise AgentProtocolError("model output is not valid action JSON") from exc
     if any(value != values[0] for value in values[1:]):
         raise AgentProtocolError("model output contains multiple different actions")
-    payload = values[0]
-    if isinstance(payload, dict) and set(payload) == {"action"}:
-        payload = payload["action"]
+    payload = unwrap_action_envelope(values[0])
     return AgentAction.from_dict(payload, allowed_types, allowed_message_types)
 
 

@@ -213,3 +213,17 @@ class TestLegacyManifestLoad:
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
         # pre-identity manifests stay on the legacy name
         assert reloaded.meeting.agent_name2role == {"agent": "generator"}
+
+
+class TestConversationCredits:
+    def test_exported_transcript_names_every_speaker(self, store) -> None:
+        store.add_agent_role("critic", "passive_discriminator")
+        store.append_chat("actor", "listing files", "ack")
+        store.append_chat("critic", "the echo never ran", "final")
+        store.append_chat("human", "carry on", "request")
+        store.render_conversation()
+        transcript = (store.run_dir / "conversation.md").read_text(encoding="utf-8")
+        assert "## Actor · ack" in transcript
+        assert "## Critic · final" in transcript
+        assert "## You · request" in transcript
+        assert "## Agent ·" not in transcript

@@ -22,6 +22,7 @@ from agent_protocol import (
     DynamicActionHandler,
     action_json_schema,
     decode_action_text,
+    unwrap_action_envelope,
 )
 from model_api_client import ModelApiConfig
 
@@ -518,9 +519,7 @@ class CodexAppServerBackend:
         if action_handler is None:
             self._send_error(request_id, -32603, "RemoteBuddy action handler is unavailable")
             self._reject_protocol("Codex dynamic tool mode has no action handler")
-        arguments = params.get("arguments")
-        if isinstance(arguments, dict) and set(arguments) == {"action"}:
-            arguments = arguments["action"]
+        arguments = unwrap_action_envelope(params.get("arguments"))
         try:
             # Per-action phase constraints are checked again by the runner,
             # because one dynamic turn may cross the first-ack boundary.

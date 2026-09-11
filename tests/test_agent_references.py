@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from agent_protocol import (
     AgentAction,
     AgentProtocolError,
     action_json_schema,
+    decode_action_text,
 )
 from interactive_runner import InteractiveRunner
 from meeting_v2 import MeetingStore
@@ -219,6 +221,66 @@ class AgentReferenceRunnerTest(unittest.TestCase):
         ]
         self.assertEqual(1, len(rejected))
         self.assertIn("invalid reference", rejected[0]["content"])
+
+
+class AgentActionFieldDiagnosticsTest(unittest.TestCase):
+    """The rejection text is the model's correction hint: name the fields."""
+
+    def test_unknown_field_is_named_in_the_error(self):
+        with self.assertRaisesRegex(AgentProtocolError, "unexpected fields: reasoning"):
+            AgentAction.from_dict(chat_payload(reasoning="thinking out loud"))
+
+    def test_missing_required_field_is_named_in_the_error(self):
+        payload = chat_payload()
+        payload.pop("message_type")
+        with self.assertRaisesRegex(AgentProtocolError, "missing fields: message_type"):
+            AgentAction.from_dict(payload)
+
+
+class AgentActionToleranceTest(unittest.TestCase):
+    """Model families differ in how faithfully they copy the action schema."""
+
+    def test_double_action_envelope_is_unwrapped(self):
+        action = decode_action_text(json.dumps({"action": {"action": chat_payload()}}))
+        self.assertEqual("chat", action.type)
+
+    def test_split_action_envelope_is_merged(self):
+        # Ground truth from the Trae backend: the model wrapped the action body
+        # and left the envelope-level fields next to it.
+        text = json.dumps(
+            {
+                "action": {
+                    "type": "chat",
+                    "content": "Looking at the directory now.",
+                    "command": "none",
+                    "path": "",
+                    "keys": [],
+                    "delay_ms": 0,
+                },
+                "references": [],
+                "message_type": "ack",
+                "result_needed": False,
+            }
+        )
+        action = decode_action_text(text)
+        self.assertEqual("chat", action.type)
+        self.assertEqual("ack", action.message_type)
+        self.assertFalse(action.result_needed)
+
+    def test_unused_fields_may_be_omitted(self):
+        action = AgentAction.from_dict(
+            {"type": "command", "message_type": "none", "command": "ls -la"}
+        )
+        self.assertEqual("ls -la", action.command)
+        self.assertEqual([], list(action.keys))
+        self.assertEqual(0, action.delay_ms)
+        self.assertEqual("", action.content)
+
+    def test_non_chat_action_defaults_message_type_to_none(self):
+        action = AgentAction.from_dict(
+            {"type": "keystrokes", "keys": [{"kind": "literal", "value": "ls -la"}]}
+        )
+        self.assertEqual("none", action.message_type)
 
 
 if __name__ == "__main__":

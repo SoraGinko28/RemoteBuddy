@@ -36,7 +36,15 @@ def _free_port() -> int:
 
 
 class _Live:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        backend: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        self.backend = backend
+        self.provider = provider
+        self.model = model
         import web_v2
         service = web_v2.MeetingWebService(
             project_root=REPO,
@@ -73,12 +81,21 @@ class _Live:
     def start(self) -> None:
         self.csrf = self._req("GET", "/api/session")["csrf_token"]
         meeting_id = "multi-" + uuid.uuid4().hex[:8]
-        result = self._req("POST", "/api/meetings", {
+        payload = {
             "meeting_id": meeting_id,
             "message": GENERATOR_TASK,
             "typing_profile": "fast",
             "agent_name2role": {"agent": "generator", "critic": "passive_discriminator"},
-        })
+        }
+        # Only send the harness fields the caller asked for; otherwise the
+        # meeting keeps the configured default (claude-code/deepseek).
+        if self.backend is not None:
+            payload["agent_backend"] = self.backend
+        if self.provider is not None:
+            payload["agent_provider"] = self.provider
+        if self.model is not None:
+            payload["model"] = self.model
+        result = self._req("POST", "/api/meetings", payload)
         self.meeting_id = result["meeting_id"]
         print(f"meeting {self.meeting_id} on :{self.port}", flush=True)
 
@@ -118,10 +135,23 @@ def _finals(events, actor: str) -> list:
 
 
 def main() -> int:
-    freeze = "--stop" in sys.argv[1:]
-    live = _Live()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="RemoteBuddy live two-agent E2E")
+    parser.add_argument("--stop", action="store_true",
+                        help="freeze (archive) the meeting instead of keeping it live")
+    parser.add_argument("--backend", default=None,
+                        help="agent_backend for the generator (default: config)")
+    parser.add_argument("--provider", default=None,
+                        help="agent_provider for the generator (default: config)")
+    parser.add_argument("--model", default=None,
+                        help="model for the generator; pass '' for the CLI default")
+    options = parser.parse_args()
+
+    freeze = options.stop
+    live = _Live(backend=options.backend, provider=options.provider, model=options.model)
     failed = []
-    summary = {}
+    summary = {"backend": options.backend, "provider": options.provider, "model": options.model}
     try:
         live.start()
         live._req("GET", f"/api/meetings/{live.meeting_id}/snapshot")
