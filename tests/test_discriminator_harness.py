@@ -56,3 +56,17 @@ class TestObservation:
 
     def test_persona_is_concise_directive(self) -> None:
         assert "short" in harness.PERSONA
+
+    def test_latest_screen_is_always_in_the_observation(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        for index in range(harness.MAX_SCREEN_FRAMES * 3):
+            store.append_event(
+                "screen", "workspace", "agent_acting",
+                content=f"frame {index}\nstill working\n",
+            )
+        store.append_event(
+            "screen", "workspace", "agent_acting",
+            content="frame last\nPROJECT TESTS PASSED\n",
+        )
+        observation = harness.build_reviewer_observation(store)
+        assert "PROJECT TESTS PASSED" in observation

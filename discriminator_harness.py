@@ -152,9 +152,10 @@ def build_reviewer_observation(store: m2.MeetingStore) -> str:
     # --- past screens with change hints -------------------------------------
     frames = [e for e in events if e.get("kind") == "screen" and isinstance(e.get("content"), str)]
     if frames:
-        chosen = frames if len(frames) <= MAX_SCREEN_FRAMES else [
-            frames[i] for i in range(0, len(frames), max(1, len(frames) // MAX_SCREEN_FRAMES))
-        ][:MAX_SCREEN_FRAMES]
+        # The newest frames are the evidence the reviewer judges against, and
+        # diffs only mean anything between neighbouring frames: keep one
+        # contiguous window ending at the latest screen instead of sampling.
+        chosen = frames[-MAX_SCREEN_FRAMES:]
         frame_parts = []
         previous = None
         for index, frame in enumerate(chosen):
