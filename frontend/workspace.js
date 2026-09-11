@@ -2830,6 +2830,11 @@ function bind() {
     if (!(takeoverStream.active || state.followLive)) return;
     const target = event.target;
     if (el.terminal_screen && (target === el.terminal_screen || el.terminal_screen.contains(target))) return;
+    // The selection toolbar drives the selection the user just made: moving
+    // focus to the terminal on its own pointerdown wipes that selection before
+    // the click lands, so 添加到对话 silently did nothing -- but only for chat
+    // text, since xterm keeps its selection internally.
+    if (el.selection_menu && el.selection_menu.contains(target)) return;
     if (isEditableFocusTarget(target)) return;
     if (isTextSelectionSurface(target)) return;
     setTimeout(focusTerminalCursor, 0);
