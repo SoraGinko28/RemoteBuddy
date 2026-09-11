@@ -58,7 +58,7 @@ SCRIPT = {
     10: act("command", command="python", path="analysis.py"),
     11: act("terminal_keys", keys=[{"kind": "key", "value": "C-c"}]),
     12: act("chat", "progress", "analysis.py 已运行完毕，输出正常。"),
-    13: act("chat", "progress", "补充：脚本运行耗时正常。"),
+    13: act("vim_keys", keys=[{"kind": "literal", "value": "i"}]),  # no editor is open
     14: act("command", command="git status"),
     15: act("done", "final", "笔记与分析脚本均已就绪，任务完成。"),
 }
@@ -233,7 +233,7 @@ class CodexTaskEndToEndTest(unittest.TestCase):
             if event["kind"] == "action" and event.get("data", {}).get("reason") == "phase_mismatch"
         ]
         self.assertEqual(2, len(invalid))  # rm -rf build, command:"none"
-        self.assertEqual(1, len(mismatch))  # chat right after chat
+        self.assertEqual(1, len(mismatch))  # vim keys while the shell owns the pane
 
         records = self.audit_records()
         feedback = {r["turn"]: r["feedback_seen"] for r in records if "feedback_seen" in r}

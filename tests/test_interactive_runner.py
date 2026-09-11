@@ -620,12 +620,10 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(1, len([item for item in self.transport.commands if item[0] == "create"]))
         self.assertTrue(any(item[1] == "vim" for item in self.transport.commands if item[0] != "create"))
         self.assertTrue(self.transport.tokens)
-        self.assertEqual(("chat",), client.calls[0][3]["allowed_types"])
         self.assertEqual(
-            ("command", "done", "observe", "keystrokes"),
-            client.calls[1][3]["allowed_types"],
+            ("chat", "command", "done", "observe", "keystrokes"),
+            client.calls[0][3]["allowed_types"],
         )
-        self.assertEqual(("none", "final"), client.calls[1][3]["allowed_message_types"])
         self.assertEqual(
             ("chat", "vim_keys", "keystrokes", "observe"),
             client.calls[2][3]["allowed_types"],
@@ -690,7 +688,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             client.calls[3][3]["allowed_types"],
         )
 
-    def test_progress_must_be_followed_by_terminal_action(self):
+    def test_progress_does_not_block_the_next_chat_or_terminal_action(self):
         client = FakeClient(
             [
                 make_action(),
@@ -717,10 +715,13 @@ class InteractiveRunnerTest(unittest.TestCase):
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         ).start()
         self.assertEqual(
-            ("vim_keys", "keystrokes", "observe"),
+            ("chat", "vim_keys", "keystrokes", "observe"),
             client.calls[4][3]["allowed_types"],
         )
-        self.assertEqual(("none",), client.calls[4][3]["allowed_message_types"])
+        self.assertEqual(
+            ("none", "ack", "progress", "question", "final"),
+            client.calls[4][3]["allowed_message_types"],
+        )
 
     def test_progress_allowed_after_completed_keystrokes_in_shell(self):
         # Regression: an echo demo typed with the keystrokes DSL (the channel
@@ -757,15 +758,14 @@ class InteractiveRunnerTest(unittest.TestCase):
         ]
         self.assertEqual(1, len(progress))
 
-    def test_progress_rejection_suggests_question_without_terminal_evidence(self):
+    def test_progress_rejection_points_at_a_plain_chat(self):
         runner = InteractiveRunner(
             self.store, self.transport, FakeClient([]), action_settle_seconds=0,
             typing_interval_seconds=0,
         )
-        runner._cycle_acknowledged = True
         self.store.append_screen("bash-3.2$", "bash", str(self.store.workspace_path))
         claimed = make_action("chat", message_type="progress", content="still checking")
-        with self.assertRaisesRegex(AgentProtocolError, "message_type=question"):
+        with self.assertRaisesRegex(AgentProtocolError, "send a plain chat or observe"):
             runner._validate_action_for_current_phase(claimed)
 
     def test_agent_capture_pump_records_delayed_vim_redraw(self):
@@ -1171,7 +1171,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             ).start()
         self.assertEqual(("chat", "done"), client.calls[1][3]["allowed_types"])
         self.assertEqual(
-            ("progress", "question", "final"),
+            ("none", "ack", "progress", "question", "final"),
             client.calls[1][3]["allowed_message_types"],
         )
         self.assertEqual(
@@ -1184,7 +1184,6 @@ class InteractiveRunnerTest(unittest.TestCase):
         runner = InteractiveRunner(
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         )
-        runner._cycle_acknowledged = True
         runner._cycle_started_monotonic = 100.0
         self.store.update(
             current_command="bash",
@@ -1196,31 +1195,30 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(("chat", "command", "done", "observe", "keystrokes"), allowed_types)
         self.assertFalse(budget_final)
 
-    def test_first_cycle_action_requires_ack_before_questions_or_terminal_actions(self):
+    def test_first_cycle_action_is_not_pinned_to_an_acknowledgement(self):
+        # Conversation policy lives in the Skill; the runner only reports what
+        # the pane allows, so a first action may already be real work.
         runner = InteractiveRunner(
             self.store, self.transport, FakeClient([]), action_settle_seconds=0,
             typing_interval_seconds=0,
         )
-        allowed_types, allowed_messages, _ = runner._phase_constraints()
-        self.assertEqual(("chat",), allowed_types)
-        self.assertEqual(("ack",), allowed_messages)
-
-    def test_done_cannot_claim_a_test_marker_missing_from_latest_screen(self):
-        runner = InteractiveRunner(
-            self.store, self.transport, FakeClient([]), action_settle_seconds=0,
-            typing_interval_seconds=0,
-        )
-        runner._cycle_acknowledged = True
         self.store.append_screen("bash-3.2$", "bash", str(self.store.workspace_path))
-        claimed = make_action(
-            "done", message_type="final", content="Finished: PROJECT TESTS PASSED"
+        allowed_types, allowed_messages, _ = runner._phase_constraints()
+        self.assertEqual(("chat", "command", "done", "observe", "keystrokes"), allowed_types)
+        self.assertEqual(("none", "ack", "progress", "question", "final"), allowed_messages)
+
+    def test_done_is_the_agents_call_even_without_a_screen_marker(self):
+        # The runner no longer audits the final message against a marker; the
+        # Skill tells the Agent to claim completion only with visible evidence,
+        # and the human confirms the proposal.
+        runner = InteractiveRunner(
+            self.store, self.transport, FakeClient([]), action_settle_seconds=0,
+            typing_interval_seconds=0,
         )
-        with self.assertRaisesRegex(AgentProtocolError, "not present"):
-            runner._validate_action_for_current_phase(claimed)
-        self.store.append_screen(
-            "PROJECT TESTS PASSED\nbash-3.2$", "bash", str(self.store.workspace_path)
+        self.store.append_screen("bash-3.2$", "bash", str(self.store.workspace_path))
+        runner._validate_action_for_current_phase(
+            make_action("done", message_type="final", content="已回答完，收工。")
         )
-        runner._validate_action_for_current_phase(claimed)
 
     def test_cycle_timeout_is_distinct_and_requires_explicit_recovery(self):
         runner = InteractiveRunner(
