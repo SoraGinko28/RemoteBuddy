@@ -490,12 +490,17 @@ function renderHeader() {
   el.resume_button.textContent = meeting.phase === "completion_proposed" ? "继续工作" : `继续 ${agentName(meeting)}`;
   const takeoverLive = meeting.control_owner === "human" && meeting.phase === "human_control";
   const waitingHandoff = meeting.control_requested === "human" && meeting.control_owner !== "human";
-  const canAcquire = !terminalState && meeting.status === "running"
+  // A meeting can outlive its tmux session; the server refuses takeover then,
+  // so the button says why instead of failing after the click.
+  const sessionGone = meeting.session_state === "stopped";
+  const canAcquire = !terminalState && !sessionGone && meeting.status === "running"
     && ["agent_thinking", "agent_acting", "waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"].includes(meeting.phase);
   el.acquire_button.hidden = terminalState || takeoverLive;
   el.acquire_button.disabled = !canAcquire;
   el.acquire_button.textContent = waitingHandoff ? "等待交权…" : "接管";
-  el.acquire_button.title = canAcquire ? `打断 ${agentName(meeting)} 并接管共享终端` : "";
+  el.acquire_button.title = sessionGone
+    ? "终端会话已结束，无法接管"
+    : (canAcquire ? `打断 ${agentName(meeting)} 并接管共享终端` : "");
   el.release_button.hidden = !takeoverLive;
   const terminalReadonly = el.terminal_readonly;
   if (terminalReadonly) {

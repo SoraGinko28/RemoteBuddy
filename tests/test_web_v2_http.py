@@ -368,6 +368,22 @@ class MeetingWebServiceTest(unittest.TestCase):
         # the Agent into another autonomous run.
         self.assertEqual(runners_before, len(RecordingRunner.instances))
 
+    def test_takeover_is_refused_when_the_terminal_is_gone(self):
+        self.start_meeting("gone-demo")
+        before = MeetingStore.load(self.root, "gone-demo").meeting
+        # The tmux session was killed outside RemoteBuddy (or the machine
+        # restarted); takeover must not pretend to succeed and then fail the
+        # meeting through the capture worker.
+        self.transport.exists = False
+        with self.assertRaises(WebError) as refused:
+            self.service.acquire("gone-demo")
+        self.assertEqual(410, refused.exception.status)
+        after = MeetingStore.load(self.root, "gone-demo").meeting
+        self.assertEqual(before.phase, after.phase)
+        self.assertEqual(before.status, after.status)
+        self.assertEqual(before.control_owner, after.control_owner)
+        self.wait_for_workers()
+
     def test_terminal_input_requires_human_control(self):
         self.start_meeting("control-gate")
         with self.assertRaises(WebError) as gate:
