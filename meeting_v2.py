@@ -913,7 +913,10 @@ class MeetingStore:
         for event in source:
             if event.get("kind") != "chat":
                 continue
-            actor = "You" if event.get("actor") == "human" else "Agent"
+            actor_name = str(event.get("actor") or LEGACY_AGENT_NAME)
+            # Multi-agent meetings must keep every speaker distinguishable in
+            # the exported transcript; only the human gets the "You" label.
+            actor = "You" if actor_name == "human" else actor_name[:1].upper() + actor_name[1:]
             data = event.get("data") if isinstance(event.get("data"), dict) else {}
             references: List[Mapping[str, Any]] = []
             raw_references = data.get("references")
