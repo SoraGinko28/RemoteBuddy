@@ -152,10 +152,6 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .message-head strong { font-size: 11px; }
 .message-head time { margin-left: 0; color: var(--muted); font-size: 9px; cursor: pointer; }
 .message-head time:hover { color: var(--ink); text-decoration: underline; }
-.message-type { padding: 2px 5px; border-radius: 3px; background: #e8ebe8; color: var(--muted); font-size: 9px; }
-.message-type.ack, .message-type.progress { color: var(--blue); background: #e8f0f8; }
-.message-type.question { color: var(--amber); background: var(--amber-soft); }
-.message-type.final { color: var(--green); background: var(--green-soft); }
 .message-content { margin: 0; border: 1px solid var(--line); background: white; padding: 10px 11px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.55; }
 .message.human .message-content { background: #eef4f0; border-color: #cddbd3; }
 .message.score-replay-target .message-content { outline: 2px solid #c59a43; outline-offset: 2px; }

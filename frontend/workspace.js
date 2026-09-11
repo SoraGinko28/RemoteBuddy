@@ -73,7 +73,6 @@ const labels = {
   status: { created: "已创建", starting: "启动中", running: "协作中", completed: "已完成", failed: "失败", interrupted: "已中止" },
   phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "{agent} 思考中", agent_acting: "{agent} 操作中", waiting_for_user: "等待你的消息", completion_proposed: "{agent} 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
   owner: { agent: "{agent} 控制", human: "你在控制", none: "无人控制" },
-  message: { request: "请求", ack: "回应", progress: "进度", question: "问题", final: "结果" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
   score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
@@ -763,7 +762,6 @@ function renderChat() {
         : (event.actor || agentName(meetingSnapshot));
       head.append(
         node("strong", "", speaker),
-        node("span", `message-type ${event.message_type || ""}`, labels.message[event.message_type] || "消息"),
         timeEl,
       );
       const annotations = scoreAnnotationsForSource(event, visibleScores);
