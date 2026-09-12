@@ -815,7 +815,7 @@ function renderChat() {
       cursorDivider.append(node("span", "", "▶ 播放到此处"));
       cursorArticle.insertAdjacentElement("afterend", cursorDivider);
     }
-    if (!chats.length) el.chat_list.append(node("div", "empty-chat", "还没有聊天消息"));
+    if (!chats.length) el.chat_list.append(node("div", "empty-chat", "还没有消息 · 说点什么，Agent 就在这个目录里开始"));
     // All scrollTop writes go through here so the follow-scroll renderChat
     // applies can be told apart from a genuine user scroll: the chat scroll
     // handler must not pause following because of its own programmatic scroll.
@@ -2963,6 +2963,16 @@ function stopPlayback() {
   el.play_button.textContent = "▶";
 }
 
+// Nothing to reopen yet: rather than parking the human on the welcome card,
+// open a meeting with no first message. It owns a fresh workspace directory
+// (the temporary directory that acts as the meeting) and the agent starts as
+// soon as they say something.
+async function openScratchMeeting() {
+  const created = await api("/api/meetings", { method: "POST", body: JSON.stringify({}) });
+  await loadMeetings();
+  await selectMeeting(created.meeting_id);
+}
+
 async function boot() {
   bind();
   try {
@@ -2970,9 +2980,16 @@ async function boot() {
     state.csrfToken = session.csrf_token;
     state.csrfHeader = session.csrf_header || state.csrfHeader;
     await Promise.all([loadHealth(), loadMeetings(), loadSettings()]);
+    // The list is ordered by last activity, so its first entry is the meeting
+    // the human was most recently in. A reload always lands there.
     if (state.meetings.length) await selectMeeting(state.meetings[0].meeting_id);
-    else renderAll();
-  } catch (error) { toast(error.message); }
+    else await openScratchMeeting();
+  } catch (error) {
+    // Only a genuine failure (service down, meeting unreadable) leaves the
+    // welcome card on screen.
+    toast(error.message);
+    renderAll();
+  }
   setInterval(() => { if (state.snapshot) renderHeader(); }, 1000);
 }
 

@@ -994,9 +994,13 @@ class MeetingWebService:
         }
         if unexpected:
             raise WebError(400, "unexpected meeting fields: " + ", ".join(sorted(unexpected)))
-        message = payload.get("message")
-        if not isinstance(message, str) or not message.strip():
-            raise WebError(400, "message must be a non-empty string")
+        message = payload.get("message", "")
+        # A meeting may be opened with no first message: it already owns a
+        # fresh workspace directory (the "temporary directory as a meeting" a
+        # client falls back to when nothing exists yet) and the agent starts on
+        # the first message the human sends.
+        if not isinstance(message, str):
+            raise WebError(400, "message must be a string")
         if len(message.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise WebError(413, "message is too large")
         meeting_id = payload.get("meeting_id") or self._new_id()
@@ -1055,7 +1059,10 @@ class MeetingWebService:
             )
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
-        self._ensure_worker(store, config, resume=False, fresh_conversation=False)
+        # Without a first message there is nothing for the agent to answer yet;
+        # wait for the human to speak (the message endpoint wakes it).
+        if message.strip():
+            self._ensure_worker(store, config, resume=False, fresh_conversation=False)
         return store
 
     def _ensure_worker(
