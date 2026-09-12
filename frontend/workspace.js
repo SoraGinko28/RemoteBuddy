@@ -388,6 +388,11 @@ function enqueueLiveScreens(events) {
 }
 
 function renderMeetingList() {
+  // Rebuilding the items drops any selection inside them, so stand down while
+  // the human is selecting something in the list (the next render, after the
+  // selection is cleared, picks the change up).
+  const live = window.getSelection();
+  if (live && !live.isCollapsed && el.meeting_list.contains(live.anchorNode)) return;
   el.meeting_list.replaceChildren();
   el.meeting_count.textContent = String(state.meetings.length);
   el.list_empty.hidden = state.meetings.length > 0;
@@ -398,7 +403,14 @@ function renderMeetingList() {
     top.append(node("strong", "", meeting.meeting_id), node("span", `mini-status ${meeting.status}`, labels.status[meeting.status] || meeting.status));
     const provider = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
     button.append(top, node("span", "meeting-item-meta", `${withAgent(labels.phase[meeting.phase] || meeting.phase, meeting)} · ${provider} · ${fmtTime(meeting.updated_at)}`));
-    button.addEventListener("click", () => selectMeeting(meeting.meeting_id));
+    // A drag across the id is the human selecting it to copy, not a command to
+    // open the meeting: a click that ends with a selection inside this item
+    // must not navigate, which would also rebuild the list and drop it.
+    button.addEventListener("click", () => {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
+      selectMeeting(meeting.meeting_id);
+    });
     el.meeting_list.append(button);
   }
 }
@@ -2827,7 +2839,15 @@ function bind() {
     // Do not clear the browser selection when the user is clicking inside a
     // selectable source. Double/triple-click selection depends on the browser
     // preserving and extending the previous selection across rapid clicks.
-    if (!sourceRootFromNode(event.target)) {
+    //
+    // The chrome outside the workspace (sidebar, dialogs) is exempt too:
+    // clearing the ranges inside the mousedown kills the native selection
+    // gesture before it can start, which is why meeting ids, the brand and the
+    // dialog notes could not be drag-selected or copied at all.
+    const chromeSurface = event.target.closest
+      && (event.target.closest(".sidebar") || event.target.closest(".rail")
+          || event.target.closest("dialog"));
+    if (!sourceRootFromNode(event.target) && !chromeSurface) {
       clearBrowserSelection();
     }
   });
@@ -2845,11 +2865,18 @@ function bind() {
   // anywhere outside it -- including non-focusable surfaces like chat blank
   // space, where no focus event ever fires -- moves focus to <body> and stops
   // the cursor blink. After such a click, hand focus straight back to the
-  // Selectable-text surfaces must never lose focus to the terminal on
-  // pointerdown: the focus grab below is meant to restart the cursor blink,
-  // but stealing focus out from under a mousedown on chat text (or the
-  // header identity) also cancels native text selection before it can start
-  // (drag, double-click and Shift+arrows all die; copy returns nothing).
+  // terminal; editable fields (chat composer, dialogs) are never touched, and
+  // playback scrubbing (followLive false) leaves focus alone.
+  //
+  // Only the workspace does this. The sidebar and the dialogs live outside it
+  // and are ordinary chrome whose text has to stay selectable: grabbing focus
+  // on their pointerdown collapsed the selection the human had just started,
+  // so meeting ids and dialog notes could not be copied at all.
+  const workspaceMain = document.querySelector(".workspace-main");
+  // Selectable-text surfaces inside the workspace must never lose focus to the
+  // terminal either: stealing focus out from under a mousedown on chat text
+  // (or the header identity) also cancels native text selection before it can
+  // start (drag, double-click and Shift+arrows all die; copy returns nothing).
   function isTextSelectionSurface(node) {
     const selectors = [".message-content", ".session-identity", "#meeting-title",
                        ".presence-strip", ".evaluation-excerpt"];
@@ -2858,11 +2885,10 @@ function bind() {
     }
     return false;
   }
-  // terminal; editable fields (chat composer, dialogs) are never touched, and
-  // playback scrubbing (followLive false) leaves focus alone.
   document.addEventListener("pointerdown", (event) => {
     if (!(takeoverStream.active || state.followLive)) return;
     const target = event.target;
+    if (!workspaceMain || !workspaceMain.contains(target)) return;
     if (el.terminal_screen && (target === el.terminal_screen || el.terminal_screen.contains(target))) return;
     // The selection toolbar drives the selection the user just made: moving
     // focus to the terminal on its own pointerdown wipes that selection before
