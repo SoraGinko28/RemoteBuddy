@@ -2721,18 +2721,27 @@ function bind() {
     state.followLive = true;
     state.chatFollow = true;
     state.playbackIndex = state.timeline.length - 1;
+    // "interrupt" == the old 立即插入 choice, now the only behavior: the
+    // message reaches the agent right away instead of waiting for its next
+    // action boundary.
+    const payload = { message, delivery: "interrupt" };
+    const references = state.references;
+    if (references.length) payload.references = references;
+    // Empty the box the moment the human sends, not when the server answers:
+    // the request can take a while and the text already left the composer.
+    el.message_input.value = "";
+    growMessageInput();
+    setReferences([]);
     try {
-      // "interrupt" == the old 立即插入 choice, now the only behavior: the
-      // message reaches the agent right away instead of waiting for its next
-      // action boundary.
-      const payload = { message, delivery: "interrupt" };
-      if (state.references.length) payload.references = state.references;
       await postMeetingAction("messages", payload);
-      el.message_input.value = "";
-      growMessageInput();
-      setReferences([]);
     }
-    catch (error) { toast(error.message); }
+    catch (error) {
+      // The message never made it, so give the text back instead of losing it.
+      el.message_input.value = message;
+      growMessageInput();
+      setReferences(references);
+      toast(error.message);
+    }
     finally { el.send_message_button.disabled = false; }
   });
   // The composer box has no resize grip (TRAE style): grow it with the text up
