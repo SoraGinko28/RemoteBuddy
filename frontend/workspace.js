@@ -14,6 +14,8 @@ const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
   "welcome", "session-view", "meeting-title", "agent-states", "status-badge", "owner-badge",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
+  "member-name-label", "member-role-label", "member-state-label", "member-terminal-label",
+  "member-chat-label", "member-last-label",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
@@ -67,6 +69,8 @@ const state = {
   judgeName: "human",
   health: null,
   pointerSelecting: false,
+  // Which member's details the header strip is showing; null = closed.
+  detailsAgent: null,
 };
 
 const labels = {
@@ -78,6 +82,7 @@ const labels = {
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
   agentState: { thinking: "思考中", acting: "操作中", idle: "待命中", error: "异常" },
+  role: { generator: "生成者", active_discriminator: "主动判别", passive_discriminator: "被动判别" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
 
@@ -176,21 +181,68 @@ function memberState(actor, meeting) {
 
 function renderMemberStates(meeting) {
   if (!el.agent_states) return;
-  const roles = (meeting.agent_name2role && Object.keys(meeting.agent_name2role).length)
-    ? meeting.agent_name2role
-    : { "agent": "generator" };
+  const roles = memberRoles(meeting);
   el.agent_states.replaceChildren();
   for (const actor of Object.keys(roles)) {
     const stateName = memberState(actor, meeting);
-    const chip = node("span", `agent-state ${stateName}`);
+    // The chip is the only way into a member's details: with several members
+    // in one meeting, each one opens its own panel.
+    const chip = node("button", `agent-state ${stateName}`);
+    chip.type = "button";
+    chip.dataset.agent = actor;
+    chip.title = `查看 ${actor} 的详情`;
+    chip.setAttribute("aria-expanded", String(state.detailsAgent === actor));
     const dot = document.createElement("span");
     dot.className = "agent-state-dot";
     dot.setAttribute("aria-hidden", "true");
     chip.append(dot, document.createTextNode(
       `${actor} · ${labels.agentState[stateName] || "待命"}`));
+    chip.addEventListener("click", () => toggleMemberDetails(actor));
     el.agent_states.append(chip);
   }
   el.agent_states.hidden = false;
+}
+
+// The member list of a meeting: the recorded role map, with the legacy
+// single-agent shape as the fallback.
+function memberRoles(meeting) {
+  const roles = meeting?.agent_name2role;
+  return (roles && Object.keys(roles).length) ? roles : { agent: "generator" };
+}
+
+function toggleMemberDetails(actor) {
+  state.detailsAgent = state.detailsAgent === actor ? null : actor;
+  renderMemberStates(state.snapshot.meeting);
+  renderMemberDetails(state.snapshot.meeting);
+}
+
+// Per-member facts for the header strip. Message counts come from the loaded
+// timeline, so they cover what the human can actually see and scroll through.
+function memberStats(actor) {
+  const events = (state.timeline || []).filter(
+    (event) => event.kind === "chat" && event.actor === actor);
+  if (!events.length) return { count: 0, last: null };
+  return { count: events.length, last: events[events.length - 1].captured_at };
+}
+
+function renderMemberDetails(meeting) {
+  const actor = state.detailsAgent;
+  const view = document.getElementById("session-view");
+  if (!actor || !memberRoles(meeting)[actor]) {
+    state.detailsAgent = null;
+    if (view) view.classList.remove("details-open");
+    return;
+  }
+  const role = memberRoles(meeting)[actor];
+  const stats = memberStats(actor);
+  el.member_name_label.textContent = actor;
+  el.member_role_label.textContent = labels.role[role] || role;
+  el.member_state_label.textContent = labels.agentState[memberState(actor, meeting)] || "待命";
+  // Only the generator may drive the shared terminal; everyone else watches.
+  el.member_terminal_label.textContent = role === "generator" ? "可写" : "只读";
+  el.member_chat_label.textContent = `${stats.count} 条`;
+  el.member_last_label.textContent = stats.last ? fmtTime(stats.last) : "—";
+  if (view) view.classList.add("details-open");
 }
 
 function eventDelay(event, queueLength = 0) {
@@ -434,6 +486,7 @@ function renderHeader() {
   if (el.agent_states) {
     renderMemberStates(meeting);
   }
+  renderMemberDetails(meeting);
   if (el.status_badge) {
     el.status_badge.textContent = labels.status[meeting.status] || meeting.status;
     el.status_badge.dataset.status = meeting.status;
@@ -2522,6 +2575,10 @@ async function selectMeeting(meetingId) {
   state.snapshotEtag = "";
   state.eventsEtag = "";
   state.eventsEtagCursor = -1;
+  // The member panel belongs to the meeting that was open: another meeting
+  // opens with it closed.
+  state.detailsAgent = null;
+  document.getElementById("session-view")?.classList.remove("details-open");
   const [snapshot, eventPayload] = await Promise.all([
     api(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`),
     api(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=0`),
@@ -2650,15 +2707,6 @@ function bind() {
   document.querySelector(".workspace-main")?.addEventListener("pointerdown", () => {
     appShell?.classList.remove("sidebar-open");
   });
-  const sessionMore = document.getElementById("session-more-button");
-  const sessionView = document.getElementById("session-view");
-  if (sessionMore && sessionView) {
-    sessionMore.addEventListener("click", () => {
-      const open = sessionView.classList.toggle("details-open");
-      sessionMore.setAttribute("aria-expanded", String(open));
-      sessionMore.title = open ? "收起会话详情" : "展开会话详情";
-    });
-  }
   el.settings_button.addEventListener("click", openSettingsDialog);
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
