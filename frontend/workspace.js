@@ -12,7 +12,7 @@ const HUMAN_TAKEOVER_FRAME_MS = 200;
 
 const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
-  "welcome", "session-view", "meeting-title", "agent-states", "status-badge", "owner-badge",
+  "welcome", "session-view", "agent-states", "status-badge", "owner-badge", "sidebar-title", "sidebar-subtitle",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "member-name-label", "member-role-label", "member-state-label", "member-terminal-label",
   "member-chat-label", "member-last-label",
@@ -21,7 +21,7 @@ const el = Object.fromEntries([
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
-  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "settings-button", "settings-dialog", "settings-form", "judge-name-input", "save-settings", "close-settings", "cancel-settings", "settings-error", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
+  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
   "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
@@ -493,7 +493,11 @@ function renderHeader() {
   if (!state.snapshot) return;
   if (state.pointerSelecting || hasLiveSelection()) return;
   const meeting = state.snapshot.meeting;
-  el.meeting_title.textContent = meeting.meeting_id;
+  // The open meeting is named in the sidebar, not in the header: the terminal
+  // already says what is going on, and the sidebar lists everything anyway.
+  el.sidebar_title.textContent = meeting.meeting_id;
+  el.sidebar_subtitle.textContent = `${labels.status[meeting.status] || meeting.status} · ${
+    Object.keys(memberRoles(meeting)).length} 个成员`;
   if (el.agent_states) {
     renderMemberStates(meeting);
   }
@@ -2689,36 +2693,26 @@ function openNewDialog() {
   el.initial_message.focus();
 }
 
+// The judge name has no UI any more (the gear it lived behind carried nothing
+// else); the stored value still labels the scores this client writes.
 async function loadSettings() {
   const payload = await api("/api/settings");
   state.judgeName = typeof payload.judge_name === "string" && payload.judge_name.trim()
     ? payload.judge_name.trim()
     : "human";
-  el.judge_name_input.value = state.judgeName;
-}
-
-function openSettingsDialog() {
-  el.settings_error.hidden = true;
-  el.judge_name_input.value = state.judgeName;
-  el.settings_dialog.showModal();
-  el.judge_name_input.focus();
-  el.judge_name_input.select();
 }
 
 function bind() {
   el.new_button.addEventListener("click", openNewDialog);
   el.welcome_new_button.addEventListener("click", openNewDialog);
-  const railNew = document.getElementById("rail-new-button");
   const railMore = document.getElementById("rail-more-button");
   const appShell = document.querySelector(".app-shell");
-  if (railNew) railNew.addEventListener("click", openNewDialog);
   if (railMore && appShell) {
     railMore.addEventListener("click", () => appShell.classList.toggle("sidebar-open"));
   }
   document.querySelector(".workspace-main")?.addEventListener("pointerdown", () => {
     appShell?.classList.remove("sidebar-open");
   });
-  el.settings_button.addEventListener("click", openSettingsDialog);
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
   el.backend_select.addEventListener("change", () => syncBackendSelectors(true));
@@ -2727,27 +2721,6 @@ function bind() {
   el.evaluation_form.addEventListener("submit", submitEvaluation);
   el.evaluation_back_button.addEventListener("click", closeEvaluationPanel);
   el.evaluation_cancel_button.addEventListener("click", closeEvaluationPanel);
-  el.close_settings.addEventListener("click", () => el.settings_dialog.close());
-  el.cancel_settings.addEventListener("click", () => el.settings_dialog.close());
-  el.settings_form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    el.save_settings.disabled = true;
-    el.settings_error.hidden = true;
-    try {
-      const payload = await api("/api/settings", {
-        method: "POST",
-        body: JSON.stringify({ judge_name: el.judge_name_input.value }),
-      });
-      state.judgeName = payload.judge_name;
-      el.judge_name_input.value = state.judgeName;
-      el.settings_dialog.close();
-    } catch (error) {
-      el.settings_error.textContent = error.message;
-      el.settings_error.hidden = false;
-    } finally {
-      el.save_settings.disabled = false;
-    }
-  });
   el.new_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     el.start_button.disabled = true;
@@ -2947,7 +2920,7 @@ function bind() {
   // (or the header identity) also cancels native text selection before it can
   // start (drag, double-click and Shift+arrows all die; copy returns nothing).
   function isTextSelectionSurface(node) {
-    const selectors = [".message-content", ".session-identity", "#meeting-title",
+    const selectors = [".message-content", ".session-identity",
                        ".presence-strip", ".evaluation-excerpt"];
     for (const selector of selectors) {
       if (node && node.closest && node.closest(selector)) return true;

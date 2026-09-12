@@ -10,18 +10,16 @@
 <body>
   <div class="app-shell">
     <aside class="rail" aria-label="快捷操作">
-      <button id="rail-new-button" class="rail-button primary-command" type="button" title="新会话" aria-label="新会话">＋</button>
-      <button id="rail-more-button" class="rail-button" type="button" title="更多" aria-label="更多">☰</button>
+      <button id="rail-more-button" class="rail-button" type="button" title="会话列表" aria-label="会话列表">☰</button>
     </aside>
     <aside class="sidebar">
       <header class="brand-row">
         <div>
-          <p class="brand">RemoteBuddy</p>
-          <p class="brand-subtitle">共享终端协作</p>
+          <p class="brand" id="sidebar-title">RemoteBuddy</p>
+          <p class="brand-subtitle" id="sidebar-subtitle">还没有打开会话</p>
         </div>
         <div class="brand-actions">
           <span id="health-dot" class="health-dot" title="环境状态"></span>
-          <button id="settings-button" class="icon-button" type="button" title="页面设置" aria-label="页面设置">⚙</button>
         </div>
       </header>
 
@@ -49,7 +47,6 @@
       <section id="session-view" class="session-view" hidden>
         <header class="session-header">
           <div class="session-identity">
-            <h1 id="meeting-title">—</h1>
             <p id="failure-message" class="failure-message" hidden></p>
           </div>
           <div class="header-actions">
@@ -237,7 +234,6 @@
           <input id="base-url-input" type="url" maxlength="500" autocomplete="off" spellcheck="false" placeholder="留空使用默认地址">
         </div>
         <p id="api-key-hint" class="settings-note" hidden></p>
-        <p id="api-key-hint" class="settings-note" hidden></p>
         <fieldset class="profile-fieldset">
           <legend>输入节奏</legend>
           <div class="profile-segments">
@@ -251,26 +247,6 @@
       <footer>
         <button id="cancel-new" class="command-button" type="button">取消</button>
         <button id="start-button" class="primary-command" type="submit">创建并启动</button>
-      </footer>
-    </form>
-  </dialog>
-
-  <dialog id="settings-dialog" class="settings-dialog">
-    <form id="settings-form" method="dialog">
-      <header>
-        <div>
-          <p class="pane-kicker">SETTINGS</p>
-          <h2>页面设置</h2>
-        </div>
-        <button id="close-settings" class="icon-button" type="button" aria-label="关闭">×</button>
-      </header>
-      <label for="judge-name-input">评判人名称</label>
-      <input id="judge-name-input" type="text" maxlength="200" autocomplete="name" required>
-      <p class="settings-note">名称只影响之后新增的评分，已有评分保持原名。</p>
-      <div id="settings-error" class="form-error" hidden></div>
-      <footer>
-        <button id="cancel-settings" class="command-button" type="button">取消</button>
-        <button id="save-settings" class="primary-command" type="submit">保存</button>
       </footer>
     </form>
   </dialog>
