@@ -1372,10 +1372,14 @@ class MeetingWebService:
             # If the generator is mid-turn, interrupt it and summon the
             # reviewer once it has parked, so the @mention is never answered
             # by the wrong speaker.
+            #
+            # Who is addressed does not depend on the delivery mode: an
+            # immediate ("interrupt") @mention must still reach the reviewer
+            # rather than the generator.
             mentioned = mentioned_agent_names(message, store.meeting.effective_role_map)
             reviewer_targets = [n for n in mentioned if store.meeting.role_of(n) != "generator"]
             mentions_generator = any(store.meeting.role_of(n) == "generator" for n in mentioned)
-            if reviewer_targets and not mentions_generator and delivery != "interrupt":
+            if reviewer_targets and not mentions_generator:
                 if store.meeting.status not in TERMINAL_STATUSES and store.meeting.control_owner != "human":
                     if self._job_alive(meeting_id) and not (
                         store.meeting.phase == "waiting_for_user"

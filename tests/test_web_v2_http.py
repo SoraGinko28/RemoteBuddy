@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -530,6 +531,42 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
         chats = MeetingStore.load(self.root, "control-message").chat_messages()
         self.assertEqual("接管结束，继续改 README", chats[-1]["content"])
+
+    def test_immediate_message_wakes_a_mid_cycle_agent(self):
+        """delivery=interrupt wakes the agent; the deferred mode only queues.
+
+        The composer now always sends ``interrupt``, so this is the path every
+        human message takes while the agent is working. ``_job_alive`` is
+        stubbed because the fake worker exits instantly: without a live job the
+        meeting counts as orphaned and the deferred mode would wake it too.
+        """
+        self.start_meeting("immediate-message")
+        store = MeetingStore.load(self.root, "immediate-message")
+        with mock.patch.object(self.service, "_job_alive", return_value=True):
+            store.update(status="running", phase="agent_thinking", control_owner="actor")
+            before = len(RecordingRunner.instances)
+            self.service.message(
+                "immediate-message",
+                {"message": "stop and look at this", "delivery": "next_action"},
+            )
+            self.wait_for_workers()
+            self.assertEqual(before, len(RecordingRunner.instances))
+            self.assertEqual(
+                "agent_thinking",
+                MeetingStore.load(self.root, "immediate-message").meeting.phase,
+            )
+
+            store.update(status="running", phase="agent_thinking", control_owner="actor")
+            self.service.message(
+                "immediate-message",
+                {"message": "no really, look now", "delivery": "interrupt"},
+            )
+            self.wait_for_workers()
+            self.assertEqual(before + 1, len(RecordingRunner.instances))
+        reloaded = MeetingStore.load(self.root, "immediate-message")
+        self.assertEqual("waiting_for_user", reloaded.meeting.phase)
+        human = [e for e in reloaded.chat_messages() if e["actor"] == "human"]
+        self.assertEqual("no really, look now", human[-1]["content"])
 
     def test_message_reference_is_derived_from_source_event(self):
         self.start_meeting("reference-demo")

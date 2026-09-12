@@ -97,21 +97,8 @@
                 <textarea id="message-input" rows="3" maxlength="1048576" placeholder="继续说明、纠正或打断 Agent…"></textarea>
                 <div id="reference-card" class="reference-card" hidden></div>
                 <div class="composer-footer">
-                  <span id="message-hint">Enter 发送 · Shift/⌘+Enter 换行 · 消息在下一个动作边界生效</span>
-                  <fieldset id="delivery-mode" class="delivery-options" aria-label="消息生效时机">
-                    <legend class="sr-only">消息生效时机</legend>
-                    <label class="delivery-option">
-                      <input type="radio" name="delivery-choice" value="next_action" checked>
-                      <span class="square-control" aria-hidden="true"></span>
-                      <span>下一步读取</span>
-                    </label>
-                    <label class="delivery-option">
-                      <input type="radio" name="delivery-choice" value="interrupt">
-                      <span class="square-control" aria-hidden="true"></span>
-                      <span>立即插入</span>
-                    </label>
-                  </fieldset>
-                  <button id="send-message-button" class="primary-command compact" type="submit">发送</button>
+                  <span id="message-hint">Enter 发送 · Shift/⌘+Enter 换行 · 消息立即送达</span>
+                  <button id="send-message-button" class="primary-command compact send-button" type="submit" title="发送" aria-label="发送">↑</button>
                 </div>
               </form>
 
