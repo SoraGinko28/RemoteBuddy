@@ -1017,8 +1017,8 @@ function ensureTerminalEngine() {
       lineHeight: TERMINAL_LINE_HEIGHT,
       scrollback: 0,
       theme: {
-        background: "#151817",
-        foreground: "#d5dbd6",
+        background: "#101413",
+        foreground: "#e7eee9",
         cursor: "#c5cdc8",
         selectionBackground: "#5b7fd4",
         selectionForeground: "#ffffff",
