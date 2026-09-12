@@ -133,8 +133,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .terminal-pane > .pane-header { display: none; }
 .chat-pane { grid-template-rows: minmax(0, 1fr) auto; border-left: 1px solid var(--line); border-right: 0; }
 /* The composer is a floating box, TRAE style: no divider above it, one border
-   around the input, and the send button sitting inside that border. */
-.composer-shell { min-width: 0; background: var(--surface); padding: 10px; }
+   around the input, and the send button sitting inside that border. The shell
+   keeps the chat list's background so the box floats on the conversation
+   surface instead of on a lighter strip. */
+.composer-shell { min-width: 0; background: var(--paper); padding: 10px; }
 .terminal-pane { grid-template-rows: minmax(0, 1fr) auto auto; }
 .pane-header { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .pane-kicker { color: var(--muted); font: 700 9px/1.2 ui-monospace, monospace; }
