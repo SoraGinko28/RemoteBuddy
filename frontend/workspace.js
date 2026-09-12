@@ -210,6 +210,17 @@ function memberRoles(meeting) {
   return (roles && Object.keys(roles).length) ? roles : { agent: "generator" };
 }
 
+// The member panel behaves like a popover: it closes from anywhere that is not
+// the chip that opened it or the panel itself.
+function closeMemberDetails() {
+  if (!state.detailsAgent) return;
+  state.detailsAgent = null;
+  document.getElementById("session-view")?.classList.remove("details-open");
+  document.querySelectorAll(".agent-state").forEach((chip) => {
+    chip.setAttribute("aria-expanded", "false");
+  });
+}
+
 function toggleMemberDetails(actor) {
   state.detailsAgent = state.detailsAgent === actor ? null : actor;
   renderMemberStates(state.snapshot.meeting);
@@ -2869,6 +2880,15 @@ function bind() {
   document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
   document.addEventListener("pointerdown", (event) => {
+    // The member panel is a popover: anything that is not its chip or the
+    // panel itself dismisses it.
+    if (
+      state.detailsAgent
+      && !event.target.closest?.(".agent-state")
+      && !event.target.closest?.("#session-details")
+    ) {
+      closeMemberDetails();
+    }
     if (el.selection_menu.contains(event.target)) return;
     hideSelectionMenu();
     // A terminal selection lives inside xterm rather than the DOM, so it
@@ -2904,6 +2924,7 @@ function bind() {
       if (state.evaluationSelection && !state.evaluationBusy) {
         closeEvaluationPanel();
       }
+      closeMemberDetails();
       hideSelectionMenu();
       clearBrowserSelection();
       state.keyboardSelection = null;
