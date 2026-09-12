@@ -2729,11 +2729,19 @@ function bind() {
       if (state.references.length) payload.references = state.references;
       await postMeetingAction("messages", payload);
       el.message_input.value = "";
+      growMessageInput();
       setReferences([]);
     }
     catch (error) { toast(error.message); }
     finally { el.send_message_button.disabled = false; }
   });
+  // The composer box has no resize grip (TRAE style): grow it with the text up
+  // to the CSS max-height, then scroll inside.
+  const growMessageInput = () => {
+    el.message_input.style.height = "auto";
+    el.message_input.style.height = `${el.message_input.scrollHeight}px`;
+  };
+  el.message_input.addEventListener("input", growMessageInput);
   // Enter sends the message immediately; Shift+Enter / ⌘+Enter insert a real
   // newline. A confirming Enter while an IME composition is active must not
   // send.
