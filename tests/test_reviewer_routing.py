@@ -105,6 +105,35 @@ class TestReviewerRouting:
         assert service.jobs.get(store.meeting.meeting_id) is None
         assert reloaded.meeting.phase == "waiting_for_user"
 
+    def test_immediate_mention_still_summons_only_reviewer(self, service, tmp_path,
+                                                         monkeypatch) -> None:
+        """delivery=interrupt must not answer an @critic with the generator.
+
+        The composer sends every message immediately now, so the routing rule
+        that keeps @mentions away from the generator cannot depend on the
+        delivery mode.
+        """
+        monkeypatch.setattr(discriminator_harness, "comment_once", _fake_comment)
+        store = self._idle_meeting(tmp_path)
+        service.message(store.meeting.meeting_id,
+                        {"message": "@critic what do you think?", "delivery": "interrupt"})
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            current = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
+            finals = [e for e in current.events()
+                      if e.get("kind") == "chat" and e.get("actor") == "critic"
+                      and e.get("message_type") == "final"]
+            if finals:
+                break
+            time.sleep(0.05)
+        reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
+        finals = [e for e in reloaded.events()
+                  if e.get("kind") == "chat" and e.get("actor") == "critic"
+                  and e.get("message_type") == "final"]
+        assert finals and finals[-1]["content"] == "reviewer agrees."
+        assert service.jobs.get(store.meeting.meeting_id) is None
+        assert reloaded.meeting.phase == "waiting_for_user"
+
     def test_plain_message_does_not_summon_reviewer(self, service, tmp_path,
                                                    monkeypatch) -> None:
         monkeypatch.setattr(discriminator_harness, "comment_once", _fake_comment)

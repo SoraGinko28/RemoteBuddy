@@ -15,7 +15,7 @@ const el = Object.fromEntries([
   "welcome", "session-view", "meeting-title", "agent-states", "status-badge", "owner-badge",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
-  "message-input", "send-message-button", "message-hint", "delivery-mode", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
+  "message-input", "send-message-button", "message-hint", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
@@ -478,7 +478,6 @@ function renderHeader() {
   if (addAction) addAction.disabled = terminalState;
   el.message_input.disabled = terminalState;
   el.send_message_button.disabled = terminalState;
-  el.delivery_mode?.querySelectorAll("input").forEach((input) => { input.disabled = terminalState; });
   if (el.evaluation_submit_button) el.evaluation_submit_button.disabled = false;
   el.complete_button.disabled = terminalState || ["created", "starting"].includes(meeting.status) || meeting.phase === "starting";
   el.stop_button.disabled = terminalState;
@@ -508,7 +507,7 @@ function renderHeader() {
   }
   el.message_hint.textContent = takeoverLive
     ? `接管中：发消息 = 交还控制权并让 ${agentName(meeting)} 继续`
-    : "Enter 发送 · Shift/⌘+Enter 换行 · 消息在下一个动作边界生效";
+    : "Enter 发送 · Shift/⌘+Enter 换行 · 消息立即送达";
   el.message_input.placeholder = takeoverLive
     ? `接管中：输入消息会结束接管并交给 ${agentName(meeting)}…`
     : `继续说明、纠正或打断 ${agentName(meeting)}…`;
@@ -2281,9 +2280,6 @@ function closeEvaluationPanel() {
   if (el.message_form) el.message_form.hidden = false;
 }
 
-function selectedDeliveryMode() {
-  return el.delivery_mode?.querySelector('input[name="delivery-choice"]:checked')?.value || "next_action";
-}
 
 async function submitEvaluation(event) {
   event?.preventDefault();
@@ -2729,7 +2725,10 @@ function bind() {
     state.chatFollow = true;
     state.playbackIndex = state.timeline.length - 1;
     try {
-      const payload = { message, delivery: selectedDeliveryMode() };
+      // "interrupt" == the old 立即插入 choice, now the only behavior: the
+      // message reaches the agent right away instead of waiting for its next
+      // action boundary.
+      const payload = { message, delivery: "interrupt" };
       if (state.references.length) payload.references = state.references;
       await postMeetingAction("messages", payload);
       el.message_input.value = "";
