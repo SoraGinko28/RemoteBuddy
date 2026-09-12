@@ -2979,7 +2979,11 @@ async function boot() {
     const session = await api("/api/session");
     state.csrfToken = session.csrf_token;
     state.csrfHeader = session.csrf_header || state.csrfHeader;
-    await Promise.all([loadHealth(), loadMeetings(), loadSettings()]);
+    // The health probe talks to the CLI backends (traecli handshakes take
+    // seconds) and only gates the new-session button, so it must never hold
+    // up opening a meeting: start it and let it land whenever it lands.
+    loadHealth().catch((error) => toast(error.message));
+    await Promise.all([loadMeetings(), loadSettings()]);
     // The list is ordered by last activity, so its first entry is the meeting
     // the human was most recently in. A reload always lands there.
     if (state.meetings.length) await selectMeeting(state.meetings[0].meeting_id);

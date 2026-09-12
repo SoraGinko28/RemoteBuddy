@@ -85,6 +85,11 @@ TERMINAL_STATUSES = {"completed", "failed", "interrupted"}
 # Phases from which the human can resume or wake the Agent. The frontend
 # mirrors this set for its resume-button predicate.
 RESUMABLE_PHASES = {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"}
+# Probing a CLI backend (traecli answers with a full protocol handshake) costs
+# seconds, and the same answer is reused by the health page and by starting a
+# session, so one probe is kept for a while instead of being repeated on every
+# page load.
+BACKEND_PROBE_CACHE_SECONDS = 60.0
 DEFAULT_JUDGE_NAME = "human"
 MAX_JUDGE_NAME_BYTES = 200
 LOCAL_SETTINGS_PATH = ".remotebuddy/settings.local.json"
@@ -755,7 +760,7 @@ class MeetingWebService:
         cache_key = f"{config.model}:{config.reasoning_effort}:{config.codex_dynamic_tools}"
         now = time.monotonic()
         cached = self._backend_check_cache
-        if cached and cached[1] == cache_key and now - cached[0] < 10.0:
+        if cached and cached[1] == cache_key and now - cached[0] < BACKEND_PROBE_CACHE_SECONDS:
             return cached[2], cached[3]
         try:
             detail = probe_codex_backend(config)
@@ -769,7 +774,7 @@ class MeetingWebService:
         cache_key = f"{config.model}:{config.reasoning_effort}"
         now = time.monotonic()
         cached = self._trae_check_cache
-        if cached and cached[1] == cache_key and now - cached[0] < 10.0:
+        if cached and cached[1] == cache_key and now - cached[0] < BACKEND_PROBE_CACHE_SECONDS:
             return cached[2], cached[3]
         try:
             detail = probe_trae_backend(config)
@@ -783,7 +788,7 @@ class MeetingWebService:
         cache_key = f"{config.model}:{config.base_url}:{config.claude_binary}"
         now = time.monotonic()
         cached = self._claude_check_cache
-        if cached and cached[1] == cache_key and now - cached[0] < 10.0:
+        if cached and cached[1] == cache_key and now - cached[0] < BACKEND_PROBE_CACHE_SECONDS:
             return cached[2], cached[3]
         try:
             detail = probe_claude_backend(config)
