@@ -51,7 +51,6 @@
           <div class="session-identity">
             <h1 id="meeting-title">—</h1>
             <p id="failure-message" class="failure-message" hidden></p>
-            <button id="session-more-button" class="session-more-button identity-toggle" type="button" title="展开会话详情" aria-label="展开会话详情" aria-expanded="false">▾</button>
           </div>
           <div class="header-actions">
             <div id="agent-states" class="agent-states" hidden></div>
@@ -64,6 +63,12 @@
         </header>
 
         <div class="presence-strip session-details" id="session-details">
+          <div><span>成员</span><strong id="member-name-label">—</strong></div>
+          <div><span>角色</span><strong id="member-role-label">—</strong></div>
+          <div><span>状态</span><strong id="member-state-label">—</strong></div>
+          <div><span>终端</span><strong id="member-terminal-label">—</strong></div>
+          <div><span>发言</span><strong id="member-chat-label">0</strong></div>
+          <div><span>最近</span><strong id="member-last-label">—</strong></div>
           <div><span>阶段</span><strong id="phase-label">—</strong></div>
           <div><span>后端</span><strong id="backend-label">—</strong></div>
           <div><span>Provider</span><strong id="provider-label">—</strong></div>
