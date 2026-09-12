@@ -15,7 +15,7 @@ const el = Object.fromEntries([
   "welcome", "session-view", "meeting-title", "agent-states", "status-badge", "owner-badge",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
-  "message-input", "send-message-button", "message-hint", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
+  "message-input", "send-message-button", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
@@ -505,9 +505,6 @@ function renderHeader() {
     terminalReadonly.textContent = takeoverLive ? "已接管 · 实时终端" : "只读预览";
     terminalReadonly.classList.toggle("takeover-live", takeoverLive);
   }
-  el.message_hint.textContent = takeoverLive
-    ? `接管中：发消息 = 交还控制权并让 ${agentName(meeting)} 继续`
-    : "Enter 发送 · Shift/⌘+Enter 换行 · 消息立即送达";
   el.message_input.placeholder = takeoverLive
     ? `接管中：输入消息会结束接管并交给 ${agentName(meeting)}…`
     : `继续说明、纠正或打断 ${agentName(meeting)}…`;
