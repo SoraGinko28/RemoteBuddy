@@ -77,7 +77,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .welcome p { color: var(--muted); margin: 0 0 22px; }
 .session-view { height: 100%; position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .session-header { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
-.session-view .session-details { position: absolute; top: 56px; left: 0; right: 0; z-index: 40; display: none; background: var(--surface); border-bottom: 1px solid var(--line); box-shadow: 0 12px 28px rgb(0 0 0 / .5); }
+.session-view .session-details { position: absolute; top: 56px; left: 12px; right: 12px; z-index: 40; display: none; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden; box-shadow: 0 16px 40px rgb(0 0 0 / .55); }
 .session-view.details-open .session-details { display: grid; }
 .session-identity { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .session-title-line { min-width: 0; display: flex; align-items: center; gap: 6px; }
