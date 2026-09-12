@@ -332,7 +332,7 @@ class MeetingStore:
         cls,
         project_root: Path,
         meeting_id: str,
-        initial_message: str,
+        initial_message: Optional[str],
         skill_source: Path,
         session_name: str,
         model: str,
@@ -343,9 +343,13 @@ class MeetingStore:
         reasoning_effort: Optional[str] = None,
         agent_name2role: Optional[Mapping[str, str]] = None,
     ) -> "MeetingStore":
-        if not isinstance(initial_message, str) or not initial_message.strip():
-            raise MeetingError("initial message must be non-empty")
-        if len(initial_message.encode("utf-8")) > MAX_MESSAGE_BYTES:
+        if initial_message is not None and not isinstance(initial_message, str):
+            raise MeetingError("initial message must be a string")
+        # A meeting may be created with no first message: the caller gets an
+        # empty meeting that already owns a fresh workspace directory, and the
+        # agent starts whenever the human finally speaks.
+        message_text = (initial_message or "").strip()
+        if len(message_text.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise MeetingError(f"initial message exceeds {MAX_MESSAGE_BYTES} bytes")
         roles = normalize_agent_role_map(agent_name2role)
         if agent_backend not in VALID_AGENT_BACKENDS:
@@ -401,13 +405,14 @@ class MeetingStore:
         )
         store = cls(run_dir, meeting)
         store._write_manifest(hash_events=True)
-        store.append_event(
-            "chat",
-            "human",
-            "created",
-            content=initial_message.strip(),
-            message_type="request",
-        )
+        if message_text:
+            store.append_event(
+                "chat",
+                "human",
+                "created",
+                content=message_text,
+                message_type="request",
+            )
         return store
 
     @classmethod

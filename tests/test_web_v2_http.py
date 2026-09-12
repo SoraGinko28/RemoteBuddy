@@ -678,9 +678,27 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(second.stop_requested())
         self.assertFalse(self.transport.exists)
 
+    def test_meeting_can_be_opened_without_a_first_message(self):
+        """An empty meeting is the fallback when the client has nothing to open.
+
+        It owns a fresh workspace directory straight away, starts no agent, and
+        the first human message wakes the agent in that same directory.
+        """
+        store = self.service.start({})
+        self.assertEqual("created", store.meeting.phase)
+        self.assertEqual([], store.chat_messages())
+        self.assertEqual({}, self.service.jobs)
+        self.assertTrue((self.root / "runs" / store.meeting.meeting_id / "workspace").is_dir())
+
+        before = len(RecordingRunner.instances)
+        self.service.message(store.meeting.meeting_id, {"message": "start here"})
+        self.wait_for_workers()
+        self.assertEqual(before + 1, len(RecordingRunner.instances))
+        reloaded = MeetingStore.load(self.root, store.meeting.meeting_id)
+        chats = [e for e in reloaded.chat_messages() if e["actor"] == "human"]
+        self.assertEqual(["start here"], [e["content"] for e in chats])
+
     def test_validation_and_missing_model_configuration(self):
-        with self.assertRaises(WebError):
-            self.service.start({"message": ""})
         with self.assertRaises(WebError):
             self.service.start({"brief": "legacy input"})
         with self.assertRaises(WebError):

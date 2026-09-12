@@ -298,15 +298,19 @@ class MeetingStoreV2Test(unittest.TestCase):
     def test_paths_and_message_limits_are_enforced(self):
         with self.assertRaises(MeetingError):
             MeetingStore.load(self.root, "../escape")
-        with self.assertRaises(MeetingError):
-            MeetingStore.create(
-                self.root,
-                "empty-message",
-                " ",
-                self.skill,
-                "remotebuddy-empty-message",
-                "test-model",
-            )
+        # A blank first message is allowed: it opens an empty meeting whose
+        # workspace directory already exists (the client's fallback meeting).
+        empty = MeetingStore.create(
+            self.root,
+            "empty-message",
+            " ",
+            self.skill,
+            "remotebuddy-empty-message",
+            "test-model",
+        )
+        self.assertEqual([], empty.chat_messages())
+        self.assertEqual("created", empty.meeting.phase)
+        self.assertTrue((self.root / "runs" / "empty-message" / "workspace").is_dir())
         large = MeetingStore.create(
             self.root,
             "large-message",
