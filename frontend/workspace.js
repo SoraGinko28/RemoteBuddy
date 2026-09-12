@@ -1929,7 +1929,13 @@ function sourceRootFromNode(value) {
 }
 
 function activeSourceSelection() {
-  if (state.pointerSelecting || state.selectionTimer !== null || state.pendingSelection !== null) return true;
+  // A pending selection-menu timer is not by itself a selection: the browser
+  // also fires selectionchange for a collapsed caret (it does while the page
+  // initialises and when the terminal takes focus). Counting that timer as
+  // "the human is selecting" made the first renderAll bail out at boot and
+  // nothing repainted until the next poll, a second later. A real, non-
+  // collapsed selection inside a source is still detected just below.
+  if (state.pointerSelecting || state.pendingSelection !== null) return true;
   const selection = window.getSelection();
   if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return false;
   try {
