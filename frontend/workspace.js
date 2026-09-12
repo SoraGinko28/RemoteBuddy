@@ -2914,6 +2914,32 @@ function bind() {
   // and are ordinary chrome whose text has to stay selectable: grabbing focus
   // on their pointerdown collapsed the selection the human had just started,
   // so meeting ids and dialog notes could not be copied at all.
+  // The first rail button belongs to the header row, so it is centred on the
+  // header instead of on a guessed padding: the header grows past its
+  // min-height as soon as a member chip wraps or a failure message appears, and
+  // that depends on the window width.
+  const sessionHeader = document.querySelector(".session-header");
+  const railButton = document.querySelector(".rail-button");
+  if (sessionHeader && railButton) {
+    const syncRailPadding = () => {
+      const headerHeight = sessionHeader.offsetHeight;
+      // No meeting open, or a narrow window where the rail and the header are
+      // stacked instead of side by side: fall back to the stylesheet's default.
+      if (!headerHeight || getComputedStyle(appShell).display !== "grid") {
+        document.documentElement.style.removeProperty("--rail-top-padding");
+        return;
+      }
+      const offset = Math.max(0, (headerHeight - railButton.offsetHeight) / 2);
+      document.documentElement.style.setProperty("--rail-top-padding", `${offset}px`);
+    };
+    syncRailPadding();
+    if (typeof ResizeObserver === "function") {
+      const observer = new ResizeObserver(syncRailPadding);
+      observer.observe(sessionHeader);
+      observer.observe(railButton);
+    }
+    window.addEventListener("resize", syncRailPadding);
+  }
   const workspaceMain = document.querySelector(".workspace-main");
   // Selectable-text surfaces inside the workspace must never lose focus to the
   // terminal either: stealing focus out from under a mousedown on chat text
