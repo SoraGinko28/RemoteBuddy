@@ -611,6 +611,54 @@ class MeetingWebServiceTest(unittest.TestCase):
                 },
             )
 
+    def test_message_can_quote_a_terminal_control_line(self):
+        """A control line is quoted like a message: same region/excerpt rules."""
+        self.start_meeting("control-quote")
+        store = MeetingStore.load(self.root, "control-quote")
+        store.note_terminal_control("human")
+        store.note_terminal_control(None)
+        records = [
+            event for event in store.events()
+            if event["kind"] == "control"
+            and event.get("data", {}).get("status") == "terminal_control"
+        ]
+        self.assertEqual(["你 接管终端", "你 交还终端"],
+                         [event["content"] for event in records])
+        hand_back = records[-1]
+        self.service.message(
+            "control-quote",
+            {
+                "message": "看这一行",
+                "references": [
+                    {
+                        "kind": "terminal_control",
+                        "event_id": hand_back["event_id"],
+                        "region": {"start": 0, "end": len(hand_back["content"])},
+                        "excerpt": "客户端伪造的摘录不应被保存",
+                    }
+                ],
+            },
+        )
+        reference = MeetingStore.load(self.root, "control-quote").chat_messages()[-1]["data"]["references"][-1]
+        self.assertEqual(hand_back["content"], reference["excerpt"])
+        self.assertEqual(hand_back["event_id"], reference["event_id"])
+        self.assertEqual("", reference["user_name"])
+        self.assertEqual(hand_back["data"]["start_time"], reference["start_time"])
+        with self.assertRaisesRegex(WebError, "outside"):
+            self.service.message(
+                "control-quote",
+                {
+                    "message": "bad",
+                    "references": [
+                        {
+                            "kind": "terminal_control",
+                            "event_id": hand_back["event_id"],
+                            "region": {"start": 0, "end": 9999},
+                        }
+                    ],
+                },
+            )
+
     def test_api_error_resume_uses_fresh_conversation(self):
         self.start_meeting("recover-demo")
         store = MeetingStore.load(self.root, "recover-demo")

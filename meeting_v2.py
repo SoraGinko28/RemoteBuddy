@@ -45,6 +45,43 @@ VALID_OWNERS = {"agent", "human", "none"}
 # this invariant; additional agents join as discriminators).
 VALID_AGENT_ROLES = {"generator", "active_discriminator", "passive_discriminator"}
 HUMAN_USER = "human"
+
+
+def terminal_control_line(previous_owner: Optional[str], user_name: Optional[str]) -> str:
+    """The transcript line for a control record.
+
+    "接管" and "交还" are not on the record -- it only says who holds the pane
+    from its start_time -- so the line follows from the record before it.
+    ``previous_owner`` and ``user_name`` are None when nobody held the pane.
+    """
+
+    def speaker(name: Optional[str]) -> str:
+        return "你" if name == HUMAN_USER else str(name)
+
+    if user_name is None:
+        return f"{speaker(previous_owner)} 交还终端" if previous_owner else "无人控制终端"
+    if previous_owner and previous_owner != user_name:
+        return f"{speaker(previous_owner)} 交还 · {speaker(user_name)} 接管终端"
+    return f"{speaker(user_name)} 接管终端"
+
+
+def fill_terminal_control_lines(events: List[Dict[str, Any]]) -> None:
+    """Give every terminal-control record the line the transcript shows.
+
+    The text is derived, not stored: a record only records who holds the pane,
+    and the line depends on the record before it. Deriving it on read keeps the
+    journal free of display text and works for records written before the chat
+    area showed them at all.
+    """
+    previous: Optional[str] = None
+    for event in events:
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if event.get("kind") != "control" or data.get("status") != "terminal_control":
+            continue
+        owner = data.get("user_name")
+        owner = owner if isinstance(owner, str) and owner else None
+        event["content"] = terminal_control_line(previous, owner)
+        previous = owner
 # New meetings default their single generator to this readable name.
 DEFAULT_AGENT_NAME = "actor"
 # A new meeting already has its reviewer on the member list. The reviewer is
@@ -579,7 +616,9 @@ class MeetingStore:
 
     def events(self) -> List[Dict[str, Any]]:
         with self._thread_lock:
-            return list(self._cached_events())
+            events = self._cached_events()
+            fill_terminal_control_lines(events)
+            return list(events)
 
     def _cached_events(self) -> List[Dict[str, Any]]:
         """Parse only appended journal bytes; the journal is append-only.
