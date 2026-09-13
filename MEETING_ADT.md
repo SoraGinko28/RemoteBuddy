@@ -66,6 +66,10 @@ ChatStreamChunk :=
     DataClass
   * $stream_name str
   * $chunks list[ChatMessage]
+  * Appendix[{
+      聊天区展示 := 按时间归并本会议的 chat 流记录与 terminal_control 流记录
+                    （展示层视图；每条展示项仍归属自己那条流）
+    }]
 
 ScoreStreamChunk :=
     DataClass
@@ -78,6 +82,10 @@ KeystrokeStreamChunk :=
 TerminalControlStreamChunk :=
     DataClass
   * $chunks list[TerminalControl]
+  * Appendix[{
+      本流记录同样展示在聊天区：它没有文本内容，
+      以「$user_name 接管/交还终端」的状态行出现在聊天区展示序列里
+    }]
 
 UserName :=
     Oneof
@@ -189,6 +197,7 @@ ContentReference :=
   | $screen_ref ScreenReference
   | $chat_ref ChatReference
   | $score_ref ScoreReference
+  | $terminal_control_ref TerminalControlReference
 
 ScreenReference :=
     DataClass
@@ -219,6 +228,21 @@ ScoreReference :=
         resolve($score_ref) := 评分流中满足
             (ScoreMessage.judge_name == $score_ref.judge_name
              ∧ ScoreMessage.time == $score_ref.judge_time) 的记录
+    }]
+
+TerminalControlReference :=
+    DataClass
+  * $start_time datetime
+  * $user_name UserName
+  * Appendix[{
+        resolve($ctrl_ref) := 控制流中满足
+            (TerminalControl.start_time == $ctrl_ref.start_time
+             ∧ TerminalControl.user_name == $ctrl_ref.user_name) 的记录
+    }]
+  * Hint[{
+      指向的是一次控制区间（起点由 TerminalControl.start_time 界定，
+      终点由下一次控制记录的 start_time 界定），所以没有 region：
+      该记录没有可切分的文本内容
     }]
 
 TextRegion :=
