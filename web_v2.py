@@ -1508,6 +1508,9 @@ class MeetingWebService:
                 pending_action_id=None,
             )
             store.append_event("control", "human", "waiting_for_user", data={"status": "released"})
+            # The hand-back is a control record like any other: with no agent
+            # picking the pane up, it records that nobody holds it.
+            store.note_terminal_control(None)
             self._sync_human_pipe(store)
             return self.load_store(meeting_id)
 

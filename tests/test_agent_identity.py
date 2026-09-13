@@ -178,6 +178,19 @@ class TestAppendMembership:
         ok = [e for e in store.events() if e["kind"] == "control"]
         assert len(ok) == 2
 
+    def test_terminal_control_records_a_hand_back_with_no_owner(self, store) -> None:
+        """A hand-back nobody picks up is still a record.
+
+        No user_name means the pane is held by no one -- not a user, and not a
+        missing record.
+        """
+        store.note_terminal_control("human")
+        store.note_terminal_control(None)
+        controls = [e for e in store.events() if e["kind"] == "control"]
+        assert [event["data"]["user_name"] for event in controls] == ["human", None]
+        assert controls[-1]["data"]["tmux_window_name"] == store.meeting.session_name
+        assert controls[-1]["data"]["start_time"]
+
     def test_terminal_control_rejects_discriminator_or_stranger(self, store) -> None:
         store.add_agent_role("auditor", "active_discriminator")
         with pytest.raises(m2.MeetingError, match="human or the generator"):
