@@ -88,12 +88,10 @@ def _action_summary(data: dict) -> str:
                         parts.append(f"<{key.get('value', 'key')}>")
             return f"type:keys {''.join(parts)[:120]}"
         return kind
-    input_payload = data.get("input")
-    if isinstance(input_payload, dict) and input_payload.get("bytes"):
-        decoded = _decode_hex(input_payload.get("bytes"))
-        return f"typed: {decoded[:120]}"
-    if data.get("bytes"):
-        return f"typed: {_decode_hex(data.get('bytes'))[:120]}"
+    # What the human typed is not in the journal (it never enters the meeting
+    # record), so the reviewer reads it off the screen frames like everyone
+    # else: echoed input is visible there, and un-echoed input is exactly what
+    # must not be kept.
     return ""
 
 
