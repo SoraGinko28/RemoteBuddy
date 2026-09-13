@@ -813,23 +813,29 @@ class MeetingStore:
             },
         )
 
-    def note_terminal_control(self, user_name: str) -> None:
-        """Record that ``user_name`` started controlling the shared pane.
+    def note_terminal_control(self, user_name: Optional[str]) -> None:
+        """Record who controls the shared pane from now on.
 
-        ADT TerminalControl: there is no end_time -- the next controller's
-        start_time marks the boundary. Stored as a ``control`` event so the
-        Agent-visible journal shape does not grow new kinds.
+        ADT TerminalControl: there is no end_time -- the next record's
+        start_time marks the boundary, so every takeover and every hand-back
+        writes one. ``user_name`` None means nobody holds it: the human handed
+        the pane back and no agent picked it up. Stored as a ``control`` event
+        so the Agent-visible journal shape does not grow new kinds.
         """
-        # ADT terminal_capable: only the human or the generator agent may
-        # own the shared pane; discriminators never hold the terminal.
-        if not (user_name == HUMAN_USER or self.meeting.role_of(user_name) == "generator"):
+        # ADT terminal_capable: only the human or the generator agent may own
+        # the shared pane; discriminators never hold the terminal.
+        if user_name is not None and not (
+            user_name == HUMAN_USER or self.meeting.role_of(user_name) == "generator"
+        ):
             raise MeetingError("terminal control user_name must be human or the generator agent")
         pane = self.meeting.pane_id or ""
         digits = pane.lstrip("%")
         tmux_pane: Optional[int] = int(digits) if digits.isdigit() else None
         self.append_event(
             "control",
-            user_name,
+            # The event's actor is whoever acted; the record's user_name is who
+            # holds the pane, which a hand-back leaves empty.
+            user_name or HUMAN_USER,
             self.meeting.phase,
             data={
                 "status": "terminal_control",
