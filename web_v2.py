@@ -129,40 +129,6 @@ class StreamClosed(RuntimeError):
     """The SSE takeover stream's client went away; stop emitting."""
 
 
-# Keystroke classification for the takeover journal: a stroke that carries
-# any C0/C1 control byte is $ctrl (mapped to the terminal key name where
-# known), otherwise it is plain $text (UTF-8). Multi-byte escape sequences
-# from arrows/special keys are named keys too.
-_CTRL_BYTE_NAME = {
-    0x0d: "Enter", 0x0a: "Enter", 0x7f: "Backspace", 0x09: "Tab", 0x1b: "Escape",
-}
-_ESC_SEQ_NAME = {
-    b"\x1b[A": "Up", b"\x1b[B": "Down", b"\x1b[C": "Right", b"\x1b[D": "Left",
-    b"\x1b[H": "Home", b"\x1b[F": "End",
-    b"\x1b[2~": "Insert", b"\x1b[3~": "Delete",
-    b"\x1b[5~": "PageUp", b"\x1b[6~": "PageDown",
-}
-
-
-def classify_keystroke(hex_text: str) -> Dict[str, Any]:
-    data = bytes.fromhex(hex_text)
-    if data in _ESC_SEQ_NAME:
-        return {"kind": "ctrl", "value": _ESC_SEQ_NAME[data]}
-    if len(data) == 1 and data[0] in _CTRL_BYTE_NAME:
-        return {"kind": "ctrl", "value": _CTRL_BYTE_NAME[data[0]]}
-    if len(data) == 1 and 1 <= data[0] <= 26:
-        return {"kind": "ctrl", "value": "C-" + chr(ord("a") + data[0] - 1)}
-    if any(byte < 0x20 or byte == 0x7f for byte in data):
-        return {"kind": "ctrl", "value": "x" + hex_text}
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return {"kind": "ctrl", "value": "x" + hex_text}
-    return {"kind": "text", "value": text}
-
-
-
-
 def _settings_path(project_root: Path) -> Path:
     # Check the lexical path before resolving it so a local symlink cannot
     # redirect settings writes outside the project.
@@ -1571,7 +1537,7 @@ class MeetingWebService:
             fields = set(payload) if isinstance(payload, dict) else set()
             if fields == {"keys"}:
                 pass
-            elif fields in ({"bytes"}, {"bytes", "strokes"}):
+            elif fields == {"bytes"}:
                 pass
             else:
                 raise WebError(400, "terminal input requires a bytes or keys payload")
@@ -1580,34 +1546,12 @@ class MeetingWebService:
                 raise WebError(409, "workspace pane is not available")
             hex_text: Optional[str] = None
             keys: Optional[list] = None
-            strokes: Optional[list] = None
             if "bytes" in payload:
                 hex_text = payload["bytes"]
                 if not isinstance(hex_text, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", hex_text):
                     raise WebError(400, "bytes must be non-empty even-length hex")
                 if len(hex_text) // 2 > 64 * 1024:
                     raise WebError(413, "bytes payload is too large")
-                raw_strokes = payload.get("strokes")
-                if raw_strokes is not None:
-                    if not isinstance(raw_strokes, list) or not raw_strokes:
-                        raise WebError(400, "strokes must be a non-empty array")
-                    parsed_strokes: List[Dict[str, Any]] = []
-                    concatenated = ""
-                    for item in raw_strokes:
-                        if (
-                            not isinstance(item, dict)
-                            or set(item) != {"hex", "stroke_time"}
-                            or not isinstance(item.get("hex"), str)
-                            or not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", item["hex"])
-                            or not isinstance(item.get("stroke_time"), str)
-                            or not item["stroke_time"]
-                        ):
-                            raise WebError(400, "invalid stroke entry")
-                        parsed_strokes.append(item)
-                        concatenated += item["hex"]
-                    if concatenated.lower() != hex_text.lower():
-                        raise WebError(400, "strokes must cover the bytes payload exactly")
-                    strokes = parsed_strokes
             else:
                 raw_keys = payload["keys"]
                 if not isinstance(raw_keys, list) or not raw_keys:
@@ -1620,11 +1564,14 @@ class MeetingWebService:
             transport = self._transport()
             action_id = "human-action-" + secrets.token_hex(6)
             profile = store.meeting.typing_profile or "balanced"
+            # The raw input is not journaled: what the human typed never enters
+            # the meeting record (ADT: Keystroke is harness-internal). The
+            # bookkeeping only says that an action was taken, by whom, and when.
             store.append_event(
                 "action",
                 "human",
                 "human_control",
-                data={"action_id": action_id, "status": "received", "input": payload},
+                data={"action_id": action_id, "status": "received"},
             )
             store.append_event(
                 "action", "human", "human_control", data={"action_id": action_id, "status": "started"}
@@ -1707,17 +1654,7 @@ class MeetingWebService:
                         else:
                             capture_workspace(store, transport)
             if not cancelled:
-                extra: Dict[str, Any] = {}
-                if strokes is not None:
-                    extra["strokes"] = [
-                        {
-                            "user_name": "human",
-                            "stroke_time": stroke["stroke_time"],
-                            "data": classify_keystroke(stroke["hex"]),
-                        }
-                        for stroke in strokes
-                    ]
-                record("completed", extra=extra)
+                record("completed")
             else:
                 record("cancelled", extra={"remaining_characters": 0})
         except (RunnerError, TmuxError, OSError) as exc:

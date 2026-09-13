@@ -470,7 +470,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             any(item[1] == "resize" and item[2:] == (120, 36) for item in self.transport.commands)
         )
 
-    def test_terminal_control_and_keystroke_records(self):
+    def test_terminal_control_is_recorded_and_input_is_not(self):
         self.start_meeting("adt-records")
         self.service.acquire("adt-records")
         events = MeetingStore.load(self.root, "adt-records").events()
@@ -485,41 +485,23 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(controls[-1]["data"]["start_time"])
 
         store = self.service.terminal_input(
-            "adt-records",
-            {
-                "bytes": "636c6561720d",
-                "strokes": [
-                    {"hex": "63", "stroke_time": "2026-09-03T00:00:01.000Z"},
-                    {"hex": "6c", "stroke_time": "2026-09-03T00:00:02.000Z"},
-                    {"hex": "656172", "stroke_time": "2026-09-03T00:00:03.000Z"},
-                    {"hex": "0d", "stroke_time": "2026-09-03T00:00:04.000Z"},
-                ],
-            },
+            "adt-records", {"bytes": "636c6561720d"}  # "clear\r"
         )
         actions = [
             e for e in store.events()
-            if e["kind"] == "action" and e.get("data", {}).get("status") == "completed"
+            if e["kind"] == "action" and e.get("data", {}).get("action_id", "").startswith("human-action-")
         ]
-        last = actions[-1]["data"]["strokes"]
-        self.assertEqual(
-            [
-                {"user_name": "human", "stroke_time": "2026-09-03T00:00:01.000Z", "data": {"kind": "text", "value": "c"}},
-                {"user_name": "human", "stroke_time": "2026-09-03T00:00:02.000Z", "data": {"kind": "text", "value": "l"}},
-                {"user_name": "human", "stroke_time": "2026-09-03T00:00:03.000Z", "data": {"kind": "text", "value": "ear"}},
-                {"user_name": "human", "stroke_time": "2026-09-03T00:00:04.000Z", "data": {"kind": "ctrl", "value": "Enter"}},
-            ],
-            last,
-        )
-        with self.assertRaises(WebError):
-            self.service.terminal_input(
-                "adt-records",
-                {
-                    "bytes": "6162",
-                    "strokes": [{"hex": "61", "stroke_time": "2026-09-03T00:00:05.000Z"}],
-                },
-            )
-        self.service.release("adt-records")
-        self.wait_for_workers()
+        self.assertTrue(actions, "human input must still be booked as an action")
+        for event in actions:
+            self.assertNotIn("input", event["data"])
+            self.assertNotIn("strokes", event["data"])
+            self.assertEqual("", event.get("content") or "")
+        # The keystroke stream is harness-internal: nothing about what was typed
+        # may reach the journal, in any event.
+        journal = json.dumps(store.events())
+        self.assertNotIn("636c656172", journal)
+        self.assertNotIn("clear", journal)
+        self.assertNotIn("strokes", journal)
 
     def test_message_during_human_control_hands_back_and_resumes(self):
         self.start_meeting("control-message")
