@@ -344,14 +344,12 @@ function eventAt(index) {
   return index >= 0 && index < state.timeline.length ? state.timeline[index] : null;
 }
 
-// A human keystroke is journaled verbatim as ground truth: three bookkeeping
-// actions per stroke (received/started/completed). During playback those
-// events carry no visuals of their own -- the takeover terminal paints through
-// the interleaved screen frames -- so auto-play coalesces them: a whole run is
-// skipped in one step and rendering resumes at the next real event. Per-event
-// pacing of these events only adds per-character stalls (250ms or even a 1ms
-// timer still has to fire per recorded event), so a typed burst flashes to the
-// next frame instead. Recording stays per-stroke.
+// Human input is journaled as bookkeeping only (received/started/completed):
+// what was typed is never stored, so the record says an action happened, by
+// whom and when. During playback those events carry no visuals of their own --
+// the takeover terminal paints through the interleaved screen frames -- so
+// auto-play coalesces them: a whole run is skipped in one step and rendering
+// resumes at the next real event.
 function isHumanKeystrokeEvent(event) {
   return Boolean(
     event
@@ -1204,7 +1202,6 @@ const takeoverStream = {
   active: false,
   source: null,
   inputHex: "",
-  strokes: [],
   flushTimer: null,
   flushing: false,
   lastFlushErrorAt: 0,
@@ -1226,12 +1223,9 @@ function flushTakeoverInput(silent = false) {
   takeoverStream.flushTimer = null;
   if (!takeoverStream.inputHex || takeoverStream.flushing) return;
   const hex = takeoverStream.inputHex;
-  const strokes = takeoverStream.strokes;
   takeoverStream.inputHex = "";
-  takeoverStream.strokes = [];
   takeoverStream.flushing = true;
   const body = { bytes: hex };
-  if (strokes.length) body.strokes = strokes;
   api(`/api/meetings/${encodeURIComponent(state.selectedId || "")}/terminal/input`, {
     method: "POST",
     body: JSON.stringify(body),
@@ -1267,9 +1261,6 @@ function queueTakeoverInput(text, urgent = false) {
   let hex = "";
   for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
   takeoverStream.inputHex += hex;
-  // One journaled stroke per physical input event (keystroke, IME commit,
-  // or paste), stamped with the moment the user actually typed it.
-  takeoverStream.strokes.push({ hex, stroke_time: new Date().toISOString() });
   if (takeoverStream.flushTimer !== null) {
     if (!urgent) return;
     clearTimeout(takeoverStream.flushTimer);
@@ -1490,7 +1481,6 @@ function stopTerminalTakeover(flushPending) {
   if (source) source.close();
   unbindTakeoverInput();
   takeoverStream.inputHex = "";
-  takeoverStream.strokes = [];
   // Hand the terminal back to frame painting from a fresh instance so no
   // byte-stream cells can linger under the painted frames. The local
   // timeline/buffer can no longer be trusted after mode switches, so block

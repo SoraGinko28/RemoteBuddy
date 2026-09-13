@@ -28,10 +28,11 @@ class TestObservation:
                   "action": {"type": "keystrokes",
                              "keys": [{"kind": "literal", "value": "echo hi"}]}},
         )
+        # The human's input is not in the journal at all: the reviewer sees
+        # what was echoed on screen, not what was typed.
         store.append_event(
             "action", "human", "human_control",
-            data={"action_id": "h1", "status": "received",
-                  "input": {"bytes": "6c730a"}},  # "ls\n"
+            data={"action_id": "h1", "status": "received"},
         )
         store.append_event("screen", "workspace", "agent_acting",
                            content="row one\nrow two\n")
@@ -42,7 +43,7 @@ class TestObservation:
         assert "actor" in observation
         assert "=== who typed what" in observation
         assert "echo hi" in observation
-        assert "ls" in observation or "typed:" in observation
+        assert "typed:" not in observation
         assert "=== past screen frames" in observation
         assert "row CHANGED" in observation
         assert "changes vs previous" in observation

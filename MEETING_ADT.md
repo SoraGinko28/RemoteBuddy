@@ -25,7 +25,7 @@ MeetingData :=
   * Appendix[{
       user_names := 从各 chunk 收集所有出现的 UserName
                      （screen.owner / chat.user_name / score.judge_name /
-                      keystroke.user_name / terminal_control.user_name）
+                      terminal_control.user_name）
     }]
   * Assert[{ keys($agent_name2role) ⊆ user_names(本记录) }]
   * Hint[{
@@ -37,9 +37,6 @@ MeetingData :=
   * Appendix[{
       owner_at(t) := 含 t 的控制区间的 TerminalControl.user_name
                      （区间由 TerminalControl.start_time 界定；可能缺省 = 此刻无人控制）
-    }]
-  * Assert[{
-      ∀ keystroke k：owner_at(k.stroke_time) == k.user_name
     }]
 
 StreamChunkDict :=
@@ -53,7 +50,6 @@ StreamChunk :=
   | $screen_stream_chunk ScreenStreamChunk
   | $chat_stream_chunk ChatStreamChunk
   | $score_stream_chunk ScoreStreamChunk
-  | $keystroke_stream_chunk KeystrokeStreamChunk
   | $terminal_control_stream_chunk TerminalControlStreamChunk
 
 ScreenStreamChunk :=
@@ -74,10 +70,6 @@ ChatStreamChunk :=
 ScoreStreamChunk :=
     DataClass
   * $chunks list[ScoreMessage]
-
-KeystrokeStreamChunk :=
-    DataClass
-  * $chunks list[Keystroke]
 
 TerminalControlStreamChunk :=
     DataClass
@@ -113,18 +105,6 @@ TerminalControl :=
         user_name == $human () 或
         user_name 的 agent 的 role == $generator
     }]
-
-Keystroke :=
-    DataClass
-  * $data KeystrokeStr
-  * $user_name UserName
-  * $stroke_time datetime
-
-KeystrokeStr :=
-    Oneof
-  | $text str
-  | $ctrl str
-  | $rest ($millisecond int)
 
 ScreenCapture :=
     DataClass
@@ -255,6 +235,31 @@ TextRegion :=
     DataClass
   * $start int
   * $end int
+```
+
+---
+
+## Harness 内部（不进入 MeetingData）
+
+```
+# 这一节的概念只约束 RemoteBuddy Harness 自身的实现，
+# 它们记录的信息一律不写入存储系统，也不属于任何一条流。
+Keystroke :=
+    DataClass
+  * $data KeystrokeStr
+  * $user_name UserName
+  * $stroke_time datetime
+  * Appendix[{
+      owner_at(t) := 见 MeetingData 的同名 Appendix
+      $user_name 必须等于 owner_at($stroke_time)：
+      只有当时的控制者能产生按键；无人控制时不产生按键
+    }]
+
+KeystrokeStr :=
+    Oneof
+  | $text str
+  | $ctrl str
+  | $rest ($millisecond int)
 ```
 
 ---
