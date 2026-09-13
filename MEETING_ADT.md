@@ -84,7 +84,9 @@ TerminalControlStreamChunk :=
   * $chunks list[TerminalControl]
   * Appendix[{
       聊天区展示 ∋ 本流记录
-          # 该记录没有文本内容，以「$user_name 接管/交还终端」的状态行出现
+          # 以居中的状态行展示：它不是谁发的言，没有作者，行内写明该记录的 $user_name
+          # 「接管」与「交还」不是记录自带的，而是相邻两条记录之间的关系：
+          #   本条 $user_name 与上一条不同，才谈得上接管或交还
     }]
 
 UserName :=
