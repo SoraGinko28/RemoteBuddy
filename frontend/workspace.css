@@ -147,6 +147,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 }
 .chat-playback-cursor::before,
 .chat-playback-cursor::after { content: ""; flex: 1; height: 1px; background: var(--accent); opacity: .35; min-width: 12px; }
+/* A terminal-control record shown in the transcript: centred, with no author of
+   its own, so it reads as something that happened rather than something said. */
+.chat-control-line { display: flex; align-items: center; gap: 10px; margin: 14px 0; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.chat-control-line::before,
+.chat-control-line::after { content: ""; flex: 1; height: 1px; background: var(--line); min-width: 12px; }
 .message { margin: 0 0 16px; max-width: 92%; }
 .message.human { margin-left: auto; }
 .message-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; user-select: none; -webkit-user-select: none; }

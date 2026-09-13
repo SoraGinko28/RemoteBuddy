@@ -591,16 +591,49 @@ function renderHeader() {
   syncTerminalTakeover(takeoverLive);
 }
 
+// The chat transcript is the meeting's narrative, so it also carries the
+// terminal-control records (ADT: data.status == "terminal_control"). They are
+// not messages and never answer the chat filter: taking the keyboard is not
+// chatter, and hiding it would misreport who was working.
 function visibleChats() {
   // The chat transcript is never clipped by the terminal playback cursor:
   // the scrubber replays screens, while the conversation stays fully
   // readable both before and after the current point.
   return state.timeline.filter((event) => {
+    if (event.kind === "control") return isTerminalControl(event);
     if (event.kind !== "chat") return false;
     if (state.chatFilter === "result") return ["request", "question", "final"].includes(event.message_type);
     if (state.chatFilter === "progress") return ["ack", "progress"].includes(event.message_type);
     return true;
   });
+}
+
+// The ADT TerminalControl record, as opposed to the acquired/released
+// annotations the journal also writes under the same event kind.
+function isTerminalControl(event) {
+  return event?.kind === "control" && event.data?.status === "terminal_control";
+}
+
+function terminalControlOwner(event) {
+  const name = event?.data?.user_name;
+  return typeof name === "string" && name ? name : (event?.actor || "");
+}
+
+// "接管" and "交还" are not on the record: it only says who holds the pane
+// from its start_time. Which of the two it reads as follows from the record
+// before it, so the line names both sides of the change.
+function terminalControlLabel(event, timeline) {
+  const owner = terminalControlOwner(event);
+  const index = timeline.indexOf(event);
+  let previous = null;
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (isTerminalControl(timeline[cursor])) { previous = timeline[cursor]; break; }
+  }
+  const speaker = (name) => (name === "human" ? "你" : name);
+  if (!previous) return `${speaker(owner)} 接管终端`;
+  const before = terminalControlOwner(previous);
+  if (before === owner) return `${speaker(owner)} 接管终端`;
+  return `${speaker(before)} 交还 · ${speaker(owner)} 接管终端`;
 }
 
 function codePoints(value) {
@@ -824,6 +857,17 @@ function renderChat() {
       (event) => event.kind === "score" && state.scoreOverlayIds.has(event.event_id),
     );
     for (const event of chats) {
+      if (isTerminalControl(event)) {
+        const line = node("div", "chat-control-line");
+        line.dataset.eventId = event.event_id || "";
+        line.append(node("span", "", terminalControlLabel(event, state.timeline)));
+        el.chat_list.append(line);
+        const lineSequence = Number(event.seq);
+        if (!state.followLive && Number.isFinite(lineSequence) && lineSequence <= chatCursorSeq) {
+          cursorArticle = line;
+        }
+        continue;
+      }
       const article = node("article", `message ${event.actor}`);
       article.dataset.eventId = event.event_id || "";
       const head = node("header", "message-head");
