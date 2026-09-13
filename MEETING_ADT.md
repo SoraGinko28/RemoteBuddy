@@ -36,7 +36,7 @@ MeetingData :=
     }]
   * Appendix[{
       owner_at(t) := 含 t 的控制区间的 TerminalControl.user_name
-                     （区间由 TerminalControl.start_time 界定）
+                     （区间由 TerminalControl.start_time 界定；可能缺省 = 此刻无人控制）
     }]
   * Assert[{
       ∀ keystroke k：owner_at(k.stroke_time) == k.user_name
@@ -98,15 +98,18 @@ TerminalControl :=
     DataClass
   * $tmux_window_name str
   * $tmux_pane int
-  * $user_name UserName
+  * $user_name Optional[UserName]
   * $start_time datetime
   * Appendix[{
-      user_name ∈ participants(user_names(MeetingData))  # 与 Keystroke/ChatMessage 口径一致
+      # 缺省 $user_name = 从 start_time 起无人控制：人交还了，且没有 agent 接手
+      # 每次接管、每次交还都写入一条记录，没有例外
+      user_name 缺省，或 user_name ∈ participants(user_names(MeetingData))
     }]
   * Appendix[{
       terminal_capable := { $human () } ∪ { a | role(a) == $generator }   # role 查所在会议的 agent_name2role
     }]
   * Assert[{
+        user_name 缺省，或
         user_name == $human () 或
         user_name 的 agent 的 role == $generator
     }]

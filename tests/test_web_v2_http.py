@@ -368,6 +368,15 @@ class MeetingWebServiceTest(unittest.TestCase):
         # Takeover started from an idle meeting, so a plain 交还 must NOT wake
         # the Agent into another autonomous run.
         self.assertEqual(runners_before, len(RecordingRunner.instances))
+        # Every takeover and every hand-back is a control record, including a
+        # hand-back that nobody picks up: it records that no one holds the pane.
+        controls = [
+            event for event in released.events()
+            if event["kind"] == "control"
+            and event.get("data", {}).get("status") == "terminal_control"
+        ]
+        self.assertEqual(["human", None],
+                         [event["data"].get("user_name") for event in controls])
 
     def test_takeover_is_refused_when_the_terminal_is_gone(self):
         self.start_meeting("gone-demo")
