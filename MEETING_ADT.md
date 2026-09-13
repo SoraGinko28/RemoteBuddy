@@ -83,8 +83,8 @@ TerminalControlStreamChunk :=
     DataClass
   * $chunks list[TerminalControl]
   * Appendix[{
-      本流记录同样展示在聊天区：它没有文本内容，
-      以「$user_name 接管/交还终端」的状态行出现在聊天区展示序列里
+      聊天区展示 ∋ 本流记录
+          # 该记录没有文本内容，以「$user_name 接管/交还终端」的状态行出现
     }]
 
 UserName :=
