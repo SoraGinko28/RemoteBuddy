@@ -183,6 +183,18 @@ ContentReference :=
   | $chat_ref ChatReference
   | $score_ref ScoreReference
   | $terminal_control_ref TerminalControlReference
+  * Assert[{
+      与 StreamChunk 一一对应：每种流的记录恰有一个 reference 变体
+        screen_stream_chunk            ↔ screen_ref
+        chat_stream_chunk              ↔ chat_ref
+        score_stream_chunk             ↔ score_ref
+        terminal_control_stream_chunk  ↔ terminal_control_ref
+    }]
+  * Hint[{
+      区间不是一种引用：引用区间的起止记录（及其间的若干条）即可表达一段；
+      要在别处反复指这段，引用那条承载这些引用的消息即可——
+      引用指向的记录本身也可以是一条带引用的消息
+    }]
 
 ScreenReference :=
     DataClass
