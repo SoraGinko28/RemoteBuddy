@@ -238,7 +238,8 @@ ScoreReference :=
 TerminalControlReference :=
     DataClass
   * $start_time datetime
-  * $user_name UserName
+  * $user_name Optional[UserName]
+  * $region TextRegion
   * Appendix[{
         resolve($ctrl_ref) := 控制流中满足
             (TerminalControl.start_time == $ctrl_ref.start_time
@@ -246,8 +247,8 @@ TerminalControlReference :=
     }]
   * Hint[{
       指向的是一次控制区间（起点由 TerminalControl.start_time 界定，
-      终点由下一次控制记录的 start_time 界定），所以没有 region：
-      该记录没有可切分的文本内容
+      终点由下一次控制记录的 start_time 界定）；
+      区间内没有可切分的原文，所以 region 恒为整行
     }]
 
 TextRegion :=
