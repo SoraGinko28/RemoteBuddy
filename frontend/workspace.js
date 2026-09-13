@@ -614,31 +614,22 @@ function isTerminalControl(event) {
   return event?.kind === "control" && event.data?.status === "terminal_control";
 }
 
-// Who holds the pane from this record on; null when nobody does, which is what
-// a hand-back with no agent behind it records.
-function terminalControlOwner(event) {
-  const name = event?.data?.user_name;
-  return typeof name === "string" && name ? name : null;
+// A control record carries the line the transcript shows (the engine writes it
+// with the record, since 接管/交还 depends on the record before it), so the
+// chat area, the selection toolbar and the server all quote the same text.
+function terminalControlLine(event) {
+  return String(event?.content || "");
 }
 
-// "接管" and "交还" are not on the record: each one only says who holds the
-// pane from its start_time. Which of the two it reads as follows from the
-// record before it, so the line names both sides of the change.
-function terminalControlLabel(event, timeline) {
-  const index = timeline.indexOf(event);
-  let previous = null;
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    if (isTerminalControl(timeline[cursor])) { previous = timeline[cursor]; break; }
-  }
-  const owner = terminalControlOwner(event);
-  const before = previous ? terminalControlOwner(previous) : null;
-  const speaker = (name) => (name === "human" ? "你" : name);
-  if (!owner) {
-    // Nobody holds the pane now: the previous holder handed it back.
-    return before ? `${speaker(before)} 交还终端` : "无人控制终端";
-  }
-  if (!before || before === owner) return `${speaker(owner)} 接管终端`;
-  return `${speaker(before)} 交还 · ${speaker(owner)} 接管终端`;
+function referenceKindLabel(kind) {
+  if (kind === "screen") return "Screen 引用";
+  if (kind === "terminal_control") return "终端接管";
+  return "Chat 引用";
+}
+
+// The ADT name of the reference that points at this event.
+function referenceKindForEvent(event) {
+  return isTerminalControl(event) ? "terminal_control" : (event?.kind || "");
 }
 
 function codePoints(value) {
@@ -684,7 +675,8 @@ function sourceEventForRoot(root) {
   const eventId = root?.dataset?.eventId;
   if (!eventId) return null;
   const fromTimeline = state.timeline.find(
-    (event) => event.event_id === eventId && (event.kind === "chat" || event.kind === "screen"),
+    (event) => event.event_id === eventId
+      && (event.kind === "chat" || event.kind === "screen" || isTerminalControl(event)),
   );
   if (fromTimeline) return fromTimeline;
   const latest = state.snapshot?.latest_screen;
@@ -865,7 +857,7 @@ function renderChat() {
       if (isTerminalControl(event)) {
         const line = node("div", "chat-control-line");
         line.dataset.eventId = event.event_id || "";
-        line.append(node("span", "", terminalControlLabel(event, state.timeline)));
+        line.append(node("span", "", terminalControlLine(event)));
         el.chat_list.append(line);
         const lineSequence = Number(event.seq);
         if (!state.followLive && Number.isFinite(lineSequence) && lineSequence <= chatCursorSeq) {
@@ -2018,7 +2010,7 @@ function setReferences(references) {
   unique.forEach((reference, index) => {
     const item = node("div", "reference-item");
     item.append(
-      node("span", "reference-kind", reference.kind === "screen" ? "Screen 引用" : "Chat 引用"),
+      node("span", "reference-kind", referenceKindLabel(reference.kind)),
       node("span", "reference-excerpt", reference.excerpt || ""),
     );
     const remove = node("button", "icon-button", "×");
@@ -2052,9 +2044,9 @@ function sourceRootFromNode(value) {
     // Under xterm.js the terminal has no text DOM to select or annotate;
     // evaluation of terminal text is re-added on top of xterm selection
     // later. Chat message text stays selectable.
-    return element.closest?.(".message-content") || null;
+    return element.closest?.(".message-content, .chat-control-line") || null;
   }
-  return element?.closest?.(".message-content, #terminal-screen") || null;
+  return element?.closest?.(".message-content, .chat-control-line, #terminal-screen") || null;
 }
 
 function activeSourceSelection() {
@@ -2290,7 +2282,12 @@ function selectionCandidate() {
     const excerpt = codePointSlice(content, start, end);
     if (!excerpt.trim()) return null;
     const rect = range.getBoundingClientRect();
-    return { start, end, excerpt, kind: source.kind, event_id: source.event_id, root, rect };
+    return {
+      start, end, excerpt,
+      kind: referenceKindForEvent(source),
+      event_id: source.event_id,
+      root, rect,
+    };
   } catch (_error) {
     return null;
   }
@@ -2995,7 +2992,7 @@ function bind() {
   // (or the header identity) also cancels native text selection before it can
   // start (drag, double-click and Shift+arrows all die; copy returns nothing).
   function isTextSelectionSurface(node) {
-    const selectors = [".message-content", ".session-identity",
+    const selectors = [".message-content", ".chat-control-line", ".session-identity",
                        ".presence-strip", ".evaluation-excerpt"];
     for (const selector of selectors) {
       if (node && node.closest && node.closest(selector)) return true;

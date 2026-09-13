@@ -15,7 +15,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Tuple, Union
 
 
-SOURCE_KINDS = frozenset({"screen", "chat"})
+SOURCE_KINDS = frozenset({"screen", "chat", "terminal_control"})
+# A reference kind names the ADT record; the journal stores them under slightly
+# different event kinds.
+SOURCE_EVENT_KINDS = {"screen": "screen", "chat": "chat", "terminal_control": "control"}
 
 
 def _datetime(value: Any, label: str = "time") -> datetime:
@@ -113,7 +116,36 @@ class ChatReference:
             raise ValueError("chat reference sequence must be positive")
 
 
-ContentReference = Union[ScreenReference, ChatReference]
+@dataclass(frozen=True)
+class TerminalControlReference:
+    """A quote of one terminal-control line.
+
+    The line is written with the record, so it can be quoted like a message:
+    the region is always the whole line, and the excerpt is that text.
+    ``user_name`` is empty when the record says nobody holds the pane.
+    """
+
+    start_time: datetime
+    user_name: str
+    region: TextRegion
+    event_id: str = ""
+    seq: int = 0
+    source_sha256: str = ""
+    excerpt: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "start_time", _datetime(self.start_time, "start_time"))
+        if not isinstance(self.user_name, str):
+            raise ValueError("terminal control reference user name must be text")
+        if not isinstance(self.region, TextRegion):
+            raise ValueError("terminal control reference region must be a TextRegion")
+        if self.event_id and not isinstance(self.event_id, str):
+            raise ValueError("terminal control reference event id must be text")
+        if self.seq and (isinstance(self.seq, bool) or not isinstance(self.seq, int) or self.seq < 1):
+            raise ValueError("terminal control reference sequence must be positive")
+
+
+ContentReference = Union[ScreenReference, ChatReference, TerminalControlReference]
 
 
 def to_dict(value: Any) -> Any:
@@ -129,7 +161,7 @@ def to_dict(value: Any) -> Any:
 
 
 def _source(event: Mapping[str, Any], kind: str) -> Tuple[str, int, datetime, str]:
-    if event.get("kind") != kind:
+    if event.get("kind") != SOURCE_EVENT_KINDS[kind]:
         raise ValueError("reference source event is invalid")
     event_id = event.get("event_id")
     seq = event.get("seq")
@@ -146,7 +178,7 @@ def _source(event: Mapping[str, Any], kind: str) -> Tuple[str, int, datetime, st
 def _reference_object(event: Mapping[str, Any], payload: Mapping[str, Any]) -> ContentReference:
     kind = payload.get("kind")
     if kind not in SOURCE_KINDS:
-        raise ValueError("reference kind must be screen or chat")
+        raise ValueError("reference kind must be screen, chat, or terminal_control")
     event_id, seq, timestamp, content = _source(event, str(kind))
     if payload.get("event_id") != event_id:
         raise ValueError("reference event does not match the selected source")
@@ -163,6 +195,20 @@ def _reference_object(event: Mapping[str, Any], payload: Mapping[str, Any]) -> C
     digest = _hash(content)
     if kind == "screen":
         return ScreenReference(timestamp, "screen", region, event_id, seq, digest, excerpt)
+    if kind == "terminal_control":
+        data = event.get("data") if isinstance(event.get("data"), Mapping) else {}
+        if data.get("status") != "terminal_control":
+            raise ValueError("reference source event is not a terminal control record")
+        owner = data.get("user_name")
+        return TerminalControlReference(
+            _datetime(data.get("start_time"), "start_time"),
+            owner if isinstance(owner, str) else "",
+            region,
+            event_id,
+            seq,
+            digest,
+            excerpt,
+        )
     return ChatReference(timestamp, str(event.get("actor", "")), region, event_id, seq, digest, "chat", excerpt)
 
 
@@ -176,6 +222,7 @@ __all__ = [
     "ChatReference",
     "ContentReference",
     "ScreenReference",
+    "TerminalControlReference",
     "TextRegion",
     "reference_from_event",
     "to_dict",
