@@ -29,7 +29,7 @@ MeetingData :=
                      （screen.owner / chat.user_name / score.judge_name /
                       terminal_control.user_name）
                    ∪ 文件层所有 Versioned.author
-                     （file_kv_store 的三条链 / file_desktop.workspaces）
+                     （file_kv_store 与 file_desktop 里的所有链）
     }]
   * Assert[{ keys($agent_name2role) ⊆ user_names(本记录) }]
   * Hint[{
@@ -51,18 +51,54 @@ FileKvStore :=
 
 FileDesktop :=
     DataClass
-  * $workspaces list[Versioned[FileWorkspace]]
+  * $workspaces AppendOnlyList[Versioned[FileWorkspace]]
+  * $reorder_indexes AppendOnlyList[Versioned[DesktopMemberOrder]]
+  * Appendix[{
+      # $workspaces 只增：位置就是 workspace 的身份
+      # 每条链各按 time ≤ $version_time 取最后一版（规则同 VersionedFileReference），
+      # 空链 = 该时刻这个对象还不存在；
+      # 成员的先后由同刻那一版 $reorder_indexes 给出
+    }]
+
+DesktopMemberOrder :=
+    DataClass
+  * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]
+  * Assert[{
+      $workspace_indexes 里的 $workspace_index 恰好是
+          0 .. len(MeetingData.file_desktop.workspaces) - 1 的一个排列
+    }]
+
+WorkspaceMemberOrder :=
+    DataClass
+  * $workspace_index int
+  * $file_indexes ReadOnlyList[($file_index int, Optional[FoldMemberOrder])]
+  * Assert[{
+      ws := MeetingData.file_desktop.workspaces[$workspace_index].data
+      { $file_index | ($file_index, _) ∈ $file_indexes } == 0 .. len(ws.member_files) - 1
+      且 对每个 ($file_index, Some(fo))：
+          fo.$member_indexes == 0 .. len((ws.member_files[$file_index].data as $fold).member_file_ids) - 1
+    }]
+
+FoldMemberOrder :=
+    DataClass
+  * $member_indexes ReadOnlyList[$member_index int]
+  # 本对象只出现在某个 ($file_index, Some(本对象)) 里；
+  # 由所在的 WorkspaceMemberOrder 断言它是 ws.member_files[$file_index] 这个 fold 的成员顺序
 
 FileWorkspace :=
     DataClass
-  * $member_files list[FileFold | FileId]
-  * $workspace_name Optional[str]
-  * $workspace_status Optional[DataStatus]
+  * $member_files AppendOnlyList[Versioned[FileFold | FileId]]
+  * $workspace_name AppendOnlyList[Versioned[Optional[str]]]
+  * $workspace_status AppendOnlyList[Versioned[Optional[DataStatus]]]
+  * Appendix[{
+      # 改名 / 改状态 = 往对应链尾追加一版；
+      # 删文件不摘链，而是往该文件的 meta 链尾追加 $deleted
+    }]
 
 FileFold :=
     DataClass
-  * $fold_name Optional[str]
-  * $member_file_ids list[FileId]
+  * $fold_name AppendOnlyList[Versioned[Optional[str]]]
+  * $member_file_ids AppendOnlyList[Versioned[FileId]]
 
 FileId :=
     DataClass
