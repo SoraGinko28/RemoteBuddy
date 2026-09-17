@@ -1,8 +1,5 @@
 # 基于 ADT 子类型判定的违规检测系统
 
-> 技术原理文档 · 2026-09-14
-> 术语与机制已按当前 `viba` 规则层（`viba-rule.md`）对齐：`Predicate` / `PredicationFailed` / `is_compliant` / `is_shape_compatible` / `reset_predication_by_python_code`。
-
 ---
 
 ## 1. 我们要解决什么问题
