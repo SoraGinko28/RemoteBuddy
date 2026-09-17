@@ -22,10 +22,14 @@ MeetingData :=
   * $meeting_name str
   * $sorted_stream_chunks list[StreamChunkDict]
   * $agent_name2role dict[str, AgentRole]        # 会内只增不减：join 时加入，冻结后固化
+  * $file_kv_store FileKvStore
+  * $file_desktop FileDesktop
   * Appendix[{
       user_names := 从各 chunk 收集所有出现的 UserName
                      （screen.owner / chat.user_name / score.judge_name /
                       terminal_control.user_name）
+                   ∪ 文件层所有 Versioned.author
+                     （file_kv_store 的三条链 / file_desktop.workspaces）
     }]
   * Assert[{ keys($agent_name2role) ⊆ user_names(本记录) }]
   * Hint[{
@@ -38,6 +42,43 @@ MeetingData :=
       owner_at(t) := 含 t 的控制区间的 TerminalControl.user_name
                      （区间由 TerminalControl.start_time 界定；可能缺省 = 此刻无人控制）
     }]
+
+FileKvStore :=
+    DataClass
+  * $file_id2file_name dict[str, list[Versioned[str]]]
+  * $file_id2file_meta dict[str, list[Versioned[DataStatus]]]
+  * $file_id2file_content dict[str, list[Versioned[str]]]
+
+FileDesktop :=
+    DataClass
+  * $workspaces list[Versioned[FileWorkspace]]
+
+FileWorkspace :=
+    DataClass
+  * $member_files list[FileFold | FileId]
+  * $workspace_name Optional[str]
+  * $workspace_status Optional[DataStatus]
+
+FileFold :=
+    DataClass
+  * $fold_name Optional[str]
+  * $member_file_ids list[FileId]
+
+FileId :=
+    DataClass
+  * $file_id str
+  * Assert[{ $file_id ∈ keys(MeetingData.file_kv_store.file_id2file_content) }]
+
+DataStatus :=
+    Oneof
+  | $deleted ()
+  | $read_only ()
+
+Versioned[T] :=
+    DataClass
+  * $data T
+  * $time datetime
+  * $author UserName
 
 StreamChunkDict :=
     DataClass
@@ -183,8 +224,10 @@ ContentReference :=
   | $chat_ref ChatReference
   | $score_ref ScoreReference
   | $terminal_control_ref TerminalControlReference
+  | $versioned_file_ref VersionedFileReference
+  | $versioned_file_content_ref VersionedFileContentReference
   * Assert[{
-      与 StreamChunk 一一对应：每种流的记录恰有一个 reference 变体
+      与 StreamChunk 一一对应：
         screen_stream_chunk            ↔ screen_ref
         chat_stream_chunk              ↔ chat_ref
         score_stream_chunk             ↔ score_ref
@@ -194,6 +237,26 @@ ContentReference :=
       区间不是一种引用：引用区间的起止记录（及其间的若干条）即可表达一段；
       要在别处反复指这段，引用那条承载这些引用的消息即可——
       引用指向的记录本身也可以是一条带引用的消息
+    }]
+
+VersionedFileReference :=
+    DataClass
+  * $file_id FileId
+  * $version_time datetime
+  * Appendix[{
+      # as-of：取该时刻（含）之前的最近一版
+      resolve($ref) := $file_id 的版本链中满足
+          (Versioned.time ≤ $ref.version_time) 的最后一版
+      # name / meta / content 是三条独立版本链，各自按同一规则取；
+      # content 链此刻为空（该时刻之前还没有任何一版）→ 本条无解
+    }]
+
+VersionedFileContentReference :=
+    DataClass
+  * $versioned_file_ref VersionedFileReference
+  * $region TextRegion
+  * Appendix[{
+      resolve($ref) := resolve($ref.$versioned_file_ref) 的 content 上取 $region 那一段
     }]
 
 ScreenReference :=
