@@ -13,7 +13,7 @@
 - **Rules**：用 Viba ADT 写的规则，叶子是 Metrics、字面量和 `Predicate` 谓词。
 - **Witness**：把 Rule 的叶子换成材料里取到的真实值，也就是"证据"。
 
-流程是这样的：规则实现方给定 Rules；大模型先猜材料违反了哪些规则，再照着规则去材料里取证——把每个叶子 metric 的实际数值填进去，得到一个 Witness；每个断言的谓词代码跑一遍，决定那个叶子的最终写法。
+流程是这样的：**高权限 Agent** 制定 Rules（含每个 `Predicate` 的 `$python_code`），每条规则经**人批准**后才生效；**低权限审核 Agent** 拿生效的 Rules 去猜材料违反了哪些，再照规则取证——把每个叶子 metric 的实际数值填进去，得到一个 Witness；每条断言的谓词代码跑一遍，决定那个叶子的最终写法。
 
 于是核心问题就一句话：**能不能用子类型判定 `Witness0 <: Rule0` 来表达"这条证据满足这条规则"？**
 
@@ -58,15 +58,16 @@ not[A] := never <- A
 
 ```
                 ┌──────────────────────────┐
-                │  llm-as-compiler         │
-  Rule0 ───────►│  编译出 predicator：       │──► 每个 Predicate 的 $python_code
- (含 Predicate  │  predicate(self) 返回     │    (生成一次，反复执行)
-  叶子)         │  断言成立与否              │
-                │  （规则本身保持原样，      │
-                │    谓词叶子留在 Rule 里）  │
+  高权限 Agent ─►│  制定 Rule（含 Predicate） │──► Rule0（谓词叶子留在 Rule 里）
+                │  并生成 predicator：       │──► 每个 Predicate 的 $python_code
+                │  predicate(self) 返回     │    (生成一次，反复执行)
+                │  断言成立与否              │
                 └──────────────────────────┘
+                            │
+                            ▼
+                     人批准 ⇒ 规则生效
 
-  材料 ──► LLM 取证 ──► Witness
+  材料 ──► 低权限审核 Agent 取证 ──► Witness
            (骨架照抄 Rule，metric 叶子填实测值)
 
   取证期执行 predicator：reset_predication_by_python_code(witness)
@@ -81,7 +82,7 @@ not[A] := never <- A
         lint：Rule 侧不得出现 PredicationFailed
 ```
 
-注意分工：**大模型只做两件需要"理解材料"的事——写规则的谓词代码、在材料里取证**。其中取证的"判定"环节（值合不合规）并不是大模型拍脑袋，而是执行谓词代码——是确定性的。到了判定内核，连代码都不执行了，就是纯语法递归。所有不确定性都收在大模型侧，内核可审计、可缓存、可回归测试。
+注意分工：**低权限审核 Agent 只做需要"理解材料"的事——猜可能违反哪条规则、在材料里取证**；制定规则和生成对应的谓词代码是**高权限 Agent** 的权限，而且每条规则都要**人批准之后才生效**。取证的"判定"环节（值合不合规）不是任何 Agent 拍脑袋，而是执行已生效的谓词代码——是确定性的。到了判定内核，连代码都不执行了，就是纯语法递归。所有不确定性都收在 Agent 侧，内核可审计、可缓存、可回归测试。
 
 ---
 
@@ -244,4 +245,4 @@ Rule 就是命题，Witness 就是证据，判定就是 inhabitation——"这�
 > **判定式**：critic 先自查 `is_shape_compatible(witness, rule)`（不过就是自己搞了乌龙，退回重做），过了再判 `is_compliant(witness, rule)`，即 `witness <: rule`，外加一条 lint（Rule 侧不得出现 `PredicationFailed`）。谓词的真假在取证期由 `reset_predication_by_python_code` 决定。
 > 等效于在 ground 结构上做一次布尔求值；类型论里叫 refinement 子类型判定；Curry-Howard 的视角下就是"证据 inhabits 命题"。
 
-这套设计最舒服的地方在时间维度上的分工：大模型负责写谓词代码和取证（要理解材料），生成的代码负责确定性的求证，判定内核只做纯结构递归（要的是可复现）。智能的事全在前面干完，后面全是机械活。
+这套设计最舒服的地方在时间维度上的分工：高权限 Agent 定规则、人点头，低权限审核 Agent 取证（都要理解材料），生成的谓词代码负责确定性的求证，判定内核只做纯结构递归（要的是可复现）。智能的事全在前面干完，后面全是机械活。
