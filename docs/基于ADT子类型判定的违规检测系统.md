@@ -109,7 +109,7 @@ def predicate(self):
 
 ### 4.3 最终版：求值留在内核之外
 
-解法不是让判定器去求值，而是**别让判定器碰求值**。三件事各归各位：
+解法很简单：**判定器不用求值**，要算的东西在取证期就算完了。三件事各归各位：
 
 - **谓词代码在取证期执行**：`reset_predication_by_python_code(witness)` 把每个 `Predicate` 的 `$python_code` 跑一遍，`self` 由带标签字段拼出来（标签去掉 `$` 前缀，metric 的实测值取 `.value`），返回假的那个叶子就地换成 `PredicationFailed[nil, str]`。
 - **判定内核只做结构递归**：`is_compliant(witness, rule) = witness <: rule`，不看环境、不执行代码。抄不抄作业不再重要——合法的抄写只可能发生在谓词代码已经点头之后。
