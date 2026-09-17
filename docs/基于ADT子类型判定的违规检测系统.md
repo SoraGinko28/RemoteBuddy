@@ -33,7 +33,7 @@ Viba 是一个用代数运算写类型的 DSL（PLY 实现，见 `viba/parser.py
 | 积（Product） | `A * B` | 与 |
 | 指数（Exponent） | `B <- A` | 函数类型 A → B |
 | 语义标签 | `$label T` | 命名字段 / 变体，支持点分路径（`$meta.id.hash`） |
-| 单位元 | `void` | 积的单位：`A * void ≡ A` |
+| 单位元 | `nil` | 积的单位：`A * nil ≡ A`（`void`、`None` 是别名） |
 | 底 | `never` | 和的单位：`A \| never ≡ A` |
 | 省略 | `...` | 开放类型，"这部分我不关心" |
 | 元组 | `(A, B, C)` | `A * B * C` 的语法糖 |
@@ -191,7 +191,7 @@ R <: T   ⟺   把 R 叶的值代进 T 的布尔骨架里求值，结果为真
 | A ∨ B | 和 | `A \| B` |
 | A → B | 函数 | `B <- A` |
 | ⊥（假） | 初始对象 | `never` |
-| ⊤（真） | 终对象 | `void` |
+| ⊤（真） | 终对象 | `nil` |
 | ¬A | A → ⊥ | `never <- A` |
 
 Rule 就是命题，Witness 就是证据，判定就是 inhabitation——"这个命题有没有居民"。规则层里的 `not[A] := never <- A` 正是 ¬A := A → ⊥。
@@ -211,7 +211,7 @@ Rule 就是命题，Witness 就是证据，判定就是 inhabitation——"这�
 下面几条应该在判定器上恒成立，直接做成属性测试：
 
 1. **和单位元**：`A | never ≡ A`（两个方向都通）
-2. **积单位元**：`A * void ≡ A`
+2. **积单位元**：`A * nil ≡ A`
 3. **和的结合/交换**（判定层面，链式展平之后看）
 4. **积的结合/交换**（同上，经 `chain.py` 展平/重组）
 5. **De Morgan（直觉主义方向）**：`never <- (A | B)` 蕴含 `(never <- A) * (never <- B)`
