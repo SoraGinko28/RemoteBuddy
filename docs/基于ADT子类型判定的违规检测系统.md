@@ -115,8 +115,6 @@ def predicate(self):
 - **判定内核只做结构递归**：`is_compliant(witness, rule) = witness <: rule`，不看环境、不执行代码。抄不抄作业不再重要——合法的抄写只可能发生在谓词代码已经点头之后。
 - **形状检查另走一条**：`is_shape_compatible(witness, rule)` 把两边的 `Predicate[...]` 与 `PredicationFailed[...]`（包括藏在类型名后面的，先展开）都擦成同一个毒剂叶子，再比 `witness <: rule`。它只回答"形状准备好了没有"：字段不能缺、tag 不能错、度量的数据类型也要对，但断言成没成不影响。这是**呈证人提交前的自查**——不过就是 critic 自己填错了，退回重做，不当作材料违规。
 
-（9/14 的版本曾把 `Assert` 在编译期折成一个名义类型名，比如 `IntLessThan100 := $x int`，让约束消失进名字里。现在不这么走：谓词叶子留在 Rule 里，判定始终是 `witness <: rule`，缩掉的那一步只保留在"形状检查"里。）
-
 ### 4.4 毒叶：为什么不能用 `never`，要用 `PredicationFailed`
 
 取证时怎么标记"这个叶子违规了"？最先想到借 `never`：
