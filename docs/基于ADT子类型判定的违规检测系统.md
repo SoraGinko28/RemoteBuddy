@@ -17,7 +17,9 @@
 
 于是核心问题就一句话：**能不能用子类型判定 `Witness0 <: Rule0` 来表达"这条证据满足这条规则"？**
 
-答案：能。判定就是 `is_compliant(witness, rule)`，它是对 `is_sub_type` 的薄包装，不剥任何东西、不求任何值。另有 `is_shape_compatible(witness, rule)` 负责"形状准备好没有"——它把两边的谓词叶子都擦成同一个毒剂再比 `<:`。
+答案：能。判定就是 `is_compliant(witness, rule)`，它是对 `is_sub_type` 的薄包装，不剥任何东西、不求任何值。
+
+在判定之前还有一道**呈证人自查**：critic 交出材料前先跑 `is_shape_compatible(witness, rule)`——把两边的谓词叶子都擦成同一个毒剂再比 `<:`，只看形状。它不过，说明字段缺了、tag 错了、或者 metric 的数据类型不对，那是 critic 自己搞的乌龙，不是材料违规；只有形状过了，这份材料才有资格进判定。
 
 ---
 
@@ -71,9 +73,11 @@ not[A] := never <- A
         └─ 断言成立 → 叶子照写 Predicate[...]
            断言不成立 → 叶子换成 PredicationFailed[nil, str]
 
-  判定内核（纯结构，无环境，无求值）：
-        is_compliant(witness, rule)      = witness <: rule
+  提交前自查（critic 自己跑；不过就是自己搞了乌龙，不是材料违规）：
         is_shape_compatible(witness, rule) = 擦掉谓词叶子之后比 <:
+
+  判定内核（纯结构，无环境，无求值）：
+        is_compliant(witness, rule) = witness <: rule
         lint：Rule 侧不得出现 PredicationFailed
 ```
 
@@ -108,7 +112,7 @@ def predicate(self):
 
 - **谓词代码在取证期执行**：`reset_predication_by_python_code(witness)` 把每个 `Predicate` 的 `$python_code` 跑一遍，`self` 由带标签字段拼出来（标签去掉 `$` 前缀，metric 的实测值取 `.value`），返回假的那个叶子就地换成 `PredicationFailed[nil, str]`。
 - **判定内核只做结构递归**：`is_compliant(witness, rule) = witness <: rule`，不看环境、不执行代码。抄不抄作业不再重要——合法的抄写只可能发生在谓词代码已经点头之后。
-- **形状检查另走一条**：`is_shape_compatible(witness, rule)` 把两边的 `Predicate[...]` 与 `PredicationFailed[...]`（包括藏在类型名后面的，先展开）都擦成同一个毒剂叶子，再比 `witness <: rule`。它只回答"形状准备好了没有"：字段不能缺、tag 不能错、度量的数据类型也要对，但断言成没成不影响。
+- **形状检查另走一条**：`is_shape_compatible(witness, rule)` 把两边的 `Predicate[...]` 与 `PredicationFailed[...]`（包括藏在类型名后面的，先展开）都擦成同一个毒剂叶子，再比 `witness <: rule`。它只回答"形状准备好了没有"：字段不能缺、tag 不能错、度量的数据类型也要对，但断言成没成不影响。这是**呈证人提交前的自查**——不过就是 critic 自己填错了，退回重做，不当作材料违规。
 
 （9/14 的版本曾把 `Assert` 在编译期折成一个名义类型名，比如 `IntLessThan100 := $x int`，让约束消失进名字里。现在不这么走：谓词叶子留在 Rule 里，判定始终是 `witness <: rule`，缩掉的那一步只保留在"形状检查"里。）
 
@@ -154,9 +158,11 @@ R <- R' <: T <- T'  ⟺  R <: T ∧ T' <: R'          （返回协变，参数�
 R <: ...            ⟺  恒真（规则不关心的区域随便填）
 ```
 
-**前置 lint**
+**前置自查与 lint**
 
 ```
+形状自查（critic 提交前）：is_shape_compatible(witness, rule) 不过
+        ⇒ 不进入判定：这是呈证人填错了，不是材料违规
 Rule 侧含 PredicationFailed  ⇒  拒绝
 Predicate 只允许以 `$tag Predicate[{...}, $python_code {...}]` 的形态出现在积位置
 $python_code 代码块内花括号必须成对（CodeBlock 词法约束）
@@ -235,7 +241,7 @@ Rule 就是命题，Witness 就是证据，判定就是 inhabitation——"这�
 
 ## 9. 一句话总结
 
-> **判定式**：`is_compliant(witness, rule)`，即 `witness <: rule`，外加一条 lint（Rule 侧不得出现 `PredicationFailed`）。形状另由 `is_shape_compatible` 单独查，谓词的真假在取证期由 `reset_predication_by_python_code` 决定。
+> **判定式**：critic 先自查 `is_shape_compatible(witness, rule)`（不过就是自己搞了乌龙，退回重做），过了再判 `is_compliant(witness, rule)`，即 `witness <: rule`，外加一条 lint（Rule 侧不得出现 `PredicationFailed`）。谓词的真假在取证期由 `reset_predication_by_python_code` 决定。
 > 等效于在 ground 结构上做一次布尔求值；类型论里叫 refinement 子类型判定；Curry-Howard 的视角下就是"证据 inhabits 命题"。
 
 这套设计最舒服的地方在时间维度上的分工：大模型负责写谓词代码和取证（要理解材料），生成的代码负责确定性的求证，判定内核只做纯结构递归（要的是可复现）。智能的事全在前面干完，后面全是机械活。
