@@ -75,8 +75,9 @@ class TestDesign:
 
     def test_pool_carries_the_stable_definitions(self) -> None:
         names = [d.def_name for d in reflect._design_pool().files[0].definitions]
-        assert len(names) == 26
+        assert len(names) == 28
         assert "FileId" in names and "ContentReference" in names and "Result" in names
+        assert "ScreenContent" in names and "FileState" in names
 
     def test_definition_by_short_and_full_name(self) -> None:
         assert _definition("FileId").full_name == "meeting_core.FileId"

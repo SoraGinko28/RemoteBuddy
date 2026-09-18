@@ -3,7 +3,7 @@
 设计（签名）在 MEETING_ADT.md 的「取数据接口」那一章（模块名 meeting_sdk）：每个函数带泛型
 参数 ``Ctx``、吃一个 ``$ctx``，返回 Result，签名里只有稳定类型。这一层是它的实现。
 
-**对外的接口就是 meeting_sdk.viba 里那 20 个**：名字落 snake_case，参数、返回都照设计，不多导出
+**对外的接口就是 meeting_sdk.viba 里那 24 个**：名字落 snake_case，参数、返回都照设计，不多导出
 任何东西——签名里那些类型（``mc.ChatReference``、``mc.AgentRole``…）属于 meeting_core，不从这里拿。
 
 这一版的绑定（协议说 Ctx / Data 由实现方绑）：
@@ -12,9 +12,9 @@
 * ``Result[T]`` = viba 的 ``Ok`` / ``Err``（meeting_core_reflect 能把它们读成 Result 的两支）。
 * 有名字的稳定类型用 meeting_adt 里同名的 dataclass：``FileId`` / ``VersionedFile`` /
   ``FileKvStore`` / ``ChatMessage`` / ``ScoreMessage`` / 各种 Reference。
-* 设计里的匿名积（屏幕那一份状态、文件那一份状态）用 ``dict``，键就是设计里的 tag 名：
-  ``{"text", "segments", "cursor_x", "cursor_y", "width", "height", "captured_at"}``、
-  ``{"name", "meta", "content"}``。
+* 屏幕那一份状态（``mc.ScreenContent``）与文件那一份状态（``mc.FileState``）用 ``dict``，
+  键就是设计里的 tag 名：``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
+  "captured_at"}``、``{"name", "meta", "content"}``。
 
 只有读：没有写入、修改、删除。取数函数一律返回 Result——查不到是 ``Err``，不是异常。
 """
@@ -34,6 +34,10 @@ if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VEND
     sys.path.insert(0, str(_VENDORED_VIBA))
 
 from viba.type import Err as _Err, Ok as _Ok, Result as _Result  # noqa: E402
+
+_REFERENCE_TYPES = (adt.ScreenReference, adt.ChatReference, adt.ScoreReference,
+                    adt.TerminalControlReference, adt.VersionedFileReference,
+                    adt.VersionedFileContentReference)
 
 Ctx = adt.MeetingData  # 这一版的绑定：Ctx 就是一份会议记录（协议说 Ctx 由实现方绑）
 
@@ -103,6 +107,40 @@ def resolve_score_reference(ctx: Ctx, ref: "adt.ScoreReference") -> _Result:
         if message.time == ref.judge_time and message.judge_name == ref.judge_name:
             return _Ok(message)
     return _Err(f"评分流里没有 {ref.judge_name!r} 在 {ref.judge_time} 的那条")
+
+
+def chat_message_references(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
+    """这条消息带的引用，按出现顺序。"""
+    given = chat_message_at(ctx, time, user)
+    if isinstance(given, _Err):
+        return given
+    return _Ok([part for part in given.value.message if isinstance(part, _REFERENCE_TYPES)])
+
+
+def score_message_reference(ctx: Ctx, time: _dt.datetime, judge: str) -> _Result:
+    """这条评分带的引用。"""
+    given = resolve_score_reference(ctx, adt.ScoreReference(judge_time=time, judge_name=judge))
+    if isinstance(given, _Err):
+        return given
+    if given.value.reference is None:
+        return _Err(f"{judge!r} 在 {time} 那条评分没有引用")
+    return _Ok(given.value.reference)
+
+
+def first_chunk_time(ctx: Ctx) -> _Result:
+    """会议里第一条 chunk 的时刻。"""
+    moments = [m for m in (_chunk_time(c) for c in ctx.sorted_stream_chunks) if m is not None]
+    if not moments:
+        return _Err("这场会议没有任何 chunk")
+    return _Ok(min(moments))
+
+
+def last_chunk_time(ctx: Ctx) -> _Result:
+    """最后一条。"""
+    moments = [m for m in (_chunk_time(c) for c in ctx.sorted_stream_chunks) if m is not None]
+    if not moments:
+        return _Err("这场会议没有任何 chunk")
+    return _Ok(max(moments))
 
 
 # ----------------------------------------------------------------------
@@ -325,6 +363,10 @@ __all__ = [
     "resolve_chat_reference",
     "resolve_chat_content_reference",
     "resolve_score_reference",
+    "chat_message_references",
+    "score_message_reference",
+    "first_chunk_time",
+    "last_chunk_time",
     "screen_at",
     "resolve_screen_reference",
     "participants",

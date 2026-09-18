@@ -264,6 +264,24 @@ TerminalTextSegment :=
   * $bg Optional[Color]                 # nil = 终端默认背景
   * $styles set[Style]                  # 空 = 无附加样式；语义是集合，顺序无关
 
+# 取数接口交出来的那一份状态：屏幕一份、文件一份。
+
+ScreenContent :=
+    Object
+  * $text str
+  * $segments list[TerminalTextSegment]
+  * $cursor_x int
+  * $cursor_y int
+  * $width int
+  * $height int
+  * $captured_at datetime
+
+FileState :=
+    Object
+  * $name str
+  * $meta DataStatus
+  * $content str
+
 # ---------------------------------------------------------------- #
 # 3. 引用、聊天与评分记录
 # ---------------------------------------------------------------- #
@@ -306,12 +324,6 @@ ScoreMessage :=
 
 ContentReference :=
     Oneof
-  | $screen_ref ScreenReference
-  | $chat_ref ChatReference
-  | $score_ref ScoreReference
-  | $terminal_control_ref TerminalControlReference
-  | $versioned_file_ref VersionedFileReference
-  | $versioned_file_content_ref VersionedFileContentReference
   * Assert[{
       与 StreamChunk 一一对应：
         screen_stream_chunk            ↔ screen_ref
@@ -324,6 +336,12 @@ ContentReference :=
       要在别处反复指这段，引用那条承载这些引用的消息即可——
       引用指向的记录本身也可以是一条带引用的消息
     }]
+  | $screen_ref ScreenReference
+  | $chat_ref ChatReference
+  | $score_ref ScoreReference
+  | $terminal_control_ref TerminalControlReference
+  | $versioned_file_ref VersionedFileReference
+  | $versioned_file_content_ref VersionedFileContentReference
 
 VersionedFileReference :=
     Object
@@ -474,24 +492,38 @@ resolve_score_reference[Ctx] :=
   <- $ctx Ctx
   <- $ref mc.ScoreReference
 
+chat_message_references[Ctx] :=
+    mc.Result[list[mc.ContentReference]]       # 这条消息带的引用，按出现顺序
+  <- $ctx Ctx
+  <- $time mc.datetime
+  <- $user mc.UserName
+
+score_message_reference[Ctx] :=
+    mc.Result[mc.ContentReference]             # 这条评分带的引用
+  <- $ctx Ctx
+  <- $time mc.datetime
+  <- $judge mc.UserName
+
+first_chunk_time[Ctx] :=
+    mc.Result[mc.datetime]                     # 会议里第一条 chunk 的时刻
+  <- $ctx Ctx
+
+last_chunk_time[Ctx] :=
+    mc.Result[mc.datetime]                     # 最后一条
+  <- $ctx Ctx
+
 # ---------------------------------------------------------------- #
 # 屏幕：按时间找、按引用找，都给那一屏的内容，不给抓屏记录本身
 # ---------------------------------------------------------------- #
 # 断言与说明留在记录层，这里只把那一屏的值交出来。
 
 screen_at[Ctx] :=
-    mc.Result[
-      $text str * $segments list[mc.TerminalTextSegment] * $cursor_x int
-        * $cursor_y int * $width int * $height int * $captured_at mc.datetime
-    ]
+    mc.Result[mc.ScreenContent]                # 这一时刻那一屏的内容
   <- $ctx Ctx
   <- $time mc.datetime
 
 resolve_screen_reference[Ctx] :=
-    mc.Result[
-      $text str * $segments list[mc.TerminalTextSegment] * $cursor_x int
-        * $cursor_y int * $width int * $height int * $captured_at mc.datetime
-    ]
+    mc.Result[mc.ScreenContent]
   <- $ctx Ctx
   <- $ref mc.ScreenReference
 
@@ -537,17 +569,17 @@ file_kv_store[Ctx] :=
   <- $ctx Ctx
 
 files_at[Ctx] :=
-    mc.Result[dict[str, $name str * $meta mc.DataStatus * $content str]]
+    mc.Result[dict[str, mc.FileState]]
   <- $ctx Ctx
   <- $time mc.datetime
 
 latest_file[Ctx] :=
-    mc.Result[$name str * $meta mc.DataStatus * $content str]   # 最新的那一份状态
+    mc.Result[mc.FileState]                    # 最新的那一份状态
   <- $ctx Ctx
   <- $file mc.FileId
 
 resolve_versioned_file_reference[Ctx] :=
-    mc.Result[$name str * $meta mc.DataStatus * $content str]   # 引用那一刻的文件状态
+    mc.Result[mc.FileState]                    # 引用那一刻的文件状态
   <- $ctx Ctx
   <- $ref mc.VersionedFileReference
 

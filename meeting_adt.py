@@ -359,9 +359,6 @@ class AtUserMessage:
     user_name: str
 
 
-ChatMessagePart = RawMessage | AtUserMessage
-
-
 @dataclass
 class ChatMessage:
     user_name: str
@@ -380,6 +377,8 @@ def chat_part_to_dict(part: ChatMessagePart) -> dict:
         return {"raw": part.text}
     if isinstance(part, AtUserMessage):
         return {"at_user_name": part.user_name}
+    if isinstance(part, _REFERENCE_TYPES):
+        return {"ref": content_reference_to_dict(part)}
     raise TypeError(f"unknown chat part: {type(part).__name__}")
 
 
@@ -388,6 +387,8 @@ def chat_part_from_dict(payload: dict) -> ChatMessagePart:
         return RawMessage(text=payload["raw"])
     if "at_user_name" in payload:
         return AtUserMessage(user_name=payload["at_user_name"])
+    if "ref" in payload:
+        return content_reference_from_dict(payload["ref"])
     raise ValueError(f"unknown chat part json: {payload!r}")
 
 
@@ -498,7 +499,15 @@ class VersionedFileContentReference:
     region: Optional[TextRegion] = None
 
 
-ContentReference = ScreenReference | ChatReference | ScoreReference
+ContentReference = (ScreenReference | ChatReference | ScoreReference
+                    | TerminalControlReference | VersionedFileReference
+                    | VersionedFileContentReference)
+
+# $message 的一支可以是一段引用（G8 的六种）
+_REFERENCE_TYPES = (ScreenReference, ChatReference, ScoreReference,
+                    TerminalControlReference, VersionedFileReference,
+                    VersionedFileContentReference)
+ChatMessagePart = RawMessage | AtUserMessage | ContentReference
 
 
 def text_region_to_dict(region: TextRegion) -> dict:
@@ -527,6 +536,22 @@ def content_reference_to_dict(reference: ContentReference) -> dict:
             "judge_time": _iso_format(reference.judge_time),
             "judge_name": reference.judge_name,
         }}
+    if isinstance(reference, TerminalControlReference):
+        return {"terminal_control_ref": {
+            "start_time": _iso_format(reference.start_time) if reference.start_time else None,
+            "user_name": reference.user_name,
+            "region": text_region_to_dict(reference.region) if reference.region else None,
+        }}
+    if isinstance(reference, VersionedFileReference):
+        return {"versioned_file_ref": {
+            "file_id": file_id_to_dict(reference.file_id),
+            "version_time": _iso_format(reference.version_time) if reference.version_time else None,
+        }}
+    if isinstance(reference, VersionedFileContentReference):
+        return {"versioned_file_content_ref": {
+            "versioned_file_ref": content_reference_to_dict(reference.versioned_file_ref),
+            "region": text_region_to_dict(reference.region) if reference.region else None,
+        }}
     raise TypeError(f"unknown content reference: {type(reference).__name__}")
 
 
@@ -550,6 +575,29 @@ def content_reference_from_dict(payload: dict) -> ContentReference:
         return ScoreReference(
             judge_time=_iso_parse(inner["judge_time"]),
             judge_name=inner["judge_name"],
+        )
+    if "terminal_control_ref" in payload:
+        inner = payload["terminal_control_ref"]
+        start = inner.get("start_time")
+        region = inner.get("region")
+        return TerminalControlReference(
+            start_time=_iso_parse(start) if isinstance(start, str) else None,
+            user_name=inner.get("user_name"),
+            region=text_region_from_dict(region) if region else None,
+        )
+    if "versioned_file_ref" in payload:
+        inner = payload["versioned_file_ref"]
+        moment = inner.get("version_time")
+        return VersionedFileReference(
+            file_id=file_id_from_dict(inner["file_id"]),
+            version_time=_iso_parse(moment) if isinstance(moment, str) else None,
+        )
+    if "versioned_file_content_ref" in payload:
+        inner = payload["versioned_file_content_ref"]
+        region = inner.get("region")
+        return VersionedFileContentReference(
+            versioned_file_ref=content_reference_from_dict(inner["versioned_file_ref"]),
+            region=text_region_from_dict(region) if region else None,
         )
     raise ValueError(f"unknown content reference json: {payload!r}")
 
