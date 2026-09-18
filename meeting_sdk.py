@@ -1,7 +1,7 @@
 """meeting_sdk — meeting_sdk.viba 的 Python 实现：从一场会议里取数的只读接口。
 
 设计（签名）在 MEETING_ADT.md 的「取数据接口」那一章（模块名 meeting_sdk）：每个函数带泛型
-参数 ``Ctx``、吃一个 ``$ctx``，返回 ``Result``，签名里只有稳定类型。这一层是它的实现。
+参数 ``Ctx``、吃一个 ``$ctx``，返回 Result，签名里只有稳定类型。这一层是它的实现。
 
 这一版的绑定（协议没规定 Ctx / Data 长什么样，实现方自己绑）：
 
@@ -13,7 +13,7 @@
   ``{"text", "segments", "cursor_x", "cursor_y", "width", "height", "captured_at"}``、
   ``{"name", "meta", "content"}``。
 
-只有读：没有写入、修改、删除。取数函数一律返回 ``Result``——查不到是 ``Err``，不是异常。
+只有读：没有写入、修改、删除。取数函数一律返回 Result——查不到是 ``Err``，不是异常。
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ _VENDORED_VIBA = Path(__file__).resolve().parent / "viba"
 if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VENDORED_VIBA) not in sys.path:
     sys.path.insert(0, str(_VENDORED_VIBA))
 
-from viba.type import Err, Ok, Result  # noqa: E402
+from viba.type import Err as _Err, Ok as _Ok, Result as _Result  # noqa: E402
 
 Ctx = adt.MeetingData
 
@@ -57,17 +57,17 @@ VersionedFileContentReference = adt.VersionedFileContentReference
 # ----------------------------------------------------------------------
 
 
-def chunk_times(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> Result:
+def chunk_times(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
     """这段时间里每条 chunk 的时刻。"""
     moments = []
     for chunk in ctx.sorted_stream_chunks:
         moment = _chunk_time(chunk)
         if moment is not None and _within(moment, start, end):
             moments.append(moment)
-    return Ok(sorted(moments))
+    return _Ok(sorted(moments))
 
 
-def streams_between(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> Result:
+def streams_between(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
     """这段时间里出现过的流名。"""
     names = []
     for chunk in ctx.sorted_stream_chunks:
@@ -76,7 +76,7 @@ def streams_between(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> Result:
             continue
         if getattr(chunk, "stream_name", "") and chunk.stream_name not in names:
             names.append(chunk.stream_name)
-    return Ok(names)
+    return _Ok(names)
 
 
 # ----------------------------------------------------------------------
@@ -84,39 +84,39 @@ def streams_between(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> Result:
 # ----------------------------------------------------------------------
 
 
-def chat_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> Result:
-    return Ok([m for m in _records(ctx, adt.ChatStreamChunk) if _within(m.time, start, end)])
+def chat_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
+    return _Ok([m for m in _records(ctx, adt.ChatStreamChunk) if _within(m.time, start, end)])
 
 
-def score_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> Result:
-    return Ok([m for m in _records(ctx, adt.ScoreStreamChunk) if _within(m.time, start, end)])
+def score_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
+    return _Ok([m for m in _records(ctx, adt.ScoreStreamChunk) if _within(m.time, start, end)])
 
 
-def chat_message_at(ctx: Ctx, time: _dt.datetime, user: str) -> Result:
+def chat_message_at(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
     """一个人在一个时刻只有一条。"""
     for message in _records(ctx, adt.ChatStreamChunk):
         if message.time == time and message.user_name == user:
-            return Ok(message)
-    return Err(f"聊天流里没有 {user!r} 在 {time} 的那条")
+            return _Ok(message)
+    return _Err(f"聊天流里没有 {user!r} 在 {time} 的那条")
 
 
-def resolve_chat_reference(ctx: Ctx, ref: "adt.ChatReference") -> Result:
+def resolve_chat_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Result:
     return chat_message_at(ctx, ref.msg_time, ref.user_name)
 
 
-def resolve_chat_content_reference(ctx: Ctx, ref: "adt.ChatReference") -> Result:
+def resolve_chat_content_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Result:
     """引用那一段的原文。"""
     given = resolve_chat_reference(ctx, ref)
-    if isinstance(given, Err):
+    if isinstance(given, _Err):
         return given
-    return Ok(_region_of(_chat_message_text(given.value), ref.region))
+    return _Ok(_region_of(_chat_message_text(given.value), ref.region))
 
 
-def resolve_score_reference(ctx: Ctx, ref: "adt.ScoreReference") -> Result:
+def resolve_score_reference(ctx: Ctx, ref: "adt.ScoreReference") -> _Result:
     for message in _records(ctx, adt.ScoreStreamChunk):
         if message.time == ref.judge_time and message.judge_name == ref.judge_name:
-            return Ok(message)
-    return Err(f"评分流里没有 {ref.judge_name!r} 在 {ref.judge_time} 的那条")
+            return _Ok(message)
+    return _Err(f"评分流里没有 {ref.judge_name!r} 在 {ref.judge_time} 的那条")
 
 
 # ----------------------------------------------------------------------
@@ -124,19 +124,19 @@ def resolve_score_reference(ctx: Ctx, ref: "adt.ScoreReference") -> Result:
 # ----------------------------------------------------------------------
 
 
-def screen_at(ctx: Ctx, time: _dt.datetime) -> Result:
+def screen_at(ctx: Ctx, time: _dt.datetime) -> _Result:
     """这一时刻那一屏（内容，不是抓屏记录本身）。"""
     for capture in _records(ctx, adt.ScreenStreamChunk):
         if capture.captured_at == time:
-            return Ok(_screen_state(capture))
-    return Err(f"屏幕流里没有 {time} 那一屏")
+            return _Ok(_screen_state(capture))
+    return _Err(f"屏幕流里没有 {time} 那一屏")
 
 
-def resolve_screen_reference(ctx: Ctx, ref: "adt.ScreenReference") -> Result:
+def resolve_screen_reference(ctx: Ctx, ref: "adt.ScreenReference") -> _Result:
     for capture in _records(ctx, adt.ScreenStreamChunk):
         if capture.captured_at == ref.capture_time:
-            return Ok(_screen_state(capture))
-    return Err(f"屏幕流里没有 {ref.capture_time} 那一屏")
+            return _Ok(_screen_state(capture))
+    return _Err(f"屏幕流里没有 {ref.capture_time} 那一屏")
 
 
 # ----------------------------------------------------------------------
@@ -144,25 +144,25 @@ def resolve_screen_reference(ctx: Ctx, ref: "adt.ScreenReference") -> Result:
 # ----------------------------------------------------------------------
 
 
-def participants(ctx: Ctx) -> Result:
-    return Ok(sorted(adt.user_names_of_meeting_data(ctx)))
+def participants(ctx: Ctx) -> _Result:
+    return _Ok(sorted(adt.user_names_of_meeting_data(ctx)))
 
 
-def roles(ctx: Ctx) -> Result:
-    return Ok(dict(ctx.agent_name2role))
+def roles(ctx: Ctx) -> _Result:
+    return _Ok(dict(ctx.agent_name2role))
 
 
-def owner_at(ctx: Ctx, time: _dt.datetime) -> Result:
+def owner_at(ctx: Ctx, time: _dt.datetime) -> _Result:
     """哪一刻谁拿着终端；nil = 此刻无人控制。"""
-    return Ok(adt.owner_at(time, _records(ctx, adt.TerminalControlStreamChunk)))
+    return _Ok(adt.owner_at(time, _records(ctx, adt.TerminalControlStreamChunk)))
 
 
-def control_owner_of(ctx: Ctx, ref: "adt.TerminalControlReference") -> Result:
+def control_owner_of(ctx: Ctx, ref: "adt.TerminalControlReference") -> _Result:
     """那一次接管 / 交还的接管人；nil = 交还之后没人接手。"""
     for control in _records(ctx, adt.TerminalControlStreamChunk):
         if control.start_time == ref.start_time and (control.user_name or None) == ref.user_name:
-            return Ok(control.user_name or None)
-    return Err(f"控制流里没有 {ref.start_time} 那一条")
+            return _Ok(control.user_name or None)
+    return _Err(f"控制流里没有 {ref.start_time} 那一条")
 
 
 # ----------------------------------------------------------------------
@@ -170,7 +170,7 @@ def control_owner_of(ctx: Ctx, ref: "adt.TerminalControlReference") -> Result:
 # ----------------------------------------------------------------------
 
 
-def file_id_by_path(ctx: Ctx, path: str) -> Result:
+def file_id_by_path(ctx: Ctx, path: str) -> _Result:
     """/workspace_name/entry_name 或 /workspace_name/fold_name/entry_name。
 
     每层名字唯一（见记录层 FileDesktop 的 Assert），所以路径定得到一条。
@@ -183,8 +183,8 @@ def file_id_by_path(ctx: Ctx, path: str) -> Result:
                 continue
             for member in workspace.member_files:
                 if isinstance(member, adt.FileId) and member.entry_name == entry_name:
-                    return Ok(member)
-        return Err(f"没有 {path!r} 这个文件")
+                    return _Ok(member)
+        return _Err(f"没有 {path!r} 这个文件")
     if len(parts) == 3:
         workspace_name, fold_name, entry_name = parts
         for workspace in ctx.file_desktop.workspaces:
@@ -195,51 +195,51 @@ def file_id_by_path(ctx: Ctx, path: str) -> Result:
                     continue
                 for file_id in member.member_file_ids:
                     if file_id.entry_name == entry_name:
-                        return Ok(file_id)
-        return Err(f"没有 {path!r} 这个文件")
-    return Err(f"路径要么 /workspace/entry，要么 /workspace/fold/entry：{path!r}")
+                        return _Ok(file_id)
+        return _Err(f"没有 {path!r} 这个文件")
+    return _Err(f"路径要么 /workspace/entry，要么 /workspace/fold/entry：{path!r}")
 
 
-def file_kv_store(ctx: Ctx) -> Result:
-    return Ok(ctx.file_kv_store)
+def file_kv_store(ctx: Ctx) -> _Result:
+    return _Ok(ctx.file_kv_store)
 
 
-def files_at(ctx: Ctx, time: _dt.datetime) -> Result:
+def files_at(ctx: Ctx, time: _dt.datetime) -> _Result:
     """某一时刻每个文件是什么（那一刻还没有的版本，这个文件就不在里面）。"""
     out: Dict[str, dict] = {}
     for file_id, versioned_file in ctx.file_kv_store.file_id2file.items():
         state = _file_state_at(versioned_file, time)
         if state is not None:
             out[file_id] = state
-    return Ok(out)
+    return _Ok(out)
 
 
-def latest_file(ctx: Ctx, file: "adt.FileId") -> Result:
+def latest_file(ctx: Ctx, file: "adt.FileId") -> _Result:
     """最新的那一份状态。"""
     versioned_file = ctx.file_kv_store.file_id2file.get(file.file_id)
     if versioned_file is None:
-        return Err(f"文件库里没有 {file.file_id!r}")
-    return Ok(_file_state(versioned_file))
+        return _Err(f"文件库里没有 {file.file_id!r}")
+    return _Ok(_file_state(versioned_file))
 
 
-def resolve_versioned_file_reference(ctx: Ctx, ref: "adt.VersionedFileReference") -> Result:
+def resolve_versioned_file_reference(ctx: Ctx, ref: "adt.VersionedFileReference") -> _Result:
     """引用那一刻的文件状态。"""
     versioned_file = ctx.file_kv_store.file_id2file.get(ref.file_id.file_id)
     if versioned_file is None:
-        return Err(f"文件库里没有 {ref.file_id.file_id!r}")
+        return _Err(f"文件库里没有 {ref.file_id.file_id!r}")
     state = _file_state_at(versioned_file, ref.version_time)
     if state is None:
-        return Err(f"{ref.file_id.file_id!r} 在 {ref.version_time} 还没有这一版")
-    return Ok(state)
+        return _Err(f"{ref.file_id.file_id!r} 在 {ref.version_time} 还没有这一版")
+    return _Ok(state)
 
 
 def resolve_versioned_file_content_reference(
-        ctx: Ctx, ref: "adt.VersionedFileContentReference") -> Result:
+        ctx: Ctx, ref: "adt.VersionedFileContentReference") -> _Result:
     """引用那一段的原文。"""
     given = resolve_versioned_file_reference(ctx, ref.versioned_file_ref)
-    if isinstance(given, Err):
+    if isinstance(given, _Err):
         return given
-    return Ok(_region_of(given.value["content"] or "", ref.region))
+    return _Ok(_region_of(given.value["content"] or "", ref.region))
 
 
 # ----------------------------------------------------------------------
@@ -336,12 +336,9 @@ __all__ = [
     "ChatReference",
     "Ctx",
     "DataStatus",
-    "Err",
     "FileId",
     "FileKvStore",
     "MeetingData",
-    "Ok",
-    "Result",
     "ScoreMessage",
     "ScoreReference",
     "ScreenReference",
