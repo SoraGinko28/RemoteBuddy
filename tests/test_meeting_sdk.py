@@ -31,6 +31,8 @@ import pytest
 import meeting_core_reflect
 import meeting_sdk
 import meeting_adt  # 只有 prepare_meeting_data_as_ctx 用它
+from viba.type import Ok  # noqa: E402  （协议里的 Ok / Err）
+from viba.viba_type_descriptor import pool_find_definition  # noqa: E402
 
 # 设计里的 datetime 是"微秒"（$microsecond int），所以这几个时刻的微秒各不相同，
 # 用例才读得出谁是谁。
@@ -96,10 +98,17 @@ def prepare_meeting_data_as_ctx():
 # ----------------------------------------------------------------------
 
 
+def _definition(name: str):
+    """描述侧的协议查询 PoolFindDefinition：按全名取定义描述符。"""
+    given = pool_find_definition(meeting_core_reflect._design_pool(), f"meeting_core.{name}")
+    assert isinstance(given, Ok), given
+    return given.value
+
+
 def _node(value, name, reflect):
     """按协议起一个节点：access(definition).root(Record(value))。"""
-    given = reflect.access(reflect.definition(name)).root(reflect.Record(value))
-    assert isinstance(given, reflect.Ok), "取不到起点"
+    given = reflect.access(_definition(name)).root(reflect.Record(value))
+    assert isinstance(given, Ok), "取不到起点"
     return given.value
 
 

@@ -10,13 +10,29 @@ import pytest
 
 import meeting_adt as adt
 import meeting_core_reflect as reflect
+from viba.type import Err, Ok  # noqa: E402  （协议里的 Ok / Err）
+
+
+from viba.viba_type_descriptor import pool_find_definition  # noqa: E402  （描述侧的协议查询）
+
+
+def _definition_result(name: str):
+    """描述侧的协议查询 PoolFindDefinition：按全名取定义描述符。"""
+    full_name = name if "." in name else f"meeting_core.{name}"
+    return pool_find_definition(reflect._design_pool(), full_name)
+
+
+def _definition(name: str):
+    given = _definition_result(name)
+    assert isinstance(given, Ok), given
+    return given.value
 
 
 def _open(record, name: str):
     """按协议起一个节点：access(definition).root(Record(record))。"""
-    accessor = reflect.access(reflect.definition(name))
+    accessor = reflect.access(_definition(name))
     given = accessor.root(reflect.Record(record))
-    assert isinstance(given, reflect.Ok), given
+    assert isinstance(given, Ok), given
     return given.value
 
 
@@ -46,7 +62,7 @@ def _store() -> adt.FileKvStore:
 
 class TestDesign:
     def test_source_is_the_stable_chapter(self) -> None:
-        source = reflect.design_source()
+        source = reflect._design_source()
         assert "FileId :=" in source and "VersionedFile :=" in source
         # 记录层那一章不在这份设计里
         assert "MeetingData :=" not in source
@@ -54,21 +70,20 @@ class TestDesign:
 
     def test_hash_is_sha256_of_the_source(self) -> None:
         import hashlib
-        assert reflect.design_hash() == hashlib.sha256(reflect.design_source().encode("utf-8")).hexdigest()
-        assert len(reflect.design_hash()) == 64
+        assert reflect._design_hash() == hashlib.sha256(reflect._design_source().encode("utf-8")).hexdigest()
+        assert len(reflect._design_hash()) == 64
 
     def test_pool_carries_the_stable_definitions(self) -> None:
-        names = [d.def_name for d in reflect.pool().files[0].definitions]
+        names = [d.def_name for d in reflect._design_pool().files[0].definitions]
         assert len(names) == 26
         assert "FileId" in names and "ContentReference" in names and "Result" in names
 
     def test_definition_by_short_and_full_name(self) -> None:
-        assert reflect.definition("FileId").full_name == "meeting_core.FileId"
-        assert reflect.definition("meeting_core.FileId").full_name == "meeting_core.FileId"
+        assert _definition("FileId").full_name == "meeting_core.FileId"
+        assert _definition("meeting_core.FileId").full_name == "meeting_core.FileId"
 
-    def test_unknown_definition_raises(self) -> None:
-        with pytest.raises(reflect.ReflectError):
-            reflect.definition("FileDesktop")
+    def test_unknown_definition_is_an_err(self) -> None:
+        assert isinstance(_definition_result("FileDesktop"), Err)
 
 
 # =====================================================================
@@ -82,7 +97,7 @@ class TestRoot:
         assert node.path == ()
 
     def test_root_hands_out_the_node_without_checking_versions(self) -> None:
-        accessor = reflect.access(reflect.definition("FileId"))
+        accessor = reflect.access(_definition("FileId"))
         for data in (reflect.Record(_file_id()),
                      reflect.Record(_file_id(), ["deadbeef"])):
             given = accessor.root(data)
@@ -91,8 +106,8 @@ class TestRoot:
         assert accessor.file_hashes(reflect.Record(_file_id(), ["x"])).value == {"x"}
 
     def test_version_matches_is_the_upper_layers_step(self) -> None:
-        assert reflect.viba_version_matches(reflect.pool(), reflect.Record(_store())).value is True
-        assert reflect.viba_version_matches(reflect.pool(), reflect.Record(_store(), ["nope"])).value is False
+        assert reflect.viba_version_matches(reflect._design_pool(), reflect.Record(_store())).value is True
+        assert reflect.viba_version_matches(reflect._design_pool(), reflect.Record(_store(), ["nope"])).value is False
 
 
 # =====================================================================
@@ -119,7 +134,7 @@ class TestSevenCells:
         assert moment.get_microsecond().value == _moment().microsecond
 
     def test_length_and_keys_only_for_containers(self) -> None:
-        accessor = reflect.access(reflect.definition("FileKvStore"))
+        accessor = reflect.access(_definition("FileKvStore"))
         node = accessor._unwrap(accessor.root(reflect.Record(_store())))
         inner = node.get_file_id2file()
         assert accessor.length(inner).value == 1
@@ -128,7 +143,7 @@ class TestSevenCells:
         assert accessor.keys(node).message.startswith("这一段不是 dict")
 
     def test_leaf_on_a_record_is_an_error(self) -> None:
-        accessor = reflect.access(reflect.definition("VersionedFile"))
+        accessor = reflect.access(_definition("VersionedFile"))
         node = accessor._unwrap(accessor.root(reflect.Record(_versioned_file())))
         assert "不是叶子" in accessor.leaf(node).message
 
@@ -268,7 +283,7 @@ class TestConvenience:
 
     def test_list_fields_keeps_what_is_there(self) -> None:
         node = _open(_file_id(), "FileId")
-        given = reflect.viba_list_fields(node, reflect.definition("FileId"))
+        given = reflect.viba_list_fields(node, _definition("FileId"))
         assert [member.value for member in given.value] == ["f1", "a.py"]
 
 
@@ -313,11 +328,11 @@ class TestResult:
 
 class TestWalk:
     def test_store_walks_down_to_leaves(self) -> None:
-        accessor = reflect.access(reflect.definition("FileKvStore"))
+        accessor = reflect.access(_definition("FileKvStore"))
         root = accessor._unwrap(accessor.root(reflect.Record(_store())))
         leaves = []
         for node in accessor._walk(root):
             given = accessor.leaf(node)
-            if isinstance(given, reflect.Ok):
+            if isinstance(given, Ok):
                 leaves.append(given.value.value)
         assert {"a.py", "alice", "bob", "print(1)"} <= set(leaves)
