@@ -16,7 +16,6 @@ Asserts covered (aligned with MEETING_ADT.md / meeting_adt.py):
                     row count == height / cursor within bounds / segments
                     non-empty and adjacent attributes distinct
   terminal_control  owner in terminal_capable (human or generator)
-  keystroke         owner_at(stroke_time) == user_name
   score             summon_chained (a passive must be summoned via an @)
   meeting           keys(agent_name2role) subset of user_names
   ordering          records within a chunk are non-decreasing in time;
@@ -104,7 +103,7 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
     _check(report, "meeting", None, "role_map_keys_in_user_names",
            lambda: adt.assert_role_map_keys_in_user_names(meeting))
 
-    # ---- collect keystroke/control/chat/score records for cross-chunk checks ----
+    # ---- collect control/chat/score records for cross-chunk checks ----
     controls: list[adt.TerminalControl] = []
     chat_messages: list[adt.ChatMessage] = []
     score_messages: list[adt.ScoreMessage] = []
@@ -127,11 +126,6 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
                 _check(report, "terminal_control", control.start_time,
                        "terminal_control_capable",
                        lambda c=control: adt.assert_terminal_control_capable(c, role_of))
-        elif isinstance(chunk, adt.KeystrokeStreamChunk):
-            for key in chunk.chunks:
-                _check(report, "keystroke", key.stroke_time,
-                       "keystroke_owner_matches",
-                       lambda k=key: adt.assert_keystroke_owner_matches(k, controls))
         elif isinstance(chunk, adt.ScoreStreamChunk):
             for message in chunk.chunks:
                 referenced = _resolve_score_reference(message, chat_messages)

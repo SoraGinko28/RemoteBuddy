@@ -115,7 +115,7 @@ class TestScreenAsserts:
         assert report.by_assert()["row_widths_fit"] == 2
 
 
-class TestTerminalControlAndKeystroke:
+class TestTerminalControl:
     def _controls(self) -> list:
         return [adt.TerminalControl(user_name=adt.HUMAN_USER_NAME, start_time=_now())]
 
@@ -131,25 +131,6 @@ class TestTerminalControlAndKeystroke:
         meeting = _meeting([adt.TerminalControlStreamChunk(chunks=self._controls())])
         report = validator.validate_meeting_data(meeting)
         assert report.ok
-
-    def test_keystroke_without_control_flagged(self) -> None:
-        chunk = adt.KeystrokeStreamChunk(chunks=[
-            adt.Keystroke(data=adt.TextKey("x"), user_name="alice",
-                          stroke_time=_later(1))])
-        meeting = _meeting([chunk])
-        meeting.agent_name2role = {"alice": adt.AgentRole.GENERATOR}
-        report = validator.validate_meeting_data(meeting)
-        assert "keystroke_owner_matches" in report.by_assert()
-
-    def test_keystroke_matching_human_interval_ok(self) -> None:
-        key = adt.Keystroke(data=adt.TextKey("x"), user_name=adt.HUMAN_USER_NAME,
-                            stroke_time=_later(1))
-        meeting = _meeting([
-            adt.TerminalControlStreamChunk(chunks=self._controls()),
-            adt.KeystrokeStreamChunk(chunks=[key]),
-        ])
-        report = validator.validate_meeting_data(meeting)
-        assert report.ok, report.violations
 
 
 class TestScoreSummon:

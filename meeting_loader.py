@@ -19,14 +19,15 @@ kind-to-stream mapping (see runs/20260902-153537-7f1bea):
                              of a human takeover interval)
   action / state / error  -> not mapped (operational noise, not part of the
                              five streams)
-  keystroke / score       -> the current journal has no such events ->
+  score                   -> the current journal has no such events ->
                              empty stream (a missing stream is semantically
                              allowed)
+  keystroke               -> not a stream: keystrokes stay in the harness and
+                             are never persisted
 
 Known limitations (surfaced in validation reports; the journal is never
 modified):
-  - The current journal has no keystroke events, no score events, and no
-    role metadata;
+  - The current journal has no score events and no role metadata;
     agent_name2role can only be inferred on the assumption that every agent
     that appears is a generator (valid for single-agent meetings).
   - control events carry only acquired/released, with no tmux pane info:
@@ -273,7 +274,7 @@ def load_meeting_data_from_run(run_dir: Path) -> tuple[adt.MeetingData, LoadSumm
     if controls:
         chunks.append(adt.TerminalControlStreamChunk(
             stream_name=adt.TERMINAL_CONTROL_STREAM_NAME, chunks=controls))
-    # No score / keystroke events -> the streams are absent (semantically
+    # No score events -> the stream is absent (semantically
     # equivalent to an empty stream; no chunk is emitted)
     chunks.sort(key=_chunk_start_time)
 

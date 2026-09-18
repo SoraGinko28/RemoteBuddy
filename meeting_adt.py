@@ -7,7 +7,8 @@ Design intent (finalized in MEETING_ADT.md; this module is its executable spec):
 - Once frozen, data is immutable; increments only append, never mutate in place.
 - Type changes must stay consistent with the ADT document; the document leads.
 
-Stream order is fixed: screen/chat/score/keystroke/terminal_control (shared by replay and validation).
+Stream order is fixed: screen/chat/score/terminal_control (shared by replay and validation).
+Keystrokes are not a stream: they live in the harness and are never persisted.
 """
 
 from __future__ import annotations
@@ -17,18 +18,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final, Optional
 
-# Stream names: the ADT's five streams, order fixed; do not add, remove, or reorder them.
+# Stream names: the ADT's four streams, order fixed; do not add, remove, or reorder them.
 SCREEN_STREAM_NAME = "screen"
 CHAT_STREAM_NAME = "chat"
 SCORE_STREAM_NAME = "score"
-KEYSTROKE_STREAM_NAME = "keystroke"
 TERMINAL_CONTROL_STREAM_NAME = "terminal_control"
 
 STREAM_NAMES: Final[tuple[str, ...]] = (
     SCREEN_STREAM_NAME,
     CHAT_STREAM_NAME,
     SCORE_STREAM_NAME,
-    KEYSTROKE_STREAM_NAME,
     TERMINAL_CONTROL_STREAM_NAME,
 )
 
@@ -36,7 +35,6 @@ __all__ = [
     "SCREEN_STREAM_NAME",
     "CHAT_STREAM_NAME",
     "SCORE_STREAM_NAME",
-    "KEYSTROKE_STREAM_NAME",
     "TERMINAL_CONTROL_STREAM_NAME",
     "STREAM_NAMES",
     "HUMAN_USER_NAME",
@@ -716,7 +714,7 @@ __all__ += [
 
 
 # =====================================================================
-# G10: Keystroke / TerminalControl (keystroke and control streams)
+# G10: Keystroke (harness-internal, never persisted) / TerminalControl
 # =====================================================================
 #
 # KeystrokeStr := Oneof | $text str | $ctrl str | $rest ($millisecond int)
@@ -737,11 +735,9 @@ __all__ += [
 #   - The journal has no tmux_window_name/pane today -> record them via a mapping: acquired starts an interval,
 #     user_name=actor (human -> $human); a release event only advances the interval and persists no record;
 #     tmux names/panes come from meeting.json (filled in by the G12 loader).
-#   - The journal has no per-keystroke events today -> the keystroke stream is an empty stream (handled like score).
+#   - Keystrokes are never persisted: they stay in the harness; there is no keystroke stream and no chunk.
 #
 # Persisted JSON:
-#   KeystrokeStr: {"text": s} | {"ctrl": s} | {"rest": {"millisecond": n}}
-#   Keystroke: {"data": ..., "user_name": u, "stroke_time": iso}
 #   TerminalControl: {"tmux_window_name": w, "tmux_pane": p,
 #                     "user_name": u, "start_time": iso}
 
@@ -776,12 +772,6 @@ class TerminalControl:
     tmux_pane: int = 0
     user_name: str = ""
     start_time: Optional[_dt.datetime] = None
-
-
-@dataclass
-class KeystrokeStreamChunk:
-    stream_name: str = KEYSTROKE_STREAM_NAME
-    chunks: list[Keystroke] = field(default_factory=list)
 
 
 @dataclass
@@ -842,22 +832,6 @@ def terminal_control_from_dict(payload: dict) -> TerminalControl:
         tmux_pane=payload.get("tmux_pane", 0),
         user_name=payload.get("user_name", ""),
         start_time=_iso_parse(start) if isinstance(start, str) else None,
-    )
-
-
-def keystroke_stream_chunk_to_dict(chunk: KeystrokeStreamChunk) -> dict:
-    return {
-        "stream_name": chunk.stream_name,
-        "chunks": [keystroke_to_dict(k) for k in chunk.chunks],
-    }
-
-
-def keystroke_stream_chunk_from_dict(payload: dict) -> KeystrokeStreamChunk:
-    if payload.get("stream_name") != KEYSTROKE_STREAM_NAME:
-        raise ValueError(f"not a keystroke chunk: {payload.get('stream_name')!r}")
-    return KeystrokeStreamChunk(
-        stream_name=payload["stream_name"],
-        chunks=[keystroke_from_dict(k) for k in payload["chunks"]],
     )
 
 
@@ -925,7 +899,6 @@ __all__ += [
     "RestKey",
     "Keystroke",
     "TerminalControl",
-    "KeystrokeStreamChunk",
     "TerminalControlStreamChunk",
     "keystroke_str_to_dict",
     "keystroke_str_from_dict",
@@ -933,8 +906,6 @@ __all__ += [
     "keystroke_from_dict",
     "terminal_control_to_dict",
     "terminal_control_from_dict",
-    "keystroke_stream_chunk_to_dict",
-    "keystroke_stream_chunk_from_dict",
     "terminal_control_stream_chunk_to_dict",
     "terminal_control_stream_chunk_from_dict",
     "owner_at",
@@ -961,7 +932,7 @@ __all__ += [
 #   * Appendix[{
 #       user_names := every UserName appearing across all chunks
 #                      (screen.owner / chat.user_name / score.judge_name /
-#                       keystroke.user_name / terminal_control.user_name)
+#                       terminal_control.user_name)
 #     }]
 #   * Assert[{ keys($agent_name2role) ⊆ user_names(this record) }]
 #
@@ -980,7 +951,7 @@ class ScreenStreamChunk:
 
 
 StreamChunk = (ScreenStreamChunk | ChatStreamChunk | ScoreStreamChunk
-               | KeystrokeStreamChunk | TerminalControlStreamChunk)
+               | TerminalControlStreamChunk)
 
 
 def _color_to_dict(color: Optional[Color]) -> Optional[dict]:
@@ -1071,8 +1042,6 @@ def stream_chunk_to_dict(chunk: StreamChunk) -> dict:
         return chat_stream_chunk_to_dict(chunk)
     if isinstance(chunk, ScoreStreamChunk):
         return score_stream_chunk_to_dict(chunk)
-    if isinstance(chunk, KeystrokeStreamChunk):
-        return keystroke_stream_chunk_to_dict(chunk)
     if isinstance(chunk, TerminalControlStreamChunk):
         return terminal_control_stream_chunk_to_dict(chunk)
     raise TypeError(f"unknown stream chunk: {type(chunk).__name__}")
@@ -1091,8 +1060,6 @@ def stream_chunk_from_dict(payload: dict) -> StreamChunk:
         return chat_stream_chunk_from_dict(payload)
     if stream_name == SCORE_STREAM_NAME:
         return score_stream_chunk_from_dict(payload)
-    if stream_name == KEYSTROKE_STREAM_NAME:
-        return keystroke_stream_chunk_from_dict(payload)
     return terminal_control_stream_chunk_from_dict(payload)
 
 
@@ -1115,8 +1082,6 @@ def user_names_of_meeting_data(data: MeetingData) -> set[str]:
             names.update(m.user_name for m in chunk.chunks)
         elif isinstance(chunk, ScoreStreamChunk):
             names.update(m.judge_name for m in chunk.chunks)
-        elif isinstance(chunk, KeystrokeStreamChunk):
-            names.update(k.user_name for k in chunk.chunks)
         elif isinstance(chunk, TerminalControlStreamChunk):
             names.update(c.user_name for c in chunk.chunks)
     return names

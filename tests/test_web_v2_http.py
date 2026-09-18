@@ -496,7 +496,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             self.assertNotIn("input", event["data"])
             self.assertNotIn("strokes", event["data"])
             self.assertEqual("", event.get("content") or "")
-        # The keystroke stream is harness-internal: nothing about what was typed
+        # Keystrokes are harness-internal: nothing about what was typed
         # may reach the journal, in any event.
         journal = json.dumps(store.events())
         self.assertNotIn("636c656172", journal)
