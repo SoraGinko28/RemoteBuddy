@@ -13,8 +13,8 @@
 
 三条规矩：
 
-1. **只有 prepare_meeting_data_as_ctx 和它用到的 make_* 构造器碰记录层**（meeting_adt），
-   形参一律 named make_xxx。
+1. **整个文件只有 prepare_meeting_data_as_ctx 一处碰记录层**（meeting_adt）；
+   引用这类值一律用 ``sdk`` 上的 ``make_*`` 造（它们是 meeting_sdk.viba 里的接口）。
 2. **用例里不许认识 meeting data 的细节**——数据只能用 ``sdk``（meeting_sdk）取，
    取回来的东西只能用 ``reflect``（meeting_core_reflect）按设计读。
 3. **结果按设计的接口读**：Result 是 meeting_core 里的类型，SDK 不暴露自己的 Ok / Err；
@@ -31,7 +31,7 @@ import pytest
 
 import meeting_core_reflect
 import meeting_sdk
-import meeting_adt  # 只有 prepare_meeting_data_as_ctx 与 make_* 用它
+import meeting_adt  # 只有 prepare_meeting_data_as_ctx 用它
 from viba.type import Ok  # noqa: E402  （协议里的 Ok / Err）
 from viba.viba_type_descriptor import pool_find_definition  # noqa: E402
 
@@ -44,65 +44,30 @@ _ALICE = "alice"
 _BOB = "bob"
 
 
-# ----------------------------------------------------------------------
-# 构造器：只有这一组和 prepare_meeting_data_as_ctx 认识记录层
-# ----------------------------------------------------------------------
-
-
-def make_region(start, end):
-    return meeting_adt.TextRegion(start, end)
-
-
-def make_chat_reference(msg_time, user_name, region):
-    return meeting_adt.ChatReference(msg_time=msg_time, user_name=user_name,
-                                     region=make_region(*region))
-
-
-def make_score_reference(judge_time, judge_name):
-    return meeting_adt.ScoreReference(judge_time=judge_time, judge_name=judge_name)
-
-
-def make_screen_reference(capture_time, stream_name, region):
-    return meeting_adt.ScreenReference(capture_time=capture_time, stream_name=stream_name,
-                                       region=make_region(*region))
-
-
-def make_terminal_control_reference(start_time, user_name, region):
-    return meeting_adt.TerminalControlReference(start_time=start_time, user_name=user_name,
-                                                region=make_region(*region))
-
-
-def make_versioned_file_reference(file_id, version_time):
-    return meeting_adt.VersionedFileReference(file_id=file_id, version_time=version_time)
-
-
-def make_versioned_file_content_reference(ref, region):
-    return meeting_adt.VersionedFileContentReference(versioned_file_ref=ref,
-                                                     region=make_region(*region))
-
-
 def prepare_meeting_data_as_ctx():
     """一份会议记录，当 ctx 交给用例。"""
     adt = meeting_adt
+    text_region = meeting_sdk.make_text_region
 
     file_id = adt.FileId(file_id="f1", entry_name="a.py")
-    file_ref = make_versioned_file_reference(file_id, _T0)
+    file_ref = meeting_sdk.make_versioned_file_reference(file_id, _T0)
     # 太早的一条：a.py 那一版是 _T0 才有的
-    stale_file_ref = make_versioned_file_reference(file_id, _T0 - _dt.timedelta(seconds=1))
-    controls = [make_terminal_control_reference(_T0, _ALICE, (0, 3)),   # 接管
-                make_terminal_control_reference(_T2, None, (0, 3))]     # 交还
+    stale_file_ref = meeting_sdk.make_versioned_file_reference(
+        file_id, _T0 - _dt.timedelta(seconds=1))
+    controls = [meeting_sdk.make_terminal_control_reference(_T0, _ALICE, text_region(0, 3)),
+                meeting_sdk.make_terminal_control_reference(_T2, None, text_region(0, 3))]
 
     # alice 的第一条消息身上带着六种引用，后面的用例从数据里把它们取出来
     first_message = adt.ChatMessage(user_name=_ALICE, time=_T1, message=[
         adt.RawMessage("hi"),
-        make_screen_reference(_T1, "screen", (0, 2)),
-        make_chat_reference(_T2, _BOB, (0, 2)),
-        make_score_reference(_T2, _BOB),
+        meeting_sdk.make_screen_reference(_T1, "screen", text_region(0, 2)),
+        meeting_sdk.make_chat_reference(_T2, _BOB, text_region(0, 2)),
+        meeting_sdk.make_score_reference(_T2, _BOB),
         controls[0],
         controls[1],
         file_ref,
         stale_file_ref,
-        make_versioned_file_content_reference(file_ref, (0, 5)),
+        meeting_sdk.make_versioned_file_content_reference(file_ref, text_region(0, 5)),
     ])
 
     controls_chunk = adt.TerminalControlStreamChunk(chunks=[
@@ -121,7 +86,8 @@ def prepare_meeting_data_as_ctx():
     scores = adt.ScoreStreamChunk(chunks=[
         adt.ScoreMessage(tag="correctness", score=1.0, comment="good", judge_name=_BOB,
                          time=_T2,
-                         reference=make_chat_reference(_T1, _ALICE, (0, 2))),
+                         reference=meeting_sdk.make_chat_reference(
+                             _T1, _ALICE, text_region(0, 2))),
     ])
 
     fold = adt.FileFold(fold_name="pkg",
@@ -370,6 +336,13 @@ def test_case_score_message_reference_without_that_score_is_an_error(ctx, sdk, r
     assert _err_message(sdk.score_message_reference(ctx, moment, _ALICE), reflect)
 
 
+def test_case_make_chat_reference_points_back_at_the_message(ctx, sdk, reflect):
+    alice = _message_of(_messages(ctx, sdk, reflect), _ALICE, reflect)
+    ref = sdk.make_chat_reference(_message_time(alice, reflect), _ALICE,
+                                  sdk.make_text_region(0, 2))
+    assert _ok_value(sdk.resolve_chat_content_reference(ctx, ref), reflect) == "hi"
+
+
 # =====================================================================
 # 屏幕
 # =====================================================================
@@ -514,3 +487,12 @@ def test_case_resolve_versioned_file_content_reference_takes_the_region(
     ref = _one_reference_of_kind(references, "versioned_file_content_ref", reflect)
     given = sdk.resolve_versioned_file_content_reference(ctx, ref)
     assert _ok_value(given, reflect) == "print"
+
+
+def test_case_make_versioned_file_content_reference_takes_the_region(ctx, sdk, reflect):
+    file_id = _ok_node(sdk.file_id_by_path(ctx, "/ws/a.py"), reflect).data
+    file_ref = sdk.make_versioned_file_reference(file_id,
+                                                 _ok_data(sdk.first_chunk_time(ctx), reflect))
+    ref = sdk.make_versioned_file_content_reference(file_ref, sdk.make_text_region(0, 5))
+    assert _ok_value(sdk.resolve_versioned_file_content_reference(ctx, ref),
+                     reflect) == "print"

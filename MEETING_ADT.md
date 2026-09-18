@@ -433,8 +433,9 @@ TerminalControlReference :=
 ## 取数据接口 meeting_sdk.viba
 
 从 meeting 里取数的只读接口：只有签名，没有实现，也没有写入。
-每个函数都带泛型参数 Ctx，并吃一个 $ctx Ctx —— 具体是什么由实现方绑
+取数函数都带泛型参数 Ctx，并吃一个 $ctx Ctx —— 具体是什么由实现方绑
 （会议句柄、连接、快照都行），接口本身不认识它；签名里只有稳定类型。
+末尾那组 make_* 不吃 ctx：它们只把引用这类值造出来，不碰记录。
 
 ```bash
 import meeting_core as mc
@@ -587,6 +588,48 @@ resolve_versioned_file_content_reference[Ctx] :=
     mc.Result[str]                             # 引用那一段的原文
   <- $ctx Ctx
   <- $ref mc.VersionedFileContentReference
+
+# ---------------------------------------------------------------- #
+# 构造引用这类值：不吃 ctx（不碰记录），名字一律 make_*
+# ---------------------------------------------------------------- #
+
+make_text_region :=
+    mc.TextRegion
+  <- $start int
+  <- $end int
+
+make_screen_reference :=
+    mc.ScreenReference
+  <- $capture_time mc.datetime
+  <- $stream_name str
+  <- $region mc.TextRegion
+
+make_chat_reference :=
+    mc.ChatReference
+  <- $msg_time mc.datetime
+  <- $user_name mc.UserName
+  <- $region mc.TextRegion
+
+make_score_reference :=
+    mc.ScoreReference
+  <- $judge_time mc.datetime
+  <- $judge_name mc.UserName
+
+make_terminal_control_reference :=
+    mc.TerminalControlReference
+  <- $start_time mc.datetime
+  <- $user_name mc.UserName | nil          # 空 = 那次交还之后没人接手
+  <- $region mc.TextRegion
+
+make_versioned_file_reference :=
+    mc.VersionedFileReference
+  <- $file_id mc.FileId
+  <- $version_time mc.datetime
+
+make_versioned_file_content_reference :=
+    mc.VersionedFileContentReference
+  <- $versioned_file_ref mc.VersionedFileReference
+  <- $region mc.TextRegion
 
 ```
 
