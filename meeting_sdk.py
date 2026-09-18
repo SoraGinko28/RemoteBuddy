@@ -3,7 +3,7 @@
 设计（签名）在 MEETING_ADT.md 的「取数据接口」那一章（模块名 meeting_sdk）：每个函数带泛型
 参数 ``Ctx``、吃一个 ``$ctx``，返回 Result，签名里只有稳定类型。这一层是它的实现。
 
-**对外的接口就是 meeting_sdk.viba 里那 24 个**：名字落 snake_case，参数、返回都照设计，不多导出
+**对外的接口就是 meeting_sdk.viba 里的那 31 个**：名字落 snake_case，参数、返回都照设计，不多导出
 任何东西——签名里那些类型（``mc.ChatReference``、``mc.AgentRole``…）属于 meeting_core，不从这里拿。
 
 这一版的绑定（协议说 Ctx / Data 由实现方绑）：
@@ -16,7 +16,8 @@
   键就是设计里的 tag 名：``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
   "captured_at"}``、``{"name", "meta", "content"}``。
 
-只有读：没有写入、修改、删除。取数函数一律返回 Result——查不到是 ``Err``，不是异常。
+只有读：没有写入、修改、删除。取数函数一律返回 Result——查不到是 ``Err``，不是异常；
+末尾那组 ``make_*`` 不吃 ``ctx``，只把引用这类值造出来。
 """
 
 from __future__ import annotations
@@ -267,6 +268,50 @@ def resolve_versioned_file_content_reference(
 
 
 # ----------------------------------------------------------------------
+# 构造：造引用这类值（只造值，不碰记录）
+# ----------------------------------------------------------------------
+
+
+def make_text_region(start: int, end: int) -> "adt.TextRegion":
+    return adt.TextRegion(start=start, end=end)
+
+
+def make_screen_reference(capture_time: _dt.datetime, stream_name: str,
+                          region: "adt.TextRegion") -> "adt.ScreenReference":
+    return adt.ScreenReference(capture_time=capture_time, stream_name=stream_name,
+                               region=region)
+
+
+def make_chat_reference(msg_time: _dt.datetime, user_name: str,
+                        region: "adt.TextRegion") -> "adt.ChatReference":
+    return adt.ChatReference(msg_time=msg_time, user_name=user_name, region=region)
+
+
+def make_score_reference(judge_time: _dt.datetime, judge_name: str) -> "adt.ScoreReference":
+    return adt.ScoreReference(judge_time=judge_time, judge_name=judge_name)
+
+
+def make_terminal_control_reference(
+        start_time: _dt.datetime, user_name: Optional[str],
+        region: "adt.TextRegion") -> "adt.TerminalControlReference":
+    return adt.TerminalControlReference(start_time=start_time, user_name=user_name,
+                                        region=region)
+
+
+def make_versioned_file_reference(
+        file_id: "adt.FileId",
+        version_time: _dt.datetime) -> "adt.VersionedFileReference":
+    return adt.VersionedFileReference(file_id=file_id, version_time=version_time)
+
+
+def make_versioned_file_content_reference(
+        versioned_file_ref: "adt.VersionedFileReference",
+        region: "adt.TextRegion") -> "adt.VersionedFileContentReference":
+    return adt.VersionedFileContentReference(versioned_file_ref=versioned_file_ref,
+                                             region=region)
+
+
+# ----------------------------------------------------------------------
 # 私有小工具（这一层认识 meeting_adt 的记录）
 # ----------------------------------------------------------------------
 
@@ -379,4 +424,11 @@ __all__ = [
     "latest_file",
     "resolve_versioned_file_reference",
     "resolve_versioned_file_content_reference",
+    "make_text_region",
+    "make_screen_reference",
+    "make_chat_reference",
+    "make_score_reference",
+    "make_terminal_control_reference",
+    "make_versioned_file_reference",
+    "make_versioned_file_content_reference",
 ]
