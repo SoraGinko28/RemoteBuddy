@@ -42,7 +42,8 @@
 * 容器：list / tuple / set 按下标走，dict 按键走（键按字符串比）。
 * 和类型的分支看三条：数据的类名就是那一支指向的定义（``$screen_ref`` 对
   ``ScreenReference``）；分支名跟类名对得上（``$ok`` / ``$err`` 对 ``Ok`` / ``Err``）；
-  或者那一支是单位元、而枚举值正好叫这个 tag（``$deleted ()`` 对 ``DataStatus.DELETED``）。
+  或者那一支是单位元、而枚举对得上这个 tag（``$deleted ()`` 对 ``DataStatus.DELETED``，
+  ``$generator ()`` 对 ``AgentRole.GENERATOR``——值、带 $ 的值、成员名都认）。
   名字比大小写不敏感。
 * 内建叶子按 Python 标量认：bool / int / float / str / None。
 
@@ -648,7 +649,7 @@ class VibaAccess:
         里递归；最后是内建叶子对 Python 标量。
         """
         if tag_name is not None:
-            if isinstance(data, Enum) and str(data.value) == tag_name:
+            if isinstance(data, Enum) and _enum_matches(data, tag_name):
                 return True
             # 分支名跟数据那个类的名字对得上（$ok / $err 对 Ok / Err）
             if tag_name.lower() == type(data).__name__.lower():
@@ -668,7 +669,7 @@ class VibaAccess:
             return unfolded is not descriptor and self._shape_matches(unfolded, data, tag_name)
         if descriptor.kind == TAGGED:
             tag = _tag_name(descriptor.payload.tag)
-            if isinstance(data, Enum) and str(data.value) == tag:
+            if isinstance(data, Enum) and _enum_matches(data, tag):
                 return True
             return self._shape_matches(descriptor.payload.tagged_type, data, tag)
         if descriptor.kind == SUM:
@@ -816,6 +817,12 @@ def _attribute(data, name: str):
     if isinstance(data, (SCALAR_KINDS, list, tuple, set, frozenset, dict)):
         return _MISSING
     return getattr(data, name, _MISSING)
+
+
+def _enum_matches(data: Enum, tag_name: str) -> bool:
+    """枚举跟 tag 对得上：值本身、值带 $ 的写法、或者成员名（去掉大小写）都算。"""
+    value = str(data.value)
+    return tag_name in (value, value.lstrip("$")) or data.name.lower() == tag_name.lower()
 
 
 def _payload_of(data):

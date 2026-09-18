@@ -191,6 +191,11 @@ class TestSumBranches:
         assert status.has_read_only() is True
         assert status.has_deleted() is False
 
+    def test_enum_with_a_dollar_value_matches_its_tag(self) -> None:
+        node = _open(adt.AgentRole.GENERATOR, "AgentRole")
+        assert node.has_generator() is True
+        assert node.has_passive_discriminator() is False
+
     def test_absent_optional_field_is_false(self) -> None:
         segment = adt.TerminalTextSegment(text="x", bg=None)
         node = _open(segment, "TerminalTextSegment")
