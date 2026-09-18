@@ -278,6 +278,20 @@ class TestResult:
         assert err.has_err() is True
         assert err.has_ok() is False
 
+    def test_ok_payload_is_the_value_itself(self) -> None:
+        """$ok T 的载荷就是 T：Ok 只有一格，取出来的是那一格。"""
+        from viba.type import Ok
+
+        node = reflect.open_record(Ok("body"), "Result")
+        assert node.get_ok().value == "body"
+
+    def test_ok_nil_is_present_with_nil_inside(self) -> None:
+        from viba.type import Ok
+
+        node = reflect.open_record(Ok(None), "Result")
+        assert node.has_ok() is True
+        assert node.get_ok().value is None
+
     def test_wrong_branch_raises(self) -> None:
         from viba.type import Ok
 

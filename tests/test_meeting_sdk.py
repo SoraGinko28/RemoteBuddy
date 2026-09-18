@@ -11,9 +11,17 @@
     test_case_xxx(prepare_meeting_data_as_ctx(), meeting_sdk, meeting_core_reflect)
     test_case_yyy(prepare_meeting_data_as_ctx(), meeting_sdk, meeting_core_reflect)
 
-规矩：**用例里不许认识 meeting data 的细节**——数据只能用 ``meeting_sdk`` 的函数取，
-取出来的东西只能用 ``meeting_core_reflect`` 按设计读。底下三个 fixture 就是为了让 pytest
-按同一签名驱动它们（``prepare_meeting_data_as_ctx`` 是唯一碰记录的地方，它造数据）。
+两条规矩：
+
+1. **用例里不许认识 meeting data 的细节**——数据只能用 ``meeting_sdk`` 取，取回来的东西
+   只能用 ``meeting_core_reflect`` 按设计读。
+2. **结果按设计的接口读**：Result 是 meeting_core 里的类型，SDK 不暴露自己的 Ok / Err；
+   一律走 ``result.has_ok()`` / ``result.get_ok().value``（失败走 ``has_err()`` /
+   ``get_err().value``）。载荷是序列或记录时，拿节点的 ``$data`` 再用反射逐段读——
+   ``$ok T`` 的 T 在 Result 那里是空的，只能靠调用方知道自己要的是什么类型。
+
+底下三个 fixture 是为了让 pytest 按同一签名驱动这些用例（``prepare_meeting_data_as_ctx``
+是唯一碰记录的地方，它造数据）。
 """
 
 import datetime as _dt
@@ -83,6 +91,33 @@ def prepare_meeting_data_as_ctx():
     )
 
 
+# ----------------------------------------------------------------------
+# 读结果：只走反射的标准接口
+# ----------------------------------------------------------------------
+
+
+def _result(value, meeting_core_reflect):
+    return meeting_core_reflect.open_record(value, "Result")
+
+
+def _ok_node(value, meeting_core_reflect):
+    """$ok 那一支的节点。"""
+    result = _result(value, meeting_core_reflect)
+    assert result.has_ok() is True, "这不是 $ok"
+    return result.get_ok()
+
+
+def _ok_value(value, meeting_core_reflect):
+    """标量载荷：result.get_ok().value。"""
+    return _ok_node(value, meeting_core_reflect).value
+
+
+def _err_message(value, meeting_core_reflect):
+    result = _result(value, meeting_core_reflect)
+    assert result.has_err() is True, "这不是 $err"
+    return result.get_err().value
+
+
 @pytest.fixture(name="meeting_sdk")
 def _meeting_sdk_module():
     return meeting_sdk
@@ -103,23 +138,22 @@ def ctx():
 # =====================================================================
 
 def test_case_chunk_times_follow_the_streams(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.chunk_times(ctx, _T0, _T2)
-    assert isinstance(given, meeting_sdk.Ok)
+    payload = _ok_node(meeting_sdk.chunk_times(ctx, _T0, _T2), meeting_core_reflect).data
     moments = [meeting_core_reflect.open_record(m, "datetime").get_microsecond().value
-               for m in given.value]
+               for m in payload]
     # 屏幕一条、聊天一条都在 _T1，评分在 _T2，控制从 _T0 起
     assert moments == [1, 2, 2, 3]
 
 
 def test_case_chunk_times_can_be_narrowed(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.chunk_times(ctx, _T2, _T3)
-    assert [m for m in given.value] == [_T2]
+    payload = _ok_node(meeting_sdk.chunk_times(ctx, _T2, _T2), meeting_core_reflect).data
+    assert len(payload) == 1
+    assert meeting_core_reflect.open_record(payload[0], "datetime").get_microsecond().value == 3
 
 
 def test_case_streams_between_lists_the_stream_names(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.streams_between(ctx, _T0, _T3)
-    assert isinstance(given, meeting_sdk.Ok)
-    assert sorted(given.value) == ["chat", "score", "screen", "terminal_control"]
+    names = _ok_node(meeting_sdk.streams_between(ctx, _T0, _T3), meeting_core_reflect).data
+    assert sorted(names) == ["chat", "score", "screen", "terminal_control"]
 
 
 # =====================================================================
@@ -127,54 +161,57 @@ def test_case_streams_between_lists_the_stream_names(ctx, meeting_sdk, meeting_c
 # =====================================================================
 
 def test_case_chat_messages_read_through_the_design(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.chat_messages(ctx, _T0, _T3)
-    assert len(given.value) == 2
-    first = meeting_core_reflect.open_record(given.value[0], "ChatMessage")
+    messages = _ok_node(meeting_sdk.chat_messages(ctx, _T0, _T3), meeting_core_reflect).data
+    assert len(messages) == 2
+    first = meeting_core_reflect.open_record(messages[0], "ChatMessage")
     assert first.get_user_name().by_tag("agent_name").value == "alice"
-    assert first.get_time().get_microsecond().value == _T1.microsecond
+    assert first.get_time().get_microsecond().value == 2
 
 
 def test_case_chat_messages_can_be_narrowed(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.chat_messages(ctx, _T2, _T2)
-    assert len(given.value) == 1
-    node = meeting_core_reflect.open_record(given.value[0], "ChatMessage")
+    messages = _ok_node(meeting_sdk.chat_messages(ctx, _T2, _T2), meeting_core_reflect).data
+    assert len(messages) == 1
+    node = meeting_core_reflect.open_record(messages[0], "ChatMessage")
     assert node.get_user_name().by_tag("agent_name").value == "bob"
 
 
 def test_case_chat_message_at_is_unique_per_time_and_user(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.chat_message_at(ctx, _T1, "alice")
-    node = meeting_core_reflect.open_record(given.value, "ChatMessage")
+    message = _ok_node(meeting_sdk.chat_message_at(ctx, _T1, "alice"), meeting_core_reflect).data
+    node = meeting_core_reflect.open_record(message, "ChatMessage")
     assert node.get_user_name().by_tag("agent_name").value == "alice"
 
-    missing = meeting_sdk.chat_message_at(ctx, _T1, "bob")
-    assert isinstance(missing, meeting_sdk.Err)
+    assert "bob" in _err_message(meeting_sdk.chat_message_at(ctx, _T1, "bob"),
+                                 meeting_core_reflect)
 
 
 def test_case_resolve_chat_reference(ctx, meeting_sdk, meeting_core_reflect):
     ref = meeting_sdk.ChatReference(msg_time=_T2, user_name="bob",
                                     region=meeting_sdk.TextRegion(0, 2))
-    given = meeting_sdk.resolve_chat_reference(ctx, ref)
-    node = meeting_core_reflect.open_record(given.value, "ChatMessage")
+    message = _ok_node(meeting_sdk.resolve_chat_reference(ctx, ref), meeting_core_reflect).data
+    node = meeting_core_reflect.open_record(message, "ChatMessage")
     assert node.get_user_name().by_tag("agent_name").value == "bob"
 
 
-def test_case_resolve_chat_content_reference_takes_the_region(ctx, meeting_sdk, meeting_core_reflect):
+def test_case_resolve_chat_content_reference_takes_the_region(ctx, meeting_sdk,
+                                                             meeting_core_reflect):
     ref = meeting_sdk.ChatReference(msg_time=_T1, user_name="alice",
                                     region=meeting_sdk.TextRegion(0, 2))
-    assert meeting_sdk.resolve_chat_content_reference(ctx, ref).value == "hi"
+    given = meeting_sdk.resolve_chat_content_reference(ctx, ref)
+    assert _ok_value(given, meeting_core_reflect) == "hi"
 
 
 def test_case_resolve_score_reference(ctx, meeting_sdk, meeting_core_reflect):
     ref = meeting_sdk.ScoreReference(judge_time=_T2, judge_name="bob")
-    given = meeting_sdk.resolve_score_reference(ctx, ref)
-    node = meeting_core_reflect.open_record(given.value, "ScoreMessage")
+    message = _ok_node(meeting_sdk.resolve_score_reference(ctx, ref), meeting_core_reflect).data
+    node = meeting_core_reflect.open_record(message, "ScoreMessage")
     assert node.get_tag().value == "correctness"
     assert node.get_score().value == 1.0
 
 
 def test_case_unknown_score_reference_is_an_error(ctx, meeting_sdk, meeting_core_reflect):
     ref = meeting_sdk.ScoreReference(judge_time=_T1, judge_name="nobody")
-    assert isinstance(meeting_sdk.resolve_score_reference(ctx, ref), meeting_sdk.Err)
+    assert "nobody" in _err_message(meeting_sdk.resolve_score_reference(ctx, ref),
+                                    meeting_core_reflect)
 
 
 # =====================================================================
@@ -182,23 +219,22 @@ def test_case_unknown_score_reference_is_an_error(ctx, meeting_sdk, meeting_core
 # =====================================================================
 
 def test_case_screen_at_returns_the_state(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.screen_at(ctx, _T1)
-    state = given.value
+    state = _ok_node(meeting_sdk.screen_at(ctx, _T1), meeting_core_reflect).data
     assert state["text"] == "ab\ncd"
     assert state["width"] == 2 and state["height"] == 2
     assert meeting_core_reflect.open_record(
-        state["captured_at"], "datetime").get_microsecond().value == _T1.microsecond
+        state["captured_at"], "datetime").get_microsecond().value == 2
 
 
 def test_case_screen_at_without_that_moment_is_an_error(ctx, meeting_sdk, meeting_core_reflect):
-    assert isinstance(meeting_sdk.screen_at(ctx, _T3), meeting_sdk.Err)
+    assert "屏幕流" in _err_message(meeting_sdk.screen_at(ctx, _T3), meeting_core_reflect)
 
 
 def test_case_resolve_screen_reference(ctx, meeting_sdk, meeting_core_reflect):
     ref = meeting_sdk.ScreenReference(capture_time=_T1, stream_name="screen",
                                       region=meeting_sdk.TextRegion(0, 2))
-    given = meeting_sdk.resolve_screen_reference(ctx, ref)
-    assert given.value["text"] == "ab\ncd"
+    state = _ok_node(meeting_sdk.resolve_screen_reference(ctx, ref), meeting_core_reflect).data
+    assert state["text"] == "ab\ncd"
 
 
 # =====================================================================
@@ -206,28 +242,30 @@ def test_case_resolve_screen_reference(ctx, meeting_sdk, meeting_core_reflect):
 # =====================================================================
 
 def test_case_participants(ctx, meeting_sdk, meeting_core_reflect):
-    assert meeting_sdk.participants(ctx).value == ["alice", "bob"]
+    names = _ok_node(meeting_sdk.participants(ctx), meeting_core_reflect).data
+    assert names == ["alice", "bob"]
 
 
 def test_case_roles(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.roles(ctx)
-    assert given.value["alice"] is meeting_sdk.AgentRole.GENERATOR
-    assert given.value["bob"] is meeting_sdk.AgentRole.PASSIVE_DISCRIMINATOR
+    roster = _ok_node(meeting_sdk.roles(ctx), meeting_core_reflect).data
+    assert roster["alice"] is meeting_sdk.AgentRole.GENERATOR
+    assert roster["bob"] is meeting_sdk.AgentRole.PASSIVE_DISCRIMINATOR
 
 
 def test_case_owner_at_covers_and_leaves_gaps(ctx, meeting_sdk, meeting_core_reflect):
-    assert meeting_sdk.owner_at(ctx, _T1).value == "alice"
-    assert meeting_sdk.owner_at(ctx, _T2).value is None
-    assert meeting_sdk.owner_at(ctx, _T0 - _dt.timedelta(seconds=1)).value is None
+    assert _ok_value(meeting_sdk.owner_at(ctx, _T1), meeting_core_reflect) == "alice"
+    assert _ok_value(meeting_sdk.owner_at(ctx, _T2), meeting_core_reflect) is None
+    earlier = meeting_sdk.owner_at(ctx, _T0 - _dt.timedelta(seconds=1))
+    assert _ok_value(earlier, meeting_core_reflect) is None
 
 
 def test_case_control_owner_of_a_handover(ctx, meeting_sdk, meeting_core_reflect):
     takeover = meeting_sdk.TerminalControlReference(
         start_time=_T0, user_name="alice", region=meeting_sdk.TextRegion(0, 3))
-    assert meeting_sdk.control_owner_of(ctx, takeover).value == "alice"
+    assert _ok_value(meeting_sdk.control_owner_of(ctx, takeover), meeting_core_reflect) == "alice"
     handback = meeting_sdk.TerminalControlReference(
         start_time=_T2, user_name=None, region=meeting_sdk.TextRegion(0, 3))
-    assert meeting_sdk.control_owner_of(ctx, handback).value is None
+    assert _ok_value(meeting_sdk.control_owner_of(ctx, handback), meeting_core_reflect) is None
 
 
 # =====================================================================
@@ -235,59 +273,64 @@ def test_case_control_owner_of_a_handover(ctx, meeting_sdk, meeting_core_reflect
 # =====================================================================
 
 def test_case_file_id_by_path_finds_a_direct_file(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.file_id_by_path(ctx, "/ws/a.py")
-    node = meeting_core_reflect.open_record(given.value, "FileId")
+    file_id = _ok_node(meeting_sdk.file_id_by_path(ctx, "/ws/a.py"), meeting_core_reflect).data
+    node = meeting_core_reflect.open_record(file_id, "FileId")
     assert node.get_entry_name().value == "a.py"
 
 
 def test_case_file_id_by_path_finds_a_file_in_a_fold(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.file_id_by_path(ctx, "/ws/pkg/b.py")
-    node = meeting_core_reflect.open_record(given.value, "FileId")
+    file_id = _ok_node(meeting_sdk.file_id_by_path(ctx, "/ws/pkg/b.py"),
+                       meeting_core_reflect).data
+    node = meeting_core_reflect.open_record(file_id, "FileId")
     assert node.get_file_id().value == "f2"
 
 
 def test_case_file_id_by_path_rejects_unknown_paths(ctx, meeting_sdk, meeting_core_reflect):
-    assert isinstance(meeting_sdk.file_id_by_path(ctx, "/ws/nope.py"), meeting_sdk.Err)
-    assert isinstance(meeting_sdk.file_id_by_path(ctx, "a.py"), meeting_sdk.Err)
-    assert isinstance(meeting_sdk.file_id_by_path(ctx, "/ws/pkg/x/y.py"), meeting_sdk.Err)
+    for path in ("/ws/nope.py", "a.py", "/ws/pkg/x/y.py"):
+        assert _err_message(meeting_sdk.file_id_by_path(ctx, path), meeting_core_reflect)
 
 
-def test_case_file_kv_store_is_readable_through_the_design(ctx, meeting_sdk, meeting_core_reflect):
-    given = meeting_sdk.file_kv_store(ctx)
-    node = meeting_core_reflect.open_record(given.value, "FileKvStore")
+def test_case_file_kv_store_is_readable_through_the_design(ctx, meeting_sdk,
+                                                           meeting_core_reflect):
+    store = _ok_node(meeting_sdk.file_kv_store(ctx), meeting_core_reflect).data
+    node = meeting_core_reflect.open_record(store, "FileKvStore")
     assert node.get_file_id2file().keys() == ["f1", "f2"]
 
 
 def test_case_latest_file_gives_the_current_state(ctx, meeting_sdk, meeting_core_reflect):
-    file_id = meeting_sdk.file_id_by_path(ctx, "/ws/a.py").value
-    state = meeting_sdk.latest_file(ctx, file_id).value
+    file_id = _ok_node(meeting_sdk.file_id_by_path(ctx, "/ws/a.py"), meeting_core_reflect).data
+    state = _ok_node(meeting_sdk.latest_file(ctx, file_id), meeting_core_reflect).data
     assert state["name"] == "a.py"
     assert state["meta"] is meeting_sdk.DataStatus.READ_ONLY
     assert state["content"] == "print(1)"
 
 
 def test_case_files_at_only_lists_what_existed(ctx, meeting_sdk, meeting_core_reflect):
-    before = meeting_sdk.files_at(ctx, _T2).value
+    before = _ok_node(meeting_sdk.files_at(ctx, _T2), meeting_core_reflect).data
     assert sorted(before) == ["f1"]                      # f2 那一版是 _T3 才有的
-    after = meeting_sdk.files_at(ctx, _T3).value
+    after = _ok_node(meeting_sdk.files_at(ctx, _T3), meeting_core_reflect).data
     assert sorted(after) == ["f1", "f2"]
     assert after["f2"]["content"] == "print(2)"
 
 
 def test_case_resolve_versioned_file_reference_is_as_of(ctx, meeting_sdk, meeting_core_reflect):
-    file_id = meeting_sdk.file_id_by_path(ctx, "/ws/pkg/b.py").value
+    file_id = _ok_node(meeting_sdk.file_id_by_path(ctx, "/ws/pkg/b.py"),
+                       meeting_core_reflect).data
     ref = meeting_sdk.VersionedFileReference(file_id=file_id, version_time=_T3)
-    assert meeting_sdk.resolve_versioned_file_reference(ctx, ref).value["name"] == "b.py"
+    state = _ok_node(meeting_sdk.resolve_versioned_file_reference(ctx, ref),
+                     meeting_core_reflect).data
+    assert state["name"] == "b.py"
 
     too_early = meeting_sdk.VersionedFileReference(file_id=file_id, version_time=_T2)
-    assert isinstance(meeting_sdk.resolve_versioned_file_reference(ctx, too_early),
-                      meeting_sdk.Err)
+    assert _err_message(meeting_sdk.resolve_versioned_file_reference(ctx, too_early),
+                        meeting_core_reflect)
 
 
 def test_case_resolve_versioned_file_content_reference_takes_the_region(
         ctx, meeting_sdk, meeting_core_reflect):
-    file_id = meeting_sdk.file_id_by_path(ctx, "/ws/a.py").value
+    file_id = _ok_node(meeting_sdk.file_id_by_path(ctx, "/ws/a.py"), meeting_core_reflect).data
     ref = meeting_sdk.VersionedFileContentReference(
         versioned_file_ref=meeting_sdk.VersionedFileReference(file_id=file_id, version_time=_T0),
         region=meeting_sdk.TextRegion(0, 5))
-    assert meeting_sdk.resolve_versioned_file_content_reference(ctx, ref).value == "print"
+    given = meeting_sdk.resolve_versioned_file_content_reference(ctx, ref)
+    assert _ok_value(given, meeting_core_reflect) == "print"

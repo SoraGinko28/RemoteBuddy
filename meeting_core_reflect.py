@@ -112,6 +112,7 @@ CONTAINERS = ("list", "set", "dict")
 UNIT_HEADS = ("Object", "nil", "Oneof", "never")
 SCALAR_KINDS = (bool, int, float, str)
 _MISSING = object()
+_NIL = object()  # 显式的 nil：分支命中了，里面装的就是 nil
 
 
 # ----------------------------------------------------------------------
@@ -436,6 +437,8 @@ class StableAccess:
     def leaf(self, node: StableNode) -> Result:
         """StableLeaf：走到叶子取值，五种。"""
         data = node.data
+        if data is _NIL:
+            return Ok(VibaConstantValue("nil", None))
         if data is None or isinstance(data, SCALAR_KINDS):
             return Ok(_constant_value(data))
         return Err(f"这一段不是叶子：{node!r}（{type(data).__name__}）")
@@ -633,13 +636,13 @@ class StableAccess:
             if found is not _MISSING:
                 return found
             if target is not None and self._shape_matches(target, data, _tag_name(step.value)):
-                return data
+                return _present(_payload_of(data))
             return None
         if step.kind == "by_field_index":
             if isinstance(data, (tuple, list)) and 0 <= step.value < len(data):
                 return data[step.value]
             if target is not None and self._shape_matches(target, data, None):
-                return data
+                return _present(_payload_of(data))
             return None
         if step.kind == "at_index":
             elements = self._elements_of(data)
@@ -850,6 +853,30 @@ def _attribute(data, name: str):
     if isinstance(data, (SCALAR_KINDS, list, tuple, set, frozenset, dict)):
         return _MISSING
     return getattr(data, name, _MISSING)
+
+
+def _payload_of(data):
+    """分支命中了一个只有一格的对象，那一格就是这一支的载荷。
+
+    ``$ok T`` 命中 ``Ok``（只有 ``value`` 一格）时，取到的是载荷本身，所以
+    ``result.get_ok().value`` 读得出值；枚举不动（它自己就是那一支的值）。
+    """
+    if isinstance(data, Enum):
+        return data
+    slots = getattr(type(data), "__slots__", None)
+    if isinstance(slots, str):
+        slots = (slots,)
+    if isinstance(slots, tuple) and len(slots) == 1:
+        return getattr(data, slots[0], data)
+    fields = getattr(data, "__dict__", None)
+    if isinstance(fields, dict) and len(fields) == 1:
+        return next(iter(fields.values()))
+    return data
+
+
+def _present(payload):
+    """分支命中了就是"这一支在"：里面装的是 nil 时给 _NIL，而不是"没有这一段"。"""
+    return _NIL if payload is None else payload
 
 
 def _leaf_matches(written: str, data) -> bool:
