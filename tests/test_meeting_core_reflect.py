@@ -1,7 +1,7 @@
 """Tests for meeting_core_reflect: the access side of viba-reflect.md on MEETING_ADT's stable types.
 
 设计 = MEETING_ADT.md 的「稳定类型」章；数据 = meeting_adt.py 那份 Python 记录。
-起点不核版本（viba-reflect.md：root 只把描述符和数据配成对）：要核就用 stable_version_matches。
+起点不核版本（viba-reflect.md：root 只把描述符和数据配成对）：要核就用 viba_version_matches。
 """
 
 import datetime as _dt
@@ -13,9 +13,9 @@ import meeting_core_reflect as reflect
 
 
 def _open(record, name: str):
-    """按协议起一个节点：access(definition).root(StableData(record))。"""
+    """按协议起一个节点：access(definition).root(Record(record))。"""
     accessor = reflect.access(reflect.definition(name))
-    given = accessor.root(reflect.StableData(record))
+    given = accessor.root(reflect.Record(record))
     assert isinstance(given, reflect.Ok), given
     return given.value
 
@@ -67,7 +67,7 @@ class TestDesign:
         assert reflect.definition("meeting_core.FileId").full_name == "meeting_core.FileId"
 
     def test_unknown_definition_raises(self) -> None:
-        with pytest.raises(reflect.StableReflectError):
+        with pytest.raises(reflect.ReflectError):
             reflect.definition("FileDesktop")
 
 
@@ -78,21 +78,21 @@ class TestDesign:
 class TestRoot:
     def test_current_design_opens(self) -> None:
         node = _open(_file_id(), "FileId")
-        assert isinstance(node, reflect.StableNode)
+        assert isinstance(node, reflect.VibaNode)
         assert node.path == ()
 
     def test_root_hands_out_the_node_without_checking_versions(self) -> None:
         accessor = reflect.access(reflect.definition("FileId"))
-        for data in (reflect.StableData(_file_id()),
-                     reflect.StableData(_file_id(), ["deadbeef"])):
+        for data in (reflect.Record(_file_id()),
+                     reflect.Record(_file_id(), ["deadbeef"])):
             given = accessor.root(data)
             assert given.value.get_file_id().value == "f1"
-        assert accessor.file_hashes(reflect.StableData(_file_id())).value == set()
-        assert accessor.file_hashes(reflect.StableData(_file_id(), ["x"])).value == {"x"}
+        assert accessor.file_hashes(reflect.Record(_file_id())).value == set()
+        assert accessor.file_hashes(reflect.Record(_file_id(), ["x"])).value == {"x"}
 
     def test_version_matches_is_the_upper_layers_step(self) -> None:
-        assert reflect.stable_version_matches(reflect.pool(), reflect.StableData(_store())).value is True
-        assert reflect.stable_version_matches(reflect.pool(), reflect.StableData(_store(), ["nope"])).value is False
+        assert reflect.viba_version_matches(reflect.pool(), reflect.Record(_store())).value is True
+        assert reflect.viba_version_matches(reflect.pool(), reflect.Record(_store(), ["nope"])).value is False
 
 
 # =====================================================================
@@ -120,7 +120,7 @@ class TestSevenCells:
 
     def test_length_and_keys_only_for_containers(self) -> None:
         accessor = reflect.access(reflect.definition("FileKvStore"))
-        node = accessor._unwrap(accessor.root(reflect.StableData(_store())))
+        node = accessor._unwrap(accessor.root(reflect.Record(_store())))
         inner = node.get_file_id2file()
         assert accessor.length(inner).value == 1
         assert accessor.keys(inner).value == ["f1"]
@@ -129,7 +129,7 @@ class TestSevenCells:
 
     def test_leaf_on_a_record_is_an_error(self) -> None:
         accessor = reflect.access(reflect.definition("VersionedFile"))
-        node = accessor._unwrap(accessor.root(reflect.StableData(_versioned_file())))
+        node = accessor._unwrap(accessor.root(reflect.Record(_versioned_file())))
         assert "不是叶子" in accessor.leaf(node).message
 
 
@@ -160,11 +160,11 @@ class TestAddressing:
 
     def test_unknown_coordinate_is_an_error(self) -> None:
         node = _open(_file_id(), "FileId")
-        with pytest.raises(reflect.StableReflectError, match="设计里没有这个坐标"):
+        with pytest.raises(reflect.ReflectError, match="设计里没有这个坐标"):
             node.by_tag("nope")
 
     def test_at_index_on_a_non_container_is_an_error(self) -> None:
-        with pytest.raises(reflect.StableReflectError):
+        with pytest.raises(reflect.ReflectError):
             _open(_file_id(), "FileId").at_index(0)
 
 
@@ -205,7 +205,7 @@ class TestSumBranches:
         assert part.has_reference() is True
         reference = part.by_tag("reference")
         assert reference.has_screen_ref() is False
-        with pytest.raises(reflect.StableReflectError):
+        with pytest.raises(reflect.ReflectError):
             reference.by_tag("screen_ref")
 
 
@@ -225,7 +225,7 @@ class TestPythonLanding:
     def test_missing_value_is_ok_none_not_an_exception(self) -> None:
         node = _open(adt.Versioned(data=None), "Versioned")
         assert node.try_get_data().value is None
-        with pytest.raises(reflect.StableReflectError, match="没有值"):
+        with pytest.raises(reflect.ReflectError, match="没有值"):
             node.get_data()
 
     def test_dir_lists_the_synthesised_names(self) -> None:
@@ -254,21 +254,21 @@ class TestConvenience:
         node = _open(_store(), "FileKvStore")
         path = [reflect.by_tag("file_id2file"), reflect.at_key("f1"),
                 reflect.by_tag("file_content"), reflect.by_tag("data")]
-        assert reflect.stable_resolve(node, path).value.value == "print(1)"
-        assert reflect.stable_read(node, path).value.value == "print(1)"
+        assert reflect.viba_resolve(node, path).value.value == "print(1)"
+        assert reflect.viba_read(node, path).value.value == "print(1)"
 
     def test_read_reports_a_missing_step(self) -> None:
         node = _open(adt.Versioned(data=None), "Versioned")
-        assert reflect.stable_read(node, [reflect.by_tag("data")]).message == "这一步没有值"
+        assert reflect.viba_read(node, [reflect.by_tag("data")]).message == "这一步没有值"
 
     def test_resolve_reports_an_unknown_step(self) -> None:
         node = _open(_file_id(), "FileId")
-        given = reflect.stable_resolve(node, [reflect.by_tag("nope")])
+        given = reflect.viba_resolve(node, [reflect.by_tag("nope")])
         assert "设计里没有这个坐标" in given.message
 
     def test_list_fields_keeps_what_is_there(self) -> None:
         node = _open(_file_id(), "FileId")
-        given = reflect.stable_list_fields(node, reflect.definition("FileId"))
+        given = reflect.viba_list_fields(node, reflect.definition("FileId"))
         assert [member.value for member in given.value] == ["f1", "a.py"]
 
 
@@ -303,7 +303,7 @@ class TestResult:
         from viba.type import Ok
 
         node = _open(Ok("body"), "Result")
-        with pytest.raises(reflect.StableReflectError):
+        with pytest.raises(reflect.ReflectError):
             node.by_tag("err")
 
 
@@ -314,7 +314,7 @@ class TestResult:
 class TestWalk:
     def test_store_walks_down_to_leaves(self) -> None:
         accessor = reflect.access(reflect.definition("FileKvStore"))
-        root = accessor._unwrap(accessor.root(reflect.StableData(_store())))
+        root = accessor._unwrap(accessor.root(reflect.Record(_store())))
         leaves = []
         for node in accessor._walk(root):
             given = accessor.leaf(node)

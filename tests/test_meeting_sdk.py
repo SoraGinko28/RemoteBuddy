@@ -97,8 +97,8 @@ def prepare_meeting_data_as_ctx():
 
 
 def _node(value, name, reflect):
-    """按协议起一个节点：access(definition).root(StableData(value))。"""
-    given = reflect.access(reflect.definition(name)).root(reflect.StableData(value))
+    """按协议起一个节点：access(definition).root(Record(value))。"""
+    given = reflect.access(reflect.definition(name)).root(reflect.Record(value))
     assert isinstance(given, reflect.Ok), "取不到起点"
     return given.value
 

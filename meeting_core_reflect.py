@@ -7,43 +7,31 @@
 - **材料**（Data）：meeting_adt.py 那份 Python 记录——dataclass 实例、list / tuple /
   set / dict、以及标量。协议不规定 Data 长什么样，这一层把它绑到 Python 对象上。
 
-名字照 viba.rule.reflect 对 viba-reflect.md 的老规矩来：协议里的类名原样保留，
-协议里的函数落 snake_case，本层自己的辅助加下划线。
+名字照 viba.rule.reflect 对 viba-reflect.md 的老规矩来：协议里的类名原样保留（``VibaStep``、
+``VibaPath``、``VibaNode``、``VibaAccess``），函数落 snake_case（``viba_resolve`` /
+``viba_read`` / ``viba_list_fields`` / ``viba_version_matches``），四支地址是 ``by_tag`` /
+``by_field_index`` / ``at_index`` / ``at_key``；七格在 ``VibaAccess`` 上：``file_hashes`` /
+``root`` / ``has`` / ``get`` / ``leaf`` / ``length`` / ``keys``。
 
-    协议（viba-reflect.md）            Python
-    ------------------------------    ------------------------------------
-    VibaStep                          StableStep
-    VibaStep 的四支                    by_tag / by_field_index / at_index / at_key
-    VibaPath                          StablePath（= list[StableStep]）
-    VibaNode[Data]                    StableNode
-    VibaAccess[Data]                  StableAccess
-    VibaRoot / VibaHas / VibaGet
-    VibaLeaf / VibaLength / VibaKeys
-    VibaFileHashes                    StableAccess.root / has / get / leaf /
-                                      length / keys / file_hashes
-    VibaResolve / VibaRead
-    VibaListFields
-    VibaVersionMatches                stable_resolve / stable_read /
-                                      stable_list_fields / stable_version_matches
+协议里没给名字的，才是本层自己的：
 
-协议里没有名字的，是本层对它的绑定与辅助：
-
-    Data 这个形参         -> StableData：一份 Python 记录 + 它声明的设计版本
-    第 5.4 节"直接抛异常"  -> StableReflectError
-    读图与遍历            -> StableAccess 上的下划线方法、以及本模块的下划线函数
+    Data 这个形参         -> Record：一份 Python 记录 + 它声明的设计版本
+    第 5.4 节"直接抛异常"  -> ReflectError（协议只说"直接抛异常"，没起名字）
+    读图与遍历            -> VibaAccess 上的下划线方法、以及本模块的下划线函数
+    设计从哪读            -> design_source / design_hash / design_pool / pool / definition
 
 两条协议里的规矩：
 
 * ``root`` 不核版本：只把 (描述符, 数据) 配成对。数据声明的哈希用 ``file_hashes``
-  问得到，要不要核、怎么核是上层的事（``stable_version_matches`` 是现成的那一步）。
+  问得到，要不要核、怎么核是上层的事（``viba_version_matches`` 是现成的那一步）。
 * ``has`` 只答真假——设计里没这个坐标、数据里没这一段，都是 ``False``。
   ``get`` 里"数据里没有"是 ``Ok(nil)``，只有"图上压根没这个坐标"才是 ``Err``；
   ``leaf`` / ``length`` / ``keys`` 取不到就是 ``Err``。
 
-起点按协议起：``access(definition(name)).root(StableData(record))``，回来的 ``Ok`` 里就是节点
+起点按协议起：``access(definition(name)).root(Record(record))``，回来的 ``Ok`` 里就是节点
 （``Err`` 是根本没对上）。协议里的 ``Ok`` / ``Err`` 就是本模块露出的这两个。
 
-第 5.4 节的 Python 落点在 StableNode 上：``get_{name}()`` / ``has_{name}()`` /
+第 5.4 节的 Python 落点在 VibaNode 上：``get_{name}()`` / ``has_{name}()`` /
 ``in`` / ``try_get_{name}()`` / ``node[i]`` / ``node.value`` / ``len(node)`` /
 迭代 / ``keys()`` / ``values()`` / ``items()``。取值的那一类抛异常，问有没有的
 那一类永不抛。
@@ -133,7 +121,7 @@ def design_source() -> str:
     text = _normalize(DESIGN_PATH.read_text(encoding="utf-8"))
     heading = re.search(r"(?m)^##\s*" + re.escape(DESIGN_CHAPTER), text)
     if heading is None:
-        raise StableReflectError(f"{DESIGN_FILE_NAME} 里找不到「{DESIGN_CHAPTER}」这一章")
+        raise ReflectError(f"{DESIGN_FILE_NAME} 里找不到「{DESIGN_CHAPTER}」这一章")
     fence = text.index("```", heading.end())
     body_start = text.index("\n", fence) + 1
     body_end = text.index("\n```", body_start)
@@ -152,10 +140,10 @@ def design_pool() -> VibaPool:
     pool = empty_pool()
     parsed = parse_viba_file(pool, design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
     if isinstance(parsed, Err):
-        raise StableReflectError(f"稳定类型章编译不了：{parsed.message}")
+        raise ReflectError(f"稳定类型章编译不了：{parsed.message}")
     added = pool_add_file(pool, parsed.value)
     if isinstance(added, Err):
-        raise StableReflectError(f"稳定类型章进不了池子：{added.message}")
+        raise ReflectError(f"稳定类型章进不了池子：{added.message}")
     return added.value
 
 
@@ -169,16 +157,16 @@ def definition(name: str) -> VibaDefinitionDescriptor:
     full_name = name if "." in name else f"{DESIGN_MODULE_NAME}.{name}"
     found = pool_find_definition(design_pool(), full_name)
     if isinstance(found, Err):
-        raise StableReflectError(found.message)
+        raise ReflectError(found.message)
     return found.value
 
 
 # ----------------------------------------------------------------------
-# StableStep 与 StablePath
+# VibaStep 与 VibaPath
 # ----------------------------------------------------------------------
 
 
-class StableStep:
+class VibaStep:
     """地址的一步：四支之一。"""
 
     __slots__ = ("kind", "value")
@@ -191,29 +179,29 @@ class StableStep:
         return f"{self.kind}({self.value!r})"
 
     def __eq__(self, other):
-        return isinstance(other, StableStep) and (self.kind, self.value) == (other.kind, other.value)
+        return isinstance(other, VibaStep) and (self.kind, self.value) == (other.kind, other.value)
 
     def __hash__(self):
         return hash((self.kind, self.value))
 
 
-def by_tag(name: str) -> StableStep:
-    return StableStep("by_tag", _tag_of(name))
+def by_tag(name: str) -> VibaStep:
+    return VibaStep("by_tag", _tag_of(name))
 
 
-def by_field_index(index: int) -> StableStep:
-    return StableStep("by_field_index", index)
+def by_field_index(index: int) -> VibaStep:
+    return VibaStep("by_field_index", index)
 
 
-def at_index(index: int) -> StableStep:
-    return StableStep("at_index", index)
+def at_index(index: int) -> VibaStep:
+    return VibaStep("at_index", index)
 
 
-def at_key(key: str) -> StableStep:
-    return StableStep("at_key", key)
+def at_key(key: str) -> VibaStep:
+    return VibaStep("at_key", key)
 
 
-StablePath = List[StableStep]
+VibaPath = List[VibaStep]
 
 
 def _tag_of(name: str) -> str:
@@ -225,7 +213,7 @@ def _tag_name(tag: str) -> str:
     return tag[1:] if tag.startswith("$") else tag
 
 
-class StableReflectError(Exception):
+class ReflectError(Exception):
     """取值那一路失败时抛的异常，带的是协议那句 ``Err`` 的话。
 
     第 5.4 节只说"直接抛异常"，没给异常起名字，这个名字是本层的。
@@ -237,7 +225,7 @@ class StableReflectError(Exception):
 # ----------------------------------------------------------------------
 
 
-class StableData:
+class Record:
     """本层对协议里 Data 形参的绑定：一份 Python 记录 + 它声明的设计版本。
 
     协议没规定 Data 长什么样。这边绑的是 meeting_adt.py 那份记录（dataclass 实例、
@@ -252,25 +240,25 @@ class StableData:
         self.hashes = set(hashes)
 
     def __repr__(self):
-        return f"StableData({type(self.record).__name__}, {len(self.hashes)} hashes)"
+        return f"Record({type(self.record).__name__}, {len(self.hashes)} hashes)"
 
 
 # ----------------------------------------------------------------------
-# StableNode[Data]
+# VibaNode[Data]
 # ----------------------------------------------------------------------
 
 
-class StableNode:
+class VibaNode:
     """一个节点：设计侧的一段描述符 + 实现侧的一段数据。
 
-    ``path`` 是从起点走到这里的 StablePath（协议的节点上没有这一栏，是本层为了让
+    ``path`` 是从起点走到这里的 VibaPath（协议的节点上没有这一栏，是本层为了让
     地址可存、可打印、可比较而留的痕）。
     """
 
     __slots__ = ("_access", "descriptor", "data", "path")
 
-    def __init__(self, access: "StableAccess", descriptor: VibaTypeDescriptor, data,
-                 path: Sequence[StableStep] = ()):
+    def __init__(self, access: "VibaAccess", descriptor: VibaTypeDescriptor, data,
+                 path: Sequence[VibaStep] = ()):
         self._access = access
         self.descriptor = descriptor
         self.data = data
@@ -278,20 +266,20 @@ class StableNode:
 
     def __repr__(self):
         where = ".".join(repr(step) for step in self.path) or "root"
-        return f"StableNode({where})"
+        return f"VibaNode({where})"
 
     # ---- 第 5.4 节的节点访问器：取值那一路抛异常 ----
 
-    def by_tag(self, name: str) -> "StableNode":
+    def by_tag(self, name: str) -> "VibaNode":
         return self._access._unwrap(self._access.get(self, by_tag(name)))
 
-    def by_field_index(self, index: int) -> "StableNode":
+    def by_field_index(self, index: int) -> "VibaNode":
         return self._access._unwrap(self._access.get(self, by_field_index(index)))
 
-    def at_index(self, index: int) -> "StableNode":
+    def at_index(self, index: int) -> "VibaNode":
         return self._access._unwrap(self._access.get(self, at_index(index)))
 
-    def at_key(self, key: str) -> "StableNode":
+    def at_key(self, key: str) -> "VibaNode":
         return self._access._unwrap(self._access.get(self, at_key(key)))
 
     @property
@@ -383,11 +371,11 @@ class StableNode:
 
 
 # ----------------------------------------------------------------------
-# StableAccess[Data]
+# VibaAccess[Data]
 # ----------------------------------------------------------------------
 
 
-class StableAccess:
+class VibaAccess:
     """绑好一段稳定类型的访问器：第 5.2 节的七格，加本层的读图辅助。"""
 
     def __init__(self, definition: VibaDefinitionDescriptor):
@@ -395,31 +383,31 @@ class StableAccess:
         self.pool = definition.pool
 
     def __repr__(self):
-        return f"StableAccess({self.definition.full_name!r})"
+        return f"VibaAccess({self.definition.full_name!r})"
 
     # ---- 协议七格 ----
 
-    def file_hashes(self, data: StableData) -> Result:
+    def file_hashes(self, data: Record) -> Result:
         return Ok(set(data.hashes))
 
-    def root(self, data: StableData) -> Result:
+    def root(self, data: Record) -> Result:
         """起点：给出 (描述符, 数据) 这一对。
 
         版本不在这里核：数据声明的哈希由 ``file_hashes`` 给出，上层想核就用
-        ``stable_version_matches``（或自己比）。
+        ``viba_version_matches``（或自己比）。
         """
-        return Ok(StableNode(self, self.definition.body, data.record))
+        return Ok(VibaNode(self, self.definition.body, data.record))
 
-    def has(self, node: StableNode, step: StableStep) -> Result:
-        """StableHas：这一步有没有。设计里没这个坐标、数据里没这一段，都是 false。"""
+    def has(self, node: VibaNode, step: VibaStep) -> Result:
+        """VibaHas：这一步有没有。设计里没这个坐标、数据里没这一段，都是 false。"""
         slots = self._members(node)
         if not self._knows(node, step, slots):
             return Ok(False)
         target = self._target_of(node, step, slots)
         return Ok(self._pick(node, step, target) is not None)
 
-    def get(self, node: StableNode, step: StableStep) -> Result:
-        """StableGet：往里走一步。数据里没有是 Ok(nil)，图上没这个坐标才是 Err。"""
+    def get(self, node: VibaNode, step: VibaStep) -> Result:
+        """VibaGet：往里走一步。数据里没有是 Ok(nil)，图上没这个坐标才是 Err。"""
         slots = self._members(node)
         if not self._knows(node, step, slots):
             return Err(f"设计里没有这个坐标：{step}（{node!r}）")
@@ -429,10 +417,10 @@ class StableAccess:
         piece = self._pick(node, step, target)
         if piece is None:
             return Ok(None)
-        return Ok(StableNode(self, target, piece, tuple(node.path) + (step,)))
+        return Ok(VibaNode(self, target, piece, tuple(node.path) + (step,)))
 
-    def leaf(self, node: StableNode) -> Result:
-        """StableLeaf：走到叶子取值，五种。"""
+    def leaf(self, node: VibaNode) -> Result:
+        """VibaLeaf：走到叶子取值，五种。"""
         data = node.data
         if data is _NIL:
             return Ok(VibaConstantValue("nil", None))
@@ -440,14 +428,14 @@ class StableAccess:
             return Ok(_constant_value(data))
         return Err(f"这一段不是叶子：{node!r}（{type(data).__name__}）")
 
-    def length(self, node: StableNode) -> Result:
-        """StableLength：list / set / tuple 的元素个数，dict 的键数。"""
+    def length(self, node: VibaNode) -> Result:
+        """VibaLength：list / set / tuple 的元素个数，dict 的键数。"""
         if not isinstance(node.data, (list, tuple, set, frozenset, dict)):
             return Err(f"这一段不是容器：{node!r}")
         return Ok(len(node.data))
 
-    def keys(self, node: StableNode) -> Result:
-        """StableKeys：dict 的键，按实现给的顺序。"""
+    def keys(self, node: VibaNode) -> Result:
+        """VibaKeys：dict 的键，按实现给的顺序。"""
         if not isinstance(node.data, dict):
             return Err(f"这一段不是 dict：{node!r}")
         return Ok([str(key) for key in node.data.keys()])
@@ -456,9 +444,9 @@ class StableAccess:
 
     def _unwrap(self, given: Result):
         if isinstance(given, Err):
-            raise StableReflectError(given.message)
+            raise ReflectError(given.message)
         if given.value is None:
-            raise StableReflectError("这一段没有值")
+            raise ReflectError("这一段没有值")
         return given.value
 
     # ---- 私有：地图（把描述符读成可寻址的形状） ----
@@ -555,7 +543,7 @@ class StableAccess:
         """能按下标数、按下标取的：list / set / tuple。"""
         return self._container_kind(descriptor) is not None or descriptor.kind == TUPLE
 
-    def _members(self, node: StableNode) -> Optional[List[tuple]]:
+    def _members(self, node: VibaNode) -> Optional[List[tuple]]:
         """这一段有哪些成员：[(tag 或 None, 描述符), ...]；没有成员就给 None。
 
         和链、积链、指数链一个规矩：成员就是 $elements；链头是单位元就不算。
@@ -578,7 +566,7 @@ class StableAccess:
                 slots.append((None, element))
         return slots
 
-    def _knows(self, node: StableNode, step: StableStep, slots: Optional[List[tuple]]) -> bool:
+    def _knows(self, node: VibaNode, step: VibaStep, slots: Optional[List[tuple]]) -> bool:
         if step.kind == "by_tag":
             return any(tag == step.value for tag, _ in slots or [])
         if step.kind == "by_field_index":
@@ -590,7 +578,7 @@ class StableAccess:
             return self._container_kind(self._unfold(node.descriptor)) == "dict"
         return False
 
-    def _target_of(self, node: StableNode, step: StableStep, slots: Optional[List[tuple]]):
+    def _target_of(self, node: VibaNode, step: VibaStep, slots: Optional[List[tuple]]):
         if step.kind == "by_tag":
             for tag, descriptor in slots or []:
                 if tag == step.value:
@@ -619,7 +607,7 @@ class StableAccess:
 
     # ---- 私有：数据侧（Python 记录） ----
 
-    def _pick(self, node: StableNode, step: StableStep,
+    def _pick(self, node: VibaNode, step: VibaStep,
               target: Optional[VibaTypeDescriptor] = None):
         """数据里对应的那一段；没有就是 None。
 
@@ -700,13 +688,13 @@ class StableAccess:
             return list(data)
         return None
 
-    # ---- 私有：成员遍历（StableListFields 与 walk 用） ----
+    # ---- 私有：成员遍历（VibaListFields 与 walk 用） ----
 
     def _is_unit_member(self, member) -> bool:
         written = _member_type_name(member)
         return written in UNIT_HEADS
 
-    def _walk(self, node: StableNode) -> List[StableNode]:
+    def _walk(self, node: VibaNode) -> List[VibaNode]:
         """把这张图上能走到的坐标全走一遍（体检表用）。"""
         out = [node]
         positional = 0
@@ -742,8 +730,8 @@ class StableAccess:
 # ----------------------------------------------------------------------
 
 
-def stable_resolve(node: StableNode, path: Sequence[StableStep]) -> Result:
-    """StableResolve：逐个 step 走 StableGet。"""
+def viba_resolve(node: VibaNode, path: Sequence[VibaStep]) -> Result:
+    """VibaResolve：逐个 step 走 VibaGet。"""
     current = node
     for step in path:
         given = node._access.get(current, step)
@@ -753,9 +741,9 @@ def stable_resolve(node: StableNode, path: Sequence[StableStep]) -> Result:
     return Ok(current)
 
 
-def stable_read(node: StableNode, path: Sequence[StableStep]) -> Result:
-    """StableRead：先 StableResolve 再 StableLeaf。"""
-    resolved = stable_resolve(node, path)
+def viba_read(node: VibaNode, path: Sequence[VibaStep]) -> Result:
+    """VibaRead：先 VibaResolve 再 VibaLeaf。"""
+    resolved = viba_resolve(node, path)
     if isinstance(resolved, Err):
         return resolved
     if resolved.value is None:
@@ -763,8 +751,8 @@ def stable_read(node: StableNode, path: Sequence[StableStep]) -> Result:
     return node._access.leaf(resolved.value)
 
 
-def stable_list_fields(node: StableNode, definition: VibaDefinitionDescriptor) -> Result:
-    """StableListFields：按 DefinitionMembers 逐个 StableGet，取到的收进表。"""
+def viba_list_fields(node: VibaNode, definition: VibaDefinitionDescriptor) -> Result:
+    """VibaListFields：按 DefinitionMembers 逐个 VibaGet，取到的收进表。"""
     accessor = node._access
     members = _definition_members(definition)
     if isinstance(members, Err):
@@ -786,8 +774,8 @@ def stable_list_fields(node: StableNode, definition: VibaDefinitionDescriptor) -
     return Ok(out)
 
 
-def stable_version_matches(pool: VibaPool, data: StableData) -> Result:
-    """StableVersionMatches：数据声明的每个哈希都要能在池子里找到。"""
+def viba_version_matches(pool: VibaPool, data: Record) -> Result:
+    """VibaVersionMatches：数据声明的每个哈希都要能在池子里找到。"""
     known = {f.file_hash for f in pool.files}
     return Ok(not (set(data.hashes) - known))
 
@@ -797,9 +785,9 @@ def stable_version_matches(pool: VibaPool, data: StableData) -> Result:
 # ----------------------------------------------------------------------
 
 
-def access(definition_descriptor: VibaDefinitionDescriptor) -> StableAccess:
+def access(definition_descriptor: VibaDefinitionDescriptor) -> VibaAccess:
     """把一段稳定类型（定义描述符）当图，返回访问器。"""
-    return StableAccess(definition_descriptor)
+    return VibaAccess(definition_descriptor)
 
 
 # ----------------------------------------------------------------------
@@ -907,12 +895,12 @@ __all__ = [
     "DESIGN_FILE_NAME",
     "DESIGN_MODULE_NAME",
     "DESIGN_PATH",
-    "StableAccess",
-    "StableData",
-    "StableNode",
-    "StablePath",
-    "StableReflectError",
-    "StableStep",
+    "VibaAccess",
+    "Record",
+    "VibaNode",
+    "VibaPath",
+    "ReflectError",
+    "VibaStep",
     "access",
     "at_index",
     "at_key",
@@ -923,8 +911,8 @@ __all__ = [
     "design_pool",
     "design_source",
     "pool",
-    "stable_list_fields",
-    "stable_read",
-    "stable_resolve",
-    "stable_version_matches",
+    "viba_list_fields",
+    "viba_read",
+    "viba_resolve",
+    "viba_version_matches",
 ]
