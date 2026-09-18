@@ -2,7 +2,7 @@
 
 这是 viba-reflect.md 的访问侧，落在稳定 ADT 上：
 
-- **设计**（地图）：MEETING_ADT.md 里「稳定类型」那一章的代码块，由描述符侧
+- **设计**（地图）：MEETING_ADT.md 里「稳定类型」那一章（模块名 meeting_core）的代码块，由描述符侧
   （viba.viba_type_descriptor）编译成描述符池。地图只跟文档有关，跟实现无关。
 - **材料**（Data）：meeting_adt.py 那份 Python 记录——dataclass 实例、list / tuple /
   set / dict、以及标量。协议不规定 Data 长什么样，这一层把它绑到 Python 对象上。
@@ -104,7 +104,7 @@ from viba.viba_type_descriptor import (
 )
 
 DESIGN_FILE_NAME = "MEETING_ADT.md"
-DESIGN_MODULE_NAME = "stable_adt"
+DESIGN_MODULE_NAME = "meeting_core"
 DESIGN_CHAPTER = "稳定类型"
 DESIGN_PATH = Path(__file__).with_name(DESIGN_FILE_NAME)
 
@@ -161,7 +161,7 @@ def pool() -> VibaPool:
 
 @lru_cache(maxsize=None)
 def definition(name: str) -> VibaDefinitionDescriptor:
-    """按名字取定义描述符；``'FileId'`` 与 ``'stable_adt.FileId'`` 都认。"""
+    """按名字取定义描述符；``'FileId'`` 与 ``'meeting_core.FileId'`` 都认。"""
     full_name = name if "." in name else f"{DESIGN_MODULE_NAME}.{name}"
     found = pool_find_definition(design_pool(), full_name)
     if isinstance(found, Err):

@@ -55,8 +55,8 @@ class TestDesign:
         assert "FileId" in names and "ContentReference" in names and "Result" in names
 
     def test_definition_by_short_and_full_name(self) -> None:
-        assert reflect.definition("FileId").full_name == "stable_adt.FileId"
-        assert reflect.definition("stable_adt.FileId").full_name == "stable_adt.FileId"
+        assert reflect.definition("FileId").full_name == "meeting_core.FileId"
+        assert reflect.definition("meeting_core.FileId").full_name == "meeting_core.FileId"
 
     def test_unknown_definition_raises(self) -> None:
         with pytest.raises(reflect.StableReflectError):
