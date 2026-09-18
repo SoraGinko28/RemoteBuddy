@@ -46,9 +46,9 @@ def _file_id(file_id: str = "f1", entry_name: str = "a.py") -> adt.FileId:
 
 def _versioned_file() -> adt.VersionedFile:
     return adt.VersionedFile(
-        file_name=adt.Versioned("a.py", _moment(), "alice"),
-        file_meta=adt.Versioned(adt.DataStatus.READ_ONLY, _moment(), "alice"),
-        file_content=adt.Versioned("print(1)", _moment(), "bob"),
+        file_name=[adt.Versioned("a.py", _moment(), "alice")],
+        file_meta=[adt.Versioned(adt.DataStatus.READ_ONLY, _moment(), "alice")],
+        file_content=[adt.Versioned("print(1)", _moment(), "bob")],
     )
 
 
@@ -116,14 +116,14 @@ class TestSevenCells:
 
     def test_leaf_kinds(self) -> None:
         node = _open(_versioned_file(), "VersionedFile")
-        author = node.get_file_name().get_author()
+        author = node.get_file_name().at_index(0).get_author()
         assert author.leaf.kind == "str"
         assert author.value == "alice"
         assert author.leaf.value == "alice"
 
     def test_time_is_a_python_datetime_and_reads_through_the_design(self) -> None:
         node = _open(_versioned_file(), "VersionedFile")
-        moment = node.get_file_name().get_time()
+        moment = node.get_file_name().at_index(0).get_time()
         assert isinstance(moment.data, _dt.datetime)
         assert moment.get_microsecond().value == _moment().microsecond
 
@@ -149,17 +149,19 @@ class TestSevenCells:
 class TestAddressing:
     def test_by_tag_and_at_key_walk_the_store(self) -> None:
         node = _open(_store(), "FileKvStore")
-        content = node.by_tag("file_id2file").at_key("f1").get_file_content().get_data()
+        content = (node.by_tag("file_id2file").at_key("f1")
+                   .get_file_content().at_index(0).get_data())
         assert content.value == "print(1)"
 
-    def test_at_index_walks_a_list(self) -> None:
+    def test_at_index_walks_a_version_chain(self) -> None:
         history = adt.VersionedFile(
-            file_name=adt.Versioned("a.py"),
-            file_meta=adt.Versioned(None),
-            file_content=adt.Versioned("body"),
+            file_name=[adt.Versioned("a.py")],
+            file_meta=[adt.Versioned(None)],
+            file_content=[adt.Versioned("body"), adt.Versioned("body\nmore")],
         )
         node = _open(history, "VersionedFile")
-        assert node.get_file_content().get_data().value == "body"
+        assert node.get_file_content().at_index(0).get_data().value == "body"
+        assert node.get_file_content().at_index(1).get_data().value == "body\nmore"
 
     def test_by_field_index_walks_an_untagged_branch(self) -> None:
         segment = adt.TerminalTextSegment(text="x", fg=adt.Rgb(1, 2, 3))
@@ -184,7 +186,7 @@ class TestAddressing:
 class TestSumBranches:
     def test_data_status_enum_matches_its_tag(self) -> None:
         node = _open(_versioned_file(), "VersionedFile")
-        status = node.get_file_meta().get_data()
+        status = node.get_file_meta().at_index(0).get_data()
         assert status.has_read_only() is True
         assert status.has_deleted() is False
 
@@ -230,7 +232,7 @@ class TestSumBranches:
 class TestPythonLanding:
     def test_get_has_try_get_and_in(self) -> None:
         node = _open(_versioned_file(), "VersionedFile")
-        assert node.get_file_name().get_data().value == "a.py"
+        assert node.get_file_name().at_index(0).get_data().value == "a.py"
         assert node.has_file_name() is True
         assert node.try_get_nope().message.startswith("设计里没有这个坐标")
         assert "file_name" in node
@@ -249,8 +251,9 @@ class TestPythonLanding:
         node = _open(_store(), "FileKvStore").get_file_id2file()
         assert len(node) == 1 and node.is_dict is True
         assert node.keys() == ["f1"]
-        assert node["f1"].get_file_name().get_data().value == "a.py"
-        assert [value.get_file_name().get_data().value for _, value in node.items()] == ["a.py"]
+        assert node["f1"].get_file_name().at_index(0).get_data().value == "a.py"
+        assert [value.get_file_name().at_index(0).get_data().value
+                for _, value in node.items()] == ["a.py"]
         styles = _open(adt.TerminalTextSegment(text="x", styles={"bold"}), "TerminalTextSegment").get_styles()
         assert [style.value for style in styles] == ["bold"]
 
@@ -267,7 +270,8 @@ class TestConvenience:
     def test_resolve_and_read(self) -> None:
         node = _open(_store(), "FileKvStore")
         path = [reflect.by_tag("file_id2file"), reflect.at_key("f1"),
-                reflect.by_tag("file_content"), reflect.by_tag("data")]
+                reflect.by_tag("file_content"), reflect.at_index(0),
+                reflect.by_tag("data")]
         assert reflect.viba_resolve(node, path).value.value == "print(1)"
         assert reflect.viba_get_by_path(node, path).value.value == "print(1)"
 

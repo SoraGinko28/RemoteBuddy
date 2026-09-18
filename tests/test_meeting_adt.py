@@ -1485,14 +1485,14 @@ def _sample_desktop() -> adt.FileDesktop:
 def _sample_store() -> adt.FileKvStore:
     return adt.FileKvStore(file_id2file={
         "f1": adt.VersionedFile(
-            file_name=_versioned("a.py", author="alice"),
-            file_meta=_versioned(adt.DataStatus.READ_ONLY, author="alice"),
-            file_content=_versioned("print(1)", author="bob"),
+            file_name=[_versioned("a.py", author="alice")],
+            file_meta=[_versioned(adt.DataStatus.READ_ONLY, author="alice")],
+            file_content=[_versioned("print(1)", author="bob")],
         ),
         "f2": adt.VersionedFile(
-            file_name=_versioned("b.py", author="bob"),
-            file_meta=_versioned(None, author="bob"),
-            file_content=_versioned("", author="bob"),
+            file_name=[_versioned("b.py", author="bob")],
+            file_meta=[_versioned(None, author="bob")],
+            file_content=[_versioned("", author="bob")],
         ),
     })
 
@@ -1550,13 +1550,13 @@ class TestVersionedFileCodec:
         versioned_file = _sample_store().file_id2file["f1"]
         restored = adt.versioned_file_from_dict(adt.versioned_file_to_dict(versioned_file))
         assert restored == versioned_file
-        assert restored.file_meta.data is adt.DataStatus.READ_ONLY
+        assert restored.file_meta[-1].data is adt.DataStatus.READ_ONLY
 
-    def test_empty_payload_gives_empty_parts(self) -> None:
+    def test_empty_payload_gives_empty_chains(self) -> None:
         restored = adt.versioned_file_from_dict({})
-        assert restored.file_name.data == ""
-        assert restored.file_meta.data is None
-        assert restored.file_content.data == ""
+        assert restored.file_name == []
+        assert restored.file_meta == []
+        assert restored.file_content == []
 
 
 class TestFileKvStoreCodec:
@@ -1697,3 +1697,33 @@ class TestMeetingDataFileLayer:
         data = adt.meeting_data_from_dict(payload)
         assert data.file_kv_store.file_id2file == {}
         assert data.file_desktop.workspaces == []
+
+
+class TestMemberOrderAfterOpenFile:
+    def test_a_new_file_keeps_the_order_a_permutation(self) -> None:
+        import meeting_sdk
+        from viba.type import Ok
+
+        desktop = adt.FileDesktop(workspaces=[adt.FileWorkspace(
+            member_files=[_file_id("f1", "a.py")],
+            workspace_name="ws",
+            workspace_status=None,
+        )])
+        desktop.reorder_indexes = _versioned(adt.identity_desktop_order(desktop),
+                                             author="alice")
+        store = adt.FileKvStore(file_id2file={
+            "f1": adt.VersionedFile(
+                file_name=[_versioned("a.py", author="alice")],
+                file_meta=[],
+                file_content=[_versioned("print(1)", author="alice")],
+            )
+        })
+        meeting = adt.MeetingData(file_kv_store=store, file_desktop=desktop)
+        moment = _datetime(2026, 9, 18, 12, 0, 0, 5, tzinfo=_dt_timezone.utc)
+
+        assert isinstance(meeting_sdk.open_file(meeting, "/ws/a.py", moment, "alice"), Ok)
+        adt.assert_file_desktop_member_order(desktop)         # 打开已有的：没动成员
+
+        assert isinstance(meeting_sdk.open_file(meeting, "/ws/c.py", moment, "alice"), Ok)
+        adt.assert_file_desktop_member_order(desktop)         # 新建：快照跟着记了一版
+        assert sorted(meeting.file_kv_store.file_id2file) == ["f1", "f2"]

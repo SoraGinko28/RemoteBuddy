@@ -279,7 +279,7 @@ ScreenContent :=
 FileState :=
     Object
   * $name str
-  * $meta DataStatus
+  * $meta Optional[DataStatus]           # nil = 可写（默认）
   * $content str
 
 # ---------------------------------------------------------------- #
@@ -294,9 +294,14 @@ FileId :=
 
 VersionedFile :=
     Object
-  * $file_name Versioned[str]
-  * $file_meta Versioned[DataStatus]
-  * $file_content Versioned[str]
+  * $file_name AppendOnlyList[Versioned[str]]                    # 名字链：改名也只加一版
+  * $file_meta AppendOnlyList[Versioned[DataStatus]]             # 状态链：链上没有版本 = 缺省，可写
+  * $file_content AppendOnlyList[Versioned[str]]                 # 内容链：只追加，旧版留着
+  * Appendix[{
+      # 三个部件各一条链，就是 FileDesktop 的 Appendix 说的那三条；
+      # as-of 取链上 (Versioned.time ≤ 引用时刻) 的最后一版；链只增，已有版本永不动。
+      # 状态链空着 = 可写：$deleted / $read_only 是后加的状态，可写是缺省
+    }]
 
 FileKvStore :=
     Object
@@ -588,6 +593,25 @@ resolve_versioned_file_content_reference[Ctx] :=
     mc.Result[str]                             # 引用那一段的原文
   <- $ctx Ctx
   <- $ref mc.VersionedFileContentReference
+  
+open_file[Ctx] :=
+    mc.Result[mc.FileId]                       # 路径上有就打开（只读/已删的也照开），没有就新建
+  <- $ctx Ctx
+  <- $file_path str                            # /workspace/entry 或 /workspace/fold/entry
+  <- $time mc.datetime
+  <- $user_name mc.UserName                    # 新建那三版都记这个时刻与作者
+  # 不能新建 -> $err：路径形状不对 / workspace 或 fold 不存在 / 那一层只读 /
+  # 那一层已有同名成员（层内名字唯一）；新建的文件：name = 路径末段、meta = nil（可写）、
+  # content = ""，各记一版（状态链空着 = 可写）；同一路径来回都是同一个 FileId；
+  # 成员多了一个，$reorder_indexes 也要记一版新的排列（快照必须是当前成员的排列）
+
+write_text[Ctx] :=
+    mc.Result[nil]                             # 文件只读或已删 -> $err
+  <- $ctx Ctx
+  <- $file_id mc.FileId
+  <- $text_content str                         # 追加：内容链加一版（旧全文 + 这段），旧版原样留着
+  <- $time mc.datetime
+  <- $user_name mc.UserName
 
 # ---------------------------------------------------------------- #
 # 构造引用这类值：不吃 ctx（不碰记录），名字一律 make_*
