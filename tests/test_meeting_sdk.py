@@ -94,6 +94,52 @@ def prepare_meeting_data_as_ctx():
 
 
 # ----------------------------------------------------------------------
+# 输入与读法的小工具
+# ----------------------------------------------------------------------
+# 设计里的类型（mc.ChatReference 之类）在 Python 这边就是 meeting_adt 里同名的 dataclass；
+# meeting_sdk 不导出它们（导出的只有协议那 20 个接口），所以用例用下面几个小构造器造输入。
+
+
+def _region(start, end):
+    return meeting_adt.TextRegion(start, end)
+
+
+def _chat_ref(msg_time, user_name, region):
+    return meeting_adt.ChatReference(msg_time=msg_time, user_name=user_name,
+                                     region=_region(*region))
+
+
+def _score_ref(judge_time, judge_name):
+    return meeting_adt.ScoreReference(judge_time=judge_time, judge_name=judge_name)
+
+
+def _screen_ref(capture_time, stream_name, region):
+    return meeting_adt.ScreenReference(capture_time=capture_time, stream_name=stream_name,
+                                       region=_region(*region))
+
+
+def _control_ref(start_time, user_name, region):
+    return meeting_adt.TerminalControlReference(start_time=start_time, user_name=user_name,
+                                                region=_region(*region))
+
+
+def _file_ref(file_id, version_time):
+    return meeting_adt.VersionedFileReference(file_id=file_id, version_time=version_time)
+
+
+def _file_content_ref(ref, region):
+    return meeting_adt.VersionedFileContentReference(versioned_file_ref=ref,
+                                                     region=_region(*region))
+
+
+def _branches(value, name, reflect):
+    """把一段值按设计读成节点，再问它是哪一支。"""
+    given = reflect.access(_definition(name)).root(reflect.Record(value))
+    assert isinstance(given, Ok), "取不到起点"
+    return given.value
+
+
+# ----------------------------------------------------------------------
 # 读结果：只走反射的标准接口
 # ----------------------------------------------------------------------
 
@@ -201,8 +247,7 @@ def test_case_chat_message_at_is_unique_per_time_and_user(ctx, sdk, reflect):
 
 
 def test_case_resolve_chat_reference(ctx, sdk, reflect):
-    ref = sdk.ChatReference(msg_time=_T2, user_name="bob",
-                                    region=sdk.TextRegion(0, 2))
+    ref = _chat_ref(_T2, "bob", (0, 2))
     message = _ok_node(sdk.resolve_chat_reference(ctx, ref), reflect).data
     node = _node(message, "ChatMessage", reflect)
     assert node.get_user_name().by_tag("agent_name").value == "bob"
@@ -210,14 +255,13 @@ def test_case_resolve_chat_reference(ctx, sdk, reflect):
 
 def test_case_resolve_chat_content_reference_takes_the_region(ctx, sdk,
                                                              reflect):
-    ref = sdk.ChatReference(msg_time=_T1, user_name="alice",
-                                    region=sdk.TextRegion(0, 2))
+    ref = _chat_ref(_T1, "alice", (0, 2))
     given = sdk.resolve_chat_content_reference(ctx, ref)
     assert _ok_value(given, reflect) == "hi"
 
 
 def test_case_resolve_score_reference(ctx, sdk, reflect):
-    ref = sdk.ScoreReference(judge_time=_T2, judge_name="bob")
+    ref = _score_ref(_T2, "bob")
     message = _ok_node(sdk.resolve_score_reference(ctx, ref), reflect).data
     node = _node(message, "ScoreMessage", reflect)
     assert node.get_tag().value == "correctness"
@@ -225,7 +269,7 @@ def test_case_resolve_score_reference(ctx, sdk, reflect):
 
 
 def test_case_unknown_score_reference_is_an_error(ctx, sdk, reflect):
-    ref = sdk.ScoreReference(judge_time=_T1, judge_name="nobody")
+    ref = _score_ref(_T1, "nobody")
     assert "nobody" in _err_message(sdk.resolve_score_reference(ctx, ref),
                                     reflect)
 
@@ -247,8 +291,7 @@ def test_case_screen_at_without_that_moment_is_an_error(ctx, sdk, reflect):
 
 
 def test_case_resolve_screen_reference(ctx, sdk, reflect):
-    ref = sdk.ScreenReference(capture_time=_T1, stream_name="screen",
-                                      region=sdk.TextRegion(0, 2))
+    ref = _screen_ref(_T1, "screen", (0, 2))
     state = _ok_node(sdk.resolve_screen_reference(ctx, ref), reflect).data
     assert state["text"] == "ab\ncd"
 
@@ -264,8 +307,8 @@ def test_case_participants(ctx, sdk, reflect):
 
 def test_case_roles(ctx, sdk, reflect):
     roster = _ok_node(sdk.roles(ctx), reflect).data
-    assert roster["alice"] is sdk.AgentRole.GENERATOR
-    assert roster["bob"] is sdk.AgentRole.PASSIVE_DISCRIMINATOR
+    assert _branches(roster["alice"], "AgentRole", reflect).has_generator() is True
+    assert _branches(roster["bob"], "AgentRole", reflect).has_passive_discriminator() is True
 
 
 def test_case_owner_at_covers_and_leaves_gaps(ctx, sdk, reflect):
@@ -276,11 +319,9 @@ def test_case_owner_at_covers_and_leaves_gaps(ctx, sdk, reflect):
 
 
 def test_case_control_owner_of_a_handover(ctx, sdk, reflect):
-    takeover = sdk.TerminalControlReference(
-        start_time=_T0, user_name="alice", region=sdk.TextRegion(0, 3))
+    takeover = _control_ref(_T0, "alice", (0, 3))
     assert _ok_value(sdk.control_owner_of(ctx, takeover), reflect) == "alice"
-    handback = sdk.TerminalControlReference(
-        start_time=_T2, user_name=None, region=sdk.TextRegion(0, 3))
+    handback = _control_ref(_T2, None, (0, 3))
     assert _ok_value(sdk.control_owner_of(ctx, handback), reflect) is None
 
 
@@ -317,7 +358,7 @@ def test_case_latest_file_gives_the_current_state(ctx, sdk, reflect):
     file_id = _ok_node(sdk.file_id_by_path(ctx, "/ws/a.py"), reflect).data
     state = _ok_node(sdk.latest_file(ctx, file_id), reflect).data
     assert state["name"] == "a.py"
-    assert state["meta"] is sdk.DataStatus.READ_ONLY
+    assert _branches(state["meta"], "DataStatus", reflect).has_read_only() is True
     assert state["content"] == "print(1)"
 
 
@@ -332,12 +373,12 @@ def test_case_files_at_only_lists_what_existed(ctx, sdk, reflect):
 def test_case_resolve_versioned_file_reference_is_as_of(ctx, sdk, reflect):
     file_id = _ok_node(sdk.file_id_by_path(ctx, "/ws/pkg/b.py"),
                        reflect).data
-    ref = sdk.VersionedFileReference(file_id=file_id, version_time=_T3)
+    ref = _file_ref(file_id, _T3)
     state = _ok_node(sdk.resolve_versioned_file_reference(ctx, ref),
                      reflect).data
     assert state["name"] == "b.py"
 
-    too_early = sdk.VersionedFileReference(file_id=file_id, version_time=_T2)
+    too_early = _file_ref(file_id, _T2)
     assert _err_message(sdk.resolve_versioned_file_reference(ctx, too_early),
                         reflect)
 
@@ -345,8 +386,6 @@ def test_case_resolve_versioned_file_reference_is_as_of(ctx, sdk, reflect):
 def test_case_resolve_versioned_file_content_reference_takes_the_region(
         ctx, sdk, reflect):
     file_id = _ok_node(sdk.file_id_by_path(ctx, "/ws/a.py"), reflect).data
-    ref = sdk.VersionedFileContentReference(
-        versioned_file_ref=sdk.VersionedFileReference(file_id=file_id, version_time=_T0),
-        region=sdk.TextRegion(0, 5))
+    ref = _file_content_ref(_file_ref(file_id, _T0), (0, 5))
     given = sdk.resolve_versioned_file_content_reference(ctx, ref)
     assert _ok_value(given, reflect) == "print"

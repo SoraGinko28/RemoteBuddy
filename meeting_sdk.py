@@ -3,7 +3,10 @@
 设计（签名）在 MEETING_ADT.md 的「取数据接口」那一章（模块名 meeting_sdk）：每个函数带泛型
 参数 ``Ctx``、吃一个 ``$ctx``，返回 Result，签名里只有稳定类型。这一层是它的实现。
 
-这一版的绑定（协议没规定 Ctx / Data 长什么样，实现方自己绑）：
+**对外的接口就是 meeting_sdk.viba 里那 20 个**：名字落 snake_case，参数、返回都照设计，不多导出
+任何东西——签名里那些类型（``mc.ChatReference``、``mc.AgentRole``…）属于 meeting_core，不从这里拿。
+
+这一版的绑定（协议说 Ctx / Data 由实现方绑）：
 
 * ``Ctx`` = :class:`meeting_adt.MeetingData`：一份会议记录。
 * ``Result[T]`` = viba 的 ``Ok`` / ``Err``（meeting_core_reflect 能把它们读成 Result 的两支）。
@@ -32,24 +35,7 @@ if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VEND
 
 from viba.type import Err as _Err, Ok as _Ok, Result as _Result  # noqa: E402
 
-Ctx = adt.MeetingData
-
-# 接口吃进 / 吐出的那些类型，从这一份里拿，调用方不必去碰记录层。
-MeetingData = adt.MeetingData
-AgentRole = adt.AgentRole
-DataStatus = adt.DataStatus
-TextRegion = adt.TextRegion
-FileId = adt.FileId
-VersionedFile = adt.VersionedFile
-FileKvStore = adt.FileKvStore
-ChatMessage = adt.ChatMessage
-ScoreMessage = adt.ScoreMessage
-ScreenReference = adt.ScreenReference
-ChatReference = adt.ChatReference
-ScoreReference = adt.ScoreReference
-TerminalControlReference = adt.TerminalControlReference
-VersionedFileReference = adt.VersionedFileReference
-VersionedFileContentReference = adt.VersionedFileContentReference
+Ctx = adt.MeetingData  # 这一版的绑定：Ctx 就是一份会议记录（协议说 Ctx 由实现方绑）
 
 
 # ----------------------------------------------------------------------
@@ -331,40 +317,24 @@ def _file_state_at(versioned_file: "adt.VersionedFile",
 
 
 __all__ = [
-    "AgentRole",
-    "ChatMessage",
-    "ChatReference",
-    "Ctx",
-    "DataStatus",
-    "FileId",
-    "FileKvStore",
-    "MeetingData",
-    "ScoreMessage",
-    "ScoreReference",
-    "ScreenReference",
-    "TerminalControlReference",
-    "TextRegion",
-    "VersionedFile",
-    "VersionedFileContentReference",
-    "VersionedFileReference",
-    "chat_message_at",
-    "chat_messages",
     "chunk_times",
+    "streams_between",
+    "chat_messages",
+    "score_messages",
+    "chat_message_at",
+    "resolve_chat_reference",
+    "resolve_chat_content_reference",
+    "resolve_score_reference",
+    "screen_at",
+    "resolve_screen_reference",
+    "participants",
+    "roles",
+    "owner_at",
     "control_owner_of",
     "file_id_by_path",
     "file_kv_store",
     "files_at",
     "latest_file",
-    "owner_at",
-    "participants",
-    "resolve_chat_content_reference",
-    "resolve_chat_reference",
-    "resolve_score_reference",
-    "resolve_screen_reference",
-    "resolve_versioned_file_content_reference",
     "resolve_versioned_file_reference",
-    "roles",
-    "screen_at",
-    "score_messages",
-    "streams_between",
+    "resolve_versioned_file_content_reference",
 ]
