@@ -1,7 +1,7 @@
 """Tests for meeting_core_reflect: the access side of viba-reflect.md on MEETING_ADT's stable types.
 
 设计 = MEETING_ADT.md 的「稳定类型」章；数据 = meeting_adt.py 那份 Python 记录。
-起点不核版本（viba-reflect.md：root 只把描述符和数据配成对）：要核就用 viba_version_matches。
+起点不核版本（viba-reflect.md：root 只把描述符和数据配成对），这一层也不提供核对。
 """
 
 import datetime as _dt
@@ -105,9 +105,6 @@ class TestRoot:
         assert accessor.file_hashes(reflect.Record(_file_id())).value == set()
         assert accessor.file_hashes(reflect.Record(_file_id(), ["x"])).value == {"x"}
 
-    def test_version_matches_is_the_upper_layers_step(self) -> None:
-        assert reflect.viba_version_matches(reflect._design_pool(), reflect.Record(_store())).value is True
-        assert reflect.viba_version_matches(reflect._design_pool(), reflect.Record(_store(), ["nope"])).value is False
 
 
 # =====================================================================
