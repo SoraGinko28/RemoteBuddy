@@ -613,10 +613,14 @@ class VibaAccess:
         """
         data = node.data
         if step.kind == "by_tag":
-            found = _attribute(data, _tag_name(step.value))
-            if found is not _MISSING:
-                return found
-            if target is not None and self._shape_matches(target, data, _tag_name(step.value)):
+            tag_name = _tag_name(step.value)
+            # 和类型先认分支：认上哪一支就走哪一支。数据里正好有个同名字段
+            # 不算（VersionedFileContentReference 身上就有 $versioned_file_ref）。
+            if self._unfold(node.descriptor).kind != SUM:
+                found = _attribute(data, tag_name)
+                if found is not _MISSING:
+                    return found
+            if target is not None and self._shape_matches(target, data, tag_name):
                 return _present(_payload_of(data))
             return None
         if step.kind == "by_field_index":
