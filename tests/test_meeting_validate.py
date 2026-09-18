@@ -237,3 +237,51 @@ class TestValidateRunDir:
     def test_missing_dir_raises(self, tmp_path) -> None:
         with pytest.raises(FileNotFoundError):
             validator.validate_run_dir(tmp_path / "no-such-run")
+
+
+def _file_id(file_id: str, entry_name: str) -> adt.FileId:
+    return adt.FileId(file_id=file_id, entry_name=entry_name)
+
+
+def _file_store() -> adt.FileKvStore:
+    return adt.FileKvStore(file_id2file={"f1": adt.VersionedFile(), "f2": adt.VersionedFile()})
+
+
+def _file_meeting(workspace: adt.FileWorkspace) -> adt.MeetingData:
+    desktop = adt.FileDesktop(workspaces=[workspace])
+    desktop.reorder_indexes = adt.Versioned(adt.identity_desktop_order(desktop))
+    meeting = _meeting([])
+    meeting.file_kv_store = _file_store()
+    meeting.file_desktop = desktop
+    return meeting
+
+
+class TestFileLayer:
+    def _workspace(self) -> adt.FileWorkspace:
+        return adt.FileWorkspace(member_files=[
+            _file_id("f1", "a.py"),
+            adt.FileFold(fold_name="pkg", member_file_ids=[_file_id("f2", "b.py")]),
+        ], workspace_name="ws")
+
+    def test_valid_desktop_passes(self) -> None:
+        report = validator.validate_meeting_data(_file_meeting(self._workspace()))
+        assert report.ok, report.violations
+
+    def test_duplicate_names_flagged(self) -> None:
+        workspace = adt.FileWorkspace(member_files=[
+            _file_id("f1", "pkg"), adt.FileFold(fold_name="pkg"),
+        ], workspace_name="ws")
+        report = validator.validate_meeting_data(_file_meeting(workspace))
+        assert "file_desktop_unique_names" in report.by_assert()
+
+    def test_missing_file_id_flagged(self) -> None:
+        workspace = adt.FileWorkspace(member_files=[_file_id("gone", "a.py")],
+                                      workspace_name="ws")
+        report = validator.validate_meeting_data(_file_meeting(workspace))
+        assert "file_id_in_store" in report.by_assert()
+
+    def test_bad_member_order_flagged(self) -> None:
+        meeting = _file_meeting(self._workspace())
+        meeting.file_desktop.reorder_indexes.data.workspace_indexes[0].file_indexes = []
+        report = validator.validate_meeting_data(meeting)
+        assert "file_desktop_member_order" in report.by_assert()

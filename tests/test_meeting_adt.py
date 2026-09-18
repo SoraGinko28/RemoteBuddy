@@ -149,6 +149,44 @@ class TestStreamNames:
             "assert_role_map_keys_in_user_names",
             "meeting_data_to_dict",
             "meeting_data_from_dict",
+            "assert_file_desktop_member_order",
+            "assert_file_desktop_unique_names",
+            "assert_file_id_in_store",
+            "data_status_from_name",
+            "DataStatus",
+            "desktop_member_order_from_dict",
+            "desktop_member_order_to_dict",
+            "DesktopMemberOrder",
+            "file_desktop_from_dict",
+            "file_desktop_to_dict",
+            "file_fold_from_dict",
+            "file_fold_to_dict",
+            "file_id_from_dict",
+            "file_id_to_dict",
+            "file_ids_of_desktop",
+            "file_kv_store_from_dict",
+            "file_kv_store_to_dict",
+            "file_workspace_from_dict",
+            "file_workspace_to_dict",
+            "FileDesktop",
+            "FileFold",
+            "FileId",
+            "FileKvStore",
+            "FileWorkspace",
+            "fold_member_order_from_dict",
+            "fold_member_order_to_dict",
+            "FoldMemberOrder",
+            "identity_desktop_order",
+            "identity_workspace_order",
+            "Versioned",
+            "versioned_file_from_dict",
+            "versioned_file_to_dict",
+            "versioned_from_dict",
+            "versioned_to_dict",
+            "VersionedFile",
+            "workspace_member_order_from_dict",
+            "workspace_member_order_to_dict",
+            "WorkspaceMemberOrder",
         }
 
 
@@ -1416,7 +1454,243 @@ def _dt_now() -> _datetime:
     return _datetime.now(tz=_dt_timezone.utc)
 
 
+# =====================================================================
+# G15: file layer (FileKvStore / FileDesktop)
+# =====================================================================
+
+def _file_id(file_id: str, entry_name: str) -> adt.FileId:
+    return adt.FileId(file_id=file_id, entry_name=entry_name)
 
 
+def _versioned(data, moment=None, author: str = "") -> adt.Versioned:
+    return adt.Versioned(data=data, time=moment, author=author)
 
 
+def _sample_desktop() -> adt.FileDesktop:
+    fold = adt.FileFold(fold_name="pkg", member_file_ids=[_file_id("f2", "b.py")])
+    workspace = adt.FileWorkspace(
+        member_files=[_file_id("f1", "a.py"), fold],
+        workspace_name="ws",
+        workspace_status=adt.DataStatus.READ_ONLY,
+    )
+    desktop = adt.FileDesktop(workspaces=[workspace])
+    desktop.reorder_indexes = _versioned(adt.identity_desktop_order(desktop),
+                                         author="alice")
+    return desktop
+
+
+def _sample_store() -> adt.FileKvStore:
+    return adt.FileKvStore(file_id2file={
+        "f1": adt.VersionedFile(
+            file_name=_versioned("a.py", author="alice"),
+            file_meta=_versioned(adt.DataStatus.READ_ONLY, author="alice"),
+            file_content=_versioned("print(1)", author="bob"),
+        ),
+        "f2": adt.VersionedFile(
+            file_name=_versioned("b.py", author="bob"),
+            file_meta=_versioned(None, author="bob"),
+            file_content=_versioned("", author="bob"),
+        ),
+    })
+
+
+class TestDataStatusCodec:
+    def test_values(self) -> None:
+        assert adt.DataStatus.DELETED.value == "deleted"
+        assert adt.DataStatus.READ_ONLY.value == "read_only"
+        assert adt.data_status_from_name("deleted") is adt.DataStatus.DELETED
+
+    def test_unknown_name_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown data status"):
+            adt.data_status_from_name("hidden")
+
+
+class TestVersionedCodec:
+    def test_roundtrip_with_time_and_author(self) -> None:
+        value = _versioned("body", _dt_now(), "alice")
+        payload = adt.versioned_to_dict(value, str)
+        assert payload == {"data": "body", "time": adt._iso_format(value.time),
+                           "author": "alice"}
+        assert adt.versioned_from_dict(payload, str) == value
+
+    def test_roundtrip_without_time(self) -> None:
+        value = _versioned("body")
+        assert adt.versioned_to_dict(value, str)["time"] is None
+        assert adt.versioned_from_dict(adt.versioned_to_dict(value, str), str) == value
+
+    def test_status_payload_encodes_none(self) -> None:
+        value = _versioned(None)
+        payload = adt.versioned_to_dict(value, adt._data_status_encode)
+        assert payload["data"] is None
+        assert adt.versioned_from_dict(payload, adt._data_status_decode).data is None
+
+    def test_status_payload_decodes_name(self) -> None:
+        value = _versioned(adt.DataStatus.DELETED)
+        restored = adt.versioned_from_dict(
+            adt.versioned_to_dict(value, adt._data_status_encode), adt._data_status_decode)
+        assert restored.data is adt.DataStatus.DELETED
+
+
+class TestFileIdCodec:
+    def test_roundtrip(self) -> None:
+        file_id = _file_id("f1", "a.py")
+        payload = adt.file_id_to_dict(file_id)
+        assert payload == {"file_id": "f1", "entry_name": "a.py"}
+        assert adt.file_id_from_dict(payload) == file_id
+
+    def test_defaults(self) -> None:
+        assert adt.file_id_from_dict({}) == adt.FileId()
+
+
+class TestVersionedFileCodec:
+    def test_roundtrip(self) -> None:
+        versioned_file = _sample_store().file_id2file["f1"]
+        restored = adt.versioned_file_from_dict(adt.versioned_file_to_dict(versioned_file))
+        assert restored == versioned_file
+        assert restored.file_meta.data is adt.DataStatus.READ_ONLY
+
+    def test_empty_payload_gives_empty_parts(self) -> None:
+        restored = adt.versioned_file_from_dict({})
+        assert restored.file_name.data == ""
+        assert restored.file_meta.data is None
+        assert restored.file_content.data == ""
+
+
+class TestFileKvStoreCodec:
+    def test_roundtrip(self) -> None:
+        store = _sample_store()
+        restored = adt.file_kv_store_from_dict(adt.file_kv_store_to_dict(store))
+        assert restored == store
+
+
+class TestFileDesktopCodec:
+    def test_roundtrip(self) -> None:
+        desktop = _sample_desktop()
+        restored = adt.file_desktop_from_dict(adt.file_desktop_to_dict(desktop))
+        assert restored == desktop
+
+    def test_fold_member_and_direct_file_survive(self) -> None:
+        restored = adt.file_desktop_from_dict(adt.file_desktop_to_dict(_sample_desktop()))
+        workspace = restored.workspaces[0]
+        assert workspace.workspace_status is adt.DataStatus.READ_ONLY
+        assert isinstance(workspace.member_files[0], adt.FileId)
+        assert isinstance(workspace.member_files[1], adt.FileFold)
+        assert workspace.member_files[1].member_file_ids[0].entry_name == "b.py"
+
+    def test_empty_payload(self) -> None:
+        restored = adt.file_desktop_from_dict({})
+        assert restored.workspaces == []
+        assert restored.reorder_indexes.data.workspace_indexes == []
+
+
+class TestFileDesktopUniqueNames:
+    def test_sample_desktop_is_valid(self) -> None:
+        adt.assert_file_desktop_unique_names(_sample_desktop())
+
+    def test_duplicate_workspace_names_rejected(self) -> None:
+        desktop = _sample_desktop()
+        desktop.workspaces.append(adt.FileWorkspace(workspace_name="ws"))
+        with pytest.raises(AssertionError, match="duplicate workspace names"):
+            adt.assert_file_desktop_unique_names(desktop)
+
+    def test_unnamed_workspaces_do_not_collide(self) -> None:
+        desktop = adt.FileDesktop(workspaces=[adt.FileWorkspace(), adt.FileWorkspace()])
+        adt.assert_file_desktop_unique_names(desktop)
+
+    def test_fold_name_colliding_with_file_entry_name_rejected(self) -> None:
+        desktop = adt.FileDesktop(workspaces=[adt.FileWorkspace(member_files=[
+            _file_id("f1", "pkg"),
+            adt.FileFold(fold_name="pkg"),
+        ], workspace_name="ws")])
+        with pytest.raises(AssertionError, match="duplicate names under workspace"):
+            adt.assert_file_desktop_unique_names(desktop)
+
+    def test_duplicate_entry_names_inside_fold_rejected(self) -> None:
+        desktop = adt.FileDesktop(workspaces=[adt.FileWorkspace(member_files=[
+            adt.FileFold(fold_name="pkg", member_file_ids=[
+                _file_id("f1", "a.py"), _file_id("f2", "a.py")]),
+        ], workspace_name="ws")])
+        with pytest.raises(AssertionError, match="duplicate entry names under fold"):
+            adt.assert_file_desktop_unique_names(desktop)
+
+
+class TestFileDesktopMemberOrder:
+    def test_identity_order_is_valid(self) -> None:
+        adt.assert_file_desktop_member_order(_sample_desktop())
+
+    def test_empty_desktop_is_valid(self) -> None:
+        adt.assert_file_desktop_member_order(adt.FileDesktop())
+
+    def test_missing_workspace_index_rejected(self) -> None:
+        desktop = _sample_desktop()
+        desktop.workspaces.append(adt.FileWorkspace(workspace_name="other"))
+        with pytest.raises(AssertionError, match="workspace_indexes is not a permutation"):
+            adt.assert_file_desktop_member_order(desktop)
+
+    def test_duplicate_workspace_index_rejected(self) -> None:
+        desktop = _sample_desktop()
+        order = desktop.reorder_indexes.data
+        order.workspace_indexes.append(order.workspace_indexes[0])
+        with pytest.raises(AssertionError, match="not a permutation"):
+            adt.assert_file_desktop_member_order(desktop)
+
+    def test_file_index_not_a_permutation_rejected(self) -> None:
+        desktop = _sample_desktop()
+        desktop.reorder_indexes.data.workspace_indexes[0].file_indexes = [(0, None), (0, None)]
+        with pytest.raises(AssertionError, match="file_indexes of workspace 0"):
+            adt.assert_file_desktop_member_order(desktop)
+
+    def test_fold_order_not_a_permutation_rejected(self) -> None:
+        desktop = _sample_desktop()
+        desktop.reorder_indexes.data.workspace_indexes[0].file_indexes[1] = (
+            1, adt.FoldMemberOrder(member_indexes=[0, 0]))
+        with pytest.raises(AssertionError, match="member_indexes of fold"):
+            adt.assert_file_desktop_member_order(desktop)
+
+    def test_fold_order_on_a_plain_file_rejected(self) -> None:
+        desktop = _sample_desktop()
+        desktop.reorder_indexes.data.workspace_indexes[0].file_indexes[0] = (
+            0, adt.FoldMemberOrder(member_indexes=[]))
+        with pytest.raises(AssertionError, match="carries a fold order but is not a fold"):
+            adt.assert_file_desktop_member_order(desktop)
+
+
+class TestFileIdInStore:
+    def test_present_id_passes(self) -> None:
+        store = _sample_store()
+        for file_id in adt.file_ids_of_desktop(_sample_desktop()):
+            adt.assert_file_id_in_store(file_id, store)
+
+    def test_missing_id_rejected(self) -> None:
+        with pytest.raises(AssertionError, match="not in"):
+            adt.assert_file_id_in_store(_file_id("nope", "x.py"), _sample_store())
+
+    def test_walker_collects_direct_and_fold_members(self) -> None:
+        ids = [f.file_id for f in adt.file_ids_of_desktop(_sample_desktop())]
+        assert ids == ["f1", "f2"]
+
+
+class TestFileLayerUserNames:
+    def test_authors_are_collected(self) -> None:
+        data = adt.MeetingData(file_kv_store=_sample_store(),
+                               file_desktop=_sample_desktop())
+        assert adt.user_names_of_meeting_data(data) == {"alice", "bob"}
+
+    def test_empty_file_layer_adds_nothing(self) -> None:
+        assert adt.user_names_of_meeting_data(adt.MeetingData()) == set()
+
+
+class TestMeetingDataFileLayer:
+    def test_roundtrip_keeps_the_file_layer(self) -> None:
+        data = adt.MeetingData(meeting_uid="m", file_kv_store=_sample_store(),
+                               file_desktop=_sample_desktop())
+        restored = adt.meeting_data_from_dict(adt.meeting_data_to_dict(data))
+        assert restored.file_kv_store == data.file_kv_store
+        assert restored.file_desktop == data.file_desktop
+
+    def test_old_payload_without_file_layer_still_loads(self) -> None:
+        payload = {"meeting_uid": "m", "meeting_name": "x", "agent_name2role": {},
+                   "sorted_stream_chunks": []}
+        data = adt.meeting_data_from_dict(payload)
+        assert data.file_kv_store.file_id2file == {}
+        assert data.file_desktop.workspaces == []

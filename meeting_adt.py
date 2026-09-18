@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime as _dt
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Final, Optional
+from typing import Callable, Final, Generic, Optional, TypeVar
 
 # Stream names: the ADT's four streams, order fixed; do not add, remove, or reorder them.
 SCREEN_STREAM_NAME = "screen"
@@ -916,6 +916,491 @@ __all__ += [
 
 
 # =====================================================================
+# G15: file layer -- FileKvStore / FileDesktop (files, versioned parts, desktop tree)
+# =====================================================================
+#
+# FileId := Object * $file_id str * $entry_name str
+#   * Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]
+# VersionedFile := Object * $file_name Versioned[str] * $file_meta Versioned[DataStatus]
+#   * $file_content Versioned[str]
+# FileKvStore := Object * $file_id2file dict[str, VersionedFile]
+# FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileId]
+# FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileId]
+#   * $workspace_name Optional[str] * $workspace_status Optional[DataStatus]
+# FileDesktop := Object * $workspaces AppendOnlyList[FileWorkspace]
+#   * $reorder_indexes Versioned[DesktopMemberOrder]
+#   * Assert[{ 同一层里名字唯一：workspace_name 两两不同；同一个 workspace 里 fold 的
+#               fold_name 与直接挂着的文件的 entry_name 两两不同；同一个 fold 里各文件的
+#               entry_name 两两不同 }]
+# DesktopMemberOrder := Object * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]
+#   * Assert[{ workspace_index 恰好是 0..len(workspaces)-1 的一个排列 }]
+# WorkspaceMemberOrder := Object * $workspace_index int
+#   * $file_indexes ReadOnlyList[($file_index int, Optional[FoldMemberOrder])]
+#   * Assert[{ file_index 恰好是 0..len(member_files)-1 的一个排列；每个 fold 的
+#               member_indexes 恰好是 0..len(member_file_ids)-1 的一个排列 }]
+# FoldMemberOrder := Object * $member_indexes ReadOnlyList[$member_index int]
+#
+# Persisted JSON:
+#   DataStatus: "deleted" | "read_only"
+#   Versioned[T]: {"data": ..., "time": iso|null, "author": user_name}
+#   FileId: {"file_id": id, "entry_name": name}
+#   VersionedFile: {"file_name": Versioned[str], "file_meta": Versioned[DataStatus],
+#                   "file_content": Versioned[str]}
+#   FileKvStore: {"file_id2file": {file_id: VersionedFile}}
+#   FileFold: {"fold_name": name|null, "member_file_ids": [FileId]}
+#   FileWorkspace: {"member_files": [{"fold": FileFold} | {"file": FileId}],
+#                   "workspace_name": name|null, "workspace_status": status|null}
+#   FoldMemberOrder: {"member_indexes": [int]}
+#   WorkspaceMemberOrder: {"workspace_index": int,
+#                          "file_indexes": [[index, FoldMemberOrder|null]]}
+#   DesktopMemberOrder: {"workspace_indexes": [WorkspaceMemberOrder]}
+#   FileDesktop: {"workspaces": [FileWorkspace], "reorder_indexes": Versioned[DesktopMemberOrder]}
+
+
+class DataStatus(Enum):
+    """DataStatus := Oneof | $deleted () | $read_only ()"""
+
+    DELETED = "deleted"
+    READ_ONLY = "read_only"
+
+
+def data_status_from_name(status_name: str) -> DataStatus:
+    for status in DataStatus:
+        if status.value == status_name:
+            return status
+    raise ValueError(f"unknown data status: {status_name!r}")
+
+
+_T = TypeVar("_T")
+
+
+@dataclass
+class Versioned(Generic[_T]):
+    """Versioned[T] := Object * $data T * $time datetime * $author UserName"""
+
+    data: _T
+    time: Optional[_dt.datetime] = None
+    author: str = ""
+
+
+def versioned_to_dict(value: Versioned, encode: Callable[[object], object]) -> dict:
+    return {
+        "data": encode(value.data),
+        "time": _iso_format(value.time) if value.time is not None else None,
+        "author": value.author,
+    }
+
+
+def versioned_from_dict(payload: dict, decode: Callable[[object], object]) -> Versioned:
+    moment = payload.get("time")
+    return Versioned(
+        data=decode(payload.get("data")),
+        time=_iso_parse(moment) if isinstance(moment, str) else None,
+        author=payload.get("author", ""),
+    )
+
+
+def _str_decode(payload: object) -> str:
+    return "" if payload is None else str(payload)
+
+
+def _data_status_encode(status: object) -> object:
+    return None if status is None else status.value
+
+
+def _data_status_decode(payload: object) -> object:
+    return None if payload is None else data_status_from_name(str(payload))
+
+
+@dataclass
+class FileId:
+    """FileId := Object * $file_id str * $entry_name str"""
+
+    file_id: str = ""
+    entry_name: str = ""
+
+
+def file_id_to_dict(file_id: FileId) -> dict:
+    return {"file_id": file_id.file_id, "entry_name": file_id.entry_name}
+
+
+def file_id_from_dict(payload: dict) -> FileId:
+    return FileId(file_id=payload.get("file_id", ""), entry_name=payload.get("entry_name", ""))
+
+
+@dataclass
+class VersionedFile:
+    """VersionedFile: the file's name / meta / content, each carrying its own version."""
+
+    file_name: Versioned = field(default_factory=lambda: Versioned(""))
+    file_meta: Versioned = field(default_factory=lambda: Versioned(None))
+    file_content: Versioned = field(default_factory=lambda: Versioned(""))
+
+
+def versioned_file_to_dict(versioned_file: VersionedFile) -> dict:
+    return {
+        "file_name": versioned_to_dict(versioned_file.file_name, str),
+        "file_meta": versioned_to_dict(versioned_file.file_meta, _data_status_encode),
+        "file_content": versioned_to_dict(versioned_file.file_content, str),
+    }
+
+
+def versioned_file_from_dict(payload: dict) -> VersionedFile:
+    return VersionedFile(
+        file_name=versioned_from_dict(payload.get("file_name") or {}, _str_decode),
+        file_meta=versioned_from_dict(payload.get("file_meta") or {}, _data_status_decode),
+        file_content=versioned_from_dict(payload.get("file_content") or {}, _str_decode),
+    )
+
+
+@dataclass
+class FileKvStore:
+    """FileKvStore := Object * $file_id2file dict[str, VersionedFile]"""
+
+    file_id2file: dict = field(default_factory=dict)  # dict[str, VersionedFile]
+
+
+def file_kv_store_to_dict(store: FileKvStore) -> dict:
+    return {
+        "file_id2file": {
+            file_id: versioned_file_to_dict(versioned_file)
+            for file_id, versioned_file in store.file_id2file.items()
+        }
+    }
+
+
+def file_kv_store_from_dict(payload: dict) -> FileKvStore:
+    payload = payload or {}
+    return FileKvStore(
+        file_id2file={
+            file_id: versioned_file_from_dict(entry)
+            for file_id, entry in (payload.get("file_id2file") or {}).items()
+        }
+    )
+
+
+@dataclass
+class FileFold:
+    """FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileId]"""
+
+    fold_name: Optional[str] = None
+    member_file_ids: list = field(default_factory=list)  # list[FileId]
+
+
+def file_fold_to_dict(fold: FileFold) -> dict:
+    return {
+        "fold_name": fold.fold_name,
+        "member_file_ids": [file_id_to_dict(f) for f in fold.member_file_ids],
+    }
+
+
+def file_fold_from_dict(payload: dict) -> FileFold:
+    payload = payload or {}
+    return FileFold(
+        fold_name=payload.get("fold_name"),
+        member_file_ids=[file_id_from_dict(f) for f in payload.get("member_file_ids", [])],
+    )
+
+
+@dataclass
+class FileWorkspace:
+    """FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileId]
+    * $workspace_name Optional[str] * $workspace_status Optional[DataStatus]"""
+
+    member_files: list = field(default_factory=list)  # list[FileFold | FileId]
+    workspace_name: Optional[str] = None
+    workspace_status: Optional[DataStatus] = None
+
+
+def _workspace_member_to_dict(member: object) -> dict:
+    if isinstance(member, FileFold):
+        return {"fold": file_fold_to_dict(member)}
+    return {"file": file_id_to_dict(member)}
+
+
+def _workspace_member_from_dict(payload: dict) -> object:
+    if "fold" in payload:
+        return file_fold_from_dict(payload["fold"])
+    return file_id_from_dict(payload["file"])
+
+
+def file_workspace_to_dict(workspace: FileWorkspace) -> dict:
+    return {
+        "member_files": [_workspace_member_to_dict(m) for m in workspace.member_files],
+        "workspace_name": workspace.workspace_name,
+        "workspace_status": _data_status_encode(workspace.workspace_status),
+    }
+
+
+def file_workspace_from_dict(payload: dict) -> FileWorkspace:
+    payload = payload or {}
+    return FileWorkspace(
+        member_files=[_workspace_member_from_dict(m) for m in payload.get("member_files", [])],
+        workspace_name=payload.get("workspace_name"),
+        workspace_status=_data_status_decode(payload.get("workspace_status")),
+    )
+
+
+@dataclass
+class FoldMemberOrder:
+    """FoldMemberOrder := Object * $member_indexes ReadOnlyList[$member_index int]"""
+
+    member_indexes: list = field(default_factory=list)  # list[int]
+
+
+def fold_member_order_to_dict(order: FoldMemberOrder) -> dict:
+    return {"member_indexes": list(order.member_indexes)}
+
+
+def fold_member_order_from_dict(payload: dict) -> FoldMemberOrder:
+    payload = payload or {}
+    return FoldMemberOrder(member_indexes=list(payload.get("member_indexes", [])))
+
+
+@dataclass
+class WorkspaceMemberOrder:
+    """WorkspaceMemberOrder := Object * $workspace_index int
+    * $file_indexes ReadOnlyList[($file_index int, Optional[FoldMemberOrder])]"""
+
+    workspace_index: int = 0
+    file_indexes: list = field(default_factory=list)  # list[tuple[int, Optional[FoldMemberOrder]]]
+
+
+def workspace_member_order_to_dict(order: WorkspaceMemberOrder) -> dict:
+    return {
+        "workspace_index": order.workspace_index,
+        "file_indexes": [
+            [index, fold_member_order_to_dict(fold_order) if fold_order is not None else None]
+            for index, fold_order in order.file_indexes
+        ],
+    }
+
+
+def workspace_member_order_from_dict(payload: dict) -> WorkspaceMemberOrder:
+    payload = payload or {}
+    file_indexes = []
+    for index, fold_order in payload.get("file_indexes", []):
+        file_indexes.append(
+            (index, fold_member_order_from_dict(fold_order) if fold_order is not None else None)
+        )
+    return WorkspaceMemberOrder(
+        workspace_index=payload.get("workspace_index", 0), file_indexes=file_indexes
+    )
+
+
+@dataclass
+class DesktopMemberOrder:
+    """DesktopMemberOrder := Object * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]"""
+
+    workspace_indexes: list = field(default_factory=list)  # list[WorkspaceMemberOrder]
+
+
+def desktop_member_order_to_dict(order: DesktopMemberOrder) -> dict:
+    return {"workspace_indexes": [workspace_member_order_to_dict(o) for o in order.workspace_indexes]}
+
+
+def desktop_member_order_from_dict(payload: dict) -> DesktopMemberOrder:
+    payload = payload or {}
+    return DesktopMemberOrder(
+        workspace_indexes=[
+            workspace_member_order_from_dict(o) for o in payload.get("workspace_indexes", [])
+        ]
+    )
+
+
+def identity_workspace_order(workspace: FileWorkspace, workspace_index: int = 0) -> WorkspaceMemberOrder:
+    """The identity order of one workspace: every member in place, folds expanded."""
+    file_indexes = []
+    for file_index, member in enumerate(workspace.member_files):
+        fold_order = (
+            FoldMemberOrder(member_indexes=list(range(len(member.member_file_ids))))
+            if isinstance(member, FileFold)
+            else None
+        )
+        file_indexes.append((file_index, fold_order))
+    return WorkspaceMemberOrder(workspace_index=workspace_index, file_indexes=file_indexes)
+
+
+def identity_desktop_order(desktop: FileDesktop) -> DesktopMemberOrder:
+    """The identity order of a whole desktop: workspaces in place, members in place."""
+    return DesktopMemberOrder(
+        workspace_indexes=[
+            identity_workspace_order(workspace, workspace_index)
+            for workspace_index, workspace in enumerate(desktop.workspaces)
+        ]
+    )
+
+
+@dataclass
+class FileDesktop:
+    """FileDesktop := Object * $workspaces AppendOnlyList[FileWorkspace]
+    * $reorder_indexes Versioned[DesktopMemberOrder]"""
+
+    workspaces: list = field(default_factory=list)  # list[FileWorkspace]
+    reorder_indexes: Versioned = field(
+        default_factory=lambda: Versioned(DesktopMemberOrder())
+    )
+
+
+def file_desktop_to_dict(desktop: FileDesktop) -> dict:
+    return {
+        "workspaces": [file_workspace_to_dict(w) for w in desktop.workspaces],
+        "reorder_indexes": versioned_to_dict(
+            desktop.reorder_indexes, desktop_member_order_to_dict
+        ),
+    }
+
+
+def file_desktop_from_dict(payload: dict) -> FileDesktop:
+    payload = payload or {}
+    return FileDesktop(
+        workspaces=[file_workspace_from_dict(w) for w in payload.get("workspaces", [])],
+        reorder_indexes=versioned_from_dict(
+            payload.get("reorder_indexes") or {}, desktop_member_order_from_dict
+        ),
+    )
+
+
+def file_ids_of_desktop(desktop: FileDesktop) -> list[FileId]:
+    """Every FileId the desktop tree carries: direct members and fold members."""
+    found: list[FileId] = []
+    for workspace in desktop.workspaces:
+        for member in workspace.member_files:
+            if isinstance(member, FileFold):
+                found.extend(member.member_file_ids)
+            else:
+                found.append(member)
+    return found
+
+
+def assert_file_id_in_store(file_id: FileId, store: FileKvStore) -> None:
+    """Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]"""
+    if file_id.file_id not in store.file_id2file:
+        raise AssertionError(
+            f"file id {file_id.file_id!r} ({file_id.entry_name!r}) not in "
+            f"FileKvStore.file_id2file"
+        )
+
+
+def _workspace_member_names(workspace: FileWorkspace) -> list[tuple[str, str]]:
+    """(kind, name) for every named member directly under a workspace."""
+    named: list[tuple[str, str]] = []
+    for member in workspace.member_files:
+        if isinstance(member, FileFold):
+            if member.fold_name is not None:
+                named.append(("fold", member.fold_name))
+        elif member.entry_name:
+            named.append(("file", member.entry_name))
+    return named
+
+
+def assert_file_desktop_unique_names(desktop: FileDesktop) -> None:
+    """Assert: names are unique on each level, so a path resolves to one entry."""
+    workspace_names = [w.workspace_name for w in desktop.workspaces if w.workspace_name]
+    duplicates = sorted({n for n in workspace_names if workspace_names.count(n) > 1})
+    if duplicates:
+        raise AssertionError(f"duplicate workspace names: {duplicates}")
+    for workspace in desktop.workspaces:
+        direct = _workspace_member_names(workspace)
+        names = [name for _, name in direct]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise AssertionError(
+                f"duplicate names under workspace {workspace.workspace_name!r}: {duplicates}"
+            )
+        for member in workspace.member_files:
+            if not isinstance(member, FileFold):
+                continue
+            entry_names = [f.entry_name for f in member.member_file_ids if f.entry_name]
+            duplicates = sorted({n for n in entry_names if entry_names.count(n) > 1})
+            if duplicates:
+                raise AssertionError(
+                    f"duplicate entry names under fold {member.fold_name!r}: {duplicates}"
+                )
+
+
+def assert_file_desktop_member_order(desktop: FileDesktop) -> None:
+    """Asserts on DesktopMemberOrder / WorkspaceMemberOrder / FoldMemberOrder."""
+    order = desktop.reorder_indexes.data
+    indexes = [o.workspace_index for o in order.workspace_indexes]
+    if sorted(indexes) != list(range(len(desktop.workspaces))) or len(set(indexes)) != len(indexes):
+        raise AssertionError(
+            f"workspace_indexes is not a permutation of 0..{len(desktop.workspaces) - 1}: {indexes}"
+        )
+    seen: set[int] = set()
+    for workspace_order in order.workspace_indexes:
+        index = workspace_order.workspace_index
+        if index in seen:
+            raise AssertionError(f"workspace_index {index} appears twice")
+        seen.add(index)
+        workspace = desktop.workspaces[index]
+        file_indexes = [i for i, _ in workspace_order.file_indexes]
+        if (sorted(file_indexes) != list(range(len(workspace.member_files)))
+                or len(set(file_indexes)) != len(file_indexes)):
+            raise AssertionError(
+                f"file_indexes of workspace {index} is not a permutation of "
+                f"0..{len(workspace.member_files) - 1}: {file_indexes}"
+            )
+        for file_index, fold_order in workspace_order.file_indexes:
+            if fold_order is None:
+                continue
+            member = workspace.member_files[file_index]
+            if not isinstance(member, FileFold):
+                raise AssertionError(
+                    f"workspace {index}: member {file_index} carries a fold order but is not a fold"
+                )
+            member_indexes = list(fold_order.member_indexes)
+            if (sorted(member_indexes) != list(range(len(member.member_file_ids)))
+                    or len(set(member_indexes)) != len(member_indexes)):
+                raise AssertionError(
+                    f"member_indexes of fold {member.fold_name!r} is not a permutation of "
+                    f"0..{len(member.member_file_ids) - 1}: {member_indexes}"
+                )
+
+
+__all__ += [
+    "DataStatus",
+    "data_status_from_name",
+    "Versioned",
+    "versioned_to_dict",
+    "versioned_from_dict",
+    "FileId",
+    "file_id_to_dict",
+    "file_id_from_dict",
+    "VersionedFile",
+    "versioned_file_to_dict",
+    "versioned_file_from_dict",
+    "FileKvStore",
+    "file_kv_store_to_dict",
+    "file_kv_store_from_dict",
+    "FileFold",
+    "file_fold_to_dict",
+    "file_fold_from_dict",
+    "FileWorkspace",
+    "file_workspace_to_dict",
+    "file_workspace_from_dict",
+    "FoldMemberOrder",
+    "fold_member_order_to_dict",
+    "fold_member_order_from_dict",
+    "WorkspaceMemberOrder",
+    "workspace_member_order_to_dict",
+    "workspace_member_order_from_dict",
+    "DesktopMemberOrder",
+    "desktop_member_order_to_dict",
+    "desktop_member_order_from_dict",
+    "identity_workspace_order",
+    "identity_desktop_order",
+    "FileDesktop",
+    "file_desktop_to_dict",
+    "file_desktop_from_dict",
+    "file_ids_of_desktop",
+    "assert_file_id_in_store",
+    "assert_file_desktop_unique_names",
+    "assert_file_desktop_member_order",
+]
+
+
+# =====================================================================
 # G11: screen chunk containers + MeetingData (the meeting record proper)
 # =====================================================================
 #
@@ -1069,10 +1554,21 @@ class MeetingData:
     meeting_name: str = ""
     agent_name2role: dict = field(default_factory=dict)  # dict[str, AgentRole]
     sorted_stream_chunks: list = field(default_factory=list)  # list[StreamChunk]
+    file_kv_store: FileKvStore = field(default_factory=FileKvStore)
+    file_desktop: FileDesktop = field(default_factory=FileDesktop)
+
+
+def _file_layer_versioned(data: MeetingData):
+    """Every Versioned value the file layer carries (each has an author)."""
+    for versioned_file in data.file_kv_store.file_id2file.values():
+        yield versioned_file.file_name
+        yield versioned_file.file_meta
+        yield versioned_file.file_content
+    yield data.file_desktop.reorder_indexes
 
 
 def user_names_of_meeting_data(data: MeetingData) -> set[str]:
-    """Appendix user_names: collect every UserName that appears in the streams."""
+    """Appendix user_names: every UserName in the streams plus every file-layer author."""
     names: set[str] = set()
     for chunk in data.sorted_stream_chunks:
         if isinstance(chunk, ScreenStreamChunk):
@@ -1084,6 +1580,7 @@ def user_names_of_meeting_data(data: MeetingData) -> set[str]:
             names.update(m.judge_name for m in chunk.chunks)
         elif isinstance(chunk, TerminalControlStreamChunk):
             names.update(c.user_name for c in chunk.chunks)
+    names.update(v.author for v in _file_layer_versioned(data) if v.author)
     return names
 
 
@@ -1106,6 +1603,8 @@ def meeting_data_to_dict(data: MeetingData) -> dict:
             name: role.value for name, role in data.agent_name2role.items()
         },
         "sorted_stream_chunks": [stream_chunk_to_dict(c) for c in data.sorted_stream_chunks],
+        "file_kv_store": file_kv_store_to_dict(data.file_kv_store),
+        "file_desktop": file_desktop_to_dict(data.file_desktop),
     }
 
 
@@ -1122,6 +1621,8 @@ def meeting_data_from_dict(payload: dict) -> MeetingData:
         meeting_name=name,
         agent_name2role={n: agent_role_from_name(v) for n, v in roles.items()},
         sorted_stream_chunks=chunks,
+        file_kv_store=file_kv_store_from_dict(payload.get("file_kv_store") or {}),
+        file_desktop=file_desktop_from_dict(payload.get("file_desktop") or {}),
     )
 
 
@@ -1178,5 +1679,3 @@ __all__ += [
 __all__ += [
     "ScreenCapture",
 ]
-
-

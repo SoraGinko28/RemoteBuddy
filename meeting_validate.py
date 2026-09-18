@@ -18,6 +18,9 @@ Asserts covered (aligned with MEETING_ADT.md / meeting_adt.py):
   terminal_control  owner in terminal_capable (human or generator)
   score             summon_chained (a passive must be summoned via an @)
   meeting           keys(agent_name2role) subset of user_names
+  file_desktop      names unique per level (so a path resolves to one entry);
+                    member order is a permutation at every level;
+                    every file id in the tree exists in FileKvStore
   ordering          records within a chunk are non-decreasing in time;
                     sorted_stream_chunks are non-decreasing by first record
 """
@@ -102,6 +105,15 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
     # ---- global: role map keys ⊆ user_names ----
     _check(report, "meeting", None, "role_map_keys_in_user_names",
            lambda: adt.assert_role_map_keys_in_user_names(meeting))
+
+    # ---- file layer: unique names, permutation order, file ids present in the store ----
+    _check(report, "file_desktop", None, "file_desktop_unique_names",
+           lambda: adt.assert_file_desktop_unique_names(meeting.file_desktop))
+    _check(report, "file_desktop", None, "file_desktop_member_order",
+           lambda: adt.assert_file_desktop_member_order(meeting.file_desktop))
+    for file_id in adt.file_ids_of_desktop(meeting.file_desktop):
+        _check(report, "file_desktop", None, "file_id_in_store",
+               lambda f=file_id: adt.assert_file_id_in_store(f, meeting.file_kv_store))
 
     # ---- collect control/chat/score records for cross-chunk checks ----
     controls: list[adt.TerminalControl] = []
