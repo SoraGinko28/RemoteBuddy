@@ -8,7 +8,7 @@ import datetime as _dt
 import pytest
 
 import meeting_adt as adt
-import stable_adt_reflect as ref
+import stable_adt_reflect as reflect
 
 
 def _moment() -> _dt.datetime:
@@ -37,7 +37,7 @@ def _store() -> adt.FileKvStore:
 
 class TestDesign:
     def test_source_is_the_stable_chapter(self) -> None:
-        source = ref.design_source()
+        source = reflect.design_source()
         assert "FileId :=" in source and "VersionedFile :=" in source
         # 记录层那一章不在这份设计里
         assert "MeetingData :=" not in source
@@ -45,21 +45,21 @@ class TestDesign:
 
     def test_hash_is_sha256_of_the_source(self) -> None:
         import hashlib
-        assert ref.design_hash() == hashlib.sha256(ref.design_source().encode("utf-8")).hexdigest()
-        assert len(ref.design_hash()) == 64
+        assert reflect.design_hash() == hashlib.sha256(reflect.design_source().encode("utf-8")).hexdigest()
+        assert len(reflect.design_hash()) == 64
 
     def test_pool_carries_the_stable_definitions(self) -> None:
-        names = [d.def_name for d in ref.pool().files[0].definitions]
+        names = [d.def_name for d in reflect.pool().files[0].definitions]
         assert len(names) == 25
         assert "FileId" in names and "ContentReference" in names
 
     def test_definition_by_short_and_full_name(self) -> None:
-        assert ref.definition("FileId").full_name == "stable_adt.FileId"
-        assert ref.definition("stable_adt.FileId").full_name == "stable_adt.FileId"
+        assert reflect.definition("FileId").full_name == "stable_adt.FileId"
+        assert reflect.definition("stable_adt.FileId").full_name == "stable_adt.FileId"
 
     def test_unknown_definition_raises(self) -> None:
-        with pytest.raises(ref.StableReflectError):
-            ref.definition("FileDesktop")
+        with pytest.raises(reflect.StableReflectError):
+            reflect.definition("FileDesktop")
 
 
 # =====================================================================
@@ -68,22 +68,22 @@ class TestDesign:
 
 class TestRoot:
     def test_current_design_opens(self) -> None:
-        node = ref.open_record(_file_id(), "FileId")
-        assert isinstance(node, ref.StableNode)
+        node = reflect.open_record(_file_id(), "FileId")
+        assert isinstance(node, reflect.StableNode)
         assert node.path == ()
 
     def test_data_without_hashes_is_refused(self) -> None:
-        given = ref.access(ref.definition("FileId")).root(ref.StableData(_file_id()))
+        given = reflect.access(reflect.definition("FileId")).root(reflect.StableData(_file_id()))
         assert given.message == "数据没有声明版本，拒绝给起点"
 
     def test_wrong_version_is_refused(self) -> None:
-        data = ref.StableData(_file_id(), ["deadbeef"])
-        given = ref.access(ref.definition("FileId")).root(data)
+        data = reflect.StableData(_file_id(), ["deadbeef"])
+        given = reflect.access(reflect.definition("FileId")).root(data)
         assert "版本对不上" in given.message
 
     def test_version_matches_is_the_other_half(self) -> None:
-        assert ref.stable_version_matches(ref.pool(), ref.StableData.current(_store())).value is True
-        assert ref.stable_version_matches(ref.pool(), ref.StableData(_store(), ["nope"])).value is False
+        assert reflect.stable_version_matches(reflect.pool(), reflect.StableData.current(_store())).value is True
+        assert reflect.stable_version_matches(reflect.pool(), reflect.StableData(_store(), ["nope"])).value is False
 
 
 # =====================================================================
@@ -92,26 +92,26 @@ class TestRoot:
 
 class TestSevenCells:
     def test_get_returns_a_node_that_remembers_the_address(self) -> None:
-        node = ref.open_record(_versioned_file(), "VersionedFile")
+        node = reflect.open_record(_versioned_file(), "VersionedFile")
         inner = node.by_tag("file_name")
         assert [step.value for step in inner.path] == ["$file_name"]
 
     def test_leaf_kinds(self) -> None:
-        node = ref.open_record(_versioned_file(), "VersionedFile")
+        node = reflect.open_record(_versioned_file(), "VersionedFile")
         author = node.get_file_name().get_author()
         assert author.leaf.kind == "str"
         assert author.value == "alice"
         assert author.leaf.value == "alice"
 
     def test_time_is_a_python_datetime_and_reads_through_the_design(self) -> None:
-        node = ref.open_record(_versioned_file(), "VersionedFile")
+        node = reflect.open_record(_versioned_file(), "VersionedFile")
         moment = node.get_file_name().get_time()
         assert isinstance(moment.data, _dt.datetime)
         assert moment.get_microsecond().value == _moment().microsecond
 
     def test_length_and_keys_only_for_containers(self) -> None:
-        accessor = ref.access(ref.definition("FileKvStore"))
-        node = accessor._unwrap(accessor.root(ref.StableData.current(_store())))
+        accessor = reflect.access(reflect.definition("FileKvStore"))
+        node = accessor._unwrap(accessor.root(reflect.StableData.current(_store())))
         inner = node.get_file_id2file()
         assert accessor.length(inner).value == 1
         assert accessor.keys(inner).value == ["f1"]
@@ -119,8 +119,8 @@ class TestSevenCells:
         assert accessor.keys(node).message.startswith("这一段不是 dict")
 
     def test_leaf_on_a_record_is_an_error(self) -> None:
-        accessor = ref.access(ref.definition("VersionedFile"))
-        node = accessor._unwrap(accessor.root(ref.StableData.current(_versioned_file())))
+        accessor = reflect.access(reflect.definition("VersionedFile"))
+        node = accessor._unwrap(accessor.root(reflect.StableData.current(_versioned_file())))
         assert "不是叶子" in accessor.leaf(node).message
 
 
@@ -130,7 +130,7 @@ class TestSevenCells:
 
 class TestAddressing:
     def test_by_tag_and_at_key_walk_the_store(self) -> None:
-        node = ref.open_record(_store(), "FileKvStore")
+        node = reflect.open_record(_store(), "FileKvStore")
         content = node.by_tag("file_id2file").at_key("f1").get_file_content().get_data()
         assert content.value == "print(1)"
 
@@ -140,23 +140,23 @@ class TestAddressing:
             file_meta=adt.Versioned(None),
             file_content=adt.Versioned("body"),
         )
-        node = ref.open_record(history, "VersionedFile")
+        node = reflect.open_record(history, "VersionedFile")
         assert node.get_file_content().get_data().value == "body"
 
     def test_by_field_index_walks_an_untagged_branch(self) -> None:
         segment = adt.TerminalTextSegment(text="x", fg=adt.Rgb(1, 2, 3))
-        fg = ref.open_record(segment, "TerminalTextSegment").get_fg()
+        fg = reflect.open_record(segment, "TerminalTextSegment").get_fg()
         assert fg.by_field_index(0).by_tag("truecolor").get_r().value == 1
         assert fg.has_field_0() is True
 
     def test_unknown_coordinate_is_an_error(self) -> None:
-        node = ref.open_record(_file_id(), "FileId")
-        with pytest.raises(ref.StableReflectError, match="设计里没有这个坐标"):
+        node = reflect.open_record(_file_id(), "FileId")
+        with pytest.raises(reflect.StableReflectError, match="设计里没有这个坐标"):
             node.by_tag("nope")
 
     def test_at_index_on_a_non_container_is_an_error(self) -> None:
-        with pytest.raises(ref.StableReflectError):
-            ref.open_record(_file_id(), "FileId").at_index(0)
+        with pytest.raises(reflect.StableReflectError):
+            reflect.open_record(_file_id(), "FileId").at_index(0)
 
 
 # =====================================================================
@@ -165,14 +165,14 @@ class TestAddressing:
 
 class TestSumBranches:
     def test_data_status_enum_matches_its_tag(self) -> None:
-        node = ref.open_record(_versioned_file(), "VersionedFile")
+        node = reflect.open_record(_versioned_file(), "VersionedFile")
         status = node.get_file_meta().get_data()
         assert status.has_read_only() is True
         assert status.has_deleted() is False
 
     def test_absent_optional_field_is_false(self) -> None:
         segment = adt.TerminalTextSegment(text="x", bg=None)
-        node = ref.open_record(segment, "TerminalTextSegment")
+        node = reflect.open_record(segment, "TerminalTextSegment")
         assert node.has_bg() is False
         assert node.has_field_1() is False
 
@@ -181,7 +181,7 @@ class TestSumBranches:
             user_name=adt.HUMAN_USER_NAME, time=_moment(),
             message=[adt.ScreenReference(
                 capture_time=_moment(), stream_name="screen", region=adt.TextRegion(0, 3))])
-        part = ref.open_record(message, "ChatMessage").get_message().at_index(0)
+        part = reflect.open_record(message, "ChatMessage").get_message().at_index(0)
         reference = part.by_tag("reference")
         assert reference.has_screen_ref() is True
         assert reference.has_chat_ref() is False
@@ -192,11 +192,11 @@ class TestSumBranches:
             message=[adt.ChatReference(
                 msg_time=_moment(), user_name=adt.HUMAN_USER_NAME,
                 region=adt.TextRegion(0, 3))])
-        part = ref.open_record(message, "ChatMessage").get_message().at_index(0)
+        part = reflect.open_record(message, "ChatMessage").get_message().at_index(0)
         assert part.has_reference() is True
         reference = part.by_tag("reference")
         assert reference.has_screen_ref() is False
-        with pytest.raises(ref.StableReflectError):
+        with pytest.raises(reflect.StableReflectError):
             reference.by_tag("screen_ref")
 
 
@@ -206,7 +206,7 @@ class TestSumBranches:
 
 class TestPythonLanding:
     def test_get_has_try_get_and_in(self) -> None:
-        node = ref.open_record(_versioned_file(), "VersionedFile")
+        node = reflect.open_record(_versioned_file(), "VersionedFile")
         assert node.get_file_name().get_data().value == "a.py"
         assert node.has_file_name() is True
         assert node.try_get_nope().message.startswith("设计里没有这个坐标")
@@ -214,27 +214,27 @@ class TestPythonLanding:
         assert "nope" not in node
 
     def test_missing_value_is_ok_none_not_an_exception(self) -> None:
-        node = ref.open_record(adt.Versioned(data=None), "Versioned")
+        node = reflect.open_record(adt.Versioned(data=None), "Versioned")
         assert node.try_get_data().value is None
-        with pytest.raises(ref.StableReflectError, match="没有值"):
+        with pytest.raises(reflect.StableReflectError, match="没有值"):
             node.get_data()
 
     def test_dir_lists_the_synthesised_names(self) -> None:
-        assert "get_file_id2file" in dir(ref.open_record(_store(), "FileKvStore"))
+        assert "get_file_id2file" in dir(reflect.open_record(_store(), "FileKvStore"))
 
     def test_dict_access_and_sequence_iteration(self) -> None:
-        node = ref.open_record(_store(), "FileKvStore").get_file_id2file()
+        node = reflect.open_record(_store(), "FileKvStore").get_file_id2file()
         assert len(node) == 1 and node.is_dict is True
         assert node.keys() == ["f1"]
         assert node["f1"].get_file_name().get_data().value == "a.py"
         assert [value.get_file_name().get_data().value for _, value in node.items()] == ["a.py"]
-        styles = ref.open_record(adt.TerminalTextSegment(text="x", styles={"bold"}),
+        styles = reflect.open_record(adt.TerminalTextSegment(text="x", styles={"bold"}),
                                  "TerminalTextSegment").get_styles()
         assert [style.value for style in styles] == ["bold"]
 
     def test_set_shapes_are_recognised(self) -> None:
         segment = adt.TerminalTextSegment(text="x", styles={"bold"})
-        assert ref.open_record(segment, "TerminalTextSegment").get_styles().is_set is True
+        assert reflect.open_record(segment, "TerminalTextSegment").get_styles().is_set is True
 
 
 # =====================================================================
@@ -243,24 +243,24 @@ class TestPythonLanding:
 
 class TestConvenience:
     def test_resolve_and_read(self) -> None:
-        node = ref.open_record(_store(), "FileKvStore")
-        path = [ref.by_tag("file_id2file"), ref.at_key("f1"),
-                ref.by_tag("file_content"), ref.by_tag("data")]
-        assert ref.stable_resolve(node, path).value.value == "print(1)"
-        assert ref.stable_read(node, path).value.value == "print(1)"
+        node = reflect.open_record(_store(), "FileKvStore")
+        path = [reflect.by_tag("file_id2file"), reflect.at_key("f1"),
+                reflect.by_tag("file_content"), reflect.by_tag("data")]
+        assert reflect.stable_resolve(node, path).value.value == "print(1)"
+        assert reflect.stable_read(node, path).value.value == "print(1)"
 
     def test_read_reports_a_missing_step(self) -> None:
-        node = ref.open_record(adt.Versioned(data=None), "Versioned")
-        assert ref.stable_read(node, [ref.by_tag("data")]).message == "这一步没有值"
+        node = reflect.open_record(adt.Versioned(data=None), "Versioned")
+        assert reflect.stable_read(node, [reflect.by_tag("data")]).message == "这一步没有值"
 
     def test_resolve_reports_an_unknown_step(self) -> None:
-        node = ref.open_record(_file_id(), "FileId")
-        given = ref.stable_resolve(node, [ref.by_tag("nope")])
+        node = reflect.open_record(_file_id(), "FileId")
+        given = reflect.stable_resolve(node, [reflect.by_tag("nope")])
         assert "设计里没有这个坐标" in given.message
 
     def test_list_fields_keeps_what_is_there(self) -> None:
-        node = ref.open_record(_file_id(), "FileId")
-        given = ref.stable_list_fields(node, ref.definition("FileId"))
+        node = reflect.open_record(_file_id(), "FileId")
+        given = reflect.stable_list_fields(node, reflect.definition("FileId"))
         assert [member.value for member in given.value] == ["f1", "a.py"]
 
 
@@ -270,11 +270,11 @@ class TestConvenience:
 
 class TestWalk:
     def test_store_walks_down_to_leaves(self) -> None:
-        accessor = ref.access(ref.definition("FileKvStore"))
-        root = accessor._unwrap(accessor.root(ref.StableData.current(_store())))
+        accessor = reflect.access(reflect.definition("FileKvStore"))
+        root = accessor._unwrap(accessor.root(reflect.StableData.current(_store())))
         leaves = []
         for node in accessor._walk(root):
             given = accessor.leaf(node)
-            if isinstance(given, ref.Ok):
+            if isinstance(given, reflect.Ok):
                 leaves.append(given.value.value)
         assert {"a.py", "alice", "bob", "print(1)"} <= set(leaves)
