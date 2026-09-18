@@ -470,6 +470,34 @@ class ScoreReference:
     judge_name: str
 
 
+@dataclass(frozen=True)
+class TerminalControlReference:
+    """$start_time datetime * $user_name Optional[UserName] * $region TextRegion
+
+    user_name 为空 = 那次交还之后没人接手。落盘走 references.py 那一套，这里只是 ADT 的镜子。
+    """
+
+    start_time: Optional[_dt.datetime]
+    user_name: Optional[str] = None
+    region: Optional[TextRegion] = None
+
+
+@dataclass(frozen=True)
+class VersionedFileReference:
+    """$file_id FileId * $version_time datetime —— as-of：取该时刻（含）之前的最近一版。"""
+
+    file_id: "FileId"
+    version_time: Optional[_dt.datetime] = None
+
+
+@dataclass(frozen=True)
+class VersionedFileContentReference:
+    """$versioned_file_ref VersionedFileReference * $region TextRegion"""
+
+    versioned_file_ref: VersionedFileReference
+    region: Optional[TextRegion] = None
+
+
 ContentReference = ScreenReference | ChatReference | ScoreReference
 
 
@@ -575,6 +603,9 @@ __all__ += [
     "ScreenReference",
     "ChatReference",
     "ScoreReference",
+    "TerminalControlReference",
+    "VersionedFileReference",
+    "VersionedFileContentReference",
     "text_region_to_dict",
     "text_region_from_dict",
     "content_reference_to_dict",
@@ -859,7 +890,7 @@ def owner_at(moment: _dt.datetime,
     for control in sorted(controls, key=lambda c: c.start_time
                           if c.start_time is not None else _dt.datetime.min):
         if control.start_time is not None and control.start_time <= moment:
-            owner = control.user_name
+            owner = control.user_name or None
         else:
             break
     return owner
@@ -1579,7 +1610,7 @@ def user_names_of_meeting_data(data: MeetingData) -> set[str]:
         elif isinstance(chunk, ScoreStreamChunk):
             names.update(m.judge_name for m in chunk.chunks)
         elif isinstance(chunk, TerminalControlStreamChunk):
-            names.update(c.user_name for c in chunk.chunks)
+            names.update(c.user_name for c in chunk.chunks if c.user_name)
     names.update(v.author for v in _file_layer_versioned(data) if v.author)
     return names
 
