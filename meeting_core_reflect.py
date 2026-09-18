@@ -10,20 +10,20 @@
 名字照 viba.rule.reflect 对 viba-reflect.md 的老规矩来：协议里的类名原样保留（``VibaStep``、
 ``VibaPath``、``VibaNode``、``VibaAccess``），函数落 snake_case（``viba_resolve`` /
 ``viba_get_by_path`` / ``viba_list_fields``），四支地址是 ``by_tag`` /
-``by_field_index`` / ``at_index`` / ``at_key``；七格在 ``VibaAccess`` 上：``file_hashes`` /
-``root`` / ``has`` / ``get`` / ``leaf`` / ``length`` / ``keys``。
+``by_field_index`` / ``at_index`` / ``at_key``；六格在 ``VibaAccess`` 上：``root`` /
+``has`` / ``get`` / ``leaf`` / ``length`` / ``keys``。
 
 协议里没给名字的，才是本层自己的：
 
-    Data 这个形参         -> Record：一份 Python 记录 + 它声明的设计版本
+    Data 这个形参         -> Record：一份 Python 记录
     第 5.4 节"直接抛异常"  -> VibaReflectError（第 5.4 节的 Python 落点名字）
     读图与遍历            -> VibaAccess 上的下划线方法、以及本模块的下划线函数
     设计从哪读            -> 私有的 _design_source / _design_hash / _design_pool / _definition
 
 两条协议里的规矩：
 
-* ``root`` 不核版本：只把 (描述符, 数据) 配成对。数据声明的哈希用 ``file_hashes``
-  问得到，要不要核、怎么核是上层的事——这一层不提供核对。
+* ``root`` 只把 (描述符, 数据) 配成对。版本协议不管：一份材料对着哪一版设计做的，
+  是上层自己的事。
 * ``has`` 只答真假——设计里没这个坐标、数据里没这一段，都是 ``False``。
   ``get`` 里"数据里没有"是 ``Ok(nil)``，只有"图上压根没这个坐标"才是 ``Err``；
   ``leaf`` / ``length`` / ``keys`` 取不到就是 ``Err``。
@@ -59,7 +59,7 @@ import sys
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 # viba 是子模块，包在它的根目录下面；把子模块根加进 sys.path，import 才找得到。
 _VENDORED_VIBA = Path(__file__).resolve().parent / "viba"
@@ -223,21 +223,19 @@ class VibaReflectError(Exception):
 
 
 class Record:
-    """本层对协议里 Data 形参的绑定：一份 Python 记录 + 它声明的设计版本。
+    """本层对协议里 Data 形参的绑定：一份 Python 记录。
 
     协议没规定 Data 长什么样。这边绑的是 meeting_adt.py 那份记录（dataclass 实例、
-    容器、标量都算），外加一份"我是对着哪一版设计做的"声明——``hashes`` 里放的是
-    设计文件的 ``$file_hash``。这份声明给 ``file_hashes`` 用，起点不拿它拦人。
+    容器、标量都算）。版本之类的信息由上层自己带，协议不管。
     """
 
-    __slots__ = ("record", "hashes")
+    __slots__ = ("record",)
 
-    def __init__(self, record, hashes: Iterable[str] = ()):
+    def __init__(self, record):
         self.record = record
-        self.hashes = set(hashes)
 
     def __repr__(self):
-        return f"Record({type(self.record).__name__}, {len(self.hashes)} hashes)"
+        return f"Record({type(self.record).__name__})"
 
 
 # ----------------------------------------------------------------------
@@ -373,7 +371,7 @@ class VibaNode:
 
 
 class VibaAccess:
-    """绑好一段稳定类型的访问器：第 5.2 节的七格，加本层的读图辅助。"""
+    """绑好一段稳定类型的访问器：第 5.2 节的六格，加本层的读图辅助。"""
 
     def __init__(self, definition: VibaDefinitionDescriptor):
         self.definition = definition
@@ -382,16 +380,10 @@ class VibaAccess:
     def __repr__(self):
         return f"VibaAccess({self.definition.full_name!r})"
 
-    # ---- 协议七格 ----
-
-    def file_hashes(self, data: Record) -> Result:
-        return Ok(set(data.hashes))
+    # ---- 协议六格 ----
 
     def root(self, data: Record) -> Result:
-        """起点：给出 (描述符, 数据) 这一对。
-
-        版本不在这里核：数据声明的哈希由 ``file_hashes`` 给出，要不要核是上层的事。
-        """
+        """起点：给出 (描述符, 数据) 这一对。"""
         return Ok(VibaNode(self, self.definition.body, data.record))
 
     def has(self, node: VibaNode, step: VibaStep) -> Result:

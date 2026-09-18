@@ -97,19 +97,15 @@ class TestRoot:
         assert isinstance(node, reflect.VibaNode)
         assert node.path == ()
 
-    def test_root_hands_out_the_node_without_checking_versions(self) -> None:
+    def test_root_pairs_the_descriptor_with_the_data(self) -> None:
         accessor = reflect.access(_definition("FileId"))
-        for data in (reflect.Record(_file_id()),
-                     reflect.Record(_file_id(), ["deadbeef"])):
-            given = accessor.root(data)
-            assert given.value.get_file_id().value == "f1"
-        assert accessor.file_hashes(reflect.Record(_file_id())).value == set()
-        assert accessor.file_hashes(reflect.Record(_file_id(), ["x"])).value == {"x"}
+        given = accessor.root(reflect.Record(_file_id()))
+        assert given.value.get_file_id().value == "f1"
 
 
 
 # =====================================================================
-# 七格：has / get / leaf / length / keys
+# 六格：has / get / leaf / length / keys
 # =====================================================================
 
 class TestSevenCells:
