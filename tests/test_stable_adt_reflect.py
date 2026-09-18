@@ -1,6 +1,7 @@
 """Tests for stable_adt_reflect: the access side of viba-reflect.md on MEETING_ADT's stable types.
 
 设计 = MEETING_ADT.md 的「稳定类型」章；数据 = meeting_adt.py 那份 Python 记录。
+起点不核版本（viba-reflect.md：root 只把描述符和数据配成对）：要核就用 stable_version_matches。
 """
 
 import datetime as _dt
@@ -63,7 +64,7 @@ class TestDesign:
 
 
 # =====================================================================
-# 起点：先核版本
+# 起点：只配 (描述符, 数据)，版本交给上层
 # =====================================================================
 
 class TestRoot:
@@ -72,16 +73,16 @@ class TestRoot:
         assert isinstance(node, reflect.StableNode)
         assert node.path == ()
 
-    def test_data_without_hashes_is_refused(self) -> None:
-        given = reflect.access(reflect.definition("FileId")).root(reflect.StableData(_file_id()))
-        assert given.message == "数据没有声明版本，拒绝给起点"
+    def test_root_hands_out_the_node_without_checking_versions(self) -> None:
+        accessor = reflect.access(reflect.definition("FileId"))
+        for data in (reflect.StableData(_file_id()),
+                     reflect.StableData(_file_id(), ["deadbeef"])):
+            given = accessor.root(data)
+            assert given.value.get_file_id().value == "f1"
+        assert accessor.file_hashes(reflect.StableData(_file_id())).value == set()
+        assert accessor.file_hashes(reflect.StableData(_file_id(), ["x"])).value == {"x"}
 
-    def test_wrong_version_is_refused(self) -> None:
-        data = reflect.StableData(_file_id(), ["deadbeef"])
-        given = reflect.access(reflect.definition("FileId")).root(data)
-        assert "版本对不上" in given.message
-
-    def test_version_matches_is_the_other_half(self) -> None:
+    def test_version_matches_is_the_upper_layers_step(self) -> None:
         assert reflect.stable_version_matches(reflect.pool(), reflect.StableData.current(_store())).value is True
         assert reflect.stable_version_matches(reflect.pool(), reflect.StableData(_store(), ["nope"])).value is False
 
