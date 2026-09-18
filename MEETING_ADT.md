@@ -45,6 +45,12 @@ FileDesktop :=
     DataClass
   * $workspaces sa.AppendOnlyList[FileWorkspace]
   * $reorder_indexes sa.Versioned[DesktopMemberOrder]
+  * Assert[{
+      同一层里名字唯一，路径才定得到一条：
+        $workspaces 里各 workspace 的 $workspace_name 两两不同；
+        同一个 workspace 里，fold 的 $fold_name 与直接挂着的文件的 $entry_name 两两不同；
+        同一个 fold 里，$member_file_ids 里各文件的 $entry_name 两两不同
+    }]
   * Appendix[{
       # 桌面树只表示当前状态：没有任何 sa.ContentReference 按 $version_time 引用它，
       # 所以树里不铺版本链（要 as-of 的只有 file_kv_store 那三条链）；
@@ -260,6 +266,7 @@ TerminalTextSegment :=
 FileId :=
     Object
   * $file_id str
+  * $entry_name str
   * Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]
 
 VersionedFile :=
@@ -519,6 +526,15 @@ ControlOwnerOf[Ctx] :=
 # ---------------------------------------------------------------- #
 # VersionedFile 是整份记录：名字 / 状态 / 内容各自的历史都在里面。
 # 问「某一时刻」或「最新」给的是那一份状态，不是整份记录。
+
+# 按路径取 FileId：$path 要么 /workspace_name/entry_name，
+# 要么 /workspace_name/fold_name/entry_name。每层名字唯一（见 FileDesktop 的 Assert），
+# 所以路径定得到一条。
+
+FileIdByPath[Ctx] :=
+    Result[sa.FileId]
+  <- $ctx Ctx
+  <- $path str
 
 FileKvStore[Ctx] :=
     Result[sa.FileKvStore]
