@@ -49,9 +49,10 @@
 
 * dataclass 的字段名就是 tag 去掉 ``$`` 之后的名字：``$file_id`` 对 ``file_id``。
 * 容器：list / tuple / set 按下标走，dict 按键走（键按字符串比）。
-* 和类型的分支看两条：数据的类名就是那一支指向的定义（``$screen_ref`` 对
-  ``ScreenReference``）；或者那一支是单位元、而枚举值正好叫这个 tag
-  （``$deleted ()`` 对 ``DataStatus.DELETED``）。
+* 和类型的分支看三条：数据的类名就是那一支指向的定义（``$screen_ref`` 对
+  ``ScreenReference``）；分支名跟类名对得上（``$ok`` / ``$err`` 对 ``Ok`` / ``Err``）；
+  或者那一支是单位元、而枚举值正好叫这个 tag（``$deleted ()`` 对 ``DataStatus.DELETED``）。
+  名字比大小写不敏感。
 * 内建叶子按 Python 标量认：bool / int / float / str / None。
 
 对不上的地方就是读不出来（``Err`` 或 ``False``）——那是 Python 那边跟文档不一致
@@ -663,18 +664,22 @@ class StableAccess:
         正好叫这个 tag（``DataStatus.DELETED`` 之于 ``$deleted ()``）；和类型往分支
         里递归；最后是内建叶子对 Python 标量。
         """
-        if tag_name is not None and isinstance(data, Enum) and str(data.value) == tag_name:
-            return True
+        if tag_name is not None:
+            if isinstance(data, Enum) and str(data.value) == tag_name:
+                return True
+            # 分支名跟数据那个类的名字对得上（$ok / $err 对 Ok / Err）
+            if tag_name.lower() == type(data).__name__.lower():
+                return True
         if descriptor.kind == TYPE_REF:
             written = descriptor.payload.type_name
-            if written == type(data).__name__:
+            if written.lower() == type(data).__name__.lower():
                 return True
             unfolded = self._unfold(descriptor)
             if unfolded is not descriptor:
                 return self._shape_matches(unfolded, data, tag_name)
             return _leaf_matches(written, data)
         if descriptor.kind == TYPE_APP:
-            if descriptor.payload.constructor_name == type(data).__name__:
+            if descriptor.payload.constructor_name.lower() == type(data).__name__.lower():
                 return True
             unfolded = self._unfold(descriptor)
             return unfolded is not descriptor and self._shape_matches(unfolded, data, tag_name)

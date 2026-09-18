@@ -51,8 +51,8 @@ class TestDesign:
 
     def test_pool_carries_the_stable_definitions(self) -> None:
         names = [d.def_name for d in reflect.pool().files[0].definitions]
-        assert len(names) == 25
-        assert "FileId" in names and "ContentReference" in names
+        assert len(names) == 26
+        assert "FileId" in names and "ContentReference" in names and "Result" in names
 
     def test_definition_by_short_and_full_name(self) -> None:
         assert reflect.definition("FileId").full_name == "stable_adt.FileId"
@@ -263,6 +263,27 @@ class TestConvenience:
         node = reflect.open_record(_file_id(), "FileId")
         given = reflect.stable_list_fields(node, reflect.definition("FileId"))
         assert [member.value for member in given.value] == ["f1", "a.py"]
+
+
+class TestResult:
+    """Result 也在稳定类型里：$ok / $err 两个分支按类名对位。"""
+
+    def test_ok_and_err_branches_match(self) -> None:
+        from viba.type import Err, Ok
+
+        ok = reflect.open_record(Ok("body"), "Result")
+        assert ok.has_ok() is True
+        assert ok.has_err() is False
+        err = reflect.open_record(Err("boom"), "Result")
+        assert err.has_err() is True
+        assert err.has_ok() is False
+
+    def test_wrong_branch_raises(self) -> None:
+        from viba.type import Ok
+
+        node = reflect.open_record(Ok("body"), "Result")
+        with pytest.raises(reflect.StableReflectError):
+            node.by_tag("err")
 
 
 # =====================================================================
