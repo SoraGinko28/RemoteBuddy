@@ -34,8 +34,8 @@
 
 两条协议里的规矩：
 
-* ``root`` 内部先核版本：拿数据的 ``file_hashes``，看这段设计的 ``$file_hash`` 在不在
-  里面；不在（或者数据压根没声明版本）就 ``Err``，不给节点。
+* ``root`` 不核版本：只把 (描述符, 数据) 配成对。数据声明的哈希用 ``file_hashes``
+  问得到，要不要核、怎么核是上层的事（``stable_version_matches`` 是现成的那一步）。
 * ``has`` 只答真假——设计里没这个坐标、数据里没这一段，都是 ``False``。
   ``get`` 里"数据里没有"是 ``Ok(nil)``，只有"图上压根没这个坐标"才是 ``Err``；
   ``leaf`` / ``length`` / ``keys`` 取不到就是 ``Err``。
@@ -238,6 +238,7 @@ class StableData:
     协议没规定 Data 长什么样。这边绑的是 meeting_adt.py 那份记录（dataclass 实例、
     容器、标量都算），外加一份"我是对着哪一版设计做的"声明——``hashes`` 里放的是
     设计文件的 ``$file_hash``；``StableData.current`` 按当前这一版设计签。
+    这份声明给 ``file_hashes`` 用，起点不拿它拦人。
     """
 
     __slots__ = ("record", "hashes")
@@ -403,16 +404,11 @@ class StableAccess:
         return Ok(set(data.hashes))
 
     def root(self, data: StableData) -> Result:
-        """起点：先核版本，再给出 (描述符, 数据) 这一对。"""
-        hashes = self.file_hashes(data)
-        if isinstance(hashes, Err):
-            return hashes
-        if not hashes.value:
-            return Err("数据没有声明版本，拒绝给起点")
-        if self.definition.file_hash not in hashes.value:
-            return Err(
-                f"版本对不上：设计是 {self.definition.file_hash[:12]}，"
-                f"数据声明的是 {sorted(h[:12] for h in hashes.value)}")
+        """起点：给出 (描述符, 数据) 这一对。
+
+        版本不在这里核：数据声明的哈希由 ``file_hashes`` 给出，上层想核就用
+        ``stable_version_matches``（或自己比）。
+        """
         return Ok(StableNode(self, self.definition.body, data.record))
 
     def has(self, node: StableNode, step: StableStep) -> Result:
@@ -805,7 +801,7 @@ def open_record(record, name: str, hashes: Optional[Iterable[str]] = None) -> St
     """给一份 Python 记录和一个稳定类型名，直接拿到起点节点。
 
     ``hashes`` 不给就按"这份记录是对着当前这一版设计做的"签（``StableData.current``）；
-    要对别的版本就别省这个参数。取不到（版本对不上等）直接抛 StableReflectError。
+    要对别的版本就别省这个参数。起点不核版本，这份声明只影响 ``file_hashes``。
     """
     data = StableData.current(record) if hashes is None else StableData(record, hashes)
     accessor = access(definition(name))
