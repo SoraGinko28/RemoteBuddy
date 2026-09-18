@@ -40,6 +40,9 @@
   ``get`` 里"数据里没有"是 ``Ok(nil)``，只有"图上压根没这个坐标"才是 ``Err``；
   ``leaf`` / ``length`` / ``keys`` 取不到就是 ``Err``。
 
+起点按协议起：``access(definition(name)).root(StableData(record))``，回来的 ``Ok`` 里就是节点
+（``Err`` 是根本没对上）。协议里的 ``Ok`` / ``Err`` 就是本模块露出的这两个。
+
 第 5.4 节的 Python 落点在 StableNode 上：``get_{name}()`` / ``has_{name}()`` /
 ``in`` / ``try_get_{name}()`` / ``node[i]`` / ``node.value`` / ``len(node)`` /
 迭代 / ``keys()`` / ``values()`` / ``items()``。取值的那一类抛异常，问有没有的
@@ -239,8 +242,7 @@ class StableData:
 
     协议没规定 Data 长什么样。这边绑的是 meeting_adt.py 那份记录（dataclass 实例、
     容器、标量都算），外加一份"我是对着哪一版设计做的"声明——``hashes`` 里放的是
-    设计文件的 ``$file_hash``；``StableData.current`` 按当前这一版设计签。
-    这份声明给 ``file_hashes`` 用，起点不拿它拦人。
+    设计文件的 ``$file_hash``。这份声明给 ``file_hashes`` 用，起点不拿它拦人。
     """
 
     __slots__ = ("record", "hashes")
@@ -248,11 +250,6 @@ class StableData:
     def __init__(self, record, hashes: Iterable[str] = ()):
         self.record = record
         self.hashes = set(hashes)
-
-    @classmethod
-    def current(cls, record) -> "StableData":
-        """这份记录是按当前这一版设计做的。"""
-        return cls(record, [design_hash()])
 
     def __repr__(self):
         return f"StableData({type(self.record).__name__}, {len(self.hashes)} hashes)"
@@ -805,17 +802,6 @@ def access(definition_descriptor: VibaDefinitionDescriptor) -> StableAccess:
     return StableAccess(definition_descriptor)
 
 
-def open_record(record, name: str, hashes: Optional[Iterable[str]] = None) -> StableNode:
-    """给一份 Python 记录和一个稳定类型名，直接拿到起点节点。
-
-    ``hashes`` 不给就按"这份记录是对着当前这一版设计做的"签（``StableData.current``）；
-    要对别的版本就别省这个参数。起点不核版本，这份声明只影响 ``file_hashes``。
-    """
-    data = StableData.current(record) if hashes is None else StableData(record, hashes)
-    accessor = access(definition(name))
-    return accessor._unwrap(accessor.root(data))
-
-
 # ----------------------------------------------------------------------
 # 私有小工具
 # ----------------------------------------------------------------------
@@ -915,6 +901,9 @@ def _member_type_name(member) -> Optional[str]:
 
 __all__ = [
     "DESIGN_CHAPTER",
+    "Err",
+    "Ok",
+    "Result",
     "DESIGN_FILE_NAME",
     "DESIGN_MODULE_NAME",
     "DESIGN_PATH",
@@ -933,7 +922,6 @@ __all__ = [
     "design_hash",
     "design_pool",
     "design_source",
-    "open_record",
     "pool",
     "stable_list_fields",
     "stable_read",

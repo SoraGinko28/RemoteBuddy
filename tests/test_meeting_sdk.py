@@ -96,8 +96,15 @@ def prepare_meeting_data_as_ctx():
 # ----------------------------------------------------------------------
 
 
+def _node(value, name, reflect):
+    """按协议起一个节点：access(definition).root(StableData(value))。"""
+    given = reflect.access(reflect.definition(name)).root(reflect.StableData(value))
+    assert isinstance(given, reflect.Ok), "取不到起点"
+    return given.value
+
+
 def _result(value, reflect):
-    return reflect.open_record(value, "Result")
+    return _node(value, "Result", reflect)
 
 
 def _ok_node(value, reflect):
@@ -139,7 +146,7 @@ def ctx():
 
 def test_case_chunk_times_follow_the_streams(ctx, sdk, reflect):
     payload = _ok_node(sdk.chunk_times(ctx, _T0, _T2), reflect).data
-    moments = [reflect.open_record(m, "datetime").get_microsecond().value
+    moments = [_node(m, "datetime", reflect).get_microsecond().value
                for m in payload]
     # 屏幕一条、聊天一条都在 _T1，评分在 _T2，控制从 _T0 起
     assert moments == [1, 2, 2, 3]
@@ -148,7 +155,7 @@ def test_case_chunk_times_follow_the_streams(ctx, sdk, reflect):
 def test_case_chunk_times_can_be_narrowed(ctx, sdk, reflect):
     payload = _ok_node(sdk.chunk_times(ctx, _T2, _T2), reflect).data
     assert len(payload) == 1
-    assert reflect.open_record(payload[0], "datetime").get_microsecond().value == 3
+    assert _node(payload[0], "datetime", reflect).get_microsecond().value == 3
 
 
 def test_case_streams_between_lists_the_stream_names(ctx, sdk, reflect):
@@ -163,7 +170,7 @@ def test_case_streams_between_lists_the_stream_names(ctx, sdk, reflect):
 def test_case_chat_messages_read_through_the_design(ctx, sdk, reflect):
     messages = _ok_node(sdk.chat_messages(ctx, _T0, _T3), reflect).data
     assert len(messages) == 2
-    first = reflect.open_record(messages[0], "ChatMessage")
+    first = _node(messages[0], "ChatMessage", reflect)
     assert first.get_user_name().by_tag("agent_name").value == "alice"
     assert first.get_time().get_microsecond().value == 2
 
@@ -171,13 +178,13 @@ def test_case_chat_messages_read_through_the_design(ctx, sdk, reflect):
 def test_case_chat_messages_can_be_narrowed(ctx, sdk, reflect):
     messages = _ok_node(sdk.chat_messages(ctx, _T2, _T2), reflect).data
     assert len(messages) == 1
-    node = reflect.open_record(messages[0], "ChatMessage")
+    node = _node(messages[0], "ChatMessage", reflect)
     assert node.get_user_name().by_tag("agent_name").value == "bob"
 
 
 def test_case_chat_message_at_is_unique_per_time_and_user(ctx, sdk, reflect):
     message = _ok_node(sdk.chat_message_at(ctx, _T1, "alice"), reflect).data
-    node = reflect.open_record(message, "ChatMessage")
+    node = _node(message, "ChatMessage", reflect)
     assert node.get_user_name().by_tag("agent_name").value == "alice"
 
     assert "bob" in _err_message(sdk.chat_message_at(ctx, _T1, "bob"),
@@ -188,7 +195,7 @@ def test_case_resolve_chat_reference(ctx, sdk, reflect):
     ref = sdk.ChatReference(msg_time=_T2, user_name="bob",
                                     region=sdk.TextRegion(0, 2))
     message = _ok_node(sdk.resolve_chat_reference(ctx, ref), reflect).data
-    node = reflect.open_record(message, "ChatMessage")
+    node = _node(message, "ChatMessage", reflect)
     assert node.get_user_name().by_tag("agent_name").value == "bob"
 
 
@@ -203,7 +210,7 @@ def test_case_resolve_chat_content_reference_takes_the_region(ctx, sdk,
 def test_case_resolve_score_reference(ctx, sdk, reflect):
     ref = sdk.ScoreReference(judge_time=_T2, judge_name="bob")
     message = _ok_node(sdk.resolve_score_reference(ctx, ref), reflect).data
-    node = reflect.open_record(message, "ScoreMessage")
+    node = _node(message, "ScoreMessage", reflect)
     assert node.get_tag().value == "correctness"
     assert node.get_score().value == 1.0
 
@@ -222,8 +229,8 @@ def test_case_screen_at_returns_the_state(ctx, sdk, reflect):
     state = _ok_node(sdk.screen_at(ctx, _T1), reflect).data
     assert state["text"] == "ab\ncd"
     assert state["width"] == 2 and state["height"] == 2
-    assert reflect.open_record(
-        state["captured_at"], "datetime").get_microsecond().value == 2
+    assert _node(
+        state["captured_at"], "datetime", reflect).get_microsecond().value == 2
 
 
 def test_case_screen_at_without_that_moment_is_an_error(ctx, sdk, reflect):
@@ -274,14 +281,14 @@ def test_case_control_owner_of_a_handover(ctx, sdk, reflect):
 
 def test_case_file_id_by_path_finds_a_direct_file(ctx, sdk, reflect):
     file_id = _ok_node(sdk.file_id_by_path(ctx, "/ws/a.py"), reflect).data
-    node = reflect.open_record(file_id, "FileId")
+    node = _node(file_id, "FileId", reflect)
     assert node.get_entry_name().value == "a.py"
 
 
 def test_case_file_id_by_path_finds_a_file_in_a_fold(ctx, sdk, reflect):
     file_id = _ok_node(sdk.file_id_by_path(ctx, "/ws/pkg/b.py"),
                        reflect).data
-    node = reflect.open_record(file_id, "FileId")
+    node = _node(file_id, "FileId", reflect)
     assert node.get_file_id().value == "f2"
 
 
@@ -293,7 +300,7 @@ def test_case_file_id_by_path_rejects_unknown_paths(ctx, sdk, reflect):
 def test_case_file_kv_store_is_readable_through_the_design(ctx, sdk,
                                                            reflect):
     store = _ok_node(sdk.file_kv_store(ctx), reflect).data
-    node = reflect.open_record(store, "FileKvStore")
+    node = _node(store, "FileKvStore", reflect)
     assert node.get_file_id2file().keys() == ["f1", "f2"]
 
 
