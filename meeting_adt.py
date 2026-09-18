@@ -1000,8 +1000,10 @@ __all__ += [
 #
 # FileId := Object * $file_id str * $entry_name str
 #   * Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]
-# VersionedFile := Object * $file_name Versioned[str] * $file_meta Versioned[DataStatus]
-#   * $file_content Versioned[str]
+# VersionedFile := Object * $file_name AppendOnlyList[Versioned[str]]
+#   * $file_meta AppendOnlyList[Versioned[DataStatus]]
+#   * $file_content AppendOnlyList[Versioned[str]]
+#   (三条链：as-of 取链上 time ≤ 时刻的最后一版；状态链空着 = 可写)
 # FileKvStore := Object * $file_id2file dict[str, VersionedFile]
 # FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileId]
 # FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileId]
@@ -1023,8 +1025,8 @@ __all__ += [
 #   DataStatus: "deleted" | "read_only"
 #   Versioned[T]: {"data": ..., "time": iso|null, "author": user_name}
 #   FileId: {"file_id": id, "entry_name": name}
-#   VersionedFile: {"file_name": Versioned[str], "file_meta": Versioned[DataStatus],
-#                   "file_content": Versioned[str]}
+#   VersionedFile: {"file_name": [Versioned[str]], "file_meta": [Versioned[status|null]],
+#                   "file_content": [Versioned[str]]}   # 每个部件一条链
 #   FileKvStore: {"file_id2file": {file_id: VersionedFile}}
 #   FileFold: {"fold_name": name|null, "member_file_ids": [FileId]}
 #   FileWorkspace: {"member_files": [{"fold": FileFold} | {"file": FileId}],
@@ -1109,26 +1111,37 @@ def file_id_from_dict(payload: dict) -> FileId:
 
 @dataclass
 class VersionedFile:
-    """VersionedFile: the file's name / meta / content, each carrying its own version."""
+    """VersionedFile := Object * $file_name AppendOnlyList[Versioned[str]]
+    * $file_meta AppendOnlyList[Versioned[DataStatus]]
+    * $file_content AppendOnlyList[Versioned[str]]
 
-    file_name: Versioned = field(default_factory=lambda: Versioned(""))
-    file_meta: Versioned = field(default_factory=lambda: Versioned(None))
-    file_content: Versioned = field(default_factory=lambda: Versioned(""))
+    Three chains, one per part. Appending a version is the only write there is:
+    existing versions stay put, and as-of takes the last version whose time is
+    at or before the moment asked for. An empty meta chain means writable: the
+    status is something added later, writable is the default.
+    """
+
+    file_name: list = field(default_factory=list)     # list[Versioned[str]]
+    file_meta: list = field(default_factory=list)     # list[Versioned[DataStatus]]
+    file_content: list = field(default_factory=list)  # list[Versioned[str]]
 
 
 def versioned_file_to_dict(versioned_file: VersionedFile) -> dict:
     return {
-        "file_name": versioned_to_dict(versioned_file.file_name, str),
-        "file_meta": versioned_to_dict(versioned_file.file_meta, _data_status_encode),
-        "file_content": versioned_to_dict(versioned_file.file_content, str),
+        "file_name": [versioned_to_dict(v, str) for v in versioned_file.file_name],
+        "file_meta": [versioned_to_dict(v, _data_status_encode) for v in versioned_file.file_meta],
+        "file_content": [versioned_to_dict(v, str) for v in versioned_file.file_content],
     }
 
 
 def versioned_file_from_dict(payload: dict) -> VersionedFile:
     return VersionedFile(
-        file_name=versioned_from_dict(payload.get("file_name") or {}, _str_decode),
-        file_meta=versioned_from_dict(payload.get("file_meta") or {}, _data_status_decode),
-        file_content=versioned_from_dict(payload.get("file_content") or {}, _str_decode),
+        file_name=[versioned_from_dict(v, _str_decode)
+                   for v in payload.get("file_name") or []],
+        file_meta=[versioned_from_dict(v, _data_status_decode)
+                   for v in payload.get("file_meta") or []],
+        file_content=[versioned_from_dict(v, _str_decode)
+                      for v in payload.get("file_content") or []],
     )
 
 
@@ -1638,11 +1651,14 @@ class MeetingData:
 
 
 def _file_layer_versioned(data: MeetingData):
-    """Every Versioned value the file layer carries (each has an author)."""
+    """Every Versioned value the file layer carries (each has an author).
+
+    The three file parts are chains now, so every version on them counts.
+    """
     for versioned_file in data.file_kv_store.file_id2file.values():
-        yield versioned_file.file_name
-        yield versioned_file.file_meta
-        yield versioned_file.file_content
+        yield from versioned_file.file_name
+        yield from versioned_file.file_meta
+        yield from versioned_file.file_content
     yield data.file_desktop.reorder_indexes
 
 

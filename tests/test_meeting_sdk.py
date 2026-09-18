@@ -93,18 +93,20 @@ def prepare_meeting_data_as_ctx():
     fold = adt.FileFold(fold_name="pkg",
                         member_file_ids=[adt.FileId(file_id="f2", entry_name="b.py")])
     workspace = adt.FileWorkspace(member_files=[file_id, fold], workspace_name="ws",
-                                  workspace_status=adt.DataStatus.READ_ONLY)
-    desktop = adt.FileDesktop(workspaces=[workspace])
+                                  workspace_status=None)          # 缺省 = 可写
+    locked = adt.FileWorkspace(member_files=[], workspace_name="locked",
+                               workspace_status=adt.DataStatus.READ_ONLY)
+    desktop = adt.FileDesktop(workspaces=[workspace, locked])
     desktop.reorder_indexes = adt.Versioned(adt.identity_desktop_order(desktop), _T0, _ALICE)
     store = adt.FileKvStore(file_id2file={
         "f1": adt.VersionedFile(
-            file_name=adt.Versioned("a.py", _T0, _ALICE),
-            file_meta=adt.Versioned(adt.DataStatus.READ_ONLY, _T0, _ALICE),
-            file_content=adt.Versioned("print(1)", _T0, _ALICE)),
+            file_name=[adt.Versioned("a.py", _T0, _ALICE)],
+            file_meta=[adt.Versioned(adt.DataStatus.READ_ONLY, _T0, _ALICE)],
+            file_content=[adt.Versioned("print(1)", _T0, _ALICE)]),
         "f2": adt.VersionedFile(
-            file_name=adt.Versioned("b.py", _T2, _BOB),
-            file_meta=adt.Versioned(adt.DataStatus.DELETED, _T2, _BOB),
-            file_content=adt.Versioned("print(2)", _T2, _BOB)),
+            file_name=[adt.Versioned("b.py", _T2, _BOB)],
+            file_meta=[adt.Versioned(adt.DataStatus.DELETED, _T2, _BOB)],
+            file_content=[adt.Versioned("print(2)", _T2, _BOB)]),
     })
 
     return adt.MeetingData(
@@ -496,3 +498,89 @@ def test_case_make_versioned_file_content_reference_takes_the_region(ctx, sdk, r
     ref = sdk.make_versioned_file_content_reference(file_ref, sdk.make_text_region(0, 5))
     assert _ok_value(sdk.resolve_versioned_file_content_reference(ctx, ref),
                      reflect) == "print"
+
+
+# =====================================================================
+# 写：open_file / write_text（只往版本链上追加）
+# =====================================================================
+
+
+def _file_id_of(ctx, sdk, reflect, path):
+    return _ok_node(sdk.file_id_by_path(ctx, path), reflect).data
+
+
+def _content_chain(ctx, sdk, reflect, file_id):
+    store = _ok_node(sdk.file_kv_store(ctx), reflect).data
+    files = _node(store, "FileKvStore", reflect).get_file_id2file()
+    key = _node(file_id, "FileId", reflect).get_file_id().value
+    return files[key].get_file_content()
+
+
+def test_case_open_file_opens_an_existing_path(ctx, sdk, reflect):
+    moment = _ok_data(sdk.last_chunk_time(ctx), reflect)
+    opened = _node(_ok_node(sdk.open_file(ctx, "/ws/a.py", moment, _ALICE),
+                            reflect).data, "FileId", reflect)
+    same = _node(_file_id_of(ctx, sdk, reflect, "/ws/a.py"), "FileId", reflect)
+    assert opened.get_file_id().value == same.get_file_id().value
+
+
+def test_case_open_file_creates_a_new_file_once(ctx, sdk, reflect):
+    moment = _ok_data(sdk.last_chunk_time(ctx), reflect)
+    first = _ok_node(sdk.open_file(ctx, "/ws/c.py", moment, _ALICE), reflect).data
+    again = _ok_node(sdk.open_file(ctx, "/ws/c.py", moment, _ALICE), reflect).data
+    assert _node(first, "FileId", reflect).get_file_id().value == \
+        _node(again, "FileId", reflect).get_file_id().value
+    state = _node(_ok_node(sdk.latest_file(ctx, first), reflect).data, "FileState", reflect)
+    assert state.get_name().value == "c.py"
+    assert state.get_content().value == ""
+    assert state.has_meta() is False                     # 状态链空着 = 可写
+
+
+def test_case_open_file_creates_inside_a_fold(ctx, sdk, reflect):
+    moment = _ok_data(sdk.last_chunk_time(ctx), reflect)
+    opened = _ok_node(sdk.open_file(ctx, "/ws/pkg/c.py", moment, _ALICE), reflect).data
+    again = _file_id_of(ctx, sdk, reflect, "/ws/pkg/c.py")
+    assert _node(opened, "FileId", reflect).get_file_id().value == \
+        _node(again, "FileId", reflect).get_file_id().value
+
+
+def test_case_open_file_shows_up_in_files_at(ctx, sdk, reflect):
+    first = _ok_data(sdk.first_chunk_time(ctx), reflect)
+    last = _ok_data(sdk.last_chunk_time(ctx), reflect)
+    opened = _node(_ok_node(sdk.open_file(ctx, "/ws/c.py", last, _ALICE), reflect).data,
+                   "FileId", reflect)
+    key = opened.get_file_id().value
+    assert key in _ok_node(sdk.files_at(ctx, last), reflect).data
+    assert key not in _ok_node(sdk.files_at(ctx, first), reflect).data
+
+
+def test_case_open_file_refuses_where_it_cannot_create(ctx, sdk, reflect):
+    moment = _ok_data(sdk.last_chunk_time(ctx), reflect)
+    for path in ("a.py", "/nope/c.py", "/ws/nofold/c.py", "/locked/c.py", "/ws/pkg"):
+        assert _err_message(sdk.open_file(ctx, path, moment, _ALICE), reflect), path
+
+
+def test_case_write_text_appends_a_version_and_keeps_the_old_one(ctx, sdk, reflect):
+    first = _ok_data(sdk.first_chunk_time(ctx), reflect)
+    last = _ok_data(sdk.last_chunk_time(ctx), reflect)
+    file_id = _ok_node(sdk.open_file(ctx, "/ws/c.py", first, _ALICE), reflect).data
+    assert _result(sdk.write_text(ctx, file_id, "print(3)", last, _ALICE),
+                   reflect).has_ok()
+    assert len(_content_chain(ctx, sdk, reflect, file_id)) == 2
+
+    latest = _node(_ok_node(sdk.latest_file(ctx, file_id), reflect).data, "FileState", reflect)
+    assert latest.get_content().value == "print(3)"
+    ref = sdk.make_versioned_file_reference(file_id, first)
+    old = _node(_ok_node(sdk.resolve_versioned_file_reference(ctx, ref), reflect).data,
+                "FileState", reflect)
+    assert old.get_content().value == ""                 # 旧版原样留着
+
+
+def test_case_write_text_refuses_read_only_and_deleted(ctx, sdk, reflect):
+    moment = _ok_data(sdk.last_chunk_time(ctx), reflect)
+    read_only = _file_id_of(ctx, sdk, reflect, "/ws/a.py")
+    assert "只读" in _err_message(sdk.write_text(ctx, read_only, "x", moment, _ALICE),
+                                  reflect)
+    deleted = _file_id_of(ctx, sdk, reflect, "/ws/pkg/b.py")
+    assert "已删除" in _err_message(sdk.write_text(ctx, deleted, "x", moment, _ALICE),
+                                    reflect)

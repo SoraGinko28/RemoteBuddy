@@ -3,7 +3,7 @@
 设计（签名）在 MEETING_ADT.md 的「取数据接口」那一章（模块名 meeting_sdk）：每个函数带泛型
 参数 ``Ctx``、吃一个 ``$ctx``，返回 Result，签名里只有稳定类型。这一层是它的实现。
 
-**对外的接口就是 meeting_sdk.viba 里的那 31 个**：名字落 snake_case，参数、返回都照设计，不多导出
+**对外的接口就是 meeting_sdk.viba 里的那 33 个**：名字落 snake_case，参数、返回都照设计，不多导出
 任何东西——签名里那些类型（``mc.ChatReference``、``mc.AgentRole``…）属于 meeting_core，不从这里拿。
 
 这一版的绑定（协议说 Ctx / Data 由实现方绑）：
@@ -16,7 +16,8 @@
   键就是设计里的 tag 名：``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
   "captured_at"}``、``{"name", "meta", "content"}``。
 
-只有读：没有写入、修改、删除。取数函数一律返回 Result——查不到是 ``Err``，不是异常；
+读是主：取数函数一律返回 Result——查不到是 ``Err``，不是异常。写只有文件层那两个
+（``open_file`` / ``write_text``），而且只往版本链上追加：旧版永远留着，as-of 照旧读得到。
 末尾那组 ``make_*`` 不吃 ``ctx``，只把引用这类值造出来。
 """
 
@@ -268,6 +269,69 @@ def resolve_versioned_file_content_reference(
 
 
 # ----------------------------------------------------------------------
+# 写：只写文件层，而且只加版本（旧版永远留着）
+# ----------------------------------------------------------------------
+
+
+def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _Result:
+    """按路径打开；路径上没有就新建。同一路径来回都是同一个 FileId。
+
+    新建的文件：name = 路径末段、content = ""（各记一版），状态链空着（可写）；
+    成员多了一个，$reorder_indexes 跟着记一版。
+    """
+    parts = [p for p in file_path.split("/") if p]
+    if len(parts) not in (2, 3):
+        return _Err(f"路径要么 /workspace/entry，要么 /workspace/fold/entry：{file_path!r}")
+    workspace_name = parts[0]
+    for workspace in ctx.file_desktop.workspaces:
+        if workspace.workspace_name != workspace_name:
+            continue
+        if workspace.workspace_status == adt.DataStatus.READ_ONLY:
+            return _Err(f"工作区 {workspace_name!r} 只读，不能新建文件")
+        if len(parts) == 2:
+            entry_name = parts[1]
+            for member in workspace.member_files:
+                if isinstance(member, adt.FileFold):
+                    if member.fold_name == entry_name:
+                        return _Err(f"{file_path!r} 那一层已经有同名的 fold")
+                elif member.entry_name == entry_name:
+                    return _Ok(member)          # 已经有：打开
+            opened = adt.FileId(file_id=_new_file_id(ctx), entry_name=entry_name)
+            workspace.member_files.append(opened)
+            _mount_new_file(ctx, opened, time, user_name)
+            return _Ok(opened)
+        fold_name, entry_name = parts[1], parts[2]
+        for member in workspace.member_files:
+            if not isinstance(member, adt.FileFold) or member.fold_name != fold_name:
+                continue
+            for existing in member.member_file_ids:
+                if existing.entry_name == entry_name:
+                    return _Ok(existing)        # 已经有：打开
+            opened = adt.FileId(file_id=_new_file_id(ctx), entry_name=entry_name)
+            member.member_file_ids.append(opened)
+            _mount_new_file(ctx, opened, time, user_name)
+            return _Ok(opened)
+        return _Err(f"工作区 {workspace_name!r} 里没有 {fold_name!r} 这个 fold")
+    return _Err(f"没有 {workspace_name!r} 这个 workspace")
+
+
+def write_text(ctx: Ctx, file_id: "adt.FileId", text_content: str, time: _dt.datetime,
+               user_name: str) -> _Result:
+    """往文件的内容链上加一版：新版 = 旧全文 + 这段，旧的版本原样留着。"""
+    versioned_file = ctx.file_kv_store.file_id2file.get(file_id.file_id)
+    if versioned_file is None:
+        return _Err(f"文件库里没有 {file_id.file_id!r}")
+    status = _latest_of(versioned_file.file_meta)
+    if status == adt.DataStatus.READ_ONLY:
+        return _Err(f"{file_id.file_id!r} 只读")
+    if status == adt.DataStatus.DELETED:
+        return _Err(f"{file_id.file_id!r} 已删除")
+    old_content = _latest_of(versioned_file.file_content) or ""
+    versioned_file.file_content.append(adt.Versioned(old_content + text_content, time, user_name))
+    return _Ok(None)
+
+
+# ----------------------------------------------------------------------
 # 构造：造引用这类值（只造值，不碰记录）
 # ----------------------------------------------------------------------
 
@@ -375,28 +439,67 @@ def _screen_state(capture: "adt.ScreenCapture") -> dict:
 
 
 def _file_state(versioned_file: "adt.VersionedFile") -> dict:
-    """设计里那个匿名积：$name * $meta * $content"""
-    return {
-        "name": versioned_file.file_name.data,
-        "meta": versioned_file.file_meta.data,
-        "content": versioned_file.file_content.data,
-    }
+    """设计里那个 FileState：$name * $meta * $content，各取链尾。"""
+    return {key: _latest_of(chain) for key, chain in _chains(versioned_file)}
 
 
 def _file_state_at(versioned_file: "adt.VersionedFile",
                    moment: _dt.datetime) -> Optional[dict]:
-    """某一时刻那一份状态；那一刻还没有的版本 -> None（这个文件在那一刻不存在）。
+    """某一刻那一份状态：每个部件取链上 ≤ moment 的最后一版。
 
-    文件库里每个部件只留一版，所以 as-of 只问"那一版赶上了没有"。
+    name / content 那一刻还没有 -> 这个文件在那一刻不存在（None）；
+    meta 那一刻还没有 -> 缺省，可写（$meta nil）。
     """
     state = {}
-    for key, part in (("name", versioned_file.file_name),
-                      ("meta", versioned_file.file_meta),
-                      ("content", versioned_file.file_content)):
-        if part.time is not None and moment is not None and part.time > moment:
+    for key, chain in _chains(versioned_file):
+        version = _version_at(chain, moment)
+        if version is None and key != "meta":
             return None
-        state[key] = part.data
+        state[key] = version.data if version is not None else None
     return state
+
+
+def _chains(versioned_file: "adt.VersionedFile"):
+    """三个部件各自的版本链，键就是设计里的 tag 名。"""
+    return (("name", versioned_file.file_name), ("meta", versioned_file.file_meta),
+            ("content", versioned_file.file_content))
+
+
+def _latest_of(chain: List) -> object:
+    """链尾就是最新的那一版的值；空链给 None。"""
+    return chain[-1].data if chain else None
+
+
+def _version_at(chain: List, moment: Optional[_dt.datetime]):
+    """链上 time ≤ moment 的最后一版；一版都没有就是 None。"""
+    found = None
+    for version in chain:
+        if moment is not None and version.time is not None and version.time > moment:
+            break
+        found = version
+    return found
+
+
+def _new_file_id(ctx: Ctx) -> str:
+    """文件库里没用过的内部 id。"""
+    taken = set(ctx.file_kv_store.file_id2file.keys())
+    number = 1
+    while f"f{number}" in taken:
+        number += 1
+    return f"f{number}"
+
+
+def _mount_new_file(ctx: Ctx, file_id: "adt.FileId", time: _dt.datetime,
+                    user_name: str) -> None:
+    """新建文件：三条链各一版；成员多了一个，桌面顺序快照跟着记一版。"""
+    ctx.file_kv_store.file_id2file[file_id.file_id] = adt.VersionedFile(
+        file_name=[adt.Versioned(file_id.entry_name, time, user_name)],
+        file_meta=[],                                 # 状态链空着 = 可写
+        file_content=[adt.Versioned("", time, user_name)],
+    )
+    desktop = ctx.file_desktop
+    desktop.reorder_indexes = adt.Versioned(adt.identity_desktop_order(desktop), time,
+                                            user_name)
 
 
 __all__ = [
@@ -424,6 +527,8 @@ __all__ = [
     "latest_file",
     "resolve_versioned_file_reference",
     "resolve_versioned_file_content_reference",
+    "open_file",
+    "write_text",
     "make_text_region",
     "make_screen_reference",
     "make_chat_reference",
