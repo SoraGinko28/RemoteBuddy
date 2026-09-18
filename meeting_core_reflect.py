@@ -9,14 +9,14 @@
 
 名字照 viba.rule.reflect 对 viba-reflect.md 的老规矩来：协议里的类名原样保留（``VibaStep``、
 ``VibaPath``、``VibaNode``、``VibaAccess``），函数落 snake_case（``viba_resolve`` /
-``viba_read`` / ``viba_list_fields``），四支地址是 ``by_tag`` /
+``viba_get_by_path`` / ``viba_list_fields``），四支地址是 ``by_tag`` /
 ``by_field_index`` / ``at_index`` / ``at_key``；七格在 ``VibaAccess`` 上：``file_hashes`` /
 ``root`` / ``has`` / ``get`` / ``leaf`` / ``length`` / ``keys``。
 
 协议里没给名字的，才是本层自己的：
 
     Data 这个形参         -> Record：一份 Python 记录 + 它声明的设计版本
-    第 5.4 节"直接抛异常"  -> ReflectError（协议只说"直接抛异常"，没起名字）
+    第 5.4 节"直接抛异常"  -> VibaReflectError（第 5.4 节的 Python 落点名字）
     读图与遍历            -> VibaAccess 上的下划线方法、以及本模块的下划线函数
     设计从哪读            -> 私有的 _design_source / _design_hash / _design_pool / _definition
 
@@ -122,7 +122,7 @@ def _design_source() -> str:
     text = _normalize(DESIGN_PATH.read_text(encoding="utf-8"))
     heading = re.search(r"(?m)^##\s*" + re.escape(DESIGN_CHAPTER), text)
     if heading is None:
-        raise ReflectError(f"{DESIGN_FILE_NAME} 里找不到「{DESIGN_CHAPTER}」这一章")
+        raise VibaReflectError(f"{DESIGN_FILE_NAME} 里找不到「{DESIGN_CHAPTER}」这一章")
     fence = text.index("```", heading.end())
     body_start = text.index("\n", fence) + 1
     body_end = text.index("\n```", body_start)
@@ -141,10 +141,10 @@ def _design_pool() -> VibaPool:
     pool = empty_pool()
     parsed = parse_viba_file(pool, _design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
     if isinstance(parsed, Err):
-        raise ReflectError(f"稳定类型章编译不了：{parsed.message}")
+        raise VibaReflectError(f"稳定类型章编译不了：{parsed.message}")
     added = pool_add_file(pool, parsed.value)
     if isinstance(added, Err):
-        raise ReflectError(f"稳定类型章进不了池子：{added.message}")
+        raise VibaReflectError(f"稳定类型章进不了池子：{added.message}")
     return added.value
 
 
@@ -154,7 +154,7 @@ def _definition(name: str) -> VibaDefinitionDescriptor:
     full_name = name if "." in name else f"{DESIGN_MODULE_NAME}.{name}"
     found = pool_find_definition(_design_pool(), full_name)
     if isinstance(found, Err):
-        raise ReflectError(found.message)
+        raise VibaReflectError(found.message)
     return found.value
 
 
@@ -210,10 +210,10 @@ def _tag_name(tag: str) -> str:
     return tag[1:] if tag.startswith("$") else tag
 
 
-class ReflectError(Exception):
+class VibaReflectError(Exception):
     """取值那一路失败时抛的异常，带的是协议那句 ``Err`` 的话。
 
-    第 5.4 节只说"直接抛异常"，没给异常起名字，这个名字是本层的。
+    第 5.4 节的 Python 落点：取值那一类失败都抛这个，``Err`` 的话原样在信息里。
     """
 
 
@@ -440,9 +440,9 @@ class VibaAccess:
 
     def _unwrap(self, given: Result):
         if isinstance(given, Err):
-            raise ReflectError(given.message)
+            raise VibaReflectError(given.message)
         if given.value is None:
-            raise ReflectError("这一段没有值")
+            raise VibaReflectError("这一段没有值")
         return given.value
 
     # ---- 私有：地图（把描述符读成可寻址的形状） ----
@@ -741,8 +741,8 @@ def viba_resolve(node: VibaNode, path: Sequence[VibaStep]) -> Result:
     return Ok(current)
 
 
-def viba_read(node: VibaNode, path: Sequence[VibaStep]) -> Result:
-    """VibaRead：先 VibaResolve 再 VibaLeaf。"""
+def viba_get_by_path(node: VibaNode, path: Sequence[VibaStep]) -> Result:
+    """VibaGetByPath：先 VibaResolve 再 VibaLeaf。"""
     resolved = viba_resolve(node, path)
     if isinstance(resolved, Err):
         return resolved
@@ -891,5 +891,5 @@ __all__ = [
     "access",
     "VibaAccess", "VibaNode", "VibaStep", "VibaPath",
     "by_tag", "by_field_index", "at_index", "at_key",
-    "viba_resolve", "viba_read", "viba_list_fields",
+    "viba_resolve", "viba_get_by_path", "viba_list_fields",
 ]
