@@ -187,6 +187,9 @@ class TestStreamNames:
             "workspace_member_order_from_dict",
             "workspace_member_order_to_dict",
             "WorkspaceMemberOrder",
+            "TerminalControlReference",
+            "VersionedFileContentReference",
+            "VersionedFileReference",
         }
 
 
