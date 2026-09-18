@@ -18,7 +18,7 @@
     Data 这个形参         -> Record：一份 Python 记录 + 它声明的设计版本
     第 5.4 节"直接抛异常"  -> ReflectError（协议只说"直接抛异常"，没起名字）
     读图与遍历            -> VibaAccess 上的下划线方法、以及本模块的下划线函数
-    设计从哪读            -> design_source / design_hash / design_pool / pool / definition
+    设计从哪读            -> 私有的 _design_source / _design_hash / _design_pool / _definition
 
 两条协议里的规矩：
 
@@ -28,7 +28,7 @@
   ``get`` 里"数据里没有"是 ``Ok(nil)``，只有"图上压根没这个坐标"才是 ``Err``；
   ``leaf`` / ``length`` / ``keys`` 取不到就是 ``Err``。
 
-起点按协议起：``access(definition(name)).root(Record(record))``，回来的 ``Ok`` 里就是节点
+起点按协议起：``access(_definition(name)).root(Record(record))``，回来的 ``Ok`` 里就是节点
 （``Err`` 是根本没对上）。协议里的 ``Ok`` / ``Err`` 就是本模块露出的这两个。
 
 第 5.4 节的 Python 落点在 VibaNode 上：``get_{name}()`` / ``has_{name}()`` /
@@ -116,7 +116,7 @@ def _normalize(source: str) -> str:
 
 
 @lru_cache(maxsize=1)
-def design_source() -> str:
+def _design_source() -> str:
     """设计原文：MEETING_ADT.md 里「稳定类型」章的代码块。"""
     text = _normalize(DESIGN_PATH.read_text(encoding="utf-8"))
     heading = re.search(r"(?m)^##\s*" + re.escape(DESIGN_CHAPTER), text)
@@ -129,16 +129,16 @@ def design_source() -> str:
 
 
 @lru_cache(maxsize=1)
-def design_hash() -> str:
+def _design_hash() -> str:
     """这一版设计的哈希：原文按 \\n 统一换行，再对 UTF-8 字节算 SHA-256。"""
-    return hashlib.sha256(design_source().encode("utf-8")).hexdigest()
+    return hashlib.sha256(_design_source().encode("utf-8")).hexdigest()
 
 
 @lru_cache(maxsize=1)
-def design_pool() -> VibaPool:
+def _design_pool() -> VibaPool:
     """把这一章编进一个池子；池子就是描述符侧的那份地图。"""
     pool = empty_pool()
-    parsed = parse_viba_file(pool, design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
+    parsed = parse_viba_file(pool, _design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
     if isinstance(parsed, Err):
         raise ReflectError(f"稳定类型章编译不了：{parsed.message}")
     added = pool_add_file(pool, parsed.value)
@@ -147,15 +147,11 @@ def design_pool() -> VibaPool:
     return added.value
 
 
-def pool() -> VibaPool:
-    return design_pool()
-
-
 @lru_cache(maxsize=None)
-def definition(name: str) -> VibaDefinitionDescriptor:
+def _definition(name: str) -> VibaDefinitionDescriptor:
     """按名字取定义描述符；``'FileId'`` 与 ``'meeting_core.FileId'`` 都认。"""
     full_name = name if "." in name else f"{DESIGN_MODULE_NAME}.{name}"
-    found = pool_find_definition(design_pool(), full_name)
+    found = pool_find_definition(_design_pool(), full_name)
     if isinstance(found, Err):
         raise ReflectError(found.message)
     return found.value
@@ -888,31 +884,8 @@ def _member_type_name(member) -> Optional[str]:
 
 
 __all__ = [
-    "DESIGN_CHAPTER",
-    "Err",
-    "Ok",
-    "Result",
-    "DESIGN_FILE_NAME",
-    "DESIGN_MODULE_NAME",
-    "DESIGN_PATH",
-    "VibaAccess",
-    "Record",
-    "VibaNode",
-    "VibaPath",
-    "ReflectError",
-    "VibaStep",
     "access",
-    "at_index",
-    "at_key",
-    "by_field_index",
-    "by_tag",
-    "definition",
-    "design_hash",
-    "design_pool",
-    "design_source",
-    "pool",
-    "viba_list_fields",
-    "viba_read",
-    "viba_resolve",
-    "viba_version_matches",
+    "VibaAccess", "VibaNode", "VibaStep", "VibaPath",
+    "by_tag", "by_field_index", "at_index", "at_key",
+    "viba_resolve", "viba_read", "viba_list_fields", "viba_version_matches",
 ]
