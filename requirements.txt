@@ -1,6 +1,7 @@
 # Direct dependencies
 libtmux==0.62.0
 mcp==2.1.1
+ply==3.11  # viba 的解析器（stable_adt_reflect 要用）
 
 # Transitive pins captured from the working conda "remotebuddy" environment
 # (python 3.12) so the environment stays reproducible.
