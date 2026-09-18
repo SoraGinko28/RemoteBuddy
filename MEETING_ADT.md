@@ -425,13 +425,13 @@ import meeting_core as mc
 # 时间：时间就是身份
 # ---------------------------------------------------------------- #
 
-ChunkTimes[Ctx] :=
+chunk_times[Ctx] :=
     mc.Result[list[mc.datetime]]               # 这段时间里每条 chunk 的时刻
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
 
-StreamsBetween[Ctx] :=
+streams_between[Ctx] :=
     mc.Result[list[str]]                       # 这段时间里出现过的流名
   <- $ctx Ctx
   <- $start mc.datetime
@@ -441,35 +441,35 @@ StreamsBetween[Ctx] :=
 # 聊天与评分
 # ---------------------------------------------------------------- #
 
-ChatMessages[Ctx] :=
+chat_messages[Ctx] :=
     mc.Result[list[mc.ChatMessage]]
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
 
-ScoreMessages[Ctx] :=
+score_messages[Ctx] :=
     mc.Result[list[mc.ScoreMessage]]
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
 
-ChatMessageAt[Ctx] :=
+chat_message_at[Ctx] :=
     mc.Result[mc.ChatMessage]                  # 一个人在一个时刻只有一条
   <- $ctx Ctx
   <- $time mc.datetime
   <- $user mc.UserName
 
-ResolveChatReference[Ctx] :=
+resolve_chat_reference[Ctx] :=
     mc.Result[mc.ChatMessage]
   <- $ctx Ctx
   <- $ref mc.ChatReference
 
-ResolveChatContentReference[Ctx] :=
+resolve_chat_content_reference[Ctx] :=
     mc.Result[str]                             # 引用那一段的原文
   <- $ctx Ctx
   <- $ref mc.ChatReference
 
-ResolveScoreReference[Ctx] :=
+resolve_score_reference[Ctx] :=
     mc.Result[mc.ScoreMessage]
   <- $ctx Ctx
   <- $ref mc.ScoreReference
@@ -479,7 +479,7 @@ ResolveScoreReference[Ctx] :=
 # ---------------------------------------------------------------- #
 # 断言与说明留在记录层，这里只把那一屏的值交出来。
 
-ScreenAt[Ctx] :=
+screen_at[Ctx] :=
     mc.Result[
       $text str * $segments list[mc.TerminalTextSegment] * $cursor_x int
         * $cursor_y int * $width int * $height int * $captured_at mc.datetime
@@ -487,7 +487,7 @@ ScreenAt[Ctx] :=
   <- $ctx Ctx
   <- $time mc.datetime
 
-ResolveScreenReference[Ctx] :=
+resolve_screen_reference[Ctx] :=
     mc.Result[
       $text str * $segments list[mc.TerminalTextSegment] * $cursor_x int
         * $cursor_y int * $width int * $height int * $captured_at mc.datetime
@@ -499,20 +499,20 @@ ResolveScreenReference[Ctx] :=
 # 人：参会的人，和某一刻谁拿着终端
 # ---------------------------------------------------------------- #
 
-Participants[Ctx] :=
+participants[Ctx] :=
     mc.Result[list[mc.UserName]]
   <- $ctx Ctx
 
-Roles[Ctx] :=
+roles[Ctx] :=
     mc.Result[dict[str, mc.AgentRole]]
   <- $ctx Ctx
 
-OwnerAt[Ctx] :=
+owner_at[Ctx] :=
     mc.Result[(mc.UserName | nil)]             # nil = 此刻无人控制
   <- $ctx Ctx
   <- $time mc.datetime
 
-ControlOwnerOf[Ctx] :=
+control_owner_of[Ctx] :=
     mc.Result[(mc.UserName | nil)]             # nil = 那一次交还之后没人接手
   <- $ctx Ctx
   <- $ref mc.TerminalControlReference
@@ -527,31 +527,31 @@ ControlOwnerOf[Ctx] :=
 # 要么 /workspace_name/fold_name/entry_name。每层名字唯一（见 FileDesktop 的 Assert），
 # 所以路径定得到一条。
 
-FileIdByPath[Ctx] :=
+file_id_by_path[Ctx] :=
     mc.Result[mc.FileId]
   <- $ctx Ctx
   <- $path str
 
-FileKvStore[Ctx] :=
+file_kv_store[Ctx] :=
     mc.Result[mc.FileKvStore]
   <- $ctx Ctx
 
-FilesAt[Ctx] :=
+files_at[Ctx] :=
     mc.Result[dict[str, $name str * $meta mc.DataStatus * $content str]]
   <- $ctx Ctx
   <- $time mc.datetime
 
-LatestFile[Ctx] :=
+latest_file[Ctx] :=
     mc.Result[$name str * $meta mc.DataStatus * $content str]   # 最新的那一份状态
   <- $ctx Ctx
   <- $file mc.FileId
 
-ResolveVersionedFileReference[Ctx] :=
+resolve_versioned_file_reference[Ctx] :=
     mc.Result[$name str * $meta mc.DataStatus * $content str]   # 引用那一刻的文件状态
   <- $ctx Ctx
   <- $ref mc.VersionedFileReference
 
-ResolveVersionedFileContentReference[Ctx] :=
+resolve_versioned_file_content_reference[Ctx] :=
     mc.Result[str]                             # 引用那一段的原文
   <- $ctx Ctx
   <- $ref mc.VersionedFileContentReference
