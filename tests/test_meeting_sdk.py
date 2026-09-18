@@ -132,8 +132,8 @@ def _definition(name: str):
 
 
 def _node(value, name, reflect):
-    """按协议起一个节点：access(definition).root(Record(value))。"""
-    given = reflect.access(_definition(name)).root(reflect.Record(value))
+    """按协议起一个节点：access(definition).root(_Record(value))。"""
+    given = reflect.access(_definition(name)).root(reflect._Record(value))
     assert isinstance(given, Ok), "取不到起点"
     return given.value
 

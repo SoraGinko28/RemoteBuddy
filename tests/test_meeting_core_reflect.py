@@ -29,9 +29,9 @@ def _definition(name: str):
 
 
 def _open(record, name: str):
-    """按协议起一个节点：access(definition).root(Record(record))。"""
+    """按协议起一个节点：access(definition).root(_Record(record))。"""
     accessor = reflect.access(_definition(name))
-    given = accessor.root(reflect.Record(record))
+    given = accessor.root(reflect._Record(record))
     assert isinstance(given, Ok), given
     return given.value
 
@@ -99,7 +99,7 @@ class TestRoot:
 
     def test_root_pairs_the_descriptor_with_the_data(self) -> None:
         accessor = reflect.access(_definition("FileId"))
-        given = accessor.root(reflect.Record(_file_id()))
+        given = accessor.root(reflect._Record(_file_id()))
         assert given.value.get_file_id().value == "f1"
 
 
@@ -129,7 +129,7 @@ class TestSevenCells:
 
     def test_length_and_keys_only_for_containers(self) -> None:
         accessor = reflect.access(_definition("FileKvStore"))
-        node = accessor._unwrap(accessor.root(reflect.Record(_store())))
+        node = accessor._unwrap(accessor.root(reflect._Record(_store())))
         inner = node.get_file_id2file()
         assert accessor.length(inner).value == 1
         assert accessor.keys(inner).value == ["f1"]
@@ -138,7 +138,7 @@ class TestSevenCells:
 
     def test_leaf_on_a_record_is_an_error(self) -> None:
         accessor = reflect.access(_definition("VersionedFile"))
-        node = accessor._unwrap(accessor.root(reflect.Record(_versioned_file())))
+        node = accessor._unwrap(accessor.root(reflect._Record(_versioned_file())))
         assert "不是叶子" in accessor.leaf(node).message
 
 
@@ -328,7 +328,7 @@ class TestResult:
 class TestWalk:
     def test_store_walks_down_to_leaves(self) -> None:
         accessor = reflect.access(_definition("FileKvStore"))
-        root = accessor._unwrap(accessor.root(reflect.Record(_store())))
+        root = accessor._unwrap(accessor.root(reflect._Record(_store())))
         leaves = []
         for node in accessor._walk(root):
             given = accessor.leaf(node)

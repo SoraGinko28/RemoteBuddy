@@ -15,7 +15,7 @@
 
 协议里没给名字的，才是本层自己的：
 
-    Data 这个形参         -> Record：一份 Python 记录
+    Data 这个形参         -> _Record：一份 Python 记录
     第 5.4 节"直接抛异常"  -> VibaReflectError（第 5.4 节的 Python 落点名字）
     读图与遍历            -> VibaAccess 上的下划线方法、以及本模块的下划线函数
     设计从哪读            -> 私有的 _design_source / _design_hash / _design_pool / _definition
@@ -28,7 +28,7 @@
   ``get`` 里"数据里没有"是 ``Ok(nil)``，只有"图上压根没这个坐标"才是 ``Err``；
   ``leaf`` / ``length`` / ``keys`` 取不到就是 ``Err``。
 
-起点按协议起：``access(_definition(name)).root(Record(record))``，回来的 ``Ok`` 里就是节点
+起点按协议起：``access(_definition(name)).root(_Record(record))``，回来的 ``Ok`` 里就是节点
 （``Err`` 是根本没对上）。协议里的 ``Ok`` / ``Err`` 就是本模块露出的这两个。
 
 第 5.4 节的 Python 落点在 VibaNode 上：``get_{name}()`` / ``has_{name}()`` /
@@ -222,7 +222,7 @@ class VibaReflectError(Exception):
 # ----------------------------------------------------------------------
 
 
-class Record:
+class _Record:
     """本层对协议里 Data 形参的绑定：一份 Python 记录。
 
     协议没规定 Data 长什么样。这边绑的是 meeting_adt.py 那份记录（dataclass 实例、
@@ -235,7 +235,7 @@ class Record:
         self.record = record
 
     def __repr__(self):
-        return f"Record({type(self.record).__name__})"
+        return f"_Record({type(self.record).__name__})"
 
 
 # ----------------------------------------------------------------------
@@ -382,7 +382,7 @@ class VibaAccess:
 
     # ---- 协议六格 ----
 
-    def root(self, data: Record) -> Result:
+    def root(self, data: _Record) -> Result:
         """起点：给出 (描述符, 数据) 这一对。"""
         return Ok(VibaNode(self, self.definition.body, data.record))
 
