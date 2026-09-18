@@ -201,6 +201,11 @@ Optional[T] := T | nil                  # 缺席就是 nil；不是 tag，是和
 AppendOnlyList[T] := list[T]            # 只增：位置即身份。语义是约定，不是结构
 ReadOnlyList[T] := list[T]              # 只读：写一次不再改。同上
 
+Result[T] :=
+    Oneof
+  | $ok T                               # 成功：装值
+  | $err str                            # 失败：装一句话
+
 # ---------------------------------------------------------------- #
 # 2. 小的稳定类型
 # ---------------------------------------------------------------- #
@@ -417,26 +422,17 @@ TerminalControlReference :=
 import stable_adt as sa
 
 # ---------------------------------------------------------------- #
-# 结果：取数函数都返回它 —— $ok 装值，$err 装一句话
-# ---------------------------------------------------------------- #
-
-Result[T] :=
-    Oneof
-  | $ok T
-  | $err str
-
-# ---------------------------------------------------------------- #
 # 时间：时间就是身份
 # ---------------------------------------------------------------- #
 
 ChunkTimes[Ctx] :=
-    Result[list[sa.datetime]]               # 这段时间里每条 chunk 的时刻
+    sa.Result[list[sa.datetime]]               # 这段时间里每条 chunk 的时刻
   <- $ctx Ctx
   <- $start sa.datetime
   <- $end sa.datetime
 
 StreamsBetween[Ctx] :=
-    Result[list[str]]                       # 这段时间里出现过的流名
+    sa.Result[list[str]]                       # 这段时间里出现过的流名
   <- $ctx Ctx
   <- $start sa.datetime
   <- $end sa.datetime
@@ -446,35 +442,35 @@ StreamsBetween[Ctx] :=
 # ---------------------------------------------------------------- #
 
 ChatMessages[Ctx] :=
-    Result[list[sa.ChatMessage]]
+    sa.Result[list[sa.ChatMessage]]
   <- $ctx Ctx
   <- $start sa.datetime
   <- $end sa.datetime
 
 ScoreMessages[Ctx] :=
-    Result[list[sa.ScoreMessage]]
+    sa.Result[list[sa.ScoreMessage]]
   <- $ctx Ctx
   <- $start sa.datetime
   <- $end sa.datetime
 
 ChatMessageAt[Ctx] :=
-    Result[sa.ChatMessage]                  # 一个人在一个时刻只有一条
+    sa.Result[sa.ChatMessage]                  # 一个人在一个时刻只有一条
   <- $ctx Ctx
   <- $time sa.datetime
   <- $user sa.UserName
 
 ResolveChatReference[Ctx] :=
-    Result[sa.ChatMessage]
+    sa.Result[sa.ChatMessage]
   <- $ctx Ctx
   <- $ref sa.ChatReference
 
 ResolveChatContentReference[Ctx] :=
-    Result[str]                             # 引用那一段的原文
+    sa.Result[str]                             # 引用那一段的原文
   <- $ctx Ctx
   <- $ref sa.ChatReference
 
 ResolveScoreReference[Ctx] :=
-    Result[sa.ScoreMessage]
+    sa.Result[sa.ScoreMessage]
   <- $ctx Ctx
   <- $ref sa.ScoreReference
 
@@ -484,7 +480,7 @@ ResolveScoreReference[Ctx] :=
 # 断言与说明留在记录层，这里只把那一屏的值交出来。
 
 ScreenAt[Ctx] :=
-    Result[
+    sa.Result[
       $text str * $segments list[sa.TerminalTextSegment] * $cursor_x int
         * $cursor_y int * $width int * $height int * $captured_at sa.datetime
     ]
@@ -492,7 +488,7 @@ ScreenAt[Ctx] :=
   <- $time sa.datetime
 
 ResolveScreenReference[Ctx] :=
-    Result[
+    sa.Result[
       $text str * $segments list[sa.TerminalTextSegment] * $cursor_x int
         * $cursor_y int * $width int * $height int * $captured_at sa.datetime
     ]
@@ -504,20 +500,20 @@ ResolveScreenReference[Ctx] :=
 # ---------------------------------------------------------------- #
 
 Participants[Ctx] :=
-    Result[list[sa.UserName]]
+    sa.Result[list[sa.UserName]]
   <- $ctx Ctx
 
 Roles[Ctx] :=
-    Result[dict[str, sa.AgentRole]]
+    sa.Result[dict[str, sa.AgentRole]]
   <- $ctx Ctx
 
 OwnerAt[Ctx] :=
-    Result[(sa.UserName | nil)]             # nil = 此刻无人控制
+    sa.Result[(sa.UserName | nil)]             # nil = 此刻无人控制
   <- $ctx Ctx
   <- $time sa.datetime
 
 ControlOwnerOf[Ctx] :=
-    Result[(sa.UserName | nil)]             # nil = 那一次交还之后没人接手
+    sa.Result[(sa.UserName | nil)]             # nil = 那一次交还之后没人接手
   <- $ctx Ctx
   <- $ref sa.TerminalControlReference
 
@@ -532,31 +528,31 @@ ControlOwnerOf[Ctx] :=
 # 所以路径定得到一条。
 
 FileIdByPath[Ctx] :=
-    Result[sa.FileId]
+    sa.Result[sa.FileId]
   <- $ctx Ctx
   <- $path str
 
 FileKvStore[Ctx] :=
-    Result[sa.FileKvStore]
+    sa.Result[sa.FileKvStore]
   <- $ctx Ctx
 
 FilesAt[Ctx] :=
-    Result[dict[str, $name str * $meta sa.DataStatus * $content str]]
+    sa.Result[dict[str, $name str * $meta sa.DataStatus * $content str]]
   <- $ctx Ctx
   <- $time sa.datetime
 
 LatestFile[Ctx] :=
-    Result[$name str * $meta sa.DataStatus * $content str]   # 最新的那一份状态
+    sa.Result[$name str * $meta sa.DataStatus * $content str]   # 最新的那一份状态
   <- $ctx Ctx
   <- $file sa.FileId
 
 ResolveVersionedFileReference[Ctx] :=
-    Result[$name str * $meta sa.DataStatus * $content str]   # 引用那一刻的文件状态
+    sa.Result[$name str * $meta sa.DataStatus * $content str]   # 引用那一刻的文件状态
   <- $ctx Ctx
   <- $ref sa.VersionedFileReference
 
 ResolveVersionedFileContentReference[Ctx] :=
-    Result[str]                             # 引用那一段的原文
+    sa.Result[str]                             # 引用那一段的原文
   <- $ctx Ctx
   <- $ref sa.VersionedFileContentReference
 
