@@ -173,11 +173,11 @@ class TestAddressing:
 
     def test_unknown_coordinate_is_an_error(self) -> None:
         node = _open(_file_id(), "FileId")
-        with pytest.raises(reflect.ReflectError, match="设计里没有这个坐标"):
+        with pytest.raises(reflect.VibaReflectError, match="设计里没有这个坐标"):
             node.by_tag("nope")
 
     def test_at_index_on_a_non_container_is_an_error(self) -> None:
-        with pytest.raises(reflect.ReflectError):
+        with pytest.raises(reflect.VibaReflectError):
             _open(_file_id(), "FileId").at_index(0)
 
 
@@ -223,7 +223,7 @@ class TestSumBranches:
         assert part.has_reference() is True
         reference = part.by_tag("reference")
         assert reference.has_screen_ref() is False
-        with pytest.raises(reflect.ReflectError):
+        with pytest.raises(reflect.VibaReflectError):
             reference.by_tag("screen_ref")
 
 
@@ -243,7 +243,7 @@ class TestPythonLanding:
     def test_missing_value_is_ok_none_not_an_exception(self) -> None:
         node = _open(adt.Versioned(data=None), "Versioned")
         assert node.try_get_data().value is None
-        with pytest.raises(reflect.ReflectError, match="没有值"):
+        with pytest.raises(reflect.VibaReflectError, match="没有值"):
             node.get_data()
 
     def test_dir_lists_the_synthesised_names(self) -> None:
@@ -273,11 +273,11 @@ class TestConvenience:
         path = [reflect.by_tag("file_id2file"), reflect.at_key("f1"),
                 reflect.by_tag("file_content"), reflect.by_tag("data")]
         assert reflect.viba_resolve(node, path).value.value == "print(1)"
-        assert reflect.viba_read(node, path).value.value == "print(1)"
+        assert reflect.viba_get_by_path(node, path).value.value == "print(1)"
 
     def test_read_reports_a_missing_step(self) -> None:
         node = _open(adt.Versioned(data=None), "Versioned")
-        assert reflect.viba_read(node, [reflect.by_tag("data")]).message == "这一步没有值"
+        assert reflect.viba_get_by_path(node, [reflect.by_tag("data")]).message == "这一步没有值"
 
     def test_resolve_reports_an_unknown_step(self) -> None:
         node = _open(_file_id(), "FileId")
@@ -321,7 +321,7 @@ class TestResult:
         from viba.type import Ok
 
         node = _open(Ok("body"), "Result")
-        with pytest.raises(reflect.ReflectError):
+        with pytest.raises(reflect.VibaReflectError):
             node.by_tag("err")
 
 
