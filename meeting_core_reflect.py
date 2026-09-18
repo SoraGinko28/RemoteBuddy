@@ -9,7 +9,7 @@
 
 名字照 viba.rule.reflect 对 viba-reflect.md 的老规矩来：协议里的类名原样保留（``VibaStep``、
 ``VibaPath``、``VibaNode``、``VibaAccess``），函数落 snake_case（``viba_resolve`` /
-``viba_read`` / ``viba_list_fields`` / ``viba_version_matches``），四支地址是 ``by_tag`` /
+``viba_read`` / ``viba_list_fields``），四支地址是 ``by_tag`` /
 ``by_field_index`` / ``at_index`` / ``at_key``；七格在 ``VibaAccess`` 上：``file_hashes`` /
 ``root`` / ``has`` / ``get`` / ``leaf`` / ``length`` / ``keys``。
 
@@ -23,7 +23,7 @@
 两条协议里的规矩：
 
 * ``root`` 不核版本：只把 (描述符, 数据) 配成对。数据声明的哈希用 ``file_hashes``
-  问得到，要不要核、怎么核是上层的事（``viba_version_matches`` 是现成的那一步）。
+  问得到，要不要核、怎么核是上层的事——这一层不提供核对。
 * ``has`` 只答真假——设计里没这个坐标、数据里没这一段，都是 ``False``。
   ``get`` 里"数据里没有"是 ``Ok(nil)``，只有"图上压根没这个坐标"才是 ``Err``；
   ``leaf`` / ``length`` / ``keys`` 取不到就是 ``Err``。
@@ -389,8 +389,7 @@ class VibaAccess:
     def root(self, data: Record) -> Result:
         """起点：给出 (描述符, 数据) 这一对。
 
-        版本不在这里核：数据声明的哈希由 ``file_hashes`` 给出，上层想核就用
-        ``viba_version_matches``（或自己比）。
+        版本不在这里核：数据声明的哈希由 ``file_hashes`` 给出，要不要核是上层的事。
         """
         return Ok(VibaNode(self, self.definition.body, data.record))
 
@@ -770,12 +769,6 @@ def viba_list_fields(node: VibaNode, definition: VibaDefinitionDescriptor) -> Re
     return Ok(out)
 
 
-def viba_version_matches(pool: VibaPool, data: Record) -> Result:
-    """VibaVersionMatches：数据声明的每个哈希都要能在池子里找到。"""
-    known = {f.file_hash for f in pool.files}
-    return Ok(not (set(data.hashes) - known))
-
-
 # ----------------------------------------------------------------------
 # 入口
 # ----------------------------------------------------------------------
@@ -887,5 +880,5 @@ __all__ = [
     "access",
     "VibaAccess", "VibaNode", "VibaStep", "VibaPath",
     "by_tag", "by_field_index", "at_index", "at_key",
-    "viba_resolve", "viba_read", "viba_list_fields", "viba_version_matches",
+    "viba_resolve", "viba_read", "viba_list_fields",
 ]
