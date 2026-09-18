@@ -9,7 +9,7 @@ import meeting_adt as adt
 
 
 # =====================================================================
-# G1: the five stream constants
+# G1: the four stream constants
 # =====================================================================
 
 class TestStreamNames:
@@ -18,19 +18,17 @@ class TestStreamNames:
             "screen",
             "chat",
             "score",
-            "keystroke",
             "terminal_control",
         )
 
-    def test_length_is_five(self) -> None:
-        assert len(adt.STREAM_NAMES) == 5
+    def test_length_is_four(self) -> None:
+        assert len(adt.STREAM_NAMES) == 4
 
     def test_constants_equal_positions_in_tuple(self) -> None:
         assert adt.SCREEN_STREAM_NAME == adt.STREAM_NAMES[0]
         assert adt.CHAT_STREAM_NAME == adt.STREAM_NAMES[1]
         assert adt.SCORE_STREAM_NAME == adt.STREAM_NAMES[2]
-        assert adt.KEYSTROKE_STREAM_NAME == adt.STREAM_NAMES[3]
-        assert adt.TERMINAL_CONTROL_STREAM_NAME == adt.STREAM_NAMES[4]
+        assert adt.TERMINAL_CONTROL_STREAM_NAME == adt.STREAM_NAMES[3]
 
     def test_names_are_unique(self) -> None:
         assert len(set(adt.STREAM_NAMES)) == len(adt.STREAM_NAMES)
@@ -49,7 +47,6 @@ class TestStreamNames:
             "SCREEN_STREAM_NAME",
             "CHAT_STREAM_NAME",
             "SCORE_STREAM_NAME",
-            "KEYSTROKE_STREAM_NAME",
             "TERMINAL_CONTROL_STREAM_NAME",
             "STREAM_NAMES",
         ):
@@ -61,7 +58,6 @@ class TestStreamNames:
             "SCREEN_STREAM_NAME",
             "CHAT_STREAM_NAME",
             "SCORE_STREAM_NAME",
-            "KEYSTROKE_STREAM_NAME",
             "TERMINAL_CONTROL_STREAM_NAME",
             "STREAM_NAMES",
             "HUMAN_USER_NAME",
@@ -125,7 +121,6 @@ class TestStreamNames:
             "RestKey",
             "Keystroke",
             "TerminalControl",
-            "KeystrokeStreamChunk",
             "TerminalControlStreamChunk",
             "keystroke_str_to_dict",
             "keystroke_str_from_dict",
@@ -133,8 +128,6 @@ class TestStreamNames:
             "keystroke_from_dict",
             "terminal_control_to_dict",
             "terminal_control_from_dict",
-            "keystroke_stream_chunk_to_dict",
-            "keystroke_stream_chunk_from_dict",
             "terminal_control_stream_chunk_to_dict",
             "terminal_control_stream_chunk_from_dict",
             "owner_at",
@@ -1064,7 +1057,7 @@ class TestSummonChained:
 
 
 # =====================================================================
-# G10: Keystroke / TerminalControl (keystroke and control streams)
+# G10: Keystroke types (harness-internal) / TerminalControl
 # =====================================================================
 
 class TestKeystrokeStrCodec:
@@ -1136,19 +1129,6 @@ class TestTerminalControlCodec:
 
 
 class TestChunkCodecs:
-    def test_keystroke_chunk_roundtrip(self) -> None:
-        chunk = adt.KeystrokeStreamChunk(chunks=[
-            adt.Keystroke(data=adt.TextKey("x"), user_name="a", stroke_time=_dt_now()),
-        ])
-        assert adt.keystroke_stream_chunk_from_dict(
-            adt.keystroke_stream_chunk_to_dict(chunk)) == chunk
-
-    def test_keystroke_chunk_empty_stream(self) -> None:
-        chunk = adt.KeystrokeStreamChunk()
-        assert adt.keystroke_stream_chunk_from_dict(
-            adt.keystroke_stream_chunk_to_dict(chunk)) == chunk
-        assert chunk.chunks == []
-
     def test_terminal_control_chunk_roundtrip(self) -> None:
         chunk = adt.TerminalControlStreamChunk(chunks=[
             adt.TerminalControl(user_name="a", start_time=_dt_now()),
@@ -1157,12 +1137,9 @@ class TestChunkCodecs:
             adt.terminal_control_stream_chunk_to_dict(chunk)) == chunk
 
     def test_default_stream_names(self) -> None:
-        assert adt.KeystrokeStreamChunk().stream_name == "keystroke"
         assert adt.TerminalControlStreamChunk().stream_name == "terminal_control"
 
     def test_wrong_stream_names_rejected(self) -> None:
-        with pytest.raises(ValueError, match="not a keystroke chunk"):
-            adt.keystroke_stream_chunk_from_dict({"stream_name": "chat", "chunks": []})
         with pytest.raises(ValueError, match="not a terminal_control chunk"):
             adt.terminal_control_stream_chunk_from_dict(
                 {"stream_name": "chat", "chunks": []})
@@ -1328,8 +1305,6 @@ class TestStreamChunkDispatch:
                                             chunks=[adt.ScreenCapture(captured_at=now)]),
             "chat": adt.ChatStreamChunk(chunks=[adt.ChatMessage(user_name="a", time=now)]),
             "score": adt.ScoreStreamChunk(chunks=[adt.ScoreMessage(tag="t")]),
-            "keystroke": adt.KeystrokeStreamChunk(chunks=[
-                adt.Keystroke(data=adt.TextKey("x"), user_name="a", stroke_time=now)]),
             "terminal_control": adt.TerminalControlStreamChunk(chunks=[
                 adt.TerminalControl(user_name="a", start_time=now)]),
         }[stream_name]
@@ -1352,7 +1327,7 @@ class TestStreamChunkDispatch:
 
 
 class TestUserNames:
-    def test_collects_from_all_five_streams(self) -> None:
+    def test_collects_from_all_four_streams(self) -> None:
         now = _dt_now()
         data = adt.MeetingData(
             sorted_stream_chunks=[
@@ -1361,14 +1336,12 @@ class TestUserNames:
                                                             time=now)]),
                 adt.ScoreStreamChunk(chunks=[adt.ScoreMessage(tag="t",
                                                               judge_name="judge")]),
-                adt.KeystrokeStreamChunk(chunks=[adt.Keystroke(
-                    data=adt.TextKey("x"), user_name="typer", stroke_time=now)]),
                 adt.TerminalControlStreamChunk(chunks=[adt.TerminalControl(
                     user_name=adt.HUMAN_USER_NAME, start_time=now)]),
             ],
         )
         assert adt.user_names_of_meeting_data(data) == {
-            "screen-owner", "chat-user", "judge", "typer", "$human",
+            "screen-owner", "chat-user", "judge", "$human",
         }
 
     def test_empty_meeting_has_no_names(self) -> None:
