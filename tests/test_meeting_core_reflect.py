@@ -27,7 +27,7 @@ def _definition_result(name: str):
 def _definition(name: str):
     given = _definition_result(name)
     assert isinstance(given, Ok), given
-    return given.value
+    return given.ok_value
 
 
 def _open(record, name: str):
@@ -35,7 +35,7 @@ def _open(record, name: str):
     accessor = reflect.access(_definition(name))
     given = accessor.root(reflect._Record(record))
     assert isinstance(given, Ok), given
-    return given.value
+    return given.ok_value
 
 
 def _moment() -> _dt.datetime:
@@ -101,7 +101,7 @@ class TestRoot:
     def test_root_pairs_the_descriptor_with_the_data(self) -> None:
         accessor = reflect.access(_definition("FileId"))
         given = accessor.root(reflect._Record(_file_id()))
-        assert given.value.get_file_id().value == "f1"
+        assert given.ok_value.get_file_id().value == "f1"
 
 
 
@@ -125,7 +125,7 @@ class TestSevenCells:
         author = name.by_tag("agent_name")
         assert author.leaf.kind == "str"
         assert author.value == "alice"
-        assert author.leaf.value == "alice"
+        assert author.leaf.constant_value == "alice"
 
     def test_time_is_a_python_datetime_and_reads_through_the_design(self) -> None:
         node = _open(_versioned_file(), "VersionedFile")
@@ -137,14 +137,14 @@ class TestSevenCells:
         accessor = reflect.access(_definition("VersionedFile"))
         node = accessor._unwrap(accessor.root(reflect._Record(_versioned_file())))
         chain = node.get_file_content()
-        assert accessor.length(chain).value == 1
-        assert accessor.keys(chain).message.startswith("this piece is not a dict")
-        assert accessor.length(node).message.startswith("this piece is not a container")
+        assert accessor.length(chain).ok_value == 1
+        assert accessor.keys(chain).err_msg.startswith("this piece is not a dict")
+        assert accessor.length(node).err_msg.startswith("this piece is not a container")
 
     def test_leaf_on_a_record_is_an_error(self) -> None:
         accessor = reflect.access(_definition("VersionedFile"))
         node = accessor._unwrap(accessor.root(reflect._Record(_versioned_file())))
-        assert "not a leaf" in accessor.leaf(node).message
+        assert "not a leaf" in accessor.leaf(node).err_msg
 
 
 # =====================================================================
@@ -205,7 +205,7 @@ class TestSumBranches:
         segment = adt.TerminalTextSegment(text="x", bg=None)
         node = _open(segment, "TerminalTextSegment")
         assert node.has_bg() is True
-        assert node.get_bg().leaf.value is None
+        assert node.get_bg().leaf.constant_value is None
         assert node.has_field_1() is False               # positional members are only fg / bg
 
     def test_content_reference_branch_matches_by_class_name(self) -> None:
@@ -241,13 +241,13 @@ class TestPythonLanding:
         node = _open(_versioned_file(), "VersionedFile")
         assert node.get_file_name().at_index(0).get_data().value == "a.py"
         assert node.has_file_name() is True
-        assert node.try_get_nope().message.startswith("the design has no such address")
+        assert node.try_get_nope().err_msg.startswith("the design has no such address")
         assert "file_name" in node
         assert "nope" not in node
 
     def test_missing_value_is_ok_none_not_an_exception(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
-        assert node.try_get_data().value is None          # the data has no such key
+        assert node.try_get_data().ok_value is None          # the data has no such key
         with pytest.raises(reflect.VibaReflectError, match="has no value"):
             node.get_data()
 
@@ -276,32 +276,32 @@ class TestConvenience:
         node = _open(_versioned_file(), "VersionedFile")
         path = [reflect.by_tag("file_content"), reflect.at_index(0),
                 reflect.by_tag("data")]
-        assert reflect.viba_resolve(node, path).value.value == "print(1)"
-        assert reflect.viba_get_by_path(node, path).value.value == "print(1)"
+        assert reflect.viba_resolve(node, path).ok_value.value == "print(1)"
+        assert reflect.viba_get_by_path(node, path).ok_value.constant_value == "print(1)"
 
     def test_a_missing_step_with_more_steps_left_is_an_err(self) -> None:
         """The piece is missing in the data and there are more steps after it:
         Err, None cannot be carried on with."""
         data = {"file_name": [adt.Versioned("a.py", _moment(), "alice")]}
         node = _open(data, "VersionedFile")
-        assert node.try_get_file_meta().value is None        # a single step: Ok(nil)
+        assert node.try_get_file_meta().ok_value is None        # a single step: Ok(nil)
         given = reflect.viba_resolve(node, [reflect.by_tag("file_meta"),
                                             reflect.at_index(0)])
-        assert isinstance(given, Err) and given.message == "this step has no value"
+        assert isinstance(given, Err) and given.err_msg == "this step has no value"
 
     def test_read_reports_a_missing_step(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
-        assert reflect.viba_get_by_path(node, [reflect.by_tag("data")]).message == "this step has no value"
+        assert reflect.viba_get_by_path(node, [reflect.by_tag("data")]).err_msg == "this step has no value"
 
     def test_resolve_reports_an_unknown_step(self) -> None:
         node = _open(_file_id(), "FileId")
         given = reflect.viba_resolve(node, [reflect.by_tag("nope")])
-        assert "no such address" in given.message
+        assert "no such address" in given.err_msg
 
     def test_list_fields_keeps_what_is_there(self) -> None:
         node = _open(_file_id(), "FileId")
         given = reflect.viba_list_fields(node, _definition("FileId"))
-        assert [member.value for member in given.value] == ["f1", "a.py"]
+        assert [member.value for member in given.ok_value] == ["f1", "a.py"]
 
 
 class TestResult:
@@ -352,5 +352,5 @@ class TestWalk:
         for node in accessor._walk(root):
             given = accessor.leaf(node)
             if isinstance(given, Ok):
-                leaves.append(given.value.value)
+                leaves.append(given.ok_value.constant_value)
         assert {"a.py", "alice", "bob", "print(1)"} <= set(leaves)

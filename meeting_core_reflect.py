@@ -10,7 +10,7 @@ This is the access side of viba-reflect.md, landing on the stable ADT:
   instances, list / tuple / set / dict, and scalars. The protocol does not
   specify what Data looks like; this layer binds it to Python objects.
 
-Names follow viba.rule.reflect's old convention for viba-reflect.md: class
+Names follow viba.reflect's convention for viba-reflect.md: class
 names from the protocol are kept as they are (``VibaStep``, ``VibaPath``,
 ``VibaNode``, ``VibaAccess``), functions land in snake_case (``viba_resolve`` /
 ``viba_get_by_path`` / ``viba_list_fields``), the four address branches are
@@ -163,11 +163,11 @@ def _design_pool() -> VibaPool:
     pool = empty_pool()
     parsed = parse_viba_file(pool, _design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
     if isinstance(parsed, Err):
-        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not compile: {parsed.message}")
-    added = pool_add_file(pool, parsed.value)
+        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not compile: {parsed.err_msg}")
+    added = pool_add_file(pool, parsed.ok_value)
     if isinstance(added, Err):
-        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not go into the pool: {added.message}")
-    return added.value
+        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not go into the pool: {added.err_msg}")
+    return added.ok_value
 
 
 @lru_cache(maxsize=None)
@@ -177,8 +177,8 @@ def _definition(name: str) -> VibaDefinitionDescriptor:
     full_name = name if "." in name else f"{DESIGN_MODULE_NAME}.{name}"
     found = pool_find_definition(_design_pool(), full_name)
     if isinstance(found, Err):
-        raise VibaReflectError(found.message)
-    return found.value
+        raise VibaReflectError(found.err_msg)
+    return found.ok_value
 
 
 # ----------------------------------------------------------------------
@@ -314,7 +314,7 @@ class VibaNode:
     def value(self):
         """The section 5.4 Python landing: ``leaf`` lands on the native
         scalar."""
-        return self.leaf.value
+        return self.leaf.constant_value
 
     # ---- Shape: only the written chain head, names are not unfolded ----
 
@@ -355,11 +355,11 @@ class VibaNode:
 
     def _has_tag(self, name: str) -> bool:
         given = self._access.has(self, by_tag(name))
-        return bool(given.value) if isinstance(given, Ok) else False
+        return bool(given.ok_value) if isinstance(given, Ok) else False
 
     def _has_field(self, index: int) -> bool:
         given = self._access.has(self, by_field_index(index))
-        return bool(given.value) if isinstance(given, Ok) else False
+        return bool(given.ok_value) if isinstance(given, Ok) else False
 
     def __contains__(self, name: str) -> bool:
         return self._has_tag(name)
@@ -481,10 +481,10 @@ class VibaAccess:
 
     def _unwrap(self, given: Result):
         if isinstance(given, Err):
-            raise VibaReflectError(given.message)
-        if given.value is None:
+            raise VibaReflectError(given.err_msg)
+        if given.ok_value is None:
             raise VibaReflectError("this piece has no value")
-        return given.value
+        return given.ok_value
 
     # ---- Private: the map (descriptors read into an addressable shape) ----
 
@@ -520,9 +520,9 @@ class VibaAccess:
             return None
         resolved = module_get_type(payload.resolvable_type.container_module,
                                    payload.constructor_name)
-        if isinstance(resolved, Err) or not isinstance(resolved.value, AstNodeType):
+        if isinstance(resolved, Err) or not isinstance(resolved.ok_value, AstNodeType):
             return None
-        target = resolved.value
+        target = resolved.ok_value
         if not isinstance(target.ast_node, viba_ast.GenericDefinition):
             return None
         params = list(target.ast_node.generic_params or [])
@@ -566,9 +566,9 @@ class VibaAccess:
         if resolvable is None:
             return None
         resolved = module_get_type(resolvable.container_module, descriptor.payload.type_name)
-        if isinstance(resolved, Err) or not isinstance(resolved.value, AstNodeType):
+        if isinstance(resolved, Err) or not isinstance(resolved.ok_value, AstNodeType):
             return None  # built-in leaves, generic parameters etc: stop here
-        target = resolved.value
+        target = resolved.ok_value
         if not isinstance(target.ast_node, viba_ast.TypeDefinition):
             return None  # a generic definition needs arguments; bare names stop
         from viba.viba_type_descriptor import _build_type
@@ -848,23 +848,23 @@ class VibaAccess:
                 step = by_field_index(positional)
                 positional += 1
             given = self.get(node, step)
-            if isinstance(given, Ok) and given.value is not None:
-                out += self._walk(given.value)
+            if isinstance(given, Ok) and given.ok_value is not None:
+                out += self._walk(given.ok_value)
         shape = self._unfold(node.descriptor)
         if self._container_kind(shape) == "dict":
             given_keys = self.keys(node)
             if isinstance(given_keys, Ok):
-                for key in given_keys.value:
+                for key in given_keys.ok_value:
                     given = self.get(node, at_key(key))
-                    if isinstance(given, Ok) and given.value is not None:
-                        out += self._walk(given.value)
+                    if isinstance(given, Ok) and given.ok_value is not None:
+                        out += self._walk(given.ok_value)
         elif self._has_elements_by_index(shape):
             given_length = self.length(node)
             if isinstance(given_length, Ok):
-                for index in range(given_length.value):
+                for index in range(given_length.ok_value):
                     given = self.get(node, at_index(index))
-                    if isinstance(given, Ok) and given.value is not None:
-                        out += self._walk(given.value)
+                    if isinstance(given, Ok) and given.ok_value is not None:
+                        out += self._walk(given.ok_value)
         return out
 
 
@@ -887,7 +887,7 @@ def viba_resolve(node: VibaNode, path: Sequence[VibaStep]) -> Result:
         given = node._access.get(current, step)
         if isinstance(given, Err):
             return given
-        current = given.value
+        current = given.ok_value
     return Ok(current)
 
 
@@ -896,9 +896,9 @@ def viba_get_by_path(node: VibaNode, path: Sequence[VibaStep]) -> Result:
     resolved = viba_resolve(node, path)
     if isinstance(resolved, Err):
         return resolved
-    if resolved.value is None:
+    if resolved.ok_value is None:
         return Err("this step has no value")
-    return node._access.leaf(resolved.value)
+    return node._access.leaf(resolved.ok_value)
 
 
 def viba_list_fields(node: VibaNode, definition: VibaDefinitionDescriptor) -> Result:
@@ -910,7 +910,7 @@ def viba_list_fields(node: VibaNode, definition: VibaDefinitionDescriptor) -> Re
         return members
     out = []
     positional = 0
-    for member in members.value:
+    for member in members.ok_value:
         if member.tag:
             step = by_tag(member.tag)
         else:
@@ -922,8 +922,8 @@ def viba_list_fields(node: VibaNode, definition: VibaDefinitionDescriptor) -> Re
         # what is taken goes into the list; what is missing (including this
         # piece not being a product/sum at all, so nothing can be asked) does
         # not.
-        if isinstance(given, Ok) and given.value is not None:
-            out.append(given.value)
+        if isinstance(given, Ok) and given.ok_value is not None:
+            out.append(given.ok_value)
     return Ok(out)
 
 
@@ -1045,7 +1045,7 @@ def _literal_matches(written: VibaConstantValue, data) -> bool:
         given = _constant_value(data)
     except TypeError:
         return False
-    return written.kind == given.kind and written.value == given.value
+    return written.kind == given.kind and written.constant_value == given.constant_value
 
 
 def _element_tag(element: VibaTypeDescriptor) -> Optional[str]:
@@ -1064,7 +1064,7 @@ def _member_type_name(member) -> Optional[str]:
     from viba.viba_type_descriptor import member_type_name
 
     written = member_type_name(member)
-    return written.value if isinstance(written, Ok) else None
+    return written.ok_value if isinstance(written, Ok) else None
 
 
 __all__ = [

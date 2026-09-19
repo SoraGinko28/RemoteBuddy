@@ -297,8 +297,8 @@ class MeetingWebService:
             raise WebError(400, f"{api} builds a value; it is not served over the wire")
         script = meeting_sdk_viba.script_for(api, self._sdk_result(meeting_id, api, args))
         if isinstance(script, _SdkErr):
-            raise WebError(500, script.message)
-        return {"script": script.value}
+            raise WebError(500, script.err_msg)
+        return {"script": script.ok_value}
 
     def _sdk_result(self, meeting_id: str, api: str, args: Dict[str, Any]):
         """The api's own Result, evaluated over the record this server holds."""

@@ -137,14 +137,14 @@ def _definition(name: str):
     full_name = name if "." in name else f"meeting_core.{name}"
     given = pool_find_definition(meeting_core_reflect._design_pool(), full_name)
     assert isinstance(given, Ok), given
-    return given.value
+    return given.ok_value
 
 
 def _node(value, name, reflect):
     """Start a node per the protocol: access(definition).root(_Record(value))."""
     given = reflect.access(_definition(name)).root(reflect._Record(value))
     assert isinstance(given, Ok), "cannot open the root"
-    return given.value
+    return given.ok_value
 
 
 def _result(value, reflect):

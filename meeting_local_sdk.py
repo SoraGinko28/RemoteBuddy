@@ -129,7 +129,7 @@ def resolve_chat_content_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Resul
     given = resolve_chat_reference(ctx, ref)
     if isinstance(given, _Err):
         return given
-    return _Ok(_region_of(_chat_message_text(given.value), ref.region))
+    return _Ok(_region_of(_chat_message_text(given.ok_value), ref.region))
 
 
 def resolve_score_reference(ctx: Ctx, ref: "adt.ScoreReference") -> _Result:
@@ -144,7 +144,7 @@ def chat_message_references(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
     given = chat_message_at(ctx, time, user)
     if isinstance(given, _Err):
         return given
-    return _Ok([part for part in given.value.message if isinstance(part, _REFERENCE_TYPES)])
+    return _Ok([part for part in given.ok_value.message if isinstance(part, _REFERENCE_TYPES)])
 
 
 def score_message_reference(ctx: Ctx, time: _dt.datetime, judge: str) -> _Result:
@@ -152,9 +152,9 @@ def score_message_reference(ctx: Ctx, time: _dt.datetime, judge: str) -> _Result
     given = resolve_score_reference(ctx, adt.ScoreReference(judge_time=time, judge_name=judge))
     if isinstance(given, _Err):
         return given
-    if given.value.reference is None:
+    if given.ok_value.reference is None:
         return _Err(f"the score by {judge!r} at {time} carries no reference")
-    return _Ok(given.value.reference)
+    return _Ok(given.ok_value.reference)
 
 
 def first_chunk_time(ctx: Ctx) -> _Result:
@@ -302,7 +302,7 @@ def resolve_versioned_file_content_reference(
     given = resolve_versioned_file_reference(ctx, ref.versioned_file_ref)
     if isinstance(given, _Err):
         return given
-    return _Ok(_region_of(given.value["content"] or "", ref.region))
+    return _Ok(_region_of(given.ok_value["content"] or "", ref.region))
 
 
 # ----------------------------------------------------------------------

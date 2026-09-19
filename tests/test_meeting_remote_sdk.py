@@ -2,7 +2,7 @@
 
 Every api answers with a viba script (``entry := ...``) that is a resident of the
 api's return type in the data-interface chapter; the script is read with
-viba.rule.reflect and must read exactly what meeting_local_sdk answers here.
+viba.reflect and must read exactly what meeting_local_sdk answers here.
 
 The server in these tests is a real RemoteBuddyHTTPServer whose record is the
 fixture the local tests use, handed over `sdk_meeting_data` instead of a journal.
@@ -69,19 +69,19 @@ def _step(step):
 def _leaf(given):
     if isinstance(given, Err):
         return None
-    return (given.value.kind, given.value.value)
+    return (given.ok_value.kind, given.ok_value.constant_value)
 
 
 def _reads_the_same(api, local_result, script) -> int:
     """Walk the local answer; the script must read the same at every leaf."""
-    access, definition = viba_sdk.access_of(api).value
-    local_root = access.root(reflect._Record(local_result)).value
-    entry = viba_sdk.is_a_valid_answer(api, script).value
-    witness_root = rule_reflect.access(definition).root(rule_reflect.Witness(entry)).value
+    access, definition = viba_sdk.access_of(api).ok_value
+    local_root = access.root(reflect._Record(local_result)).ok_value
+    entry = viba_sdk.is_a_valid_answer(api, script).ok_value
+    witness_root = rule_reflect.access.root(definition, rule_reflect.Witness(entry)).ok_value
     compared = 0
     for node in access._walk(local_root):
         ours = access.leaf(node)
-        theirs = rule_reflect.viba_get_by_path(witness_root,
+        theirs = rule_reflect.access.get_by_path(witness_root,
                                                [_step(step) for step in node.path])
         assert _leaf(ours) == _leaf(theirs), (
             f"{api}: path {[step.value for step in node.path]} reads {ours!r} here and "
@@ -93,9 +93,9 @@ def _reads_the_same(api, local_result, script) -> int:
 def _api_calls():
     """(api, args): every read api with arguments the fixture can answer."""
     data = prepare_meeting_data_as_ctx()
-    first = local.first_chunk_time(data).value
-    last = local.last_chunk_time(data).value
-    file_id = local.file_id_by_path(data, "/ws/a.py").value
+    first = local.first_chunk_time(data).ok_value
+    last = local.last_chunk_time(data).ok_value
+    file_id = local.file_id_by_path(data, "/ws/a.py").ok_value
     file_ref = local.make_versioned_file_reference(file_id, first)
     content_ref = local.make_versioned_file_content_reference(file_ref,
                                                               local.make_text_region(0, 5))
@@ -162,7 +162,7 @@ def test_every_answer_is_the_script_for_the_local_answer(api, args, wired) -> No
     ours = getattr(local, api)(data, *rest)
     given = getattr(remote, api)(data.meeting_uid, *rest)
     assert isinstance(given, Ok), given
-    assert given.value == viba_sdk.script_for(api, ours).value
+    assert given.ok_value == viba_sdk.script_for(api, ours).ok_value
 
 
 @pytest.mark.parametrize("api,args", _calls(set(WALKABLE)), ids=lambda item: None)
@@ -171,57 +171,57 @@ def test_the_walkable_answers_read_the_same(api, args, wired) -> None:
     ours = getattr(local, api)(data, *rest)
     given = getattr(remote, api)(data.meeting_uid, *rest)
     assert isinstance(given, Ok), given
-    assert _reads_the_same(api, ours, given.value) > 0
+    assert _reads_the_same(api, ours, given.ok_value) > 0
 
 
 @pytest.mark.parametrize("api", KNOWN_BINDING_GAP)
 def test_the_chat_apis_hit_the_known_binding_gap(api, wired) -> None:
     """$raw_msg does not bind (RawMessage has no spelling), so no script yet."""
     data = wired
-    moment = local.last_chunk_time(data).value
+    moment = local.last_chunk_time(data).ok_value
     calls = {"chat_messages": (data, moment, moment),
              "chat_message_at": (data, moment, "bob"),
              "resolve_chat_reference": (data, local.make_chat_reference(
                  moment, "bob", local.make_text_region(0, 2)))}
     given = getattr(remote, api)(data.meeting_uid, *calls[api][1:])
     assert isinstance(given, Err)
-    assert "no branch of this sum matches" in given.message
+    assert "no branch of this sum matches" in given.err_msg
 
 
 def test_a_failed_api_answers_its_err_branch(wired) -> None:
     data = wired
-    moment = local.last_chunk_time(data).value
+    moment = local.last_chunk_time(data).ok_value
     given = remote.chat_message_at(data.meeting_uid, moment, "alice")
     assert isinstance(given, Ok)
-    entry = viba_sdk.is_a_valid_answer("chat_message_at", given.value).value
-    access, definition = viba_sdk.access_of("chat_message_at").value
-    witness_root = rule_reflect.access(definition).root(rule_reflect.Witness(entry)).value
-    assert witness_root.get_err().value.value        # the sentence rides the $err branch
+    entry = viba_sdk.is_a_valid_answer("chat_message_at", given.ok_value).ok_value
+    access, definition = viba_sdk.access_of("chat_message_at").ok_value
+    witness_root = rule_reflect.access.root(definition, rule_reflect.Witness(entry)).ok_value
+    assert witness_root.get_err().value        # the sentence rides the $err branch
 
 
 def test_a_missing_path_is_an_err_inside_the_script(wired) -> None:
     given = remote.file_id_by_path(wired.meeting_uid, "/ws/c.py")
     assert isinstance(given, Ok)
-    assert "$err" in given.value
+    assert "$err" in given.ok_value
 
 
 def test_an_unknown_api_is_a_404(wired) -> None:
     given = remote._call("no_such_api", wired.meeting_uid)
     assert isinstance(given, Err)
-    assert "404" in given.message
+    assert "404" in given.err_msg
 
 
 def test_a_value_builder_is_not_served_over_the_wire(wired) -> None:
     """make_* builds a value; asking the server for one is a 400."""
     given = remote._call("make_text_region", wired.meeting_uid, start=0, end=2)
     assert isinstance(given, Err)
-    assert "builds a value" in given.message
+    assert "builds a value" in given.err_msg
 
 
 def test_now_comes_from_the_server(wired) -> None:
     given = remote.now(wired.meeting_uid)
     assert isinstance(given, Ok)
-    assert viba_sdk.is_a_valid_answer("now", given.value).value is not None
+    assert viba_sdk.is_a_valid_answer("now", given.ok_value).ok_value is not None
 
 
 def test_the_make_group_is_local_and_identical() -> None:

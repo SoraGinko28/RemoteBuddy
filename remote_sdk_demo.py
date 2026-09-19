@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the remote sdk end to end, and read its answers with viba.rule.reflect.
+"""Run the remote sdk end to end, and read its answers with viba.reflect.
 
     python3 remote_sdk_demo.py
 
@@ -10,7 +10,7 @@ All in this one process, no fixtures from the test suite:
 2. start the harness web server on a free local port over that journal;
 3. point meeting_remote_sdk at it and drive the apis of the data-interface
    chapter -- every answer is a viba script (``entry := ...``);
-4. read those scripts with viba.rule.reflect -- the landing's sugar:
+4. read those scripts with viba.reflect -- the landing's sugar:
    ``get_ok()`` / ``get_microsecond()`` / ``node["agent"]`` / ``has_err()`` /
    ``node.value`` -- and check what came out.
 
@@ -26,6 +26,7 @@ import datetime as dt
 import json
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import meeting_remote_sdk as remote
@@ -59,6 +60,7 @@ def write_journal(root: Path) -> dt.datetime:
     store = MeetingStore.create(root, MEETING_ID, CHAT_ASKED, skill, "remote-demo",
                                 "test-model", agent_name2role={"agent": "generator"})
     store.append_chat("agent", CHAT_DONE, "final")
+    time.sleep(0.01)      # the journal stamps milliseconds: keep the two apart
     screen = store.append_screen(SCREEN_TEXT, "bash", str(store.workspace_path),
                                  metadata={"pane_width": 80, "pane_height": 1,
                                            "cursor_x": 0, "cursor_y": 0})
@@ -71,20 +73,20 @@ def write_journal(root: Path) -> dt.datetime:
 # ----------------------------------------------------------------------
 
 
+def leaf_value(node) -> object:
+    """The python value under a node (the landing puts it on ``node.value``)."""
+    return node.value
+
+
 def answer(api: str, *args):
     """Call one api over the wire; give back (the script, the entry's node)."""
     given = getattr(remote, api)(MEETING_ID, *args)
     if isinstance(given, Err):
-        raise SystemExit(f"{api}: {given.message}")
-    entry = viba_sdk.is_a_valid_answer(api, given.value).value
-    _access, definition = viba_sdk.access_of(api).value
-    node = rule_reflect.access(definition).root(rule_reflect.Witness(entry)).value
-    return given.value, node
-
-
-def scalar(node) -> object:
-    """The python value under a node (``node.value`` is the leaf)."""
-    return node.value.value
+        raise SystemExit(f"{api}: {given.err_msg}")
+    entry = viba_sdk.is_a_valid_answer(api, given.ok_value).ok_value
+    _access, definition = viba_sdk.access_of(api).ok_value
+    node = rule_reflect.access.root(definition, rule_reflect.Witness(entry)).ok_value
+    return given.ok_value, node
 
 
 # ----------------------------------------------------------------------
@@ -117,7 +119,7 @@ class Report:
 
 
 def run_checks(report: Report, capture_time: dt.datetime) -> None:
-    print("remote sdk, read back with viba.rule.reflect")
+    print("remote sdk, read back with viba.reflect")
     print(f"  meeting: {MEETING_ID} at {remote.server_url()}")
 
     now = dt.datetime.now(dt.timezone.utc)
@@ -127,19 +129,19 @@ def run_checks(report: Report, capture_time: dt.datetime) -> None:
                 f"{len(node.get_ok())} moments in the range")
 
     _script, node = answer("participants")
-    names = [scalar(name.get_agent_name()) for name in node.get_ok()]
+    names = [leaf_value(name.get_agent_name()) for name in node.get_ok()]
     report.that("participants", names == ["$human", "agent"], f"{names}")
 
     _script, first = answer("first_chunk_time")
     _script, last = answer("last_chunk_time")
-    first_us = scalar(first.get_ok().get_microsecond())
-    last_us = scalar(last.get_ok().get_microsecond())
+    first_us = leaf_value(first.get_ok().get_microsecond())
+    last_us = leaf_value(last.get_ok().get_microsecond())
     report.that("first_chunk_time", first_us is not None, f"microsecond={first_us}")
     report.that("last_chunk_time", last_us > first_us, f"microsecond={last_us} > {first_us}")
 
     _script, node = answer("now")
     report.that("now (the server's clock)", node.has_ok() is True,
-                f"microsecond={scalar(node.get_ok().get_microsecond())}")
+                f"microsecond={leaf_value(node.get_ok().get_microsecond())}")
 
     _script, node = answer("roles")
     role = node.get_ok()["agent"]
@@ -147,13 +149,13 @@ def run_checks(report: Report, capture_time: dt.datetime) -> None:
 
     script, node = answer("file_id_by_path", "/ws/a.py")
     report.that("file_id_by_path (no file layer in a journal)", node.has_err() is True,
-                f"$err = {scalar(node.get_err())!r}")
+                f"$err = {leaf_value(node.get_err())!r}")
 
     for api, args in (("chat_messages", (now - dt.timedelta(minutes=5),
                                          now + dt.timedelta(minutes=5))),
                       ("screen_at", (capture_time,))):
         given = getattr(remote, api)(MEETING_ID, *args)
-        report.note(api, given.message if isinstance(given, Err) else "served")
+        report.note(api, given.err_msg if isinstance(given, Err) else "served")
     print()
     print("one answer, as the server sent it:")
     for line in script.rstrip("\n").splitlines():

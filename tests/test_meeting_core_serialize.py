@@ -6,7 +6,7 @@ Each case does two things:
 
 1. The written viba code is a resident of that definition (``is_compliant``);
 2. On the same path, both sides read exactly the same thing — one side is
-   viba.rule.reflect reading the serialized result, the other is
+   viba.reflect reading the serialized result, the other is
    meeting_core_reflect reading the Python data directly.
 
 Point 2 does not hand-pick a few paths; it walks the whole tree on the Python
@@ -86,7 +86,7 @@ def _witness(name: str, data):
     """serialize -> the parsed-back witness body (the spelling of that data)."""
     given = serialize.serialize(name, data)
     assert isinstance(given, Ok), given
-    module = viba_ast.parse(given.value)
+    module = viba_ast.parse(given.ok_value)
     body = [definition for definition in module.body if definition.name == name]
     assert len(body) == 1
     return body[0].body
@@ -94,7 +94,7 @@ def _witness(name: str, data):
 
 def _same_step(step):
     """Translate a step on the Python side into the same step on the
-    viba.rule.reflect side."""
+    viba.reflect side."""
     return {"by_tag": rule_reflect.by_tag, "by_field_index": rule_reflect.by_field_index,
             "at_index": rule_reflect.at_index, "at_key": rule_reflect.at_key}[step.kind](
         step.value)
@@ -103,7 +103,7 @@ def _same_step(step):
 def _leaf_of(given):
     if isinstance(given, Err):
         return None
-    return (given.value.kind, given.value.value)
+    return (given.ok_value.kind, given.ok_value.constant_value)
 
 
 @pytest.mark.parametrize("name,data", _samples(), ids=lambda x: None)
@@ -113,7 +113,7 @@ def test_the_written_code_is_a_resident_of_the_definition(name, data) -> None:
                          AstNodeType(CORE_DEFS[name].body, CORE_MODULE))
     if name in KNOWN_VIBA_GAPS:
         pytest.xfail(KNOWN_VIBA_GAPS[name])
-    assert isinstance(given, Ok) and given.value is True, given
+    assert isinstance(given, Ok) and given.ok_value is True, given
 
 
 @pytest.mark.parametrize("name,data", _samples(), ids=lambda x: None)
@@ -122,12 +122,12 @@ def test_both_readers_read_the_same_thing(name, data) -> None:
     body = _witness(name, data)
     definition = reflect._definition(name)
     access = reflect.access(definition)
-    root = access.root(reflect._Record(data)).value
-    witness_root = rule_reflect.access(definition).root(rule_reflect.Witness(body)).value
+    root = access.root(reflect._Record(data)).ok_value
+    witness_root = rule_reflect.access.root(definition, rule_reflect.Witness(body)).ok_value
     compared = 0
     for node in access._walk(root):
         ours = access.leaf(node)
-        theirs = rule_reflect.viba_get_by_path(
+        theirs = rule_reflect.access.get_by_path(
             witness_root, [_same_step(step) for step in node.path])
         assert _leaf_of(ours) == _leaf_of(theirs), (
             f"{name}: path {[step.value for step in node.path]} "
@@ -144,7 +144,7 @@ def test_an_empty_container_has_no_viba_spelling(ctx=None) -> None:
         file_meta=[],
         file_content=[adt.Versioned("print(1)", _moment(), "alice")]))
     assert isinstance(given, Err)
-    assert "empty" in given.message
+    assert "empty" in given.err_msg
 
 
 def test_a_chat_part_that_does_not_bind_is_refused() -> None:
@@ -153,7 +153,7 @@ def test_a_chat_part_that_does_not_bind_is_refused() -> None:
     given = serialize.serialize("ChatMessage", adt.ChatMessage(
         user_name="alice", time=_moment(), message=[adt.RawMessage("hi")]))
     assert isinstance(given, Err)
-    assert "no branch" in given.message
+    assert "no branch" in given.err_msg
 
 
 def test_serialize_refuses_a_missing_step() -> None:
