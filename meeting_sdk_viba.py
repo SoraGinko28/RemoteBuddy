@@ -73,8 +73,19 @@ def return_type(api: str) -> str:
 
 
 def script_for(api: str, result) -> Result:
-    """A result of that api -> ``entry := ...`` (the remote answer)."""
-    return _serialize.serialize_for(return_type(api), result)
+    """A result of that api -> ``entry := ...`` (the remote answer).
+
+    The result is this layer's Python data, so binding it into a node happens
+    here; the writer is handed the node.
+    """
+    found = access_of(api)
+    if isinstance(found, Err):
+        return found
+    access, definition = found.ok_value
+    root = access.root(definition, _reflect._Record(result))
+    if isinstance(root, Err):
+        return root
+    return _serialize.serialize("entry", access, root.ok_value)
 
 
 @lru_cache(maxsize=None)
