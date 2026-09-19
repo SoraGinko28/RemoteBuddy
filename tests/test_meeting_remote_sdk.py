@@ -133,19 +133,18 @@ def _api_calls():
     ]
 
 
-# The apis whose answers walk down to leaves on both sides. chat_messages,
-# chat_message_at and resolve_chat_reference cannot be serialized at all yet (a
-# chat part of kind $raw_msg does not bind: RawMessage is not spelled in the
-# design), and owner_at / control_owner_of answer a Result[UserName | nil],
-# whose untagged branch neither reader walks into.
+# The apis whose answers walk down to leaves on both sides. The three chat ones
+# cannot be serialized at all yet: a chat part of kind $raw_msg does not bind
+# (RawMessage has no spelling in the design).
 WALKABLE = (
     "chunk_times", "streams_between", "score_messages",
     "resolve_chat_content_reference", "resolve_score_reference",
     "chat_message_references", "score_message_reference",
     "first_chunk_time", "last_chunk_time", "screen_at", "resolve_screen_reference",
-    "participants", "roles", "file_id_by_path", "file_datetimes", "files_at",
-    "latest_file", "resolve_versioned_file_reference",
-    "resolve_versioned_file_content_reference", "read_text",
+    "participants", "roles", "owner_at", "control_owner_of", "file_id_by_path",
+    "file_datetimes", "files_at", "latest_file",
+    "resolve_versioned_file_reference", "resolve_versioned_file_content_reference",
+    "read_text",
 )
 KNOWN_BINDING_GAP = ("chat_messages", "chat_message_at", "resolve_chat_reference")
 

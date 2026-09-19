@@ -628,9 +628,59 @@ class VibaAccess:
                 positional += 1
         return out
 
+    def _bare_sum(self, descriptor: VibaTypeDescriptor) -> Optional[List[tuple]]:
+        """The positional branches of an untagged sum a material may write
+        without the sum's own layer: [(index, shape, descriptor), ...], else None.
+
+        A sum with at most one inner node can be written without that layer: the
+        material carries the branch's content straight, and leaf branches are
+        told apart by the value itself. Two inner nodes cannot be told apart, and
+        a tagged sum is addressed by tag, so neither qualifies.
+        """
+        shape = self._unfold(descriptor)
+        if shape.kind != SUM:
+            return None
+        elements = list(shape.payload.elements)
+        if elements and _is_unit_descriptor(elements[0]):
+            elements = elements[1:]
+        members, inner = [], 0
+        for index, element in enumerate(elements):
+            if element.kind == TAGGED:
+                return None
+            branch = self._branch_shape(element)
+            inner += 1 if branch == "inner" else 0
+            members.append((index, branch, element))
+        return members if inner <= 1 else None
+
+    def _branch_shape(self, descriptor: VibaTypeDescriptor) -> str:
+        """How one branch of a sum reads: "unit", "leaf" or "inner"."""
+        shape = self._unfold(descriptor)
+        if shape.kind in (NIL, NEVER):
+            return "unit"
+        if shape.kind == LITERAL:
+            return "leaf"
+        if shape.kind == TYPE_REF and shape.payload.type_name in LEAF_NAMES:
+            return "leaf"
+        return "inner"
+
+    def _bare_sum_tag_target(self, descriptor: VibaTypeDescriptor, tag: str):
+        """The descriptor a tag names when it lives in a skipped sum's branch."""
+        members = self._bare_sum(descriptor)
+        if members is None:
+            return None
+        for _, branch_shape, branch in members:
+            if branch_shape != "inner":
+                continue
+            for branch_tag, branch_type in self._design_members(branch) or []:
+                if _tag_name(branch_tag) == _tag_name(tag):
+                    return branch_type
+        return None
+
     def _knows(self, node: VibaNode, step: VibaStep, slots: Optional[List[tuple]]) -> bool:
         if step.kind == "by_tag":
-            return any(tag == step.value for tag, _ in slots or [])
+            if any(tag == step.value for tag, _ in slots or []):
+                return True
+            return self._bare_sum_tag_target(node.descriptor, step.value) is not None
         if step.kind == "by_field_index":
             positional = [tag for tag, _ in slots or [] if tag is None]
             return 0 <= step.value < len(positional)
@@ -645,7 +695,7 @@ class VibaAccess:
             for tag, descriptor in slots or []:
                 if tag == step.value:
                     return descriptor
-            return None
+            return self._bare_sum_tag_target(node.descriptor, step.value)
         if step.kind == "by_field_index":
             positional = [descriptor for tag, descriptor in slots or [] if tag is None]
             if 0 <= step.value < len(positional):
@@ -791,12 +841,9 @@ class VibaAccess:
         out = [node]
         positional = 0
         members = self._members(node) or []
-        untagged_is_the_value = self._unfold(node.descriptor).kind == SUM
         for tag, _ in members:
             if tag:
                 step = by_tag(tag)
-            elif untagged_is_the_value:
-                continue        # untagged sum branch: the value is that branch
             else:
                 step = by_field_index(positional)
                 positional += 1
