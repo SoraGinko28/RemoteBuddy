@@ -274,6 +274,15 @@ class TestConvenience:
         assert reflect.viba_resolve(node, path).value.value == "print(1)"
         assert reflect.viba_get_by_path(node, path).value.value == "print(1)"
 
+    def test_a_missing_step_with_more_steps_left_is_an_err(self) -> None:
+        """数据里没有那一段、后面还有 step：Err，不能拿 None 接着走。"""
+        data = {"file_name": [adt.Versioned("a.py", _moment(), "alice")]}
+        node = _open(data, "VersionedFile")
+        assert node.try_get_file_meta().value is None        # 单独一步：Ok(nil)
+        given = reflect.viba_resolve(node, [reflect.by_tag("file_meta"),
+                                            reflect.at_index(0)])
+        assert isinstance(given, Err) and given.message == "这一步没有值"
+
     def test_read_reports_a_missing_step(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
         assert reflect.viba_get_by_path(node, [reflect.by_tag("data")]).message == "这一步没有值"
