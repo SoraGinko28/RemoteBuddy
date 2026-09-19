@@ -31,9 +31,8 @@ implementation):
   "captured_at"}``, ``{"name", "meta", "content"}``.
 
 Reading only: getters always return a Result -- a miss is an ``Err``, not an
-exception. ``open_file`` opens a path that is already there and creates nothing;
-no api writes, writes are the harness's job. The ``make_*`` group at the end
-takes no ``ctx``; it only builds values such as references.
+exception, and no api writes (writes are the harness's job). The ``make_*`` group
+at the end takes no ``ctx``; it only builds values such as references.
 """
 
 from __future__ import annotations
@@ -311,18 +310,6 @@ def resolve_versioned_file_content_reference(
 # ----------------------------------------------------------------------
 
 
-def open_file(ctx: Ctx, file_path: str) -> _Result:
-    """Open an existing file by path; nothing is created here.
-
-    A bad path shape, or no workspace / fold / entry with that name, is an Err.
-    Writes are the harness's job; this layer only reads.
-    """
-    opened = file_id_by_path(ctx, file_path)
-    if isinstance(opened, _Err):
-        return opened
-    return opened
-
-
 def read_text(ctx: Ctx, file: "adt.FileId") -> _Result:
     """read_text := latest_file (the design's spelling is an alias)."""
     return latest_file(ctx, file)
@@ -508,7 +495,6 @@ __all__ = [
     "latest_file",
     "resolve_versioned_file_reference",
     "resolve_versioned_file_content_reference",
-    "open_file",
     "read_text",
     "make_text_region",
     "make_screen_reference",

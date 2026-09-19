@@ -16,9 +16,8 @@ meeting_local_sdk over the record it holds, so the two bindings agree by
 construction. Call configure() once (the default is the local web server); the
 csrf token is fetched from /api/session on the first call.
 
-Nothing writes: the data interface is read-only, and open_file only opens a path
-that is already there. The make_* group builds values and never goes over the
-wire.
+Nothing writes: the data interface is read-only. The make_* group builds values
+and never goes over the wire.
 """
 
 from __future__ import annotations
@@ -121,7 +120,7 @@ def _error_message(error: urllib.error.HTTPError) -> str:
 
 
 # ----------------------------------------------------------------------
-# the 34 apis of the contract
+# the 33 apis of the contract
 # ----------------------------------------------------------------------
 
 
@@ -243,11 +242,6 @@ def resolve_versioned_file_content_reference(ctx: Ctx, ref: 'adt.VersionedFileCo
     return _call("resolve_versioned_file_content_reference", ctx, ref=ref)
 
 
-def open_file(ctx: Ctx, file_path: str) -> _Result:
-    """Open an existing file by path; nothing is created here."""
-    return _call("open_file", ctx, file_path=file_path)
-
-
 def read_text(ctx: Ctx, file: 'adt.FileId') -> _Result:
     """read_text := latest_file (the design's spelling is an alias)."""
     return _call("read_text", ctx, file=file)
@@ -299,7 +293,6 @@ __all__ = [
     "latest_file",
     "resolve_versioned_file_reference",
     "resolve_versioned_file_content_reference",
-    "open_file",
     "read_text",
     "make_text_region",
     "make_screen_reference",
