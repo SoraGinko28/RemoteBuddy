@@ -9,7 +9,7 @@ server:
 The answer is a viba script whose entry is the api's own result: a failure is the
 $err branch of that result, so the script is always a resident of the api's
 return type in the data-interface chapter. This binding checks that before it
-hands the script back (``Ok(script)``); read it with viba.rule.reflect, the way a
+hands the script back (``Ok(script)``); read it with viba.reflect, the way a
 local answer is read with meeting_core_reflect. Arguments travel through
 meeting_sdk_json. The server answers by running the same api of
 meeting_local_sdk over the record it holds, so the two bindings agree by
@@ -105,7 +105,7 @@ def _call(api: str, meeting_uid: str, **args) -> _Result:
         return _Err("the meeting server did not answer with a viba script")
     checked = meeting_sdk_viba.is_a_valid_answer(api, script)
     if isinstance(checked, _Err):
-        return _Err(checked.message)
+        return _Err(checked.err_msg)
     return _Ok(script)
 
 

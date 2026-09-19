@@ -8,7 +8,7 @@ answers with:
     entry := $ok ...
 
 so a remote answer is a viba witness: the rule layer reads it with
-viba.rule.reflect, the same way meeting_core_reflect reads a local answer.
+viba.reflect, the same way meeting_core_reflect reads a local answer.
 
 Three questions, one per function: what type does this api return
 (``return_type``), what is a result of it written as (``script_for``), and what
@@ -116,6 +116,6 @@ def is_a_valid_answer(api: str, script: str) -> Result:
                           AstNodeType(definition, module))
     if isinstance(judged, Err):
         return judged
-    if judged.value is not True:
+    if judged.ok_value is not True:
         return Err(f"the entry is not a resident of {return_type(api)}")
     return Ok(entries[0].body)

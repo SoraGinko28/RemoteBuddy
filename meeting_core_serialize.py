@@ -9,7 +9,7 @@ Both must hold:
 
 1. The written code is a resident of that definition:
    ``is_compliant(result, the definition) == Ok(True)``.
-2. Reading result with viba.rule.reflect reads exactly the same thing as
+2. Reading result with viba.reflect reads exactly the same thing as
    handing the same data to meeting_core_reflect.
 
 The map and the values are walked together: the shape comes from the descriptor
@@ -97,7 +97,7 @@ def witness_for(type_expression: str, data) -> Result:
     found = _expression_definition(type_expression)
     if isinstance(found, Err):
         return found
-    access, definition = found.value
+    access, definition = found.ok_value
     return _emit_against(access, data, definition=definition)
 
 
@@ -106,7 +106,7 @@ def _emit_against(access, data, definition=None) -> Result:
     if isinstance(root, Err):
         return root
     try:
-        return Ok(_emit(access, root.value))
+        return Ok(_emit(access, root.ok_value))
     except SerializeGap as gap:
         return Err(str(gap))
 
@@ -114,7 +114,7 @@ def _emit_against(access, data, definition=None) -> Result:
 def _source(name: str, body: Result) -> Result:
     if isinstance(body, Err):
         return body
-    module = viba_ast.Module([viba_ast.TypeDefinition(name, body.value)])
+    module = viba_ast.Module([viba_ast.TypeDefinition(name, body.ok_value)])
     return Ok(viba_ast.unparse(module) + "\n")
 
 
@@ -136,14 +136,14 @@ def _expression_definition(type_expression: str):
     pool = empty_pool()
     parsed = parse_viba_file(pool, source, "sdk_entry.viba", "meeting_core")
     if isinstance(parsed, Err):
-        return Err(f"cannot compile the return type {type_expression!r}: {parsed.message}")
-    added = pool_add_file(pool, parsed.value)
+        return Err(f"cannot compile the return type {type_expression!r}: {parsed.err_msg}")
+    added = pool_add_file(pool, parsed.ok_value)
     if isinstance(added, Err):
         return added
-    found = pool_find_definition(added.value, "meeting_core.SdkEntry")
+    found = pool_find_definition(added.ok_value, "meeting_core.SdkEntry")
     if isinstance(found, Err):
         return found
-    return Ok((_reflect.access(found.value), found.value))
+    return Ok((_reflect.access(found.ok_value), found.ok_value))
 
 
 # ----------------------------------------------------------------------
@@ -179,9 +179,9 @@ def _emit_sum(access, node):
     """Sum: write the selected branch; none selected is the default (nil)."""
     for tag, step, _ in access._member_steps(node):
         child = access.get(node, step)
-        if not isinstance(child, Ok) or child.value is None:
+        if not isinstance(child, Ok) or child.ok_value is None:
             continue
-        inner = _payload(access, child.value)
+        inner = _payload(access, child.ok_value)
         return viba_ast.Tagged(tag, inner) if tag else inner
     if node.data is None:
         return viba_ast.Nil()               # the default branch (Optional nil)
@@ -196,8 +196,8 @@ def _emit_product(access, node):
             elements.append(viba_ast.Nil())     # a prose word: the unit
             continue
         child = access.get(node, step)
-        if isinstance(child, Ok) and child.value is not None:
-            elements.append(viba_ast.Tagged(tag, _payload(access, child.value)))
+        if isinstance(child, Ok) and child.ok_value is not None:
+            elements.append(viba_ast.Tagged(tag, _payload(access, child.ok_value)))
         elif _is_optional(access, step, node):
             elements.append(viba_ast.Tagged(tag, viba_ast.Nil()))
         else:
@@ -221,8 +221,8 @@ def _emit_container(access, node, container: str):
     """Container: a literal (ListLiteral / SetLiteral / DictLiteral)."""
     length = access.length(node)
     if isinstance(length, Err):
-        raise SerializeGap(length.message)
-    if length.value == 0:
+        raise SerializeGap(length.err_msg)
+    if length.ok_value == 0:
         raise SerializeGap(
             f"an empty {container} has no viba spelling yet: a literal takes at least "
             f"one element")
@@ -230,16 +230,16 @@ def _emit_container(access, node, container: str):
         constructor = "ListLiteral" if container == "list" else "SetLiteral"
         return viba_ast.TypeApp(constructor, [
             _payload(access, _child(access, node, _reflect.at_index(index)))
-            for index in range(length.value)
+            for index in range(length.ok_value)
         ])
     if container == "dict":
         keys = access.keys(node)
         if isinstance(keys, Err):
-            raise SerializeGap(keys.message)
+            raise SerializeGap(keys.err_msg)
         return viba_ast.TypeApp("DictLiteral", [
             viba_ast.Tuple([viba_ast.Constant(key),
                             _payload(access, _child(access, node, _reflect.at_key(key)))])
-            for key in keys.value
+            for key in keys.ok_value
         ])
     raise SerializeGap(f"cannot write this container out: {container}")
 
@@ -264,9 +264,9 @@ def _steps(access, node):
 
 def _child(access, node, step):
     given = access.get(node, step)
-    if not isinstance(given, Ok) or given.value is None:
+    if not isinstance(given, Ok) or given.ok_value is None:
         raise SerializeGap(f"this step has no value: {step}")
-    return given.value
+    return given.ok_value
 
 
 def _payload(access, node):
