@@ -1,11 +1,11 @@
 """MEETING_ADT.md 里的两份设计是不是完备的（viba 的 is_complete）。
 
-`meeting_core.viba` = 「稳定类型」那一章的代码块；`meeting_sdk.viba` = 「取数据接口」那一章，
+`meeting_core.viba` = the code block of the "Stable types" chapter; `meeting_sdk.viba` = the "The data interface" chapter,
 要拿前者当库（`import meeting_core as mc`）。
 
 完备 = 从每个定义出发，图上每个坐标都走得到叶子；走不进去的只有 CodeBlock，
-所以 terminators 只要给 `Assert` / `Appendix` / `Hint` 三个说明用的词
-（它们身上挂的就是 CodeBlock）。不给这三个词就不完备——这也是设计里备注的跑法。
+The three prose words (`Assert` / `Appendix` / `Hint`) are defined as units, so a
+code block is never reached and no terminator is needed.
 """
 
 import re
@@ -20,8 +20,8 @@ from viba.is_complete import is_complete  # noqa: E402
 
 DESIGN_PATH = REPO_ROOT / "MEETING_ADT.md"
 TERMINATORS = {"Assert", "Appendix", "Hint"}
-CORE_CHAPTER = "稳定类型"
-SDK_CHAPTER = "取数据接口"
+CORE_CHAPTER = "Stable types"
+SDK_CHAPTER = "The data interface"
 
 
 def _chapter_source(title: str) -> str:
@@ -48,5 +48,5 @@ def test_meeting_sdk_is_complete() -> None:
 
 
 def test_no_terminators_are_needed() -> None:
-    """说明用的词（Assert / Appendix / Hint）定义成了单位元：代码块走不到。"""
+    """Assert / Appendix / Hint are units: the walk never reaches a code block."""
     assert is_complete(_core_source(), (), (), set()) is True

@@ -1,15 +1,19 @@
 # Meeting ADT
 
-> 本文档是 RemoteBuddy 会议模型的形式化定稿（用户原稿，随讨论同步）。
-> ADT 只描述系统核心逻辑（能力层）；Workspace 存数据、Tree 记血缘、
-> Image 是血统快照、Instance 是活线、MeetingData 是可被引用/审核/回放的事实载体；
-> 复制/快照/去重等属数据层，不在此讨论。
+> This document is the formal ADT of the RemoteBuddy meeting model (the author's
+> own text, kept in sync with the discussion). It describes the core logic of
+> the system (the capability layer) only: a Workspace stores data, a Tree records
+> lineage, an Image is a lineage snapshot, an Instance is a live line, and
+> MeetingData is the fact carrier that can be cited, reviewed and replayed.
+> Copying, snapshotting and deduplicating belong to the data layer and are not
+> discussed here.
 
 ---
 
-## 记录层
+## The record layer
 
-会议记录本体。下面的类型、断言与说明都在这一层。
+The meeting record itself. The types, assertions and notes below all live in
+this layer.
 
 ```bash
 import meeting_core as mc
@@ -19,26 +23,28 @@ MeetingData :=
   * $meeting_uid str     # basically uuid
   * $meeting_name str
   * $sorted_stream_chunks list[StreamChunkDict]
-  * $agent_name2role dict[str, mc.AgentRole]        # 会内只增不减：join 时加入，冻结后固化
+  * $agent_name2role dict[str, mc.AgentRole]        # only grows inside a meeting: added on join, frozen once frozen
   * $file_kv_store mc.FileKvStore
   * $file_desktop FileDesktop
   * Appendix[{
-      user_names := 从各 chunk 收集所有出现的 mc.UserName
-                     （screen.owner / chat.user_name / score.judge_name /
-                      terminal_control.user_name）
-                   ∪ 文件层所有 mc.Versioned.author
-                     （file_kv_store 的三条链 / file_desktop 的 $reorder_indexes）
+      user_names := every mc.UserName that appears in any chunk
+                     (screen.owner / chat.user_name / score.judge_name /
+                      terminal_control.user_name)
+                   ∪ every mc.Versioned.author in the file layer
+                     (the three chains of file_kv_store / file_desktop's $reorder_indexes)
     }]
-  * Assert[{ keys($agent_name2role) ⊆ user_names(本记录) }]
+  * Assert[{ keys($agent_name2role) ⊆ user_names(this record) }]
   * Hint[{
-      回应提醒：∀ chat 消息 m ∈ 聊天流，若 m 含 $at_user_name == P
-                且 role(P) == $passive_discriminator，
-                则 ∃ 后续记录 r（P 产出的 chat 或 score）
-                  : r 含可解析到 m 的 mc.ContentReference
+      reply reminder: ∀ chat message m in the chat stream, if m carries
+                 $at_user_name == P and role(P) == $passive_discriminator,
+                 then ∃ a later record r (a chat or score produced by P)
+                   : r carries an mc.ContentReference that resolves to m
     }]
   * Appendix[{
-      owner_at(t) := 含 t 的控制区间的 TerminalControl.user_name
-                     （区间由 TerminalControl.start_time 界定；可能缺省 = 此刻无人控制）
+      owner_at(t) := the TerminalControl.user_name of the control interval
+                     that contains t
+                     (the interval starts at TerminalControl.start_time; absent
+                      = nobody holds the terminal at that moment)
     }]
 
 FileKvStore :=
@@ -50,23 +56,26 @@ FileDesktop :=
   * $workspaces mc.AppendOnlyList[FileWorkspace]
   * $reorder_indexes mc.Versioned[DesktopMemberOrder]
   * Assert[{
-      同一层里名字唯一，路径才定得到一条：
-        $workspaces 里各 workspace 的 $workspace_name 两两不同；
-        同一个 workspace 里，fold 的 $fold_name 与直接挂着的文件的 $entry_name 两两不同；
-        同一个 fold 里，$member_file_ids 里各文件的 $entry_name 两两不同
+      names are unique within a level, so a path picks exactly one file:
+        the $workspace_name of the $workspaces are pairwise different;
+        inside one workspace, a fold's $fold_name and the $entry_name of a file
+        hanging directly under it are pairwise different;
+        inside one fold, the $entry_name of the files in $member_file_ids are
+        pairwise different
     }]
   * Appendix[{
-      # 桌面树只表示当前状态：没有任何 mc.ContentReference 按 $version_time 引用它，
-      # 所以树里不铺版本链（要 as-of 的只有 file_kv_store 那三条链）；
-      # $reorder_indexes 记的是最后一次重排的时间与作者
+      # the desktop tree shows the current state only: no mc.ContentReference
+      # cites it by $version_time, so the tree carries no version chain (the only
+      # things read as-of are the three chains in file_kv_store);
+      # $reorder_indexes records the time and author of the last reordering
     }]
 
 DesktopMemberOrder :=
     DataClass
   * $workspace_indexes mc.ReadOnlyList[WorkspaceMemberOrder]
   * Assert[{
-      $workspace_indexes 里的 $workspace_index 恰好是
-          0 .. len(MeetingData.file_desktop.workspaces) - 1 的一个排列
+      the $workspace_index in $workspace_indexes are exactly
+          a permutation of 0 .. len(MeetingData.file_desktop.workspaces) - 1
     }]
 
 WorkspaceMemberOrder :=
@@ -76,15 +85,16 @@ WorkspaceMemberOrder :=
   * Assert[{
       ws := MeetingData.file_desktop.workspaces[$workspace_index]
       { $file_index | ($file_index, _) ∈ $file_indexes } == 0 .. len(ws.member_files) - 1
-      且 对每个 ($file_index, Some(fo))：
+      and for every ($file_index, Some(fo)):
           fo.$member_indexes == 0 .. len((ws.member_files[$file_index] as $fold).member_file_ids) - 1
     }]
 
 FoldMemberOrder :=
     DataClass
   * $member_indexes mc.ReadOnlyList[$member_index int]
-  # 本对象只出现在某个 ($file_index, Some(本对象)) 里；
-  # 由所在的 WorkspaceMemberOrder 断言它是 ws.member_files[$file_index] 这个 fold 的成员顺序
+  # this object only ever appears as some ($file_index, Some(this object));
+  # the WorkspaceMemberOrder that holds it asserts that it is the member order of
+  # the fold ws.member_files[$file_index]
 
 FileWorkspace :=
     DataClass
@@ -121,8 +131,10 @@ ChatStreamChunk :=
   * $stream_name str
   * $chunks list[mc.ChatMessage]
   * Appendix[{
-      聊天区展示 := 按时间归并本会议的 chat 流记录与 terminal_control 流记录
-                    （展示层视图；每条展示项仍归属自己那条流）
+      the chat pane shows := this meeting's chat-stream records merged with its
+                    terminal_control stream records, by time
+                    (a view for the display layer; every item still belongs to
+                     its own stream)
     }]
 
 ScoreStreamChunk :=
@@ -133,10 +145,12 @@ TerminalControlStreamChunk :=
     DataClass
   * $chunks list[TerminalControl]
   * Appendix[{
-      聊天区展示 ∋ 本流记录
-          # 以居中的状态行展示：它不是谁发的言，没有作者，行内写明该记录的 $user_name
-          # 「接管」与「交还」不是记录自带的，而是相邻两条记录之间的关系：
-          #   本条 $user_name 与上一条不同，才谈得上接管或交还
+      the chat pane shows ∋ the records of this stream
+          # shown as a centered status line: nobody said it, there is no author,
+          # and the line names the record's $user_name
+          # a hold and a hand-back are not on the record itself but a relation
+          # between two adjacent records: only when this record's $user_name
+          # differs from the previous one is there a hold or a hand-back
     }]
 
 TerminalControl :=
@@ -146,24 +160,25 @@ TerminalControl :=
   * $user_name mc.Optional[mc.UserName]
   * $start_time mc.datetime
   * Appendix[{
-      # 缺省 $user_name = 从 start_time 起无人控制：人交还了，且没有 agent 接手
-      # 每次接管、每次交还都写入一条记录，没有例外
-      user_name 缺省，或 user_name ∈ participants(user_names(MeetingData))
+      # absent $user_name = nobody holds the terminal from start_time on: the
+      # human handed it back and no agent took over
+      # every hold and every hand-back is written as a record, no exceptions
+      user_name is absent, or user_name ∈ participants(user_names(MeetingData))
     }]
   * Appendix[{
-      terminal_capable := { $human nil } ∪ { a | role(a) == $generator }   # role 查所在会议的 agent_name2role
+      terminal_capable := { $human nil } ∪ { a | role(a) == $generator }   # role looks up the meeting's agent_name2role
     }]
   * Assert[{
-        user_name 缺省，或
-        user_name == $human nil 或
-        user_name 的 agent 的 role == $generator
+        user_name is absent, or
+        user_name == $human nil, or
+        the role of user_name's agent == $generator
     }]
 
 ScreenCapture :=
     DataClass
-  * $screen_data str                       # 纯文本（模型/引用/评分坐标）；逐行右去尾部空格
+  * $screen_data str                       # plain text (the coordinates the model / references / scores use); every row right-trimmed
   * $terminal_text_content list[mc.TerminalTextSegment]
-  * $cursor_x int                          # 格坐标（0 起）；与字符坐标的换算由渲染层按 wcwidth 折算
+  * $cursor_x int                          # cell coordinates (0-based); the renderer converts to character coordinates with wcwidth
   * $cursor_y int
   * $screen_width int
   * $screen_height int
@@ -175,50 +190,51 @@ ScreenCapture :=
   * Assert[{ 0 <= $cursor_y < $screen_height and 0 <= $cursor_x < $screen_width }]
   * Assert[{ ∀ i: seg_attrs($terminal_text_content[i]) != seg_attrs($terminal_text_content[i+1]) }]
   * Appendix[{
-      frame_rows(s)      := s.split('\n')                       # 行 = 右去尾空格后的内容行；无尾随空行
+      frame_rows(s)      := s.split('\n')                       # a row = a content row, right-trimmed; no trailing blank rows
       concat_text_field_of_list(list) := ''.join(seg.text for seg in list)
       row_plain(row)     := row.rstrip(' ')
       plain_of(list)     := '\n'.join(row_plain(r) for r in frame_rows(concat_text_field_of_list(list)))
-      cell_width(row)    := sum(wcwidth(ch) for ch in row)      # CJK 占 2 格
+      cell_width(row)    := sum(wcwidth(ch) for ch in row)      # a CJK character is 2 cells wide
       seg_attrs(seg)     := (seg.fg, seg.bg, frozenset(seg.styles))
     }]
 ```
 
 ---
 
-## 稳定类型 meeting_core.viba
+## Stable types — meeting_core.viba
 
-小的、稳定的类型集中在这一章：时间、身份、版本、文本区间、颜色、引用、聊天与评分记录。
-它们不随研发变化，后面几章的记录都建立在这一章上。
+The small, stable types are gathered in this chapter: time, identity, versions,
+text regions, colors, references, chat and score records. They do not change as
+the work goes on, and the record layers of the later chapters are built on them.
 
 ```bash
 # ---------------------------------------------------------------- #
-# 1. 时间、可选值、只增列表、只读列表
+# 1. Time, optional values, append-only lists, read-only lists
 # ---------------------------------------------------------------- #
 
 datetime :=
     Object
-  * $microsecond int                    # 会议里的时间身份：微秒，构造上唯一
+  * $microsecond int                    # time identity inside a meeting: microseconds, unique by construction
 
-Optional[T] := T | nil                  # 缺席就是 nil；不是 tag，是和的形状
+Optional[T] := T | nil                  # absence is nil; a sum shape, not a tag
 
-AppendOnlyList[T] := list[T]            # 只增：位置即身份。语义是约定，不是结构
-ReadOnlyList[T] := list[T]              # 只读：写一次不再改。同上
+AppendOnlyList[T] := list[T]            # append-only: position is identity. A convention, not a structure
+ReadOnlyList[T] := list[T]              # read-only: written once, never changed. Same as above
 
 Result[T] :=
     Oneof
-  | $ok T                               # 成功：装值
-  | $err str                            # 失败：装一句话
+  | $ok T                               # success: carries a value
+  | $err str                            # failure: carries one sentence
 
 # ---------------------------------------------------------------- #
-# 2. 小的稳定类型
+# 2. Small stable types
 # ---------------------------------------------------------------- #
 
 AgentRole :=
     Oneof
-  | $generator nil                      # 有 tmux 权限
-  | $active_discriminator nil           # 随时评论
-  | $passive_discriminator nil          # 有召才评论
+  | $generator nil                      # holds the terminal
+  | $active_discriminator nil           # comments at will
+  | $passive_discriminator nil          # comments when summoned
 
 UserName :=
     Oneof
@@ -249,7 +265,7 @@ Rgb :=
 
 Color :=
     Oneof
-  | $palette int                        # SGR 调色板下标 0..255
+  | $palette int                        # SGR palette index 0..255
   | $truecolor Rgb
 
 Style :=
@@ -263,12 +279,12 @@ Style :=
 
 TerminalTextSegment :=
     Object
-  * $text str                           # 连续同属性文本；可含 \n（跨行背景色不断开）
-  * $fg Optional[Color]                 # nil = 终端默认前景
-  * $bg Optional[Color]                 # nil = 终端默认背景
-  * $styles set[Style]                  # 空 = 无附加样式；语义是集合，顺序无关
+  * $text str                           # one run of text with the same attributes; may contain \n (a background color does not break across rows)
+  * $fg Optional[Color]                 # nil = the terminal's default foreground
+  * $bg Optional[Color]                 # nil = the terminal's default background
+  * $styles set[Style]                  # empty = no extra styles; a set, so order does not matter
 
-# 取数接口交出来的那一份状态：屏幕一份、文件一份。
+# The two states the data interface hands out: one for the screen, one for a file.
 
 ScreenContent :=
     Object
@@ -283,11 +299,11 @@ ScreenContent :=
 FileState :=
     Object
   * $name str
-  * $meta Optional[DataStatus]           # nil = 可写（默认）
+  * $meta Optional[DataStatus]           # nil = writable (the default)
   * $content str
 
 # ---------------------------------------------------------------- #
-# 3. 引用、聊天与评分记录
+# 3. References, chat and score records
 # ---------------------------------------------------------------- #
 
 FileId :=
@@ -298,13 +314,15 @@ FileId :=
 
 VersionedFile :=
     Object
-  * $file_name AppendOnlyList[Versioned[str]]                    # 名字链：改名也只加一版
-  * $file_meta AppendOnlyList[Versioned[DataStatus]]             # 状态链：链上没有版本 = 缺省，可写
-  * $file_content AppendOnlyList[Versioned[str]]                 # 内容链：只追加，旧版留着
+  * $file_name AppendOnlyList[Versioned[str]]                    # the name chain: a rename is one more version
+  * $file_meta AppendOnlyList[Versioned[DataStatus]]             # the status chain: no version on it = the default, writable
+  * $file_content AppendOnlyList[Versioned[str]]                 # the content chain: append only, older versions stay
   * Appendix[{
-      # 三个部件各一条链，就是 FileDesktop 的 Appendix 说的那三条；
-      # as-of 取链上 (Versioned.time ≤ 引用时刻) 的最后一版；链只增，已有版本永不动。
-      # 状态链空着 = 可写：$deleted / $read_only 是后加的状态，可写是缺省
+      # one chain per part: the three chains FileDesktop's Appendix names;
+      # as-of takes the last version with (Versioned.time ≤ the moment cited);
+      # a chain only grows, an existing version never moves.
+      # an empty status chain = writable: $deleted / $read_only are statuses laid
+      # on later, writable is the default
     }]
 
 ChatMessage :=
@@ -323,23 +341,26 @@ ScoreMessage :=
   * $reference ContentReference
   * Appendix[{
       summon_chained := role($judge_name) != $passive_discriminator
-                        ∨ 该消息的 $reference 可解析到一条召唤它的消息
+                        ∨ this message's $reference resolves to a message that
+                          summoned it
     }]
   * Assert[{ summon_chained }]
 
 ContentReference :=
     Oneof
   * Assert[{
-      与 StreamChunk 一一对应：
+      one kind per StreamChunk:
         screen_stream_chunk            ↔ screen_ref
         chat_stream_chunk              ↔ chat_ref
         score_stream_chunk             ↔ score_ref
         terminal_control_stream_chunk  ↔ terminal_control_ref
     }]
   * Hint[{
-      区间不是一种引用：引用区间的起止记录（及其间的若干条）即可表达一段；
-      要在别处反复指这段，引用那条承载这些引用的消息即可——
-      引用指向的记录本身也可以是一条带引用的消息
+      a region is not a kind of reference: citing the record a stretch of text
+      starts in and the one it ends in (plus the records between them) already
+      describes that stretch; to point at the same stretch again elsewhere, cite
+      the message that carries those references — the record a reference points
+      at may itself be a message that carries references
     }]
   | $screen_ref ScreenReference
   | $chat_ref ChatReference
@@ -353,11 +374,12 @@ VersionedFileReference :=
   * $file_id FileId
   * $version_time datetime
   * Appendix[{
-      # as-of：取该时刻（含）之前的最近一版
-      resolve($ref) := $file_id 的版本链中满足
-          (Versioned.time ≤ $ref.version_time) 的最后一版
-      # name / meta / content 是三条独立版本链，各自按同一规则取；
-      # content 链此刻为空（该时刻之前还没有任何一版）→ 本条无解
+      # as-of: the newest version at or before that moment
+      resolve($ref) := the last version on $file_id's chain that satisfies
+          (Versioned.time ≤ $ref.version_time)
+      # name / meta / content are three independent version chains, each resolved
+      # by the same rule; an empty content chain at that moment (no version yet)
+      # -> this reference has no answer
     }]
 
 VersionedFileContentReference :=
@@ -365,7 +387,7 @@ VersionedFileContentReference :=
   * $versioned_file_ref VersionedFileReference
   * $region TextRegion
   * Appendix[{
-      resolve($ref) := resolve($ref.$versioned_file_ref) 的 content 上取 $region 那一段
+      resolve($ref) := the $region slice of the content of resolve($ref.$versioned_file_ref)
     }]
 
 ScreenReference :=
@@ -374,8 +396,8 @@ ScreenReference :=
   * $stream_name str
   * $region TextRegion
   * Appendix[{
-        resolve($screen_ref) := $stream_name 流中满足
-            (ScreenCapture.captured_at == $screen_ref.capture_time) 的记录
+        resolve($screen_ref) := the record in the $stream_name stream that satisfies
+            (ScreenCapture.captured_at == $screen_ref.capture_time)
     }]
 
 ChatReference :=
@@ -384,9 +406,9 @@ ChatReference :=
   * $user_name UserName
   * $region TextRegion
   * Appendix[{
-        resolve($chat_ref) := 聊天流中满足
+        resolve($chat_ref) := the record in the chat stream that satisfies
             (ChatMessage.time == $chat_ref.msg_time
-             ∧ ChatMessage.user_name == $chat_ref.user_name) 的记录
+             ∧ ChatMessage.user_name == $chat_ref.user_name)
     }]
 
 ScoreReference :=
@@ -394,9 +416,9 @@ ScoreReference :=
   * $judge_time datetime
   * $judge_name UserName
   * Appendix[{
-        resolve($score_ref) := 评分流中满足
+        resolve($score_ref) := the record in the score stream that satisfies
             (ScoreMessage.judge_name == $score_ref.judge_name
-             ∧ ScoreMessage.time == $score_ref.judge_time) 的记录
+             ∧ ScoreMessage.time == $score_ref.judge_time)
     }]
 
 TerminalControlReference :=
@@ -405,19 +427,20 @@ TerminalControlReference :=
   * $user_name Optional[UserName]
   * $region TextRegion
   * Appendix[{
-        resolve($ctrl_ref) := 控制流中满足
+        resolve($ctrl_ref) := the record in the control stream that satisfies
             (TerminalControl.start_time == $ctrl_ref.start_time
-             ∧ TerminalControl.user_name == $ctrl_ref.user_name) 的记录
+             ∧ TerminalControl.user_name == $ctrl_ref.user_name)
     }]
   * Hint[{
-      指向的是一次控制区间（起点由 TerminalControl.start_time 界定，
-      终点由下一次控制记录的 start_time 界定）；
-      区间内没有可切分的原文，所以 region 恒为整行
+      it points at one control interval (it starts at TerminalControl.start_time
+      and ends at the start_time of the next control record); there is no text to
+      slice inside that interval, so region always covers the whole row
     }]
 
 # ---------------------------------------------------------------- #
-# 说明用的词：它们也是类型，只挂一段散文，判定时是单位元（Object = nil）。
-# 定义出来，带注释的那些定义才能拿来判定（is_compliant）。
+# Assert / Appendix / Hint carry prose and nothing else: they are types whose
+# shape is the unit (Object = nil). Defining them is what lets a definition that
+# carries them be judged (is_compliant).
 # ---------------------------------------------------------------- #
 
 Assert[Cond] := Object
@@ -427,61 +450,65 @@ Appendix[Note] := Object
 Hint[Note] := Object
 
 # ---------------------------------------------------------------- #
-# 完备性自检（在 viba 子模块里跑）：
+# Completeness check (run inside the viba submodule):
 #
 #   from viba.is_complete import is_complete
 #   from pathlib import Path
 #   print(is_complete(Path("meeting_core.viba").read_text(),
 #                     viba_paths=["."]))                       # True
 #
-# 说明用的词都定义成单位元（上面那三行），代码块永远走不到：
-# 完备性与判定都不需要 terminators。
+# The three prose words are units (the three lines above), so the walk never
+# reaches a code block: neither completeness nor judgment needs terminators.
 # ---------------------------------------------------------------- #
 
 # ---------------------------------------------------------------- #
-# 需要准备 meeting_core_serialize 函数，其必须满足如下约束：
-# rule_reflect * meeting_core_serialize === meeting_core_reflect
-# 也就是说meeting_core_serialize把meeting_core对象数据序列化成viba代码 result，
-# 且result必须满足 is_compliant(result, 对应对象定义)，最后务必在result上使用
-# rule_reflect反射的效果和直接在meeting_core对象数据上使用meeting_core_reflect的
-# 反射效果一样。
+# meeting_core_serialize has to satisfy:
+#
+#   rule_reflect ∘ meeting_core_serialize ≡ meeting_core_reflect
+#
+# that is, meeting_core_serialize writes meeting_core object data out as viba code
+# (result); the result must satisfy is_compliant(result, the object's definition);
+# and reflecting the result with rule_reflect must read exactly what reflecting
+# the object data with meeting_core_reflect reads.
 # ---------------------------------------------------------------- #
 
 ```
 
-这一章是完备的：拿 viba 自带的 `is_complete` 验，说明用的词都定义成了单位元，
-别的名字全都解析得到，terminators 一个都不用。
+This chapter is complete: run viba's own `is_complete` on it and the three prose
+words are units, every other name resolves, and not one terminator is needed.
 
 ---
 
-## 取数据接口 meeting_sdk.viba
+## The data interface — meeting_sdk.viba
 
-从 meeting 里取数的只读接口：只有签名，没有实现，也没有写入。
-取数函数都带泛型参数 Ctx，并吃一个 $ctx Ctx —— 具体是什么由实现方绑
-（会议句柄、连接、快照都行），接口本身不认识它；签名里只有稳定类型。
-末尾那组 make_* 不吃 ctx：它们只把引用这类值造出来，不碰记录。
+Read-only interfaces that take data out of a meeting: signatures only, no
+implementation, no writes. Every getter carries the generic parameter Ctx and
+takes a $ctx Ctx — what that is is bound by the implementation (a meeting
+handle, a connection, a snapshot), the interface itself does not know; the
+signatures only mention stable types. The make_* group at the end takes no ctx:
+it builds reference values and never touches a record.
 
 ```bash
 import meeting_core as mc
 
 # ---------------------------------------------------------------- #
-# 时间：时间就是身份
+# Time: time is identity
 # ---------------------------------------------------------------- #
 
 chunk_times[Ctx] :=
-    mc.Result[list[mc.datetime]]               # 这段时间里每条 chunk 的时刻
+    mc.Result[list[mc.datetime]]               # the moment of every chunk in this span
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
 
 streams_between[Ctx] :=
-    mc.Result[list[str]]                       # 这段时间里出现过的流名
+    mc.Result[list[str]]                       # the stream names seen in this span
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
 
 # ---------------------------------------------------------------- #
-# 聊天与评分
+# Chat and scores
 # ---------------------------------------------------------------- #
 
 chat_messages[Ctx] :=
@@ -497,7 +524,7 @@ score_messages[Ctx] :=
   <- $end mc.datetime
 
 chat_message_at[Ctx] :=
-    mc.Result[mc.ChatMessage]                  # 一个人在一个时刻只有一条
+    mc.Result[mc.ChatMessage]                  # one person has one message at a moment
   <- $ctx Ctx
   <- $time mc.datetime
   <- $user mc.UserName
@@ -508,7 +535,7 @@ resolve_chat_reference[Ctx] :=
   <- $ref mc.ChatReference
 
 resolve_chat_content_reference[Ctx] :=
-    mc.Result[str]                             # 引用那一段的原文
+    mc.Result[str]                             # the text the reference points at
   <- $ctx Ctx
   <- $ref mc.ChatReference
 
@@ -518,32 +545,33 @@ resolve_score_reference[Ctx] :=
   <- $ref mc.ScoreReference
 
 chat_message_references[Ctx] :=
-    mc.Result[list[mc.ContentReference]]       # 这条消息带的引用，按出现顺序
+    mc.Result[list[mc.ContentReference]]       # the references this message carries, in order
   <- $ctx Ctx
   <- $time mc.datetime
   <- $user mc.UserName
 
 score_message_reference[Ctx] :=
-    mc.Result[mc.ContentReference]             # 这条评分带的引用
+    mc.Result[mc.ContentReference]             # the reference this score carries
   <- $ctx Ctx
   <- $time mc.datetime
   <- $judge mc.UserName
 
 first_chunk_time[Ctx] :=
-    mc.Result[mc.datetime]                     # 会议里第一条 chunk 的时刻
+    mc.Result[mc.datetime]                     # the moment of the meeting's first chunk
   <- $ctx Ctx
 
 last_chunk_time[Ctx] :=
-    mc.Result[mc.datetime]                     # 最后一条
+    mc.Result[mc.datetime]                     # the last one
   <- $ctx Ctx
 
 # ---------------------------------------------------------------- #
-# 屏幕：按时间找、按引用找，都给那一屏的内容，不给抓屏记录本身
+# Screen: by time or by reference, either way the content of that screen,
+# not the capture record itself
 # ---------------------------------------------------------------- #
-# 断言与说明留在记录层，这里只把那一屏的值交出来。
+# The assertions and notes stay in the record layer; this hands out the value.
 
 screen_at[Ctx] :=
-    mc.Result[mc.ScreenContent]                # 这一时刻那一屏的内容
+    mc.Result[mc.ScreenContent]                # the content of that screen at that moment
   <- $ctx Ctx
   <- $time mc.datetime
 
@@ -553,7 +581,7 @@ resolve_screen_reference[Ctx] :=
   <- $ref mc.ScreenReference
 
 # ---------------------------------------------------------------- #
-# 人：参会的人，和某一刻谁拿着终端
+# People: who is in the meeting, and who holds the terminal at a moment
 # ---------------------------------------------------------------- #
 
 participants[Ctx] :=
@@ -565,24 +593,25 @@ roles[Ctx] :=
   <- $ctx Ctx
 
 owner_at[Ctx] :=
-    mc.Result[(mc.UserName | nil)]             # nil = 此刻无人控制
+    mc.Result[(mc.UserName | nil)]             # nil = nobody holds the terminal at that moment
   <- $ctx Ctx
   <- $time mc.datetime
 
 control_owner_of[Ctx] :=
-    mc.Result[(mc.UserName | nil)]             # nil = 那一次交还之后没人接手
+    mc.Result[(mc.UserName | nil)]             # nil = nobody took over after that hand-back
   <- $ctx Ctx
   <- $ref mc.TerminalControlReference
 
 # ---------------------------------------------------------------- #
-# 文件层
+# The file layer
 # ---------------------------------------------------------------- #
-# VersionedFile 是整份记录：名字 / 状态 / 内容各自的历史都在里面。
-# 问「某一时刻」或「最新」给的是那一份状态，不是整份记录。
+# VersionedFile is the whole record: the history of name / status / content each
+# lives in it. Asking for "at a moment" or "the latest" gives that state, not the
+# whole record.
 
-# 按路径取 FileId：$path 要么 /workspace_name/entry_name，
-# 要么 /workspace_name/fold_name/entry_name。每层名字唯一（见 FileDesktop 的 Assert），
-# 所以路径定得到一条。
+# FileId by path: $path is either /workspace_name/entry_name or
+# /workspace_name/fold_name/entry_name. Names are unique per level (see
+# FileDesktop's Assert), so a path picks exactly one file.
 
 file_id_by_path[Ctx] :=
     mc.Result[mc.FileId]
@@ -600,43 +629,46 @@ files_at[Ctx] :=
   <- $time mc.datetime
 
 latest_file[Ctx] :=
-    mc.Result[mc.FileState]                    # 最新的那一份状态
+    mc.Result[mc.FileState]                    # the latest state
   <- $ctx Ctx
   <- $file mc.FileId
 
 resolve_versioned_file_reference[Ctx] :=
-    mc.Result[mc.FileState]                    # 引用那一刻的文件状态
+    mc.Result[mc.FileState]                    # the file's state at the moment cited
   <- $ctx Ctx
   <- $ref mc.VersionedFileReference
 
 resolve_versioned_file_content_reference[Ctx] :=
-    mc.Result[str]                             # 引用那一段的原文
+    mc.Result[str]                             # the text the reference points at
   <- $ctx Ctx
   <- $ref mc.VersionedFileContentReference
 
 open_file[Ctx] :=
-    mc.Result[mc.FileId]                       # 路径上有就打开（只读/已删的也照开），没有就新建
+    mc.Result[mc.FileId]                       # opens it if the path has one (even read-only or deleted), creates it if not
   <- $ctx Ctx
-  <- $file_path str                            # /workspace/entry 或 /workspace/fold/entry
+  <- $file_path str                            # /workspace/entry or /workspace/fold/entry
   <- $time mc.datetime
-  <- $user_name mc.UserName                    # 新建那三版都记这个时刻与作者
-  # 不能新建 -> $err：路径形状不对 / workspace 或 fold 不存在 / 那一层只读 /
-  # 那一层已有同名成员（层内名字唯一）；新建的文件：name = 路径末段、meta = nil（可写）、
-  # content = ""，各记一版（状态链空着 = 可写）；同一路径来回都是同一个 FileId；
-  # 成员多了一个，$reorder_indexes 也要记一版新的排列（快照必须是当前成员的排列）
+  <- $user_name mc.UserName                    # the versions a new file gets all carry this moment and author
+  # cannot create -> $err: bad path shape / no such workspace or fold / that
+  # level is read-only / that level already has a member with this name (names
+  # are unique per level); a new file gets one version each: name = last path
+  # segment, meta = nil (writable), content = "" (an empty status chain means
+  # writable); the same path always gives the same FileId; one more member means
+  # $reorder_indexes gets a new version too (the snapshot must be a permutation
+  # of the current members)
 
 write_text[Ctx] :=
-    mc.Result[nil]                             # 文件只读或已删 -> $err
+    mc.Result[nil]                             # a read-only or deleted file -> $err
   <- $ctx Ctx
   <- $file_id mc.FileId
-  <- $text_content str                         # 追加：内容链加一版（旧全文 + 这段），旧版原样留着
+  <- $text_content str                         # append: one more version on the content chain (the old full text + this), older versions stay untouched
   <- $time mc.datetime
   <- $user_name mc.UserName
 
 read_text[Ctx] := latest_file[Ctx]
 
 # ---------------------------------------------------------------- #
-# 构造引用这类值：不吃 ctx（不碰记录），名字一律 make_*
+# Building reference values: no ctx (never touches a record), always named make_*
 # ---------------------------------------------------------------- #
 
 make_text_region :=
@@ -664,7 +696,7 @@ make_score_reference :=
 make_terminal_control_reference :=
     mc.TerminalControlReference
   <- $start_time mc.datetime
-  <- $user_name mc.UserName | nil          # 空 = 那次交还之后没人接手
+  <- $user_name mc.UserName | nil          # absent = nobody took over after that hand-back
   <- $region mc.TextRegion
 
 make_versioned_file_reference :=
@@ -681,22 +713,23 @@ make_versioned_file_content_reference :=
 
 ---
 
-## Harness 内部（不进入 MeetingData）
+## Inside the Harness (never in MeetingData)
 
 
 
 ```bash
-# 这一节的概念只约束 RemoteBuddy Harness 自身的实现，
-# 它们记录的信息一律不写入存储系统，也不属于任何一条流。
+# The concepts in this section only constrain RemoteBuddy's own Harness; what
+# they record is never written to storage and belongs to no stream.
 Keystroke :=
     DataClass
   * $data KeystrokeStr
   * $user_name mc.UserName
   * $stroke_time mc.datetime
   * Appendix[{
-      owner_at(t) := 见 MeetingData 的同名 Appendix
-      $user_name 必须等于 owner_at($stroke_time)：
-      只有当时的控制者能产生按键；无人控制时不产生按键
+      owner_at(t) := see the Appendix of the same name on MeetingData
+      $user_name must equal owner_at($stroke_time):
+      only whoever holds the terminal at that moment produces a keystroke, and
+      nobody produces one while nobody holds it
     }]
 
 KeystrokeStr :=
@@ -708,7 +741,7 @@ KeystrokeStr :=
 
 ---
 
-## 通用 helper
+## Shared helpers
 
 
 
@@ -727,7 +760,7 @@ Tree[T] :=
 
 ---
 
-## 对象层（去中心化协作 / 血缘 / 镜像 / 实例）
+## The object layer (decentralized collaboration / lineage / images / instances)
 
 
 
@@ -780,20 +813,20 @@ MeetingWorkspace         := Workspace[MeetingData]
 AgentTreeNode :=
     Object
   * $uid UUID[str]
-  * $data LazyEvaluated[AgentContextData]    # 从 agent workspace 读取该血缘点记录的句柄
+  * $data LazyEvaluated[AgentContextData]    # a handle to this lineage point's record, read from the agent workspace
 
 AgentTree := Tree[AgentTreeNode]
 
 MeetingTreeNode :=
     Object
   * $uid UUID[str]
-  * $data LazyEvaluated[MeetingContextData]  # 从 meeting workspace 读取该血缘点记录的句柄
+  * $data LazyEvaluated[MeetingContextData]  # a handle to this lineage point's record, read from the meeting workspace
   * $agent_name2agent_node dict[str, AgentTreeNode]
   * Assert[{ keys(agent_name2agent_node) are user names in MeetingContextData }]
 
 MeetingTree := Tree[MeetingTreeNode]
 
-# ---- images（不可变血统快照；tree_node = None ⇔ 尚未提交过）----
+# ---- images (immutable lineage snapshots; tree_node = None ⇔ never committed) ----
 AgentPrototypeImage :=
     Object
   * $service_provider AgentServiceProvider
@@ -814,7 +847,7 @@ MeetingPrototypeImage :=
              $configuration.configuration_uid, and $meeting_tree_node.uid }]
   * Assert[{ keys($agent_name2agent_prototype_image) are user names in $meeting_tree_node.data }]
 
-# ---- instances（活：必有 image；活尾巴续写在 workspace）----
+# ---- instances (alive: always has an image; the live tail is appended in the workspace) ----
 AgentInstance :=
     Object
   * $agent_prototype_image AgentPrototypeImage
@@ -833,7 +866,7 @@ MeetingInstance :=
 
 ---
 
-## 关键操作
+## Key operations
 
 
 
@@ -877,11 +910,13 @@ SpawnMeeting :=
     <- $workspace MeetingWorkspace
     <- $agent_name2new_agent_workspace dict[str, AgentWorkspace]
     <- Hint[{
-        1. 以 $image.meeting_tree_node.data 为基底恢复会议记录；
-        2. 对 $image.agent_name2agent_prototype_image 中每个 agent 调 SpawnAgent，
-           生成 $agent_name2agent_instance；
-        3. 产出可运行的 MeetingInstance。
-        4. image里的Agent的 name 只有出现在$agent_name2new_agent_workspace中，才能复苏。
+        1. restore the meeting record on top of $image.meeting_tree_node.data;
+        2. call SpawnAgent for every agent in
+           $image.agent_name2agent_prototype_image to build
+           $agent_name2agent_instance;
+        3. hand out a runnable MeetingInstance.
+        4. an agent in the image comes back only if its name appears in
+           $agent_name2new_agent_workspace.
     }]
     <- Assert[{ keys($agent_name2new_agent_workspace)
                 ⊆ keys($image.agent_name2agent_prototype_image) }]

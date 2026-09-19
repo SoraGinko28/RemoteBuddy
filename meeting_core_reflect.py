@@ -1,8 +1,8 @@
-"""meeting_core_reflect — 把 MEETING_ADT.md 里的稳定类型当图，去 Python 记录里按图索骥。
+"""meeting_core_reflect — read the stable types of MEETING_ADT.md as a map over a Python record.
 
 这是 viba-reflect.md 的访问侧，落在稳定 ADT 上：
 
-- **设计**（地图）：MEETING_ADT.md 里「稳定类型」那一章（模块名 meeting_core）的代码块，由描述符侧
+- **设计**（地图）：the "Stable types" chapter of MEETING_ADT.md (module name meeting_core)，由描述符侧
   （viba.viba_type_descriptor）编译成描述符池。地图只跟文档有关，跟实现无关。
 - **材料**（Data）：meeting_adt.py 那份 Python 记录——dataclass 实例、list / tuple /
   set / dict、以及标量。协议不规定 Data 长什么样，这一层把它绑到 Python 对象上。
@@ -97,7 +97,7 @@ from viba.viba_type_descriptor import (
 
 DESIGN_FILE_NAME = "MEETING_ADT.md"
 DESIGN_MODULE_NAME = "meeting_core"
-DESIGN_CHAPTER = "稳定类型"
+DESIGN_CHAPTER = "Stable types"
 DESIGN_PATH = Path(__file__).with_name(DESIGN_FILE_NAME)
 
 CONTAINERS = ("list", "set", "dict")
@@ -109,7 +109,7 @@ _NIL = object()  # 显式的 nil：分支命中了，里面装的就是 nil
 
 
 # ----------------------------------------------------------------------
-# 设计：从 MEETING_ADT.md 的「稳定类型」章编译出描述符池
+# Design: compile the descriptor pool out of the "Stable types" chapter
 # ----------------------------------------------------------------------
 
 
@@ -119,11 +119,11 @@ def _normalize(source: str) -> str:
 
 @lru_cache(maxsize=1)
 def _design_source() -> str:
-    """设计原文：MEETING_ADT.md 里「稳定类型」章的代码块。"""
+    """The design source: the code block of the "Stable types" chapter."""
     text = _normalize(DESIGN_PATH.read_text(encoding="utf-8"))
     heading = re.search(r"(?m)^##\s*" + re.escape(DESIGN_CHAPTER), text)
     if heading is None:
-        raise VibaReflectError(f"{DESIGN_FILE_NAME} 里找不到「{DESIGN_CHAPTER}」这一章")
+        raise VibaReflectError(f"{DESIGN_FILE_NAME} has no chapter named {DESIGN_CHAPTER!r}")
     fence = text.index("```", heading.end())
     body_start = text.index("\n", fence) + 1
     body_end = text.index("\n```", body_start)
@@ -142,10 +142,10 @@ def _design_pool() -> VibaPool:
     pool = empty_pool()
     parsed = parse_viba_file(pool, _design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
     if isinstance(parsed, Err):
-        raise VibaReflectError(f"稳定类型章编译不了：{parsed.message}")
+        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not compile: {parsed.message}")
     added = pool_add_file(pool, parsed.value)
     if isinstance(added, Err):
-        raise VibaReflectError(f"稳定类型章进不了池子：{added.message}")
+        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not go into the pool: {added.message}")
     return added.value
 
 

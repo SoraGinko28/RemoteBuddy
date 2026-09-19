@@ -1,6 +1,6 @@
 """meeting_core_serialize — 把 meeting_core 的对象数据写成 viba 代码（witness）。
 
-约束（MEETING_ADT.md 稳定类型章末尾那条）：
+The contract (the note at the end of the "Stable types" chapter):
 
     rule_reflect ∘ meeting_core_serialize ≡ meeting_core_reflect
 
@@ -10,9 +10,10 @@
 2. 在 result 上用 viba.rule.reflect 读，和把同一份数据交给 meeting_core_reflect 读，
    两边读出来一模一样。
 
-写法是「地图和值一起走」：形状照描述符（设计），值取数据。说明用的词（Assert /
-Appendix / Hint）不是数据的形状，写 nil——它们定义成单位元，所以带注释的定义照样
-判得过。
+The map and the values are walked together: the shape comes from the descriptor
+(the design), the values from the data. The prose words (Assert / Appendix / Hint)
+are not part of the data shape and are written nil — they are units, so a definition
+that carries them is still judged fine.
 
 三条已知缺口（都写不出来，给 Err——不硬凑一个错的写法）：
 
@@ -123,11 +124,11 @@ def _emit_sum(access, node):
 
 
 def _emit_product(access, node):
-    """积：带标签的写字段，说明用的词原样抄。"""
+    """A product: tagged members are written out, the prose words are units."""
     elements = [viba_ast.TypeRef("Object")]
     for tag, step, _ in access._member_steps(node):
         if tag is None:
-            elements.append(viba_ast.Nil())     # 说明用的词：单位元
+            elements.append(viba_ast.Nil())     # a prose word: the unit
             continue
         child = access.get(node, step)
         if isinstance(child, Ok) and child.value is not None:
@@ -208,10 +209,10 @@ def _payload(access, node):
 
 
 def _annotation(member):
-    """说明用的词：连散文一起照抄。"""
+    """A prose word, copied together with its prose."""
     if member.kind == TYPE_APP and member.payload.constructor_name in ANNOTATIONS:
         args = member.payload.args
         if len(args) == 1 and args[0].kind == CODE_BLOCK:
             return viba_ast.TypeApp(member.payload.constructor_name,
                                     [viba_ast.CodeBlock(args[0].payload.code)])
-    raise SerializeGap(f"这个说明用的词写不出来：{member.kind}")
+    raise SerializeGap(f"this prose word cannot be written: {member.kind}")

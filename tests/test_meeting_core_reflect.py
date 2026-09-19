@@ -1,6 +1,6 @@
 """Tests for meeting_core_reflect: the access side of viba-reflect.md on MEETING_ADT's stable types.
 
-设计 = MEETING_ADT.md 的「稳定类型」章；数据 = meeting_adt.py 那份 Python 记录。
+Design = the "Stable types" chapter of MEETING_ADT.md; data = the Python record in meeting_adt.py.
 起点不核版本（viba-reflect.md：root 只把描述符和数据配成对），这一层也不提供核对。
 """
 
@@ -53,14 +53,14 @@ def _versioned_file() -> adt.VersionedFile:
 
 
 # =====================================================================
-# 设计：从 MEETING_ADT.md 的「稳定类型」章编译出来
+# Design: compiled out of the "Stable types" chapter
 # =====================================================================
 
 class TestDesign:
     def test_source_is_the_stable_chapter(self) -> None:
         source = reflect._design_source()
         assert "FileId :=" in source and "VersionedFile :=" in source
-        # 记录层那一章不在这份设计里
+        # the record layer chapter is not part of this design
         assert "MeetingData :=" not in source
         assert "FileDesktop :=" not in source
 
@@ -74,8 +74,8 @@ class TestDesign:
         assert len(names) == 30
         assert "FileId" in names and "ContentReference" in names and "Result" in names
         assert "ScreenContent" in names and "FileState" in names
-        assert "FileKvStore" not in names                 # 记录层的类型不在稳定类型章里
-        assert {"Assert", "Appendix", "Hint"} <= set(names)   # 说明用的词也是定义（单位元）
+        assert "FileKvStore" not in names                 # the record layer types are not in the stable chapter
+        assert {"Assert", "Appendix", "Hint"} <= set(names)   # the prose words are definitions too (units)
 
     def test_definition_by_short_and_full_name(self) -> None:
         assert _definition("FileId").full_name == "meeting_core.FileId"
@@ -299,7 +299,7 @@ class TestConvenience:
 
 
 class TestResult:
-    """Result 也在稳定类型里：$ok / $err 两个分支按类名对位。"""
+    """Result is a stable type too: $ok / $err match by class name."""
 
     def test_ok_and_err_branches_match(self) -> None:
         from viba.type import Err, Ok
