@@ -1,12 +1,17 @@
-"""meeting_sdk -- the Python implementation of meeting_sdk.viba: the read-only
-interface that takes data out of a meeting.
+"""meeting_local_sdk -- the local binding of the meeting_sdk.viba contract.
+
+Ctx is a Python object in this process: a meeting_adt.MeetingData record. Every
+getter evaluates in place; nothing goes over a wire. For the remote binding
+(Ctx is a meeting uid, every api is backed by a REST URL) see meeting_remote_sdk.
+
+The read-only interface that takes data out of a meeting.
 
 The design (signatures) is the data-interface chapter of MEETING_ADT.md
 (module name meeting_sdk): every function carries the generic parameter ``Ctx``,
 takes a ``$ctx``, and returns a Result; the signature mentions only stable
 types. This layer is its implementation.
 
-**The public interface is exactly the 34 in meeting_sdk.viba**: names fall in
+**The public interface is exactly the 35 in meeting_sdk.viba**: names fall in
 snake_case, parameters and returns follow the design, and nothing else is
 exported -- the types in the signatures (``mc.ChatReference``,
 ``mc.AgentRole``...) belong to meeting_core and are not taken from here.
@@ -53,6 +58,8 @@ _REFERENCE_TYPES = (adt.ScreenReference, adt.ChatReference, adt.ScoreReference,
                     adt.TerminalControlReference, adt.VersionedFileReference,
                     adt.VersionedFileContentReference)
 
+_LAST_NOW: Optional[_dt.datetime] = None  # the last moment now() handed out
+
 Ctx = adt.MeetingData  # this version's binding: Ctx is a meeting record (the
 # interface says Ctx is bound by the implementation)
 
@@ -60,6 +67,16 @@ Ctx = adt.MeetingData  # this version's binding: Ctx is a meeting record (the
 # ----------------------------------------------------------------------
 # Getters: time and streams
 # ----------------------------------------------------------------------
+
+
+def now(ctx: Ctx) -> _Result:
+    """The moment this process is at; never hands out a microsecond twice."""
+    global _LAST_NOW
+    moment = _dt.datetime.now(_dt.timezone.utc)
+    if _LAST_NOW is not None and moment <= _LAST_NOW:
+        moment = _LAST_NOW + _dt.timedelta(microseconds=1)
+    _LAST_NOW = moment
+    return _Ok(moment)
 
 
 def chunk_times(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
@@ -539,6 +556,7 @@ def _mount_new_file(ctx: Ctx, file_id: "adt.FileId", time: _dt.datetime,
 
 
 __all__ = [
+    "now",
     "chunk_times",
     "streams_between",
     "chat_messages",

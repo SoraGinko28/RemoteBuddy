@@ -1,8 +1,8 @@
-"""Test cases for meeting_sdk: every test_case_* only takes (ctx, sdk, reflect).
+"""Test cases for meeting_local_sdk: every test_case_* only takes (ctx, sdk, reflect).
 
 The style is practice for future metric getters:
 
-    import meeting_sdk
+    import meeting_local_sdk
     import meeting_core_reflect
 
     def prepare_meeting_data_as_ctx():
@@ -16,9 +16,9 @@ Three rules:
 1. **The whole file touches the record layer only in
    prepare_meeting_data_as_ctx** (meeting_adt); values like references are
    always built with the ``make_*`` constructors on ``sdk`` (they are the
-   interface in meeting_sdk.viba).
+   interface in meeting_local_sdk.viba).
 2. **Test cases must not know the details of meeting data** — data can only be
-   fetched with ``sdk`` (meeting_sdk), and whatever comes back can only be read
+   fetched with ``sdk`` (meeting_local_sdk), and whatever comes back can only be read
    through ``reflect`` (meeting_core_reflect) per the design.
 3. **Results are read through the design's interface**: Result is a type in
    meeting_core, the SDK does not expose its own Ok / Err; always go through
@@ -35,7 +35,7 @@ import datetime as _dt
 import pytest
 
 import meeting_core_reflect
-import meeting_sdk
+import meeting_local_sdk
 import meeting_adt  # only prepare_meeting_data_as_ctx uses this
 from viba.type import Ok  # noqa: E402  (Ok / Err in the protocol)
 from viba.viba_type_descriptor import pool_find_definition  # noqa: E402
@@ -52,28 +52,28 @@ _BOB = "bob"
 def prepare_meeting_data_as_ctx():
     """A meeting record, handed to the cases as ctx."""
     adt = meeting_adt
-    text_region = meeting_sdk.make_text_region
+    text_region = meeting_local_sdk.make_text_region
 
     file_id = adt.FileId(file_id="f1", entry_name="a.py")
-    file_ref = meeting_sdk.make_versioned_file_reference(file_id, _T0)
+    file_ref = meeting_local_sdk.make_versioned_file_reference(file_id, _T0)
     # one that is too early: that version of a.py only exists from _T0
-    stale_file_ref = meeting_sdk.make_versioned_file_reference(
+    stale_file_ref = meeting_local_sdk.make_versioned_file_reference(
         file_id, _T0 - _dt.timedelta(seconds=1))
-    controls = [meeting_sdk.make_terminal_control_reference(_T0, _ALICE, text_region(0, 3)),
-                meeting_sdk.make_terminal_control_reference(_T2, None, text_region(0, 3))]
+    controls = [meeting_local_sdk.make_terminal_control_reference(_T0, _ALICE, text_region(0, 3)),
+                meeting_local_sdk.make_terminal_control_reference(_T2, None, text_region(0, 3))]
 
     # alice's first message carries all six kinds of reference; later cases
     # pull them out of the data
     first_message = adt.ChatMessage(user_name=_ALICE, time=_T1, message=[
         adt.RawMessage("hi"),
-        meeting_sdk.make_screen_reference(_T1, "screen", text_region(0, 2)),
-        meeting_sdk.make_chat_reference(_T2, _BOB, text_region(0, 2)),
-        meeting_sdk.make_score_reference(_T2, _BOB),
+        meeting_local_sdk.make_screen_reference(_T1, "screen", text_region(0, 2)),
+        meeting_local_sdk.make_chat_reference(_T2, _BOB, text_region(0, 2)),
+        meeting_local_sdk.make_score_reference(_T2, _BOB),
         controls[0],
         controls[1],
         file_ref,
         stale_file_ref,
-        meeting_sdk.make_versioned_file_content_reference(file_ref, text_region(0, 5)),
+        meeting_local_sdk.make_versioned_file_content_reference(file_ref, text_region(0, 5)),
     ])
 
     controls_chunk = adt.TerminalControlStreamChunk(chunks=[
@@ -92,7 +92,7 @@ def prepare_meeting_data_as_ctx():
     scores = adt.ScoreStreamChunk(chunks=[
         adt.ScoreMessage(tag="correctness", score=1.0, comment="good", judge_name=_BOB,
                          time=_T2,
-                         reference=meeting_sdk.make_chat_reference(
+                         reference=meeting_local_sdk.make_chat_reference(
                              _T1, _ALICE, text_region(0, 2))),
     ])
 
@@ -220,7 +220,7 @@ def _message_of(messages, user_name, reflect):
 
 @pytest.fixture(name="sdk")
 def _sdk_module():
-    return meeting_sdk
+    return meeting_local_sdk
 
 
 @pytest.fixture(name="reflect")
@@ -236,6 +236,13 @@ def ctx():
 # =====================================================================
 # Time and streams
 # =====================================================================
+
+def test_case_now_is_a_moment_and_never_repeats(ctx, sdk, reflect):
+    first = _node(_ok_data(sdk.now(ctx), reflect), "datetime", reflect)
+    second = _node(_ok_data(sdk.now(ctx), reflect), "datetime", reflect)
+    assert first.get_microsecond().value >= 0
+    assert second.data > first.data
+
 
 def test_case_first_and_last_chunk_time_bound_the_meeting(ctx, sdk, reflect):
     first = _node(_ok_data(sdk.first_chunk_time(ctx), reflect), "datetime", reflect)
