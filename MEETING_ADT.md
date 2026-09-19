@@ -462,14 +462,14 @@ Hint[Note] := Object
 # ---------------------------------------------------------------- #
 
 # ---------------------------------------------------------------- #
-# meeting_core_serialize has to satisfy:
+# Writing the data out (viba.serialize) has to satisfy:
 #
-#   rule_reflect ∘ meeting_core_serialize ≡ meeting_core_reflect
+#   rule_reflect ∘ serialize ≡ meeting_core_reflect
 #
-# that is, meeting_core_serialize writes meeting_core object data out as viba code
-# (result); the result must satisfy is_compliant(result, the object's definition);
-# and reflecting the result with rule_reflect must read exactly what reflecting
-# the object data with meeting_core_reflect reads.
+# that is, the writer writes meeting_core object data out as viba code (result);
+# the result must satisfy is_compliant(result, the object's definition); and
+# reflecting the result with rule_reflect must read exactly what reflecting the
+# object data with meeting_core_reflect reads.
 # ---------------------------------------------------------------- #
 
 ```
