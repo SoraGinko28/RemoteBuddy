@@ -10,7 +10,9 @@ All in this one process, no fixtures from the test suite:
 2. start the harness web server on a free local port over that journal;
 3. point meeting_remote_sdk at it and drive the apis of the data-interface
    chapter -- every answer is a viba script (``entry := ...``);
-4. read those scripts with viba.rule.reflect and check what came out.
+4. read those scripts with viba.rule.reflect -- the landing's sugar:
+   ``get_ok()`` / ``get_microsecond()`` / ``node["agent"]`` / ``has_err()`` /
+   ``node.value`` -- and check what came out.
 
 Step 4 is the point: this program never calls meeting_core_reflect. A remote
 consumer only ever sees viba code, so the rule layer is all it needs.
@@ -65,7 +67,7 @@ def write_journal(root: Path) -> dt.datetime:
 
 
 # ----------------------------------------------------------------------
-# 2. reading a script with viba.rule.reflect
+# 2. reading a script with the rule layer's pythonic landing
 # ----------------------------------------------------------------------
 
 
@@ -80,29 +82,9 @@ def answer(api: str, *args):
     return given.value, node
 
 
-def read(node, *path):
-    """Follow a path; Err and nil both come back as they are."""
-    given = rule_reflect.viba_resolve(node, list(path))
-    if isinstance(given, Err):
-        return given
-    return given.value
-
-
-def leaf(node, *path):
-    """Follow a path to a leaf value, or None when there is none."""
-    found = read(node, *path)
-    if isinstance(found, Err) or found is None:
-        return None
-    got = rule_reflect.viba_get_by_path(node, list(path))
-    return None if isinstance(got, Err) else (None if got.value is None else got.value.value)
-
-
-def branch(node, tag: str) -> str:
-    """Which tagged branch this node took: $ok / $err / $generator ..."""
-    for name in ("ok", "err", "generator", "active_discriminator", "passive_discriminator"):
-        if rule_reflect.access(node._access.definition).has(node, rule_reflect.by_tag(name)).value:
-            return name
-    return "?"
+def scalar(node) -> object:
+    """The python value under a node (``node.value`` is the leaf)."""
+    return node.value.value
 
 
 # ----------------------------------------------------------------------
@@ -139,37 +121,33 @@ def run_checks(report: Report, capture_time: dt.datetime) -> None:
     print(f"  meeting: {MEETING_ID} at {remote.server_url()}")
 
     now = dt.datetime.now(dt.timezone.utc)
-    broad = answer("chunk_times", now - dt.timedelta(minutes=5), now + dt.timedelta(minutes=5))
-    moments = read(broad[1], rule_reflect.by_tag("ok"))
-    report.that("chunk_times", len(moments) == 2, f"{len(moments)} moments in the range")
+    script, node = answer("chunk_times", now - dt.timedelta(minutes=5),
+                          now + dt.timedelta(minutes=5))
+    report.that("chunk_times", len(node.get_ok()) == 2,
+                f"{len(node.get_ok())} moments in the range")
 
     _script, node = answer("participants")
-    names = [leaf(node, rule_reflect.by_tag("ok"), rule_reflect.at_index(i),
-                  rule_reflect.by_tag("agent_name"))
-             for i in range(len(read(node, rule_reflect.by_tag("ok"))))]
+    names = [scalar(name.get_agent_name()) for name in node.get_ok()]
     report.that("participants", names == ["$human", "agent"], f"{names}")
 
-    _script, node = answer("first_chunk_time")
-    first = leaf(node, rule_reflect.by_tag("ok"), rule_reflect.by_tag("microsecond"))
-    _script, node = answer("last_chunk_time")
-    last = leaf(node, rule_reflect.by_tag("ok"), rule_reflect.by_tag("microsecond"))
-    report.that("first_chunk_time", first is not None, f"microsecond={first}")
-    report.that("last_chunk_time", last is not None and last > first,
-                f"microsecond={last} > {first}")
+    _script, first = answer("first_chunk_time")
+    _script, last = answer("last_chunk_time")
+    first_us = scalar(first.get_ok().get_microsecond())
+    last_us = scalar(last.get_ok().get_microsecond())
+    report.that("first_chunk_time", first_us is not None, f"microsecond={first_us}")
+    report.that("last_chunk_time", last_us > first_us, f"microsecond={last_us} > {first_us}")
 
     _script, node = answer("now")
-    moment = leaf(node, rule_reflect.by_tag("ok"), rule_reflect.by_tag("microsecond"))
-    report.that("now (the server's clock)", moment is not None, f"microsecond={moment}")
+    report.that("now (the server's clock)", node.has_ok() is True,
+                f"microsecond={scalar(node.get_ok().get_microsecond())}")
 
     _script, node = answer("roles")
-    role = read(node, rule_reflect.by_tag("ok"), rule_reflect.at_key("agent"))
-    taken = branch(role, "generator")
-    report.that("roles", taken == "generator", f"agent -> {taken}")
+    role = node.get_ok()["agent"]
+    report.that("roles", role.has_generator() is True, "agent -> generator")
 
     script, node = answer("file_id_by_path", "/ws/a.py")
-    report.that("file_id_by_path (no file layer in a journal)",
-                branch(node, "err") == "err",
-                f"$err = {leaf(node, rule_reflect.by_tag('err'))!r}")
+    report.that("file_id_by_path (no file layer in a journal)", node.has_err() is True,
+                f"$err = {scalar(node.get_err())!r}")
 
     for api, args in (("chat_messages", (now - dt.timedelta(minutes=5),
                                          now + dt.timedelta(minutes=5))),
