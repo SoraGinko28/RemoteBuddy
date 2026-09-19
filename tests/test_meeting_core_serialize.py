@@ -101,9 +101,10 @@ def _same_step(step):
 
 
 def _leaf_of(given):
+    """(kind, value): Err and Ok are told apart, the messages are not compared."""
     if isinstance(given, Err):
-        return None
-    return (given.ok_value.kind, given.ok_value.constant_value)
+        return ("err", None)
+    return ("ok", given.ok_value)
 
 
 @pytest.mark.parametrize("name,data", _samples(), ids=lambda x: None)
@@ -121,8 +122,8 @@ def test_both_readers_read_the_same_thing(name, data) -> None:
     """Walk the whole tree: every path must read the same leaf on both sides."""
     body = _witness(name, data)
     definition = reflect._definition(name)
-    access = reflect.access(definition)
-    root = access.root(reflect._Record(data)).ok_value
+    access = reflect.access
+    root = access.root(definition, reflect._Record(data)).ok_value
     witness_root = rule_reflect.access.root(definition, rule_reflect.Witness(body)).ok_value
     compared = 0
     for node in access._walk(root):
@@ -132,7 +133,7 @@ def test_both_readers_read_the_same_thing(name, data) -> None:
         assert _leaf_of(ours) == _leaf_of(theirs), (
             f"{name}: path {[step.value for step in node.path]} "
             f"here {ours!r}, there {theirs!r}")
-        compared += _leaf_of(ours) is not None
+        compared += _leaf_of(ours)[0] == "ok"
     assert compared > 0, f"{name}: not one leaf matched"
 
 

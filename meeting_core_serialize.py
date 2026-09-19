@@ -89,7 +89,7 @@ def serialize_for(type_expression: str, data, name: str = "entry") -> Result:
 
 def witness(definition_name: str, data) -> Result:
     """Object data -> the witness AST (the code serialize writes out)."""
-    return _emit_against(_reflect.access(_reflect._definition(definition_name)), data)
+    return _emit_against(_reflect.access, _reflect._definition(definition_name), data)
 
 
 def witness_for(type_expression: str, data) -> Result:
@@ -98,11 +98,11 @@ def witness_for(type_expression: str, data) -> Result:
     if isinstance(found, Err):
         return found
     access, definition = found.ok_value
-    return _emit_against(access, data, definition=definition)
+    return _emit_against(access, definition, data)
 
 
-def _emit_against(access, data, definition=None) -> Result:
-    root = access.root(_reflect._Record(data))
+def _emit_against(access, definition, data) -> Result:
+    root = access.root(definition, _reflect._Record(data))
     if isinstance(root, Err):
         return root
     try:
@@ -143,7 +143,7 @@ def _expression_definition(type_expression: str):
     found = pool_find_definition(added.ok_value, "meeting_core.SdkEntry")
     if isinstance(found, Err):
         return found
-    return Ok((_reflect.access(found.ok_value), found.ok_value))
+    return Ok((_reflect.access, found.ok_value))
 
 
 # ----------------------------------------------------------------------

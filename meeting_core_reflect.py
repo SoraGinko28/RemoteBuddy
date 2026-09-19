@@ -101,7 +101,6 @@ from viba.viba_type_descriptor import (
     TYPE_APP,
     TYPE_REF,
     VibaChainDescriptor,
-    VibaConstantValue,
     VibaDefinitionDescriptor,
     VibaPool,
     VibaTaggedDescriptor,
@@ -121,7 +120,6 @@ DESIGN_PATH = Path(__file__).with_name(DESIGN_FILE_NAME)
 
 CONTAINERS = ("list", "set", "dict")
 LEAF_NAMES = ("bool", "int", "float", "str", "nil", "void", "None")
-UNIT_HEADS = ("Object", "nil", "Oneof", "never")
 SCALAR_KINDS = (bool, int, float, str)
 _MISSING = object()
 _NIL = object()  # explicit nil: the branch matched and what it holds is nil
@@ -307,14 +305,15 @@ class VibaNode:
         return self._access._unwrap(self._access.get(self, at_key(key)))
 
     @property
-    def leaf(self) -> VibaConstantValue:
+    def leaf(self):
+        """The node's $leaf cell: the literal this piece carries."""
         return self._access._unwrap(self._access.leaf(self))
 
     @property
     def value(self):
-        """The section 5.4 Python landing: ``leaf`` lands on the native
-        scalar."""
-        return self.leaf.constant_value
+        """The section 5.4 Python landing: ``leaf`` lands on the naked value
+        (bool / int / float / str / None)."""
+        return self.leaf
 
     # ---- Shape: only the written chain head, names are not unfolded ----
 
@@ -400,22 +399,43 @@ class VibaNode:
 # ----------------------------------------------------------------------
 
 
-class VibaAccess:
-    """An accessor bound to one stable type: the six cells of section 5.2, plus
-    this layer's map-reading helpers."""
+class Config:
+    """Which written names stand for the units ``never`` and ``nil``.
 
-    def __init__(self, definition: VibaDefinitionDescriptor):
-        self.definition = definition
-        self.pool = definition.pool
+    ``never_eqv`` holds the names equivalent to ``never``, the sum's unit, and
+    ``nil_eqv`` the names equivalent to ``nil``, the product's unit. The units
+    themselves are units by kind, so naming them again changes nothing. Whoever
+    builds an accessor fills these in.
+    """
+
+    def __init__(self, never_eqv=(), nil_eqv=()):
+        self.never_eqv = frozenset(str(name).lstrip("$") for name in never_eqv)
+        self.nil_eqv = frozenset(str(name).lstrip("$") for name in nil_eqv)
 
     def __repr__(self):
-        return f"VibaAccess({self.definition.full_name!r})"
+        return (f"Config(never_eqv={sorted(self.never_eqv)!r}, "
+                f"nil_eqv={sorted(self.nil_eqv)!r})")
+
+    def is_unit_name(self, name: str) -> bool:
+        """Whether this written name is one of the units."""
+        return name in self.never_eqv or name in self.nil_eqv
+
+
+class VibaAccess:
+    """An accessor built from a Config: the six cells of section 5.2, plus this
+    layer's map-reading helpers."""
+
+    def __init__(self, config: Optional[Config] = None):
+        self.config = config or Config()
+
+    def __repr__(self):
+        return f"VibaAccess({self.config!r})"
 
     # ---- The protocol's six cells ----
 
-    def root(self, data: _Record) -> Result:
+    def root(self, definition: VibaDefinitionDescriptor, data: _Record) -> Result:
         """The entry point: gives the (descriptor, data) pair."""
-        return Ok(VibaNode(self, self.definition.body, data.record))
+        return Ok(VibaNode(self, definition.body, data.record))
 
     def has(self, node: VibaNode, step: VibaStep) -> Result:
         """VibaHas: whether this step exists. No such coordinate in the design
@@ -450,7 +470,7 @@ class VibaAccess:
         """
         data = node.data
         if data is _NIL:
-            return Ok(VibaConstantValue("nil", None))
+            return Ok(None)
         if data is None or isinstance(data, SCALAR_KINDS):
             shape = self._unfold(node.descriptor)
             if (shape.kind in (PRODUCT, TUPLE)
@@ -461,7 +481,7 @@ class VibaAccess:
                 # branch is the leaf; only the literal kind of sum (Style) and
                 # Optional[float] are "the value is itself that branch"
                 return Err(f"this piece is not a leaf: {node!r}")
-            return Ok(_constant_value(data))
+            return Ok(data)
         return Err(f"this piece is not a leaf: {node!r}")
 
     def length(self, node: VibaNode) -> Result:
@@ -476,6 +496,58 @@ class VibaAccess:
         if not isinstance(node.data, dict):
             return Err(f"this piece is not a dict: {node!r}")
         return Ok([str(key) for key in node.data.keys()])
+
+
+    def resolve(self, node: VibaNode, path: Sequence[VibaStep]) -> Result:
+        """VibaResolve: walk VibaGet step by step.
+
+        Reaching "the data has no such piece" (``Ok(nil)``) stops there: if steps
+        remain it is ``Err("this step has no value")``, and if no steps remain the
+        ``Ok(nil)`` is handed out.
+        """
+        current = node
+        for step in path:
+            if current is None:
+                return Err("this step has no value")
+            given = node._access.get(current, step)
+            if isinstance(given, Err):
+                return given
+            current = given.ok_value
+        return Ok(current)
+
+    def get_by_path(self, node: VibaNode, path: Sequence[VibaStep]) -> Result:
+        """VibaGetByPath: VibaResolve first, then VibaLeaf."""
+        resolved = self.resolve(node, path)
+        if isinstance(resolved, Err):
+            return resolved
+        if resolved.ok_value is None:
+            return Err("this step has no value")
+        return node._access.leaf(resolved.ok_value)
+
+    def list_fields(self, node: VibaNode, definition: VibaDefinitionDescriptor) -> Result:
+        """VibaListFields: VibaGet one by one over DefinitionMembers, what is
+        taken goes into the list."""
+        accessor = self
+        members = _definition_members(definition)
+        if isinstance(members, Err):
+            return members
+        out = []
+        positional = 0
+        for member in members.ok_value:
+            if member.tag:
+                step = by_tag(member.tag)
+            else:
+                if accessor._is_unit_member(member):
+                    continue
+                step = by_field_index(positional)
+                positional += 1
+            given = accessor.get(node, step)
+            # what is taken goes into the list; what is missing (including this
+            # piece not being a product/sum at all, so nothing can be asked) does
+            # not.
+            if isinstance(given, Ok) and given.ok_value is not None:
+                out.append(given.ok_value)
+        return Ok(out)
 
     # ---- Private: the value-taking path (raises on both Err and Ok(nil)) ----
 
@@ -531,7 +603,7 @@ class VibaAccess:
         from viba.viba_type_descriptor import _build_type
 
         body_node = viba_ast.convert_to_chain_style(target.ast_node.body)
-        body = _build_type(self.pool, target.container_module, body_node)
+        body = _build_type(descriptor.payload.pool, target.container_module, body_node)
         return self._substitute(body, dict(zip(params, payload.args)))
 
     def _substitute(self, descriptor: VibaTypeDescriptor,
@@ -573,7 +645,7 @@ class VibaAccess:
             return None  # a generic definition needs arguments; bare names stop
         from viba.viba_type_descriptor import _build_type
 
-        return _build_type(self.pool, target.container_module, target.ast_node.body)
+        return _build_type(descriptor.payload.pool, target.container_module, target.ast_node.body)
 
     def _container_kind(self, descriptor: VibaTypeDescriptor) -> Optional[str]:
         """The three built-in containers list / set / dict; a tuple does not
@@ -605,7 +677,7 @@ class VibaAccess:
             return [(descriptor.payload.tag, descriptor.payload.tagged_type)]
         if elements is None:
             return None
-        if elements and _is_unit_descriptor(elements[0]):
+        if elements and _is_unit_descriptor(elements[0], self.config):
             elements = elements[1:]
         slots = []
         for element in elements:
@@ -641,7 +713,7 @@ class VibaAccess:
         if shape.kind != SUM:
             return None
         elements = list(shape.payload.elements)
-        if elements and _is_unit_descriptor(elements[0]):
+        if elements and _is_unit_descriptor(elements[0], self.config):
             elements = elements[1:]
         members, inner = [], 0
         for index, element in enumerate(elements):
@@ -812,7 +884,7 @@ class VibaAccess:
             tag = _tag_name(descriptor.payload.tag)
             if isinstance(data, Enum) and _enum_matches(data, tag):
                 return True
-            if _is_unit_descriptor(self._unfold(descriptor.payload.tagged_type)):
+            if _is_unit_descriptor(self._unfold(descriptor.payload.tagged_type), self.config):
                 return False        # unit branch: only tag / enum value match
             return self._shape_matches(descriptor.payload.tagged_type, data, tag)
         if descriptor.kind == SUM:
@@ -833,7 +905,7 @@ class VibaAccess:
 
     def _is_unit_member(self, member) -> bool:
         written = _member_type_name(member)
-        return written in UNIT_HEADS
+        return written is not None and self.config.is_unit_name(written)
 
     def _walk(self, node: VibaNode) -> List[VibaNode]:
         """Walk every coordinate reachable on this map (used for the check
@@ -873,69 +945,17 @@ class VibaAccess:
 # ----------------------------------------------------------------------
 
 
-def viba_resolve(node: VibaNode, path: Sequence[VibaStep]) -> Result:
-    """VibaResolve: walk VibaGet step by step.
-
-    Reaching "the data has no such piece" (``Ok(nil)``) stops there: if steps
-    remain it is ``Err("this step has no value")``, and if no steps remain the
-    ``Ok(nil)`` is handed out.
-    """
-    current = node
-    for step in path:
-        if current is None:
-            return Err("this step has no value")
-        given = node._access.get(current, step)
-        if isinstance(given, Err):
-            return given
-        current = given.ok_value
-    return Ok(current)
-
-
-def viba_get_by_path(node: VibaNode, path: Sequence[VibaStep]) -> Result:
-    """VibaGetByPath: VibaResolve first, then VibaLeaf."""
-    resolved = viba_resolve(node, path)
-    if isinstance(resolved, Err):
-        return resolved
-    if resolved.ok_value is None:
-        return Err("this step has no value")
-    return node._access.leaf(resolved.ok_value)
-
-
-def viba_list_fields(node: VibaNode, definition: VibaDefinitionDescriptor) -> Result:
-    """VibaListFields: VibaGet one by one over DefinitionMembers, what is
-    taken goes into the list."""
-    accessor = node._access
-    members = _definition_members(definition)
-    if isinstance(members, Err):
-        return members
-    out = []
-    positional = 0
-    for member in members.ok_value:
-        if member.tag:
-            step = by_tag(member.tag)
-        else:
-            if accessor._is_unit_member(member):
-                continue
-            step = by_field_index(positional)
-            positional += 1
-        given = accessor.get(node, step)
-        # what is taken goes into the list; what is missing (including this
-        # piece not being a product/sum at all, so nothing can be asked) does
-        # not.
-        if isinstance(given, Ok) and given.ok_value is not None:
-            out.append(given.ok_value)
-    return Ok(out)
-
-
 # ----------------------------------------------------------------------
-# Entry point
+# Entry point: this layer's default accessor
 # ----------------------------------------------------------------------
 
+# The language layer's units: what viba/type.viba writes for the sum unit and
+# the product unit. Our design defines the three prose words as Object too, so
+# they are units as well.
+DEFAULT_CONFIG = Config(never_eqv={"Oneof"},
+                        nil_eqv={"Object", "Assert", "Appendix", "Hint"})
 
-def access(definition_descriptor: VibaDefinitionDescriptor) -> VibaAccess:
-    """Treat one stable type (a definition descriptor) as a map and return an
-    accessor."""
-    return VibaAccess(definition_descriptor)
+access = VibaAccess(DEFAULT_CONFIG)
 
 
 # ----------------------------------------------------------------------
@@ -943,26 +963,27 @@ def access(definition_descriptor: VibaDefinitionDescriptor) -> VibaAccess:
 # ----------------------------------------------------------------------
 
 
-def _constant_value(value) -> VibaConstantValue:
+def _scalar_name(value) -> Optional[str]:
+    """The name the design writes for this literal: bool / int / float / str."""
     if isinstance(value, bool):
-        return VibaConstantValue("bool", value)
+        return "bool"
     if isinstance(value, int):
-        return VibaConstantValue("int", value)
+        return "int"
     if isinstance(value, float):
-        return VibaConstantValue("float", value)
+        return "float"
     if isinstance(value, str):
-        return VibaConstantValue("str", value)
-    if value is None:
-        return VibaConstantValue("nil", None)
-    raise TypeError(f"no constant kind for {value!r}")
+        return "str"
+    return None
 
 
-def _is_unit_descriptor(descriptor: VibaTypeDescriptor) -> bool:
+def _is_unit_descriptor(descriptor: VibaTypeDescriptor,
+                        config: "Config" = None) -> bool:
     if descriptor.kind in (NIL, NEVER):
         return True
     if descriptor.kind == TUPLE and not descriptor.payload.elements:
         return True                                     # (): the unit
-    return descriptor.kind == TYPE_REF and descriptor.payload.type_name in UNIT_HEADS
+    return (descriptor.kind == TYPE_REF
+            and (config or DEFAULT_CONFIG).is_unit_name(descriptor.payload.type_name))
 
 
 def _attribute(data, name: str):
@@ -1038,14 +1059,9 @@ def _leaf_matches(written: str, data) -> bool:
     return False
 
 
-def _literal_matches(written: VibaConstantValue, data) -> bool:
-    """The literal branch: it matches only if the written value equals the
-    data's value."""
-    try:
-        given = _constant_value(data)
-    except TypeError:
-        return False
-    return written.kind == given.kind and written.constant_value == given.constant_value
+def _literal_matches(written, data) -> bool:
+    """The literal branch matches when the written value is the data's value."""
+    return _scalar_name(data) is not None and type(written) is type(data) and written == data
 
 
 def _element_tag(element: VibaTypeDescriptor) -> Optional[str]:
@@ -1068,8 +1084,7 @@ def _member_type_name(member) -> Optional[str]:
 
 
 __all__ = [
-    "access",
+    "access", "Config",
     "VibaAccess", "VibaNode", "VibaStep", "VibaPath",
     "by_tag", "by_field_index", "at_index", "at_key",
-    "viba_resolve", "viba_get_by_path", "viba_list_fields",
 ]
