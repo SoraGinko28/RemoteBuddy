@@ -59,6 +59,10 @@ from meeting_v2 import (
     utc_now,
 )
 import discriminator_harness
+import meeting_loader
+import meeting_local_sdk
+import meeting_sdk_json
+from viba.type import Err as _SdkErr
 from references import reference_from_event
 from model_api_client import (
     MODEL_RE,
@@ -227,6 +231,12 @@ def _apply_meeting_effort(config: ModelApiConfig, store: MeetingStore) -> ModelA
     return config
 
 
+# The meeting sdk apis that would write; a record loaded from a journal has
+# nowhere to put a write, and the harness owns writes. They are routed like the
+# rest, and refused here.
+_SDK_WRITE_APIS = ("open_file", "write_text")
+
+
 class MeetingWebService:
     def __init__(
         self,
@@ -268,6 +278,29 @@ class MeetingWebService:
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._trae_check_cache: Optional[Tuple[float, str, bool, str]] = None
+
+    def sdk_meeting_data(self, meeting_id: str) -> Any:
+        """The record this server holds for that meeting.
+
+        One place to change when a test wants to hand out a record that never
+        went through a journal.
+        """
+        store = self.load_store(meeting_id)
+        data, _summary = meeting_loader.load_meeting_data_from_run(store.run_dir)
+        return data
+
+    def sdk_call(self, meeting_id: str, api: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """One meeting-sdk api, run here over the record this server holds."""
+        if api not in meeting_local_sdk.__all__:
+            raise WebError(404, f"no such meeting sdk api: {api}")
+        if api in _SDK_WRITE_APIS:
+            raise WebError(403, f"{api} writes; the sdk is read-only over the wire")
+        function = getattr(meeting_local_sdk, api)
+        given = function(self.sdk_meeting_data(meeting_id),
+                         **meeting_sdk_json.decode(args or {}))
+        if isinstance(given, _SdkErr):
+            return {"ok": False, "error": given.message}
+        return {"ok": True, "value": meeting_sdk_json.encode(given.value)}
 
     def _meeting_lock(self, meeting_id: str) -> threading.RLock:
         with self.lock:
@@ -2225,6 +2258,12 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/credentials":
                 self._json(self.service.update_credentials(self._read_json()))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/sdk/([A-Za-z_][A-Za-z0-9_]*)", path)
+            if match:
+                payload = self._read_json() or {}
+                self._json(self.service.sdk_call(unquote(match.group(1)), match.group(2),
+                                                 payload.get("args") or {}))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/scores", path)
             if match:

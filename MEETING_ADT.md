@@ -495,6 +495,10 @@ import meeting_core as mc
 # Time: time is identity
 # ---------------------------------------------------------------- #
 
+now[Ctx] :=
+		mc.Result[mc.datetime]
+	<- $ctx Ctx 
+
 chunk_times[Ctx] :=
     mc.Result[list[mc.datetime]]               # the moment of every chunk in this span
   <- $ctx Ctx
@@ -709,6 +713,19 @@ make_versioned_file_content_reference :=
   <- $versioned_file_ref mc.VersionedFileReference
   <- $region mc.TextRegion
 
+
+local_version_hint := Hint[{
+	Ctx is python object in current process
+	usage:
+  	import meeting_local_sdk as sdk
+}]
+
+remote_version_hint := Hint[{
+	Ctx is meeting uid
+	every api should be backed by REST URL
+	usage:
+  	import meeting_remote_sdk as sdk
+}]
 ```
 
 ---
