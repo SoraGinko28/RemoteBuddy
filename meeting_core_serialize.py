@@ -45,6 +45,7 @@ if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VEND
     sys.path.insert(0, str(_VENDORED_VIBA))
 
 from viba import builder  # noqa: E402
+from viba.reflect import at_index, at_key, by_field_index  # noqa: E402
 from viba.type import Err, Ok, Result  # noqa: E402
 from viba.viba_type_descriptor import (  # noqa: E402
     empty_pool,
@@ -153,7 +154,7 @@ def _emit(access, node):
     if container is not None:
         return _emit_container(access, node, container)
     if shape.kind == TAGGED:
-        return _emit(access, _child(access, node, _reflect.by_field_index(0)))
+        return _emit(access, _child(access, node, by_field_index(0)))
     if shape.kind in (NIL, NEVER):
         return None
     raise SerializeGap(f"cannot write this piece out: {shape.kind}")
@@ -209,13 +210,13 @@ def _emit_container(access, node, container: str):
         keys = access.keys(node)
         if isinstance(keys, Err):
             raise SerializeGap(keys.err_msg)
-        pairs = tuple((key, _emit(access, _child(access, node, _reflect.at_key(key))))
+        pairs = tuple((key, _emit(access, _child(access, node, at_key(key))))
                       for key in keys.ok_value)
         return _NAMES.DictLiteral[pairs]
     length = access.length(node)
     if isinstance(length, Err):
         raise SerializeGap(length.err_msg)
-    payloads = tuple(_emit(access, _child(access, node, _reflect.at_index(index)))
+    payloads = tuple(_emit(access, _child(access, node, at_index(index)))
                      for index in range(length.ok_value))
     if container == "list":
         return _NAMES.ListLiteral[payloads]
