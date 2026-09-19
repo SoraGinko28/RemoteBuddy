@@ -4,13 +4,17 @@ Ctx is a meeting uid. Every api is backed by its own url on a RemoteBuddy web
 server:
 
     POST {base_url}/api/meetings/{meeting_uid}/sdk/{api}
-    body  {"args": {...}}   ->  {"ok": true, "value": ...}
-                            |   {"ok": false, "error": "..."}
+    body  {"args": {...}}   ->  {"script": "entry := ..."}
 
-The server answers by running the same api of meeting_local_sdk over the record
-it holds, so the two bindings agree by construction; values travel through
-meeting_sdk_json. Call configure() once (the default is the local web server);
-the csrf token is fetched from /api/session on the first call.
+The answer is a viba script whose entry is the api's own result: a failure is the
+$err branch of that result, so the script is always a resident of the api's
+return type in the data-interface chapter. This binding checks that before it
+hands the script back (``Ok(script)``); read it with viba.rule.reflect, the way a
+local answer is read with meeting_core_reflect. Arguments travel through
+meeting_sdk_json. The server answers by running the same api of
+meeting_local_sdk over the record it holds, so the two bindings agree by
+construction. Call configure() once (the default is the local web server); the
+csrf token is fetched from /api/session on the first call.
 
 The two writers (open_file / write_text) are refused by the server: a record
 loaded from a journal has nowhere to put a write, the harness owns writes.
@@ -27,6 +31,7 @@ import urllib.request
 from typing import Optional
 
 import meeting_local_sdk as local
+import meeting_sdk_viba
 from meeting_sdk_json import decode, encode
 from viba.type import Err as _Err, Ok as _Ok, Result as _Result
 
@@ -96,9 +101,13 @@ def _call(api: str, meeting_uid: str, **args) -> _Result:
             return _Err(f"cannot reach the meeting server: {error}")
     else:
         return _Err("the meeting server refused the call")
-    if not payload.get("ok"):
-        return _Err(str(payload.get("error") or "the meeting server refused the call"))
-    return _Ok(decode(payload.get("value")))
+    script = payload.get("script")
+    if not isinstance(script, str):
+        return _Err("the meeting server did not answer with a viba script")
+    checked = meeting_sdk_viba.is_a_valid_answer(api, script)
+    if isinstance(checked, _Err):
+        return _Err(checked.message)
+    return _Ok(script)
 
 
 def _error_message(error: urllib.error.HTTPError) -> str:
@@ -106,8 +115,9 @@ def _error_message(error: urllib.error.HTTPError) -> str:
     try:
         payload = json.loads(detail)
     except ValueError:
-        return f"the meeting server answered {error.code}: {detail.strip()}"
-    return str(payload.get("error") or payload.get("message") or f"HTTP {error.code}")
+        return f"{error.code}: {detail.strip()}"
+    answer = payload.get("error") or payload.get("message") or "no message"
+    return f"{error.code}: {answer}"
 
 
 # ----------------------------------------------------------------------

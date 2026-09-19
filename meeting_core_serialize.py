@@ -31,7 +31,9 @@ Three known gaps (all unspellable, give Err — do not force a wrong spelling):
 
 from __future__ import annotations
 
+import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import meeting_core_reflect as _reflect
@@ -45,6 +47,10 @@ from viba import viba_ast  # noqa: E402
 from viba.type import Err, Ok, Result  # noqa: E402
 from viba.viba_type_descriptor import (  # noqa: E402
     LITERAL,
+    empty_pool,
+    parse_viba_file,
+    pool_add_file,
+    pool_find_definition,
     NEVER,
     NIL,
     PRODUCT,
@@ -55,29 +61,47 @@ from viba.viba_type_descriptor import (  # noqa: E402
     TYPE_REF,
 )
 
-__all__ = ["serialize", "witness"]
+__all__ = ["serialize", "witness", "serialize_for", "witness_for", "access_for"]
 
 
 class SerializeGap(Exception):
     """No viba spelling for this part yet (the empty-container case)."""
 
 
-def serialize(definition_name: str, data) -> Result:
-    """Object data -> a chunk of viba source: a definition of the same name,
-    whose body is the spelling of that data.
+def serialize(definition_name: str, data, name: str = None) -> Result:
+    """Object data -> a chunk of viba source: a definition whose body is the
+    spelling of that data (named after the design type unless ``name`` says
+    otherwise).
 
     ``viba_ast.parse(result)`` directly gives a usable witness.
     """
-    given = witness(definition_name, data)
-    if isinstance(given, Err):
-        return given
-    module = viba_ast.Module([viba_ast.TypeDefinition(definition_name, given.value)])
-    return Ok(viba_ast.unparse(module) + "\n")
+    return _source(name or definition_name, witness(definition_name, data))
+
+
+def serialize_for(type_expression: str, data, name: str = "entry") -> Result:
+    """The same, against a type expression instead of a named definition.
+
+    ``serialize_for("Result[list[datetime]]", result)`` is what an api of the
+    data interface answers with: a script whose ``entry`` is the witness.
+    """
+    return _source(name, witness_for(type_expression, data))
 
 
 def witness(definition_name: str, data) -> Result:
     """Object data -> the witness AST (the code serialize writes out)."""
-    access = _reflect.access(_reflect._definition(definition_name))
+    return _emit_against(_reflect.access(_reflect._definition(definition_name)), data)
+
+
+def witness_for(type_expression: str, data) -> Result:
+    """Object data -> the witness AST against a type expression."""
+    found = _expression_definition(type_expression)
+    if isinstance(found, Err):
+        return found
+    access, definition = found.value
+    return _emit_against(access, data, definition=definition)
+
+
+def _emit_against(access, data, definition=None) -> Result:
     root = access.root(_reflect._Record(data))
     if isinstance(root, Err):
         return root
@@ -85,6 +109,41 @@ def witness(definition_name: str, data) -> Result:
         return Ok(_emit(access, root.value))
     except SerializeGap as gap:
         return Err(str(gap))
+
+
+def _source(name: str, body: Result) -> Result:
+    if isinstance(body, Err):
+        return body
+    module = viba_ast.Module([viba_ast.TypeDefinition(name, body.value)])
+    return Ok(viba_ast.unparse(module) + "\n")
+
+
+def access_for(type_expression: str):
+    """(access, definition) for one type expression, resolved in meeting_core."""
+    return _expression_definition(type_expression)
+
+
+@lru_cache(maxsize=None)
+def _expression_definition(type_expression: str):
+    """(access, full name) for one type expression, resolved in meeting_core.
+
+    The expression is written the way the data-interface chapter writes return
+    types (``mc.Result[list[mc.datetime]]``); the ``mc.`` prefix is dropped so
+    it resolves inside the stable-types module.
+    """
+    written = re.sub(r"\bmc\.", "", type_expression).strip()
+    source = _reflect._design_source() + f"\nSdkEntry := {written}\n"
+    pool = empty_pool()
+    parsed = parse_viba_file(pool, source, "sdk_entry.viba", "meeting_core")
+    if isinstance(parsed, Err):
+        return Err(f"cannot compile the return type {type_expression!r}: {parsed.message}")
+    added = pool_add_file(pool, parsed.value)
+    if isinstance(added, Err):
+        return added
+    found = pool_find_definition(added.value, "meeting_core.SdkEntry")
+    if isinstance(found, Err):
+        return found
+    return Ok((_reflect.access(found.value), found.value))
 
 
 # ----------------------------------------------------------------------

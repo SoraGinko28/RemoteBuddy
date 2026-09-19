@@ -62,6 +62,7 @@ import discriminator_harness
 import meeting_loader
 import meeting_local_sdk
 import meeting_sdk_json
+import meeting_sdk_viba
 from viba.type import Err as _SdkErr
 from references import reference_from_event
 from model_api_client import (
@@ -290,17 +291,28 @@ class MeetingWebService:
         return data
 
     def sdk_call(self, meeting_id: str, api: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """One meeting-sdk api, run here over the record this server holds."""
+        """One meeting-sdk api, run here over the record this server holds.
+
+        The answer is a viba script (``entry := ...``) whatever happened: an api
+        that failed answers its own $err branch, so the script is always a
+        resident of that api's return type.
+        """
         if api not in meeting_local_sdk.__all__:
             raise WebError(404, f"no such meeting sdk api: {api}")
+        if api not in meeting_sdk_viba.return_types():
+            raise WebError(400, f"{api} builds a value; it is not served over the wire")
+        script = meeting_sdk_viba.script_for(api, self._sdk_result(meeting_id, api, args))
+        if isinstance(script, _SdkErr):
+            raise WebError(500, script.message)
+        return {"script": script.value}
+
+    def _sdk_result(self, meeting_id: str, api: str, args: Dict[str, Any]):
+        """The api's own Result, evaluated over the record this server holds."""
         if api in _SDK_WRITE_APIS:
-            raise WebError(403, f"{api} writes; the sdk is read-only over the wire")
+            return _SdkErr(f"{api} writes; the sdk is read-only over the wire")
         function = getattr(meeting_local_sdk, api)
-        given = function(self.sdk_meeting_data(meeting_id),
-                         **meeting_sdk_json.decode(args or {}))
-        if isinstance(given, _SdkErr):
-            return {"ok": False, "error": given.message}
-        return {"ok": True, "value": meeting_sdk_json.encode(given.value)}
+        return function(self.sdk_meeting_data(meeting_id),
+                        **meeting_sdk_json.decode(args or {}))
 
     def _meeting_lock(self, meeting_id: str) -> threading.RLock:
         with self.lock:
