@@ -151,11 +151,11 @@ TerminalControl :=
       user_name 缺省，或 user_name ∈ participants(user_names(MeetingData))
     }]
   * Appendix[{
-      terminal_capable := { $human () } ∪ { a | role(a) == $generator }   # role 查所在会议的 agent_name2role
+      terminal_capable := { $human nil } ∪ { a | role(a) == $generator }   # role 查所在会议的 agent_name2role
     }]
   * Assert[{
         user_name 缺省，或
-        user_name == $human () 或
+        user_name == $human nil 或
         user_name 的 agent 的 role == $generator
     }]
 
@@ -216,19 +216,19 @@ Result[T] :=
 
 AgentRole :=
     Oneof
-  | $generator ()                       # 有 tmux 权限
-  | $active_discriminator ()            # 随时评论
-  | $passive_discriminator ()           # 有召才评论
+  | $generator nil                      # 有 tmux 权限
+  | $active_discriminator nil           # 随时评论
+  | $passive_discriminator nil          # 有召才评论
 
 UserName :=
     Oneof
   | $agent_name str
-  | $human ()
+  | $human nil
 
 DataStatus :=
     Oneof
-  | $deleted ()
-  | $read_only ()
+  | $deleted nil
+  | $read_only nil
 
 Versioned[T] :=
     Object
@@ -416,22 +416,41 @@ TerminalControlReference :=
     }]
 
 # ---------------------------------------------------------------- #
+# 说明用的词：它们也是类型，只挂一段散文，判定时是单位元（Object = nil）。
+# 定义出来，带注释的那些定义才能拿来判定（is_compliant）。
+# ---------------------------------------------------------------- #
+
+Assert[Cond] := Object
+
+Appendix[Note] := Object
+
+Hint[Note] := Object
+
+# ---------------------------------------------------------------- #
 # 完备性自检（在 viba 子模块里跑）：
 #
 #   from viba.is_complete import is_complete
 #   from pathlib import Path
-#   stops = {"Assert", "Appendix", "Hint"}
 #   print(is_complete(Path("meeting_core.viba").read_text(),
-#                     viba_paths=["."], terminators=stops))    # True
+#                     viba_paths=["."]))                       # True
 #
-# Assert / Appendix / Hint 是三个说明用的词，三个都必需：
-# FileId、ContentReference、ScoreMessage 身上带着它们。
+# 说明用的词都定义成单位元（上面那三行），代码块永远走不到：
+# 完备性与判定都不需要 terminators。
+# ---------------------------------------------------------------- #
+
+# ---------------------------------------------------------------- #
+# 需要准备 meeting_core_serialize 函数，其必须满足如下约束：
+# rule_reflect * meeting_core_serialize === meeting_core_reflect
+# 也就是说meeting_core_serialize把meeting_core对象数据序列化成viba代码 result，
+# 且result必须满足 is_compliant(result, 对应对象定义)，最后务必在result上使用
+# rule_reflect反射的效果和直接在meeting_core对象数据上使用meeting_core_reflect的
+# 反射效果一样。
 # ---------------------------------------------------------------- #
 
 ```
 
-这一章是完备的：拿 viba 自带的 `is_complete` 验，terminators 只需要
-`Assert` / `Appendix` / `Hint` 三个说明用的词，别的名字全都解析得到。
+这一章是完备的：拿 viba 自带的 `is_complete` 验，说明用的词都定义成了单位元，
+别的名字全都解析得到，terminators 一个都不用。
 
 ---
 

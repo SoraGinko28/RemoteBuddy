@@ -101,6 +101,7 @@ DESIGN_CHAPTER = "稳定类型"
 DESIGN_PATH = Path(__file__).with_name(DESIGN_FILE_NAME)
 
 CONTAINERS = ("list", "set", "dict")
+LEAF_NAMES = ("bool", "int", "float", "str", "nil", "void", "None")
 UNIT_HEADS = ("Object", "nil", "Oneof", "never")
 SCALAR_KINDS = (bool, int, float, str)
 _MISSING = object()
@@ -408,11 +409,23 @@ class VibaAccess:
         return Ok(VibaNode(self, target, piece, tuple(node.path) + (step,)))
 
     def leaf(self, node: VibaNode) -> Result:
-        """VibaLeaf：走到叶子取值，五种。"""
+        """VibaLeaf：走到叶子取值，五种。
+
+        和、积、元组、容器都还不是叶子——它们得再往里走一步；
+        值本身是 nil（显式的单位元支、或字段在但值是 nil）也算叶子。
+        """
         data = node.data
         if data is _NIL:
             return Ok(VibaConstantValue("nil", None))
         if data is None or isinstance(data, SCALAR_KINDS):
+            shape = self._unfold(node.descriptor)
+            if (shape.kind in (PRODUCT, TUPLE)
+                    or self._container_kind(shape) is not None):
+                return Err(f"这一段不是叶子：{node!r}（{shape.kind}）")
+            if shape.kind == SUM and not self._branch_is_a_leaf(node):
+                # 和要往里走一步：$agent_name 那一支才是叶子；
+                # 只有字面量那种和（Style）与 Optional[float] 才是"值自己就是那一支"
+                return Err(f"这一段不是叶子：{node!r}（和类型）")
             return Ok(_constant_value(data))
         return Err(f"这一段不是叶子：{node!r}（{type(data).__name__}）")
 
@@ -554,6 +567,18 @@ class VibaAccess:
                 slots.append((None, element))
         return slots
 
+    def _member_steps(self, node: VibaNode) -> List[tuple]:
+        """[(标签或 None, 那一步, 描述符)]：标签为 None 的按位置走。"""
+        out = []
+        positional = 0
+        for tag, member in self._members(node) or []:
+            if tag:
+                out.append((tag, by_tag(tag), member))
+            else:
+                out.append((None, by_field_index(positional), member))
+                positional += 1
+        return out
+
     def _knows(self, node: VibaNode, step: VibaStep, slots: Optional[List[tuple]]) -> bool:
         if step.kind == "by_tag":
             return any(tag == step.value for tag, _ in slots or [])
@@ -611,29 +636,43 @@ class VibaAccess:
             if self._unfold(node.descriptor).kind != SUM:
                 found = _attribute(data, tag_name)
                 if found is not _MISSING:
-                    return found
+                    return _present(found)      # 字段在、值是 nil 也算在
             if target is not None and self._shape_matches(target, data, tag_name):
-                return _present(_payload_of(data))
+                return _payload(target, data)
             return None
         if step.kind == "by_field_index":
             if isinstance(data, (tuple, list)) and 0 <= step.value < len(data):
-                return data[step.value]
+                return _present(data[step.value])
             if target is not None and self._shape_matches(target, data, None):
-                return _present(_payload_of(data))
+                return _payload(target, data)
             return None
         if step.kind == "at_index":
             elements = self._elements_of(data)
             if elements is None or not (0 <= step.value < len(elements)):
                 return None
-            return elements[step.value]
+            return _present(elements[step.value])
         if step.kind == "at_key":
             if not isinstance(data, dict):
                 return None
             for key, value in data.items():
                 if str(key) == str(step.value):
-                    return value
+                    return _present(value)
             return None
         return None
+
+    def _branch_is_a_leaf(self, node: VibaNode) -> bool:
+        """和命中的那一支自己是不是叶子形状（字面量 / 内建叶子 / 单位元）。"""
+        for tag, step, member in self._member_steps(node):
+            if self._pick(node, step, member) is None:
+                continue
+            if tag:
+                return False        # 带标签的支：值挂在那个 tag 底下，还得走一步
+            shape = self._unfold(member)
+            if shape.kind in (LITERAL, NIL, NEVER):
+                return True
+            return (shape.kind == TYPE_REF
+                    and shape.payload.type_name in LEAF_NAMES)
+        return False
 
     def _shape_matches(self, descriptor: VibaTypeDescriptor, data,
                        tag_name: Optional[str]) -> bool:
@@ -667,10 +706,14 @@ class VibaAccess:
             tag = _tag_name(descriptor.payload.tag)
             if isinstance(data, Enum) and _enum_matches(data, tag):
                 return True
+            if _is_unit_descriptor(self._unfold(descriptor.payload.tagged_type)):
+                return False        # 单位元支：只有 tag / 枚举值对得上才算命中
             return self._shape_matches(descriptor.payload.tagged_type, data, tag)
         if descriptor.kind == SUM:
             return any(self._shape_matches(element, data, _element_tag(element))
                        for element in descriptor.payload.elements)
+        if descriptor.kind == LITERAL:
+            return _literal_matches(descriptor.payload.value, data)
         if descriptor.kind in (NIL, NEVER):
             return data is None
         return False
@@ -690,9 +733,13 @@ class VibaAccess:
         """把这张图上能走到的坐标全走一遍（体检表用）。"""
         out = [node]
         positional = 0
-        for tag, _ in self._members(node) or []:
+        members = self._members(node) or []
+        untagged_is_the_value = self._unfold(node.descriptor).kind == SUM
+        for tag, _ in members:
             if tag:
                 step = by_tag(tag)
+            elif untagged_is_the_value:
+                continue        # 和的无标签支（Style / Optional 的 T）：值自己就是那一支
             else:
                 step = by_field_index(positional)
                 positional += 1
@@ -798,6 +845,8 @@ def _constant_value(value) -> VibaConstantValue:
 def _is_unit_descriptor(descriptor: VibaTypeDescriptor) -> bool:
     if descriptor.kind in (NIL, NEVER):
         return True
+    if descriptor.kind == TUPLE and not descriptor.payload.elements:
+        return True                                     # ()：单位元
     return descriptor.kind == TYPE_REF and descriptor.payload.type_name in UNIT_HEADS
 
 
@@ -845,6 +894,13 @@ def _present(payload):
     return _NIL if payload is None else payload
 
 
+def _payload(target: VibaTypeDescriptor, data):
+    """分支的载荷：单位元那一支是 nil，别的支按单槽包装拆一层。"""
+    if _is_unit_descriptor(target):
+        return _NIL
+    return _present(_payload_of(data))
+
+
 def _leaf_matches(written: str, data) -> bool:
     """写出来的内建叶子名字对不对得上这一份 Python 数据。"""
     if written == "str":
@@ -858,6 +914,15 @@ def _leaf_matches(written: str, data) -> bool:
     if written in ("nil", "void", "None"):
         return data is None
     return False
+
+
+def _literal_matches(written: VibaConstantValue, data) -> bool:
+    """字面量那一支：写的值和数据的值一样才算。"""
+    try:
+        given = _constant_value(data)
+    except TypeError:
+        return False
+    return written.kind == given.kind and written.value == given.value
 
 
 def _element_tag(element: VibaTypeDescriptor) -> Optional[str]:
