@@ -116,7 +116,7 @@ def _error_message(error: urllib.error.HTTPError) -> str:
 
 
 def now(ctx: Ctx) -> _Result:
-    """The moment this process is at; never hands out a microsecond twice."""
+    """The moment the server is at."""
     return _call("now", ctx)
 
 
