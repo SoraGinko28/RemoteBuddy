@@ -135,8 +135,9 @@ def _api_calls():
 
 
 # The apis whose answers walk down to leaves on both sides. The three chat ones
-# cannot be serialized at all yet: a chat part of kind $raw_msg does not bind
-# (RawMessage has no spelling in the design).
+# cannot be serialized at all yet: the record layer wraps the two chat parts in
+# classes of its own (RawMessage / AtUserMessage) and the binding does not land
+# them on the design's branches ($raw_msg str / $at_user_name UserName).
 WALKABLE = (
     "chunk_times", "streams_between", "score_messages",
     "resolve_chat_content_reference", "resolve_score_reference",
@@ -177,7 +178,8 @@ def test_the_walkable_answers_read_the_same(api, args, wired) -> None:
 
 @pytest.mark.parametrize("api", KNOWN_BINDING_GAP)
 def test_the_chat_apis_hit_the_known_binding_gap(api, wired) -> None:
-    """$raw_msg does not bind (RawMessage has no spelling), so no script yet."""
+    """The record layer's RawMessage does not land on $raw_msg str, so no
+    script yet."""
     data = wired
     moment = local.last_chunk_time(data).ok_value
     calls = {"chat_messages": (data, moment, moment),
