@@ -196,7 +196,7 @@ def test_a_failed_api_answers_its_err_branch(wired) -> None:
     entry = viba_sdk.is_a_valid_answer("chat_message_at", given.value).value
     access, definition = viba_sdk.access_of("chat_message_at").value
     witness_root = rule_reflect.access(definition).root(rule_reflect.Witness(entry)).value
-    assert witness_root.by_tag("$err").value.value  # the sentence rides the $err branch
+    assert witness_root.get_err().value.value        # the sentence rides the $err branch
 
 
 def test_a_missing_path_is_an_err_inside_the_script(wired) -> None:
