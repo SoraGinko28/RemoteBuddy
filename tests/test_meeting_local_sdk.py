@@ -142,7 +142,7 @@ def _definition(name: str):
 
 def _node(value, name, reflect):
     """Start a node per the protocol: access(definition).root(_Record(value))."""
-    given = reflect.access(_definition(name)).root(reflect._Record(value))
+    given = reflect.access.root(_definition(name), reflect._Record(value))
     assert isinstance(given, Ok), "cannot open the root"
     return given.ok_value
 
@@ -167,6 +167,12 @@ def _ok_data(value, reflect):
     """When the payload is a datetime / sequence / record, take $data from the
     node of the $ok branch."""
     return _ok_node(value, reflect).data
+
+
+def _ok_leaf(value, reflect):
+    """The $leaf cell of the $ok node, nil included: a payload that is nil has
+    no value to hand out, so this does not go through ``.value``."""
+    return reflect.access.leaf(_ok_node(value, reflect)).ok_value
 
 
 def _err_message(value, reflect):
@@ -415,9 +421,9 @@ def test_case_owner_at_reads_the_control_intervals(ctx, sdk, reflect):
     # at the moment alice speaks (_T1) the terminal is still hers
     assert _ok_value(sdk.owner_at(ctx, _message_time(alice, reflect)), reflect) == "alice"
     handback = _control_references(ctx, sdk, reflect)[1]
-    assert _ok_value(
-        sdk.owner_at(ctx, _node(handback, "TerminalControlReference",
-                                reflect).get_start_time().data), reflect) is None
+    assert _ok_leaf(sdk.owner_at(ctx, _node(handback, "TerminalControlReference",
+                                            reflect).get_start_time().data),
+                    reflect) is None
 
 
 def _control_references(ctx, sdk, reflect):
@@ -432,7 +438,7 @@ def _control_references(ctx, sdk, reflect):
 def test_case_control_owner_of_a_handover(ctx, sdk, reflect):
     takeover, handback = _control_references(ctx, sdk, reflect)
     assert _ok_value(sdk.control_owner_of(ctx, takeover), reflect) == "alice"
-    assert _ok_value(sdk.control_owner_of(ctx, handback), reflect) is None
+    assert _ok_leaf(sdk.control_owner_of(ctx, handback), reflect) is None
 
 
 # =====================================================================

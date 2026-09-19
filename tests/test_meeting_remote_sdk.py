@@ -67,15 +67,16 @@ def _step(step):
 
 
 def _leaf(given):
+    """(kind, value): Err and Ok are told apart, the messages are not compared."""
     if isinstance(given, Err):
-        return None
-    return (given.ok_value.kind, given.ok_value.constant_value)
+        return ("err", None)
+    return ("ok", given.ok_value)
 
 
 def _reads_the_same(api, local_result, script) -> int:
     """Walk the local answer; the script must read the same at every leaf."""
     access, definition = viba_sdk.access_of(api).ok_value
-    local_root = access.root(reflect._Record(local_result)).ok_value
+    local_root = access.root(definition, reflect._Record(local_result)).ok_value
     entry = viba_sdk.is_a_valid_answer(api, script).ok_value
     witness_root = rule_reflect.access.root(definition, rule_reflect.Witness(entry)).ok_value
     compared = 0
@@ -86,7 +87,7 @@ def _reads_the_same(api, local_result, script) -> int:
         assert _leaf(ours) == _leaf(theirs), (
             f"{api}: path {[step.value for step in node.path]} reads {ours!r} here and "
             f"{theirs!r} there")
-        compared += _leaf(ours) is not None
+        compared += _leaf(ours)[0] == "ok"
     return compared
 
 
