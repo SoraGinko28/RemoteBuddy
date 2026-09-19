@@ -151,11 +151,20 @@ def run_checks(report: Report, capture_time: dt.datetime) -> None:
     report.that("file_id_by_path (no file layer in a journal)", node.has_err() is True,
                 f"$err = {leaf_value(node.get_err())!r}")
 
-    for api, args in (("chat_messages", (now - dt.timedelta(minutes=5),
-                                         now + dt.timedelta(minutes=5))),
-                      ("screen_at", (capture_time,))):
-        given = getattr(remote, api)(MEETING_ID, *args)
-        report.note(api, given.err_msg if isinstance(given, Err) else "served")
+    _script, node = answer("screen_at", capture_time)
+    content = node.get_ok()
+    segments = content.get_segments()
+    report.that("screen_at",
+                leaf_value(content.get_text()) == SCREEN_TEXT
+                and len(segments) == 1
+                and leaf_value(segments[0].get_text()) == SCREEN_TEXT
+                and len(segments[0].get_styles()) == 0,
+                f"{leaf_value(content.get_text())!r}, {len(segments)} segment(s), "
+                f"{len(segments[0].get_styles())} styles")
+
+    given = remote.chat_messages(MEETING_ID, now - dt.timedelta(minutes=5),
+                                 now + dt.timedelta(minutes=5))
+    report.note("chat_messages", given.err_msg if isinstance(given, Err) else "served")
     print()
     print("one answer, as the server sent it:")
     for line in script.rstrip("\n").splitlines():
