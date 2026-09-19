@@ -47,6 +47,6 @@ def test_meeting_sdk_is_complete() -> None:
     assert is_complete(_chapter_source(SDK_CHAPTER), library, (), TERMINATORS) is True
 
 
-def test_the_three_terminators_are_what_ends_the_walk() -> None:
-    """不给这三个词就走不完：说明用的词身上挂的是 CodeBlock。"""
-    assert is_complete(_core_source(), (), (), set()) is False
+def test_no_terminators_are_needed() -> None:
+    """说明用的词（Assert / Appendix / Hint）定义成了单位元：代码块走不到。"""
+    assert is_complete(_core_source(), (), (), set()) is True

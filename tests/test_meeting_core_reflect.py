@@ -71,10 +71,11 @@ class TestDesign:
 
     def test_pool_carries_the_stable_definitions(self) -> None:
         names = [d.def_name for d in reflect._design_pool().files[0].definitions]
-        assert len(names) == 27
+        assert len(names) == 30
         assert "FileId" in names and "ContentReference" in names and "Result" in names
         assert "ScreenContent" in names and "FileState" in names
         assert "FileKvStore" not in names                 # 记录层的类型不在稳定类型章里
+        assert {"Assert", "Appendix", "Hint"} <= set(names)   # 说明用的词也是定义（单位元）
 
     def test_definition_by_short_and_full_name(self) -> None:
         assert _definition("FileId").full_name == "meeting_core.FileId"
@@ -112,8 +113,12 @@ class TestSevenCells:
         assert [step.value for step in inner.path] == ["$file_name"]
 
     def test_leaf_kinds(self) -> None:
+        """UserName 是和：值挂在 $agent_name 那一支底下，得走进去才是叶子。"""
         node = _open(_versioned_file(), "VersionedFile")
-        author = node.get_file_name().at_index(0).get_author()
+        name = node.get_file_name().at_index(0).get_author()
+        with pytest.raises(reflect.VibaReflectError, match="和类型"):
+            name.leaf
+        author = name.by_tag("agent_name")
         assert author.leaf.kind == "str"
         assert author.value == "alice"
         assert author.leaf.value == "alice"
@@ -190,11 +195,13 @@ class TestSumBranches:
         assert node.has_generator() is True
         assert node.has_passive_discriminator() is False
 
-    def test_absent_optional_field_is_false(self) -> None:
+    def test_nil_valued_optional_field_is_present_with_nil(self) -> None:
+        """字段在、值是 nil：has 为真，读出来是 nil（不是"没有这一段"）。"""
         segment = adt.TerminalTextSegment(text="x", bg=None)
         node = _open(segment, "TerminalTextSegment")
-        assert node.has_bg() is False
-        assert node.has_field_1() is False
+        assert node.has_bg() is True
+        assert node.get_bg().leaf.value is None
+        assert node.has_field_1() is False               # 位置成员只有 fg / bg
 
     def test_content_reference_branch_matches_by_class_name(self) -> None:
         message = adt.ChatMessage(
@@ -234,8 +241,8 @@ class TestPythonLanding:
         assert "nope" not in node
 
     def test_missing_value_is_ok_none_not_an_exception(self) -> None:
-        node = _open(adt.Versioned(data=None), "Versioned")
-        assert node.try_get_data().value is None
+        node = _open({"time": _moment(), "author": "alice"}, "Versioned")
+        assert node.try_get_data().value is None          # 数据里没有这个 key
         with pytest.raises(reflect.VibaReflectError, match="没有值"):
             node.get_data()
 
@@ -268,7 +275,7 @@ class TestConvenience:
         assert reflect.viba_get_by_path(node, path).value.value == "print(1)"
 
     def test_read_reports_a_missing_step(self) -> None:
-        node = _open(adt.Versioned(data=None), "Versioned")
+        node = _open({"time": _moment(), "author": "alice"}, "Versioned")
         assert reflect.viba_get_by_path(node, [reflect.by_tag("data")]).message == "这一步没有值"
 
     def test_resolve_reports_an_unknown_step(self) -> None:

@@ -532,7 +532,7 @@ def test_case_open_file_creates_a_new_file_once(ctx, sdk, reflect):
     state = _node(_ok_node(sdk.latest_file(ctx, first), reflect).data, "FileState", reflect)
     assert state.get_name().value == "c.py"
     assert state.get_content().value == ""
-    assert state.has_meta() is False                     # 状态链空着 = 可写
+    assert state.get_meta().leaf.value is None           # 状态链空着 = 可写（nil）
 
 
 def test_case_open_file_creates_inside_a_fold(ctx, sdk, reflect):
