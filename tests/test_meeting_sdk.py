@@ -439,9 +439,10 @@ def test_case_file_id_by_path_rejects_unknown_paths(ctx, sdk, reflect):
         assert _err_message(sdk.file_id_by_path(ctx, path), reflect)
 
 
-def test_case_file_kv_store_is_readable_through_the_design(ctx, sdk, reflect):
-    store = _ok_node(sdk.file_kv_store(ctx), reflect).data
-    assert _node(store, "FileKvStore", reflect).get_file_id2file().keys() == ["f1", "f2"]
+def test_case_file_datetimes_lists_the_versions(ctx, sdk, reflect):
+    file_id = _file_id_of(ctx, sdk, reflect, "/ws/a.py")
+    moments = _ok_node(sdk.file_datetimes(ctx, file_id), reflect).data
+    assert [_node(m, "datetime", reflect).get_microsecond().value for m in moments] == [1]
 
 
 def test_case_latest_file_gives_the_current_state(ctx, sdk, reflect):
@@ -509,11 +510,9 @@ def _file_id_of(ctx, sdk, reflect, path):
     return _ok_node(sdk.file_id_by_path(ctx, path), reflect).data
 
 
-def _content_chain(ctx, sdk, reflect, file_id):
-    store = _ok_node(sdk.file_kv_store(ctx), reflect).data
-    files = _node(store, "FileKvStore", reflect).get_file_id2file()
-    key = _node(file_id, "FileId", reflect).get_file_id().value
-    return files[key].get_file_content()
+def _version_times(ctx, sdk, reflect, file_id):
+    return [_node(m, "datetime", reflect).get_microsecond().value
+            for m in _ok_node(sdk.file_datetimes(ctx, file_id), reflect).data]
 
 
 def test_case_open_file_opens_an_existing_path(ctx, sdk, reflect):
@@ -566,14 +565,21 @@ def test_case_write_text_appends_a_version_and_keeps_the_old_one(ctx, sdk, refle
     file_id = _ok_node(sdk.open_file(ctx, "/ws/c.py", first, _ALICE), reflect).data
     assert _result(sdk.write_text(ctx, file_id, "print(3)", last, _ALICE),
                    reflect).has_ok()
-    assert len(_content_chain(ctx, sdk, reflect, file_id)) == 2
+    assert _version_times(ctx, sdk, reflect, file_id) == [1, 3]      # 新建那一版 + 写这一版
 
-    latest = _node(_ok_node(sdk.latest_file(ctx, file_id), reflect).data, "FileState", reflect)
+    latest = _node(_ok_node(sdk.read_text(ctx, file_id), reflect).data, "FileState", reflect)
     assert latest.get_content().value == "print(3)"
     ref = sdk.make_versioned_file_reference(file_id, first)
     old = _node(_ok_node(sdk.resolve_versioned_file_reference(ctx, ref), reflect).data,
                 "FileState", reflect)
     assert old.get_content().value == ""                 # 旧版原样留着
+
+
+def test_case_read_text_is_latest_file(ctx, sdk, reflect):
+    file_id = _file_id_of(ctx, sdk, reflect, "/ws/a.py")
+    read = _ok_node(sdk.read_text(ctx, file_id), reflect).data
+    latest = _ok_node(sdk.latest_file(ctx, file_id), reflect).data
+    assert read == latest
 
 
 def test_case_write_text_refuses_read_only_and_deleted(ctx, sdk, reflect):

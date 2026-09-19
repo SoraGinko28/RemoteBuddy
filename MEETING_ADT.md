@@ -1,4 +1,4 @@
-# Meeting ADT（定稿存档）
+# Meeting ADT
 
 > 本文档是 RemoteBuddy 会议模型的形式化定稿（用户原稿，随讨论同步）。
 > ADT 只描述系统核心逻辑（能力层）；Workspace 存数据、Tree 记血缘、
@@ -40,6 +40,10 @@ MeetingData :=
       owner_at(t) := 含 t 的控制区间的 TerminalControl.user_name
                      （区间由 TerminalControl.start_time 界定；可能缺省 = 此刻无人控制）
     }]
+
+FileKvStore :=
+    Object
+  * $file_id2file dict[str, mc.VersionedFile]
 
 FileDesktop :=
     DataClass
@@ -302,10 +306,6 @@ VersionedFile :=
       # as-of 取链上 (Versioned.time ≤ 引用时刻) 的最后一版；链只增，已有版本永不动。
       # 状态链空着 = 可写：$deleted / $read_only 是后加的状态，可写是缺省
     }]
-
-FileKvStore :=
-    Object
-  * $file_id2file dict[str, VersionedFile]
 
 ChatMessage :=
     Object
@@ -570,9 +570,10 @@ file_id_by_path[Ctx] :=
   <- $ctx Ctx
   <- $path str
 
-file_kv_store[Ctx] :=
-    mc.Result[mc.FileKvStore]
+file_datetimes[Ctx] :=
+    mc.Result[list[mc.datetime]]
   <- $ctx Ctx
+  <- $file mc.FileId
 
 files_at[Ctx] :=
     mc.Result[dict[str, mc.FileState]]
@@ -593,7 +594,7 @@ resolve_versioned_file_content_reference[Ctx] :=
     mc.Result[str]                             # 引用那一段的原文
   <- $ctx Ctx
   <- $ref mc.VersionedFileContentReference
-  
+
 open_file[Ctx] :=
     mc.Result[mc.FileId]                       # 路径上有就打开（只读/已删的也照开），没有就新建
   <- $ctx Ctx
@@ -612,6 +613,8 @@ write_text[Ctx] :=
   <- $text_content str                         # 追加：内容链加一版（旧全文 + 这段），旧版原样留着
   <- $time mc.datetime
   <- $user_name mc.UserName
+
+read_text[Ctx] := latest_file[Ctx]
 
 # ---------------------------------------------------------------- #
 # 构造引用这类值：不吃 ctx（不碰记录），名字一律 make_*
