@@ -1,6 +1,6 @@
 """meeting_sdk — meeting_sdk.viba 的 Python 实现：从一场会议里取数的只读接口。
 
-设计（签名）在 MEETING_ADT.md 的「取数据接口」那一章（模块名 meeting_sdk）：每个函数带泛型
+The design (signatures) is the "The data interface" chapter of MEETING_ADT.md (module name meeting_sdk)：每个函数带泛型
 参数 ``Ctx``、吃一个 ``$ctx``，返回 Result，签名里只有稳定类型。这一层是它的实现。
 
 **对外的接口就是 meeting_sdk.viba 里的那 34 个**：名字落 snake_case，参数、返回都照设计，不多导出
