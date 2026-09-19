@@ -66,7 +66,7 @@ FileDesktop :=
   * Appendix[{
       # the desktop tree shows the current state only: no mc.ContentReference
       # cites it by $version_time, so the tree carries no version chain (the only
-      # things read as-of are the three chains in file_kv_store);
+      # things read at a moment are the three chains in file_kv_store);
       # $reorder_indexes records the time and author of the last reordering
     }]
 
@@ -319,7 +319,7 @@ VersionedFile :=
   * $file_content AppendOnlyList[Versioned[str]]                 # the content chain: append only, older versions stay
   * Appendix[{
       # one chain per part: the three chains FileDesktop's Appendix names;
-      # as-of takes the last version with (Versioned.time ≤ the moment cited);
+      # reading at a moment takes the last version with (Versioned.time ≤ the moment cited);
       # a chain only grows, an existing version never moves.
       # an empty status chain = writable: $deleted / $read_only are statuses laid
       # on later, writable is the default
@@ -374,7 +374,7 @@ VersionedFileReference :=
   * $file_id FileId
   * $version_time datetime
   * Appendix[{
-      # as-of: the newest version at or before that moment
+      # reading at a moment: the newest version at or before that moment
       resolve($ref) := the last version on $file_id's chain that satisfies
           (Versioned.time ≤ $ref.version_time)
       # name / meta / content are three independent version chains, each resolved

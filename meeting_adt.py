@@ -485,7 +485,7 @@ class TerminalControlReference:
 
 @dataclass(frozen=True)
 class VersionedFileReference:
-    """$file_id FileId * $version_time datetime —— as-of：取该时刻（含）之前的最近一版。"""
+    """$file_id FileId * $version_time datetime —— 取该时刻（含）之前的最近一版。"""
 
     file_id: "FileId"
     version_time: Optional[_dt.datetime] = None
@@ -1003,7 +1003,7 @@ __all__ += [
 # VersionedFile := Object * $file_name AppendOnlyList[Versioned[str]]
 #   * $file_meta AppendOnlyList[Versioned[DataStatus]]
 #   * $file_content AppendOnlyList[Versioned[str]]
-#   (三条链：as-of 取链上 time ≤ 时刻的最后一版；状态链空着 = 可写)
+#   (三条链：读某一刻取链上 time ≤ 时刻的最后一版；状态链空着 = 可写)
 # FileKvStore := Object * $file_id2file dict[str, VersionedFile]
 # FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileId]
 # FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileId]
@@ -1116,8 +1116,8 @@ class VersionedFile:
     * $file_content AppendOnlyList[Versioned[str]]
 
     Three chains, one per part. Appending a version is the only write there is:
-    existing versions stay put, and as-of takes the last version whose time is
-    at or before the moment asked for. An empty meta chain means writable: the
+    existing versions stay put, and reading at a moment takes the last version
+    whose time is at or before that moment. An empty meta chain means writable: the
     status is something added later, writable is the default.
     """
 
