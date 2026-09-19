@@ -42,7 +42,6 @@ if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VEND
 from viba import builder  # noqa: E402
 from viba.type import Err, Ok, Result  # noqa: E402
 from viba.viba_type_descriptor import (  # noqa: E402
-    LITERAL,
     empty_pool,
     parse_viba_file,
     pool_add_file,
@@ -53,7 +52,6 @@ from viba.viba_type_descriptor import (  # noqa: E402
     SUM,
     TAGGED,
     TUPLE,
-    TYPE_REF,
 )
 
 __all__ = ["serialize", "serialize_for", "access_for"]
@@ -141,10 +139,17 @@ def _source(name: str, access, definition, data) -> Result:
 
 
 def _emit(access, node):
-    """This part of the data, as a builder expression."""
+    """This part of the data, as a builder expression.
+
+    The value side is asked with the protocol's own cells, never by looking at
+    what the binding put in the node: VibaLeaf answers "the value is itself this
+    piece" (a literal, a unit branch, nil) and "walk one step further in" for
+    the rest, which is exactly the question here.
+    """
     shape = access._unfold(node.descriptor)
-    if node.data is _reflect._NIL:
-        return None                     # carries a unit: the design writes nil
+    given = access.leaf(node)
+    if isinstance(given, Ok):
+        return _emit_leaf(given.ok_value)
     if shape.kind == SUM:
         return _emit_sum(access, node)
     if shape.kind == PRODUCT:
@@ -157,8 +162,6 @@ def _emit(access, node):
         return _emit_container(access, node, container)
     if shape.kind == TAGGED:
         return _emit(access, _child(access, node, _reflect.by_field_index(0)))
-    if shape.kind in (TYPE_REF, LITERAL):
-        return _emit_leaf(node.data)
     if shape.kind in (NIL, NEVER):
         return None
     raise SerializeGap(f"cannot write this piece out: {shape.kind}")
@@ -172,9 +175,10 @@ def _emit_sum(access, node):
             continue
         inner = _emit(access, child.ok_value)
         return inner if tag is None else _tag(tag)(inner)
-    if node.data is None:
-        return None                     # the default branch (Optional nil)
-    raise SerializeGap(f"no branch of this sum matches: {type(node.data).__name__}")
+    given = access.leaf(node)
+    if isinstance(given, Ok):
+        return _emit_leaf(given.ok_value)   # the sum's own unit: the default branch
+    raise SerializeGap(f"no branch of this sum matches: {node!r}")
 
 
 def _emit_product(access, node):
@@ -234,13 +238,13 @@ def _emit_container(access, node, container: str):
     raise SerializeGap(f"cannot write this container out: {container}")
 
 
-def _emit_leaf(data):
-    """Built-in leaves: five kinds."""
-    if data is None:
+def _emit_leaf(value):
+    """A leaf the language can write: nil, or one of the four literals."""
+    if value is None:
         return None
-    if isinstance(data, (bool, int, float, str)):
-        return data
-    raise SerializeGap(f"cannot write this leaf out: {type(data).__name__}")
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    raise SerializeGap(f"cannot write this leaf out: {type(value).__name__}")
 
 
 # ----------------------------------------------------------------------
