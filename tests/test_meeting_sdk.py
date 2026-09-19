@@ -143,7 +143,7 @@ def _definition(name: str):
 def _node(value, name, reflect):
     """Start a node per the protocol: access(definition).root(_Record(value))."""
     given = reflect.access(_definition(name)).root(reflect._Record(value))
-    assert isinstance(given, Ok), "取不到起点"
+    assert isinstance(given, Ok), "cannot open the root"
     return given.value
 
 
@@ -154,7 +154,7 @@ def _result(value, reflect):
 def _ok_node(value, reflect):
     """The node of the $ok branch."""
     result = _result(value, reflect)
-    assert result.has_ok() is True, "这不是 $ok"
+    assert result.has_ok() is True, "this is not $ok"
     return result.get_ok()
 
 
@@ -171,7 +171,7 @@ def _ok_data(value, reflect):
 
 def _err_message(value, reflect):
     result = _result(value, reflect)
-    assert result.has_err() is True, "这不是 $err"
+    assert result.has_err() is True, "this is not $err"
     return result.get_err().value
 
 
@@ -185,7 +185,7 @@ def _reference_kind(reference, reflect):
     for kind in _REFERENCE_KINDS:
         if getattr(node, f"has_{kind}")():
             return kind
-    raise AssertionError("不是任何一种引用")
+    raise AssertionError("not one of the reference kinds")
 
 
 def _references_of_kind(references, kind, reflect):
@@ -194,7 +194,7 @@ def _references_of_kind(references, kind, reflect):
 
 def _one_reference_of_kind(references, kind, reflect):
     found = _references_of_kind(references, kind, reflect)
-    assert len(found) == 1, f"{kind} 有 {len(found)} 条"
+    assert len(found) == 1, f"{kind}: found {len(found)}"
     return found[0]
 
 
@@ -215,7 +215,7 @@ def _message_of(messages, user_name, reflect):
         node = _node(message, "ChatMessage", reflect)
         if node.get_user_name().by_tag("agent_name").value == user_name:
             return message
-    raise AssertionError(f"数据里没有 {user_name} 的消息")
+    raise AssertionError(f"no message from {user_name} in the data")
 
 
 @pytest.fixture(name="sdk")
@@ -378,7 +378,7 @@ def test_case_screen_at_returns_the_state(ctx, sdk, reflect):
 
 def test_case_screen_at_without_that_moment_is_an_error(ctx, sdk, reflect):
     last = _ok_data(sdk.last_chunk_time(ctx), reflect)
-    assert "屏幕流" in _err_message(sdk.screen_at(ctx, last), reflect)
+    assert "screen stream" in _err_message(sdk.screen_at(ctx, last), reflect)
 
 
 def test_case_resolve_screen_reference(ctx, sdk, reflect):
@@ -596,8 +596,8 @@ def test_case_read_text_is_latest_file(ctx, sdk, reflect):
 def test_case_write_text_refuses_read_only_and_deleted(ctx, sdk, reflect):
     moment = _ok_data(sdk.last_chunk_time(ctx), reflect)
     read_only = _file_id_of(ctx, sdk, reflect, "/ws/a.py")
-    assert "只读" in _err_message(sdk.write_text(ctx, read_only, "x", moment, _ALICE),
+    assert "read-only" in _err_message(sdk.write_text(ctx, read_only, "x", moment, _ALICE),
                                   reflect)
     deleted = _file_id_of(ctx, sdk, reflect, "/ws/pkg/b.py")
-    assert "已删除" in _err_message(sdk.write_text(ctx, deleted, "x", moment, _ALICE),
+    assert "deleted" in _err_message(sdk.write_text(ctx, deleted, "x", moment, _ALICE),
                                     reflect)

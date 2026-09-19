@@ -29,7 +29,7 @@ from viba.type import AstNodeType, Err, Ok, custom_module  # noqa: E402
 # not accept a ListLiteral resident, while writing list[T] directly is. Once viba
 # is fixed this table goes empty.
 KNOWN_VIBA_GAPS = {
-    "VersionedFile": "AppendOnlyList[T] := list[T] 展开后不认 ListLiteral 居民",
+    "VersionedFile": "AppendOnlyList[T] := list[T] does not take a ListLiteral resident once unfolded",
 }
 
 CORE_MODULE = custom_module(reflect._design_source())
@@ -130,10 +130,10 @@ def test_both_readers_read_the_same_thing(name, data) -> None:
         theirs = rule_reflect.viba_get_by_path(
             witness_root, [_same_step(step) for step in node.path])
         assert _leaf_of(ours) == _leaf_of(theirs), (
-            f"{name}: 路径 {[step.value for step in node.path]} "
-            f"这边 {ours!r}，那边 {theirs!r}")
+            f"{name}: path {[step.value for step in node.path]} "
+            f"here {ours!r}, there {theirs!r}")
         compared += _leaf_of(ours) is not None
-    assert compared > 0, f"{name}: 一条叶子都没对上"
+    assert compared > 0, f"{name}: not one leaf matched"
 
 
 def test_an_empty_container_has_no_viba_spelling(ctx=None) -> None:
@@ -144,7 +144,7 @@ def test_an_empty_container_has_no_viba_spelling(ctx=None) -> None:
         file_meta=[],
         file_content=[adt.Versioned("print(1)", _moment(), "alice")]))
     assert isinstance(given, Err)
-    assert "空的" in given.message
+    assert "empty" in given.message
 
 
 def test_a_chat_part_that_does_not_bind_is_refused() -> None:
@@ -153,7 +153,7 @@ def test_a_chat_part_that_does_not_bind_is_refused() -> None:
     given = serialize.serialize("ChatMessage", adt.ChatMessage(
         user_name="alice", time=_moment(), message=[adt.RawMessage("hi")]))
     assert isinstance(given, Err)
-    assert "对得上的支" in given.message
+    assert "no branch" in given.message
 
 
 def test_serialize_refuses_a_missing_step() -> None:
