@@ -120,6 +120,11 @@ def test_the_written_code_is_a_resident_of_the_definition(name, data) -> None:
 @pytest.mark.parametrize("name,data", _samples(), ids=lambda x: None)
 def test_both_readers_read_the_same_thing(name, data) -> None:
     """Walk the whole tree: every path must read the same leaf on both sides."""
+    assert _leaves_read_alike(name, data) > 0, f"{name}: not one leaf matched"
+
+
+def _leaves_read_alike(name: str, data) -> int:
+    """Walk both sides and compare every path; how many leaves were read."""
     body = _witness(name, data)
     definition = reflect._definition(name)
     access = reflect.access
@@ -134,18 +139,34 @@ def test_both_readers_read_the_same_thing(name, data) -> None:
             f"{name}: path {[step.value for step in node.path]} "
             f"here {ours!r}, there {theirs!r}")
         compared += _leaf_of(ours)[0] == "ok"
-    assert compared > 0, f"{name}: not one leaf matched"
+    return compared
 
 
-def test_an_empty_container_has_no_viba_spelling(ctx=None) -> None:
-    """Known gap: a literal needs at least one element, so an empty
-    list / set / dict cannot be written yet."""
-    given = serialize.serialize("VersionedFile", adt.VersionedFile(
+def test_an_empty_container_is_written_as_an_empty_literal() -> None:
+    """A literal with no members is still a literal: ListLiteral[] and the
+    other two. The design leans on this — an empty $styles set means "no extra
+    styles"."""
+    for type_expression, empty, written in (
+            ("list[str]", [], "ListLiteral[]"),
+            ("set[str]", set(), "SetLiteral[]"),
+            ("dict[str, str]", {}, "DictLiteral[]")):
+        given = serialize.serialize_for(type_expression, empty)
+        assert isinstance(given, Ok), given
+        assert written in given.ok_value, given.ok_value
+        assert viba_ast.parse(given.ok_value)            # and it reads back
+
+
+def test_an_empty_list_among_the_chains_still_reads_the_same() -> None:
+    """VersionedFile with no $file_meta: the empty chain is written, and both
+    readers walk the rest of the record the same way."""
+    data = adt.VersionedFile(
         file_name=[adt.Versioned("a.py", _moment(), "alice")],
         file_meta=[],
-        file_content=[adt.Versioned("print(1)", _moment(), "alice")]))
-    assert isinstance(given, Err)
-    assert "empty" in given.err_msg
+        file_content=[adt.Versioned("print(1)", _moment(), "alice")])
+    given = serialize.serialize("VersionedFile", data)
+    assert isinstance(given, Ok), given
+    assert "ListLiteral[]" in given.ok_value
+    assert _leaves_read_alike("VersionedFile", data) > 0
 
 
 def test_a_chat_part_that_does_not_bind_is_refused() -> None:
