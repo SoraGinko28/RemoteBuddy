@@ -19,14 +19,10 @@ is refused where it is made. The prose words (Assert / Appendix / Hint) are not
 part of the data shape and are written nil — they are units, so a definition
 that carries them is still judged fine.
 
-Two known gaps (both unspellable, give Err — do not force a wrong spelling):
-
-1. A generic alias does not accept a literal resident: under the spelling
-   ``AppendOnlyList[T] := list[T]``, ``ListLiteral[...]`` fails
-   ``is_compliant`` (writing ``list[T]`` directly passes).
-2. The chat message's ``$raw_msg`` / ``$at_user_name`` branches: on the Python
-   side these are the two classes ``RawMessage`` / ``AtUserMessage``, which
-   match neither the design's tag nor its leaf type.
+A piece of the data the design has no spelling for gives Err (SerializeGap):
+this module writes what the design says and never forces a spelling. Which side
+cannot be spelled — the design's definition, the judge, or this binding — is not
+something this module knows about, and no definition name is special here.
 """
 
 from __future__ import annotations

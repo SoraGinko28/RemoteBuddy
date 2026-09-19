@@ -170,8 +170,8 @@ def test_an_empty_list_among_the_chains_still_reads_the_same() -> None:
 
 
 def test_a_chat_part_that_does_not_bind_is_refused() -> None:
-    """Known gap: $raw_msg does not match RawMessage; better to write nothing
-    than to force a nil."""
+    """The design's chat part is $raw_msg str; the record layer hands over a
+    RawMessage. Nothing is written rather than a forced nil."""
     given = serialize.serialize("ChatMessage", adt.ChatMessage(
         user_name="alice", time=_moment(), message=[adt.RawMessage("hi")]))
     assert isinstance(given, Err)
