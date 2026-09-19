@@ -25,13 +25,6 @@ from viba.rule import reflect as rule_reflect  # noqa: E402
 from viba.rule.is_compliant import is_compliant  # noqa: E402
 from viba.type import AstNodeType, Err, Ok, custom_module  # noqa: E402
 
-# Known gap on the viba side: a generic alias (AppendOnlyList[T] := list[T]) does
-# not accept a ListLiteral resident, while writing list[T] directly is. Once viba
-# is fixed this table goes empty.
-KNOWN_VIBA_GAPS = {
-    "VersionedFile": "AppendOnlyList[T] := list[T] does not take a ListLiteral resident once unfolded",
-}
-
 CORE_MODULE = custom_module(reflect._design_source())
 CORE_DEFS = {definition.name: definition for definition in CORE_MODULE.module.body}
 
@@ -112,8 +105,6 @@ def test_the_written_code_is_a_resident_of_the_definition(name, data) -> None:
     body = _witness(name, data)
     given = is_compliant(AstNodeType(body, CORE_MODULE),
                          AstNodeType(CORE_DEFS[name].body, CORE_MODULE))
-    if name in KNOWN_VIBA_GAPS:
-        pytest.xfail(KNOWN_VIBA_GAPS[name])
     assert isinstance(given, Ok) and given.ok_value is True, given
 
 
