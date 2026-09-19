@@ -102,7 +102,7 @@ def chat_message_at(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
     for message in _records(ctx, adt.ChatStreamChunk):
         if message.time == time and message.user_name == user:
             return _Ok(message)
-    return _Err(f"聊天流里没有 {user!r} 在 {time} 的那条")
+    return _Err(f"the chat stream has no message from {user!r} at {time}")
 
 
 def resolve_chat_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Result:
@@ -121,7 +121,7 @@ def resolve_score_reference(ctx: Ctx, ref: "adt.ScoreReference") -> _Result:
     for message in _records(ctx, adt.ScoreStreamChunk):
         if message.time == ref.judge_time and message.judge_name == ref.judge_name:
             return _Ok(message)
-    return _Err(f"评分流里没有 {ref.judge_name!r} 在 {ref.judge_time} 的那条")
+    return _Err(f"the score stream has no score by {ref.judge_name!r} at {ref.judge_time}")
 
 
 def chat_message_references(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
@@ -138,7 +138,7 @@ def score_message_reference(ctx: Ctx, time: _dt.datetime, judge: str) -> _Result
     if isinstance(given, _Err):
         return given
     if given.value.reference is None:
-        return _Err(f"{judge!r} 在 {time} 那条评分没有引用")
+        return _Err(f"the score by {judge!r} at {time} carries no reference")
     return _Ok(given.value.reference)
 
 
@@ -146,7 +146,7 @@ def first_chunk_time(ctx: Ctx) -> _Result:
     """The moment of the meeting's first chunk."""
     moments = [m for m in (_chunk_time(c) for c in ctx.sorted_stream_chunks) if m is not None]
     if not moments:
-        return _Err("这场会议没有任何 chunk")
+        return _Err("this meeting has no chunk at all")
     return _Ok(min(moments))
 
 
@@ -154,7 +154,7 @@ def last_chunk_time(ctx: Ctx) -> _Result:
     """The last one."""
     moments = [m for m in (_chunk_time(c) for c in ctx.sorted_stream_chunks) if m is not None]
     if not moments:
-        return _Err("这场会议没有任何 chunk")
+        return _Err("this meeting has no chunk at all")
     return _Ok(max(moments))
 
 
@@ -168,14 +168,14 @@ def screen_at(ctx: Ctx, time: _dt.datetime) -> _Result:
     for capture in _records(ctx, adt.ScreenStreamChunk):
         if capture.captured_at == time:
             return _Ok(_screen_state(capture))
-    return _Err(f"屏幕流里没有 {time} 那一屏")
+    return _Err(f"the screen stream has no screen at {time}")
 
 
 def resolve_screen_reference(ctx: Ctx, ref: "adt.ScreenReference") -> _Result:
     for capture in _records(ctx, adt.ScreenStreamChunk):
         if capture.captured_at == ref.capture_time:
             return _Ok(_screen_state(capture))
-    return _Err(f"屏幕流里没有 {ref.capture_time} 那一屏")
+    return _Err(f"the screen stream has no screen at {ref.capture_time}")
 
 
 # ----------------------------------------------------------------------
@@ -201,7 +201,7 @@ def control_owner_of(ctx: Ctx, ref: "adt.TerminalControlReference") -> _Result:
     for control in _records(ctx, adt.TerminalControlStreamChunk):
         if control.start_time == ref.start_time and (control.user_name or None) == ref.user_name:
             return _Ok(control.user_name or None)
-    return _Err(f"控制流里没有 {ref.start_time} 那一条")
+    return _Err(f"the control stream has no record at {ref.start_time}")
 
 
 # ----------------------------------------------------------------------
@@ -224,7 +224,7 @@ def file_id_by_path(ctx: Ctx, path: str) -> _Result:
             for member in workspace.member_files:
                 if isinstance(member, adt.FileId) and member.entry_name == entry_name:
                     return _Ok(member)
-        return _Err(f"没有 {path!r} 这个文件")
+        return _Err(f"no file at {path!r}")
     if len(parts) == 3:
         workspace_name, fold_name, entry_name = parts
         for workspace in ctx.file_desktop.workspaces:
@@ -236,8 +236,8 @@ def file_id_by_path(ctx: Ctx, path: str) -> _Result:
                 for file_id in member.member_file_ids:
                     if file_id.entry_name == entry_name:
                         return _Ok(file_id)
-        return _Err(f"没有 {path!r} 这个文件")
-    return _Err(f"路径要么 /workspace/entry，要么 /workspace/fold/entry：{path!r}")
+        return _Err(f"no file at {path!r}")
+    return _Err(f"a path is either /workspace/entry or /workspace/fold/entry: {path!r}")
 
 
 def file_datetimes(ctx: Ctx, file: "adt.FileId") -> _Result:
@@ -245,7 +245,7 @@ def file_datetimes(ctx: Ctx, file: "adt.FileId") -> _Result:
     three chains, deduplicated and ascending."""
     versioned_file = ctx.file_kv_store.file_id2file.get(file.file_id)
     if versioned_file is None:
-        return _Err(f"文件库里没有 {file.file_id!r}")
+        return _Err(f"the file store has no {file.file_id!r}")
     moments = {version.time for _, chain in _chains(versioned_file)
                for version in chain if version.time is not None}
     return _Ok(sorted(moments))
@@ -266,7 +266,7 @@ def latest_file(ctx: Ctx, file: "adt.FileId") -> _Result:
     """The latest state."""
     versioned_file = ctx.file_kv_store.file_id2file.get(file.file_id)
     if versioned_file is None:
-        return _Err(f"文件库里没有 {file.file_id!r}")
+        return _Err(f"the file store has no {file.file_id!r}")
     return _Ok(_file_state(versioned_file))
 
 
@@ -274,10 +274,10 @@ def resolve_versioned_file_reference(ctx: Ctx, ref: "adt.VersionedFileReference"
     """The file state at the moment cited."""
     versioned_file = ctx.file_kv_store.file_id2file.get(ref.file_id.file_id)
     if versioned_file is None:
-        return _Err(f"文件库里没有 {ref.file_id.file_id!r}")
+        return _Err(f"the file store has no {ref.file_id.file_id!r}")
     state = _file_state_at(versioned_file, ref.version_time)
     if state is None:
-        return _Err(f"{ref.file_id.file_id!r} 在 {ref.version_time} 还没有这一版")
+        return _Err(f"{ref.file_id.file_id!r} has no version at {ref.version_time}")
     return _Ok(state)
 
 
@@ -305,19 +305,19 @@ def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _
     """
     parts = [p for p in file_path.split("/") if p]
     if len(parts) not in (2, 3):
-        return _Err(f"路径要么 /workspace/entry，要么 /workspace/fold/entry：{file_path!r}")
+        return _Err(f"a path is either /workspace/entry or /workspace/fold/entry: {file_path!r}")
     workspace_name = parts[0]
     for workspace in ctx.file_desktop.workspaces:
         if workspace.workspace_name != workspace_name:
             continue
         if workspace.workspace_status == adt.DataStatus.READ_ONLY:
-            return _Err(f"工作区 {workspace_name!r} 只读，不能新建文件")
+            return _Err(f"workspace {workspace_name!r} is read-only, cannot create a file")
         if len(parts) == 2:
             entry_name = parts[1]
             for member in workspace.member_files:
                 if isinstance(member, adt.FileFold):
                     if member.fold_name == entry_name:
-                        return _Err(f"{file_path!r} 那一层已经有同名的 fold")
+                        return _Err(f"that level already has a fold named {file_path!r}")
                 elif member.entry_name == entry_name:
                     return _Ok(member)          # already there: open it
             opened = adt.FileId(file_id=_new_file_id(ctx), entry_name=entry_name)
@@ -335,8 +335,8 @@ def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _
             member.member_file_ids.append(opened)
             _mount_new_file(ctx, opened, time, user_name)
             return _Ok(opened)
-        return _Err(f"工作区 {workspace_name!r} 里没有 {fold_name!r} 这个 fold")
-    return _Err(f"没有 {workspace_name!r} 这个 workspace")
+        return _Err(f"workspace {workspace_name!r} has no fold {fold_name!r}")
+    return _Err(f"no workspace named {workspace_name!r}")
 
 
 def write_text(ctx: Ctx, file_id: "adt.FileId", text_content: str, time: _dt.datetime,
@@ -345,12 +345,12 @@ def write_text(ctx: Ctx, file_id: "adt.FileId", text_content: str, time: _dt.dat
     full text + this span; older versions stay untouched."""
     versioned_file = ctx.file_kv_store.file_id2file.get(file_id.file_id)
     if versioned_file is None:
-        return _Err(f"文件库里没有 {file_id.file_id!r}")
+        return _Err(f"the file store has no {file_id.file_id!r}")
     status = _latest_of(versioned_file.file_meta)
     if status == adt.DataStatus.READ_ONLY:
-        return _Err(f"{file_id.file_id!r} 只读")
+        return _Err(f"{file_id.file_id!r} is read-only")
     if status == adt.DataStatus.DELETED:
-        return _Err(f"{file_id.file_id!r} 已删除")
+        return _Err(f"{file_id.file_id!r} is deleted")
     old_content = _latest_of(versioned_file.file_content) or ""
     versioned_file.file_content.append(adt.Versioned(old_content + text_content, time, user_name))
     return _Ok(None)

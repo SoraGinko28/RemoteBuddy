@@ -30,7 +30,7 @@ def _chapter_source(title: str) -> str:
     """The source in the first code block under the chapter heading is that .viba."""
     text = DESIGN_PATH.read_text(encoding="utf-8").replace("\r\n", "\n")
     heading = re.search(r"(?m)^##\s*" + re.escape(title), text)
-    assert heading is not None, f"MEETING_ADT.md 里没有「{title}」这一章"
+    assert heading is not None, f"MEETING_ADT.md has no chapter named {title!r}"
     fence = text.index("```", heading.end())
     start = text.index("\n", fence) + 1
     return text[start:text.index("\n```", start)].rstrip("\n") + "\n"

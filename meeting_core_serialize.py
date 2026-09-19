@@ -113,7 +113,7 @@ def _emit(access, node):
         return _emit_leaf(node.data)
     if shape.kind in (NIL, NEVER):
         return viba_ast.Nil()
-    raise SerializeGap(f"这一段写不出来：{shape.kind}")
+    raise SerializeGap(f"cannot write this piece out: {shape.kind}")
 
 
 def _emit_sum(access, node):
@@ -126,7 +126,7 @@ def _emit_sum(access, node):
         return viba_ast.Tagged(tag, inner) if tag else inner
     if node.data is None:
         return viba_ast.Nil()               # the default branch (Optional nil)
-    raise SerializeGap(f"这个和类型没有对得上的支：{type(node.data).__name__}")
+    raise SerializeGap(f"no branch of this sum matches: {type(node.data).__name__}")
 
 
 def _emit_product(access, node):
@@ -142,7 +142,7 @@ def _emit_product(access, node):
         elif _is_optional(access, step, node):
             elements.append(viba_ast.Tagged(tag, viba_ast.Nil()))
         else:
-            raise SerializeGap(f"这一段没有值：{tag}")
+            raise SerializeGap(f"no value here: {tag}")
     return viba_ast.ProductChain(elements)
 
 
@@ -165,7 +165,8 @@ def _emit_container(access, node, container: str):
         raise SerializeGap(length.message)
     if length.value == 0:
         raise SerializeGap(
-            f"空的 {container} 现在没有 viba 写法：字面量至少要一个元素")
+            f"an empty {container} has no viba spelling yet: a literal takes at least "
+            f"one element")
     if container in ("list", "set"):
         constructor = "ListLiteral" if container == "list" else "SetLiteral"
         return viba_ast.TypeApp(constructor, [
@@ -181,7 +182,7 @@ def _emit_container(access, node, container: str):
                             _payload(access, _child(access, node, _reflect.at_key(key)))])
             for key in keys.value
         ])
-    raise SerializeGap(f"容器写不出来：{container}")
+    raise SerializeGap(f"cannot write this container out: {container}")
 
 
 def _emit_leaf(data):
@@ -190,7 +191,7 @@ def _emit_leaf(data):
         return viba_ast.Nil()
     if isinstance(data, (bool, int, float, str)):
         return viba_ast.Constant(data)
-    raise SerializeGap(f"叶子写不出来：{type(data).__name__}")
+    raise SerializeGap(f"cannot write this leaf out: {type(data).__name__}")
 
 
 # ----------------------------------------------------------------------
@@ -205,7 +206,7 @@ def _steps(access, node):
 def _child(access, node, step):
     given = access.get(node, step)
     if not isinstance(given, Ok) or given.value is None:
-        raise SerializeGap(f"这一步没有值：{step}")
+        raise SerializeGap(f"this step has no value: {step}")
     return given.value
 
 
