@@ -130,7 +130,6 @@ def _api_calls():
         ("resolve_versioned_file_reference", (data, file_ref)),
         ("resolve_versioned_file_content_reference", (data, content_ref)),
         ("read_text", (data, file_id)),
-        ("open_file", (data, "/ws/a.py")),
     ]
 
 
@@ -145,7 +144,7 @@ WALKABLE = (
     "participants", "roles", "owner_at", "control_owner_of", "file_id_by_path",
     "file_datetimes", "files_at", "latest_file",
     "resolve_versioned_file_reference", "resolve_versioned_file_content_reference",
-    "read_text", "open_file",
+    "read_text",
 )
 KNOWN_BINDING_GAP = ("chat_messages", "chat_message_at", "resolve_chat_reference")
 
@@ -200,9 +199,8 @@ def test_a_failed_api_answers_its_err_branch(wired) -> None:
     assert witness_root.by_tag("$err").value.value  # the sentence rides the $err branch
 
 
-def test_open_file_refuses_a_path_that_is_not_there(wired) -> None:
-    """Nothing writes over the wire either: a missing path is the answer's $err."""
-    given = remote.open_file(wired.meeting_uid, "/ws/c.py")
+def test_a_missing_path_is_an_err_inside_the_script(wired) -> None:
+    given = remote.file_id_by_path(wired.meeting_uid, "/ws/c.py")
     assert isinstance(given, Ok)
     assert "$err" in given.value
 
@@ -232,9 +230,9 @@ def test_the_make_group_is_local_and_identical() -> None:
             assert getattr(remote, name) is getattr(local, name)
 
 
-def test_the_contract_is_the_same_34() -> None:
+def test_the_contract_is_the_same_33() -> None:
     assert remote.__all__ == local.__all__
-    assert len(remote.__all__) == 34
+    assert len(remote.__all__) == 33
 
 
 def test_every_data_api_has_a_return_type() -> None:

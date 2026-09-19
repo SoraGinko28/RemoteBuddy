@@ -647,13 +647,6 @@ resolve_versioned_file_content_reference[Ctx] :=
   <- $ctx Ctx
   <- $ref mc.VersionedFileContentReference
 
-open_file[Ctx] :=
-    mc.Result[mc.FileId]                       # opens what is already there; nothing is created
-  <- $ctx Ctx
-  <- $file_path str                            # /workspace/entry or /workspace/fold/entry
-  # no such path -> $err: a bad path shape, or no workspace / fold / entry with
-  # that name. Writes are the harness's job; this layer only reads.
-
 read_text[Ctx] := latest_file[Ctx]
 
 # ---------------------------------------------------------------- #

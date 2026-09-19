@@ -520,7 +520,7 @@ def test_case_make_versioned_file_content_reference_takes_the_region(ctx, sdk, r
 
 
 # =====================================================================
-# Opening: open_file only opens what is already there
+# Opening a file: the path answers its FileId, or an Err
 # =====================================================================
 
 
@@ -528,24 +528,9 @@ def _file_id_of(ctx, sdk, reflect, path):
     return _ok_node(sdk.file_id_by_path(ctx, path), reflect).data
 
 
-def test_case_open_file_opens_an_existing_path(ctx, sdk, reflect):
-    opened = _node(_ok_node(sdk.open_file(ctx, "/ws/a.py"), reflect).data, "FileId", reflect)
-    same = _node(_file_id_of(ctx, sdk, reflect, "/ws/a.py"), "FileId", reflect)
-    assert opened.get_file_id().value == same.get_file_id().value
-
-
-def test_case_open_file_opens_a_file_in_a_fold(ctx, sdk, reflect):
-    opened = _ok_node(sdk.open_file(ctx, "/ws/pkg/b.py"), reflect).data
-    same = _file_id_of(ctx, sdk, reflect, "/ws/pkg/b.py")
-    assert _node(opened, "FileId", reflect).get_file_id().value == \
-        _node(same, "FileId", reflect).get_file_id().value
-
-
-def test_case_open_file_refuses_a_path_that_is_not_there(ctx, sdk, reflect):
-    """Nothing is created: every path that has no file is an Err."""
-    for path in ("a.py", "/nope/c.py", "/ws/nofold/c.py", "/locked/c.py", "/ws/pkg",
-                 "/ws/c.py", "/ws/pkg/c.py"):
-        assert _err_message(sdk.open_file(ctx, path), reflect), path
+def test_case_a_path_that_is_not_there_is_an_error(ctx, sdk, reflect):
+    for path in ("a.py", "/nope/c.py", "/ws/nofold/c.py", "/ws/pkg", "/ws/c.py"):
+        assert _err_message(sdk.file_id_by_path(ctx, path), reflect), path
 
 
 def test_case_read_text_is_latest_file(ctx, sdk, reflect):
