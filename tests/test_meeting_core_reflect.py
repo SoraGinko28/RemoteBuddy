@@ -116,7 +116,7 @@ class TestSevenCells:
         """UserName 是和：值挂在 $agent_name 那一支底下，得走进去才是叶子。"""
         node = _open(_versioned_file(), "VersionedFile")
         name = node.get_file_name().at_index(0).get_author()
-        with pytest.raises(reflect.VibaReflectError, match="和类型"):
+        with pytest.raises(reflect.VibaReflectError, match="not a leaf"):
             name.leaf
         author = name.by_tag("agent_name")
         assert author.leaf.kind == "str"
@@ -134,13 +134,13 @@ class TestSevenCells:
         node = accessor._unwrap(accessor.root(reflect._Record(_versioned_file())))
         chain = node.get_file_content()
         assert accessor.length(chain).value == 1
-        assert accessor.keys(chain).message.startswith("这一段不是 dict")
-        assert accessor.length(node).message.startswith("这一段不是容器")
+        assert accessor.keys(chain).message.startswith("this piece is not a dict")
+        assert accessor.length(node).message.startswith("this piece is not a container")
 
     def test_leaf_on_a_record_is_an_error(self) -> None:
         accessor = reflect.access(_definition("VersionedFile"))
         node = accessor._unwrap(accessor.root(reflect._Record(_versioned_file())))
-        assert "不是叶子" in accessor.leaf(node).message
+        assert "not a leaf" in accessor.leaf(node).message
 
 
 # =====================================================================
@@ -171,7 +171,7 @@ class TestAddressing:
 
     def test_unknown_coordinate_is_an_error(self) -> None:
         node = _open(_file_id(), "FileId")
-        with pytest.raises(reflect.VibaReflectError, match="设计里没有这个坐标"):
+        with pytest.raises(reflect.VibaReflectError, match="no such address"):
             node.by_tag("nope")
 
     def test_at_index_on_a_non_container_is_an_error(self) -> None:
@@ -236,14 +236,14 @@ class TestPythonLanding:
         node = _open(_versioned_file(), "VersionedFile")
         assert node.get_file_name().at_index(0).get_data().value == "a.py"
         assert node.has_file_name() is True
-        assert node.try_get_nope().message.startswith("设计里没有这个坐标")
+        assert node.try_get_nope().message.startswith("the design has no such address")
         assert "file_name" in node
         assert "nope" not in node
 
     def test_missing_value_is_ok_none_not_an_exception(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
         assert node.try_get_data().value is None          # 数据里没有这个 key
-        with pytest.raises(reflect.VibaReflectError, match="没有值"):
+        with pytest.raises(reflect.VibaReflectError, match="has no value"):
             node.get_data()
 
     def test_dir_lists_the_synthesised_names(self) -> None:
@@ -281,16 +281,16 @@ class TestConvenience:
         assert node.try_get_file_meta().value is None        # 单独一步：Ok(nil)
         given = reflect.viba_resolve(node, [reflect.by_tag("file_meta"),
                                             reflect.at_index(0)])
-        assert isinstance(given, Err) and given.message == "这一步没有值"
+        assert isinstance(given, Err) and given.message == "this step has no value"
 
     def test_read_reports_a_missing_step(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
-        assert reflect.viba_get_by_path(node, [reflect.by_tag("data")]).message == "这一步没有值"
+        assert reflect.viba_get_by_path(node, [reflect.by_tag("data")]).message == "this step has no value"
 
     def test_resolve_reports_an_unknown_step(self) -> None:
         node = _open(_file_id(), "FileId")
         given = reflect.viba_resolve(node, [reflect.by_tag("nope")])
-        assert "设计里没有这个坐标" in given.message
+        assert "no such address" in given.message
 
     def test_list_fields_keeps_what_is_there(self) -> None:
         node = _open(_file_id(), "FileId")

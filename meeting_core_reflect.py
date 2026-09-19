@@ -399,10 +399,10 @@ class VibaAccess:
         """VibaGet：往里走一步。数据里没有是 Ok(nil)，图上没这个坐标才是 Err。"""
         slots = self._members(node)
         if not self._knows(node, step, slots):
-            return Err(f"设计里没有这个坐标：{step}（{node!r}）")
+            return Err(f"the design has no such address: {step} ({node!r})")
         target = self._target_of(node, step, slots)
         if target is None:
-            return Err(f"设计里没有这个坐标：{step}（{node!r}）")
+            return Err(f"the design has no such address: {step} ({node!r})")
         piece = self._pick(node, step, target)
         if piece is None:
             return Ok(None)
@@ -421,24 +421,24 @@ class VibaAccess:
             shape = self._unfold(node.descriptor)
             if (shape.kind in (PRODUCT, TUPLE)
                     or self._container_kind(shape) is not None):
-                return Err(f"这一段不是叶子：{node!r}（{shape.kind}）")
+                return Err(f"this piece is not a leaf: {node!r}")
             if shape.kind == SUM and not self._branch_is_a_leaf(node):
                 # 和要往里走一步：$agent_name 那一支才是叶子；
                 # 只有字面量那种和（Style）与 Optional[float] 才是"值自己就是那一支"
-                return Err(f"这一段不是叶子：{node!r}（和类型）")
+                return Err(f"this piece is not a leaf: {node!r}")
             return Ok(_constant_value(data))
-        return Err(f"这一段不是叶子：{node!r}（{type(data).__name__}）")
+        return Err(f"this piece is not a leaf: {node!r}")
 
     def length(self, node: VibaNode) -> Result:
         """VibaLength：list / set / tuple 的元素个数，dict 的键数。"""
         if not isinstance(node.data, (list, tuple, set, frozenset, dict)):
-            return Err(f"这一段不是容器：{node!r}")
+            return Err(f"this piece is not a container: {node!r}")
         return Ok(len(node.data))
 
     def keys(self, node: VibaNode) -> Result:
         """VibaKeys：dict 的键，按实现给的顺序。"""
         if not isinstance(node.data, dict):
-            return Err(f"这一段不是 dict：{node!r}")
+            return Err(f"this piece is not a dict: {node!r}")
         return Ok([str(key) for key in node.data.keys()])
 
     # ---- 私有：取值那一路（Err 与 Ok(nil) 都抛） ----
@@ -447,7 +447,7 @@ class VibaAccess:
         if isinstance(given, Err):
             raise VibaReflectError(given.message)
         if given.value is None:
-            raise VibaReflectError("这一段没有值")
+            raise VibaReflectError("this piece has no value")
         return given.value
 
     # ---- 私有：地图（把描述符读成可寻址的形状） ----
@@ -776,12 +776,12 @@ def viba_resolve(node: VibaNode, path: Sequence[VibaStep]) -> Result:
     """VibaResolve：逐个 step 走 VibaGet。
 
     走到"数据里没有这一段"（``Ok(nil)``）就到此为止：后面还有 step 就是
-    ``Err("这一步没有值")``，没有 step 了就把 ``Ok(nil)`` 交出去。
+    ``Err("this step has no value")``，没有 step 了就把 ``Ok(nil)`` 交出去。
     """
     current = node
     for step in path:
         if current is None:
-            return Err("这一步没有值")
+            return Err("this step has no value")
         given = node._access.get(current, step)
         if isinstance(given, Err):
             return given
@@ -795,7 +795,7 @@ def viba_get_by_path(node: VibaNode, path: Sequence[VibaStep]) -> Result:
     if isinstance(resolved, Err):
         return resolved
     if resolved.value is None:
-        return Err("这一步没有值")
+        return Err("this step has no value")
     return node._access.leaf(resolved.value)
 
 
