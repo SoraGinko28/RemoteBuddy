@@ -687,9 +687,25 @@ class VibaAccess:
                 slots.append((None, element))
         return slots
 
-    def _member_steps(self, node: VibaNode) -> List[tuple]:
-        """[(tag or None, that step, descriptor)]: a None tag goes by
-        position."""
+    def carries_nil(self, descriptor: VibaTypeDescriptor) -> bool:
+        """Whether this written type admits nil.
+
+        Unfolded, that is a sum with a branch that is the product unit: a writer
+        asking whether a slot with no value may be written ``nil``.
+        """
+        shape = self._unfold(descriptor)
+        if shape.kind != SUM:
+            return False
+        return any(_is_unit_descriptor(element, self.config)
+                   for element in shape.payload.elements)
+
+    def member_steps(self, node: VibaNode) -> List[tuple]:
+        """[(tag or None, that step, descriptor)]: the members of this piece,
+        each with the step that takes you there; a None tag goes by position.
+
+        The step is what VibaGet takes, so a writer walks a material the same
+        way a reader does.
+        """
         out = []
         positional = 0
         for tag, member in self._members(node) or []:
@@ -837,7 +853,7 @@ class VibaAccess:
     def _branch_is_a_leaf(self, node: VibaNode) -> bool:
         """Whether the sum branch that matched is itself a leaf shape (literal /
         built-in leaf / unit)."""
-        for tag, step, member in self._member_steps(node):
+        for tag, step, member in self.member_steps(node):
             if self._pick(node, step, member) is None:
                 continue
             if tag:

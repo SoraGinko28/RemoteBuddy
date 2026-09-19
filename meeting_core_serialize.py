@@ -161,7 +161,7 @@ def _emit(access, node):
 
 def _emit_sum(access, node):
     """Sum: write the selected branch; none selected is the default (nil)."""
-    for tag, step, _ in access._member_steps(node):
+    for tag, step, _ in access.member_steps(node):
         child = access.get(node, step)
         if not isinstance(child, Ok) or child.ok_value is None:
             continue
@@ -176,14 +176,14 @@ def _emit_sum(access, node):
 def _emit_product(access, node):
     """A product: tagged members are written out, the prose words are units."""
     written = [_NAMES.Object]
-    for tag, step, _ in access._member_steps(node):
+    for tag, step, _ in access.member_steps(node):
         if tag is None:
             written.append(None)        # a prose word: the unit
             continue
         child = access.get(node, step)
         if isinstance(child, Ok) and child.ok_value is not None:
             written.append(_tag(tag)(_emit(access, child.ok_value)))
-        elif _is_optional(access, step, node):
+        elif _may_be_nil(access, step, node):
             written.append(_tag(tag)(None))
         else:
             raise SerializeGap(f"no value here: {tag}")
@@ -193,16 +193,10 @@ def _emit_product(access, node):
     return product
 
 
-def _is_optional(access, step, node) -> bool:
-    """Does this slot's design type carry nil (Optional[T] = T | nil)."""
+def _may_be_nil(access, step, node) -> bool:
+    """May this slot's written type be nil (a sum with a unit branch)?"""
     target = access._target_of(node, step, access._members(node))
-    if target is None:
-        return False
-    shape = access._unfold(target)
-    if shape.kind != SUM:
-        return False
-    return any(_reflect._is_unit_descriptor(element)
-               for element in shape.payload.elements)
+    return target is not None and access.carries_nil(target)
 
 
 def _emit_container(access, node, container: str):
@@ -250,7 +244,7 @@ def _tag(name: str):
 
 
 def _steps(access, node):
-    return [step for _, step, _ in access._member_steps(node)]
+    return [step for _, step, _ in access.member_steps(node)]
 
 
 def _child(access, node, step):
