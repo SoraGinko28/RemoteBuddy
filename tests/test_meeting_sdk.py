@@ -1,6 +1,6 @@
-"""meeting_sdk 的用例：每个 test_case_* 只吃 (ctx, sdk, reflect)。
+"""Test cases for meeting_sdk: every test_case_* only takes (ctx, sdk, reflect).
 
-写法是给以后的 metric getter 练手的：
+The style is practice for future metric getters:
 
     import meeting_sdk
     import meeting_core_reflect
@@ -11,18 +11,23 @@
     test_case_xxx(prepare_meeting_data_as_ctx(), sdk, reflect)
     test_case_yyy(prepare_meeting_data_as_ctx(), sdk, reflect)
 
-三条规矩：
+Three rules:
 
-1. **整个文件只有 prepare_meeting_data_as_ctx 一处碰记录层**（meeting_adt）；
-   引用这类值一律用 ``sdk`` 上的 ``make_*`` 造（它们是 meeting_sdk.viba 里的接口）。
-2. **用例里不许认识 meeting data 的细节**——数据只能用 ``sdk``（meeting_sdk）取，
-   取回来的东西只能用 ``reflect``（meeting_core_reflect）按设计读。
-3. **结果按设计的接口读**：Result 是 meeting_core 里的类型，SDK 不暴露自己的 Ok / Err；
-   一律走 ``result.has_ok()`` / ``result.get_ok().value``（失败走 ``has_err()`` /
-   ``get_err().value``）。载荷是序列或记录时，拿节点的 ``$data`` 再用反射逐段读——
-   ``$ok T`` 的 T 在 Result 那里是空的，只能靠调用方知道自己要的是什么类型。
+1. **The whole file touches the record layer only in
+   prepare_meeting_data_as_ctx** (meeting_adt); values like references are
+   always built with the ``make_*`` constructors on ``sdk`` (they are the
+   interface in meeting_sdk.viba).
+2. **Test cases must not know the details of meeting data** — data can only be
+   fetched with ``sdk`` (meeting_sdk), and whatever comes back can only be read
+   through ``reflect`` (meeting_core_reflect) per the design.
+3. **Results are read through the design's interface**: Result is a type in
+   meeting_core, the SDK does not expose its own Ok / Err; always go through
+   ``result.has_ok()`` / ``result.get_ok().value`` (on failure ``has_err()`` /
+   ``get_err().value``). When the payload is a sequence or a record, take the
+   node's ``$data`` and then read it piece by piece with reflection — the T of
+   ``$ok T`` is empty at Result, so only the caller knows which type it wants.
 
-底下三个 fixture 是为了让 pytest 按同一签名驱动这些用例。
+The three fixtures below let pytest drive these cases with the same signature.
 """
 
 import datetime as _dt
@@ -31,12 +36,12 @@ import pytest
 
 import meeting_core_reflect
 import meeting_sdk
-import meeting_adt  # 只有 prepare_meeting_data_as_ctx 用它
-from viba.type import Ok  # noqa: E402  （协议里的 Ok / Err）
+import meeting_adt  # only prepare_meeting_data_as_ctx uses this
+from viba.type import Ok  # noqa: E402  (Ok / Err in the protocol)
 from viba.viba_type_descriptor import pool_find_definition  # noqa: E402
 
-# 设计里的 datetime 是"微秒"（$microsecond int），所以这几个时刻的微秒各不相同，
-# 用例才读得出谁是谁。
+# In the design datetime is in "microseconds" ($microsecond int), so these
+# moments all differ in microsecond count and the cases can tell them apart.
 _T0 = _dt.datetime(2026, 9, 18, 12, 0, 0, 1, tzinfo=_dt.timezone.utc)
 _T1 = _dt.datetime(2026, 9, 18, 12, 0, 1, 2, tzinfo=_dt.timezone.utc)
 _T2 = _dt.datetime(2026, 9, 18, 12, 0, 2, 3, tzinfo=_dt.timezone.utc)
@@ -45,19 +50,20 @@ _BOB = "bob"
 
 
 def prepare_meeting_data_as_ctx():
-    """一份会议记录，当 ctx 交给用例。"""
+    """A meeting record, handed to the cases as ctx."""
     adt = meeting_adt
     text_region = meeting_sdk.make_text_region
 
     file_id = adt.FileId(file_id="f1", entry_name="a.py")
     file_ref = meeting_sdk.make_versioned_file_reference(file_id, _T0)
-    # 太早的一条：a.py 那一版是 _T0 才有的
+    # one that is too early: that version of a.py only exists from _T0
     stale_file_ref = meeting_sdk.make_versioned_file_reference(
         file_id, _T0 - _dt.timedelta(seconds=1))
     controls = [meeting_sdk.make_terminal_control_reference(_T0, _ALICE, text_region(0, 3)),
                 meeting_sdk.make_terminal_control_reference(_T2, None, text_region(0, 3))]
 
-    # alice 的第一条消息身上带着六种引用，后面的用例从数据里把它们取出来
+    # alice's first message carries all six kinds of reference; later cases
+    # pull them out of the data
     first_message = adt.ChatMessage(user_name=_ALICE, time=_T1, message=[
         adt.RawMessage("hi"),
         meeting_sdk.make_screen_reference(_T1, "screen", text_region(0, 2)),
@@ -93,7 +99,7 @@ def prepare_meeting_data_as_ctx():
     fold = adt.FileFold(fold_name="pkg",
                         member_file_ids=[adt.FileId(file_id="f2", entry_name="b.py")])
     workspace = adt.FileWorkspace(member_files=[file_id, fold], workspace_name="ws",
-                                  workspace_status=None)          # 缺省 = 可写
+                                  workspace_status=None)          # default = writable
     locked = adt.FileWorkspace(member_files=[], workspace_name="locked",
                                workspace_status=adt.DataStatus.READ_ONLY)
     desktop = adt.FileDesktop(workspaces=[workspace, locked])
@@ -121,12 +127,13 @@ def prepare_meeting_data_as_ctx():
 
 
 # ----------------------------------------------------------------------
-# 读法与取输入的小工具：只走 sdk + reflect
+# Small helpers for reading and fetching input: only sdk + reflect
 # ----------------------------------------------------------------------
 
 
 def _definition(name: str):
-    """描述侧的协议查询 PoolFindDefinition：按全名取定义描述符。"""
+    """The description-side protocol query PoolFindDefinition: fetch a
+    definition descriptor by full name."""
     full_name = name if "." in name else f"meeting_core.{name}"
     given = pool_find_definition(meeting_core_reflect._design_pool(), full_name)
     assert isinstance(given, Ok), given
@@ -134,7 +141,7 @@ def _definition(name: str):
 
 
 def _node(value, name, reflect):
-    """按协议起一个节点：access(definition).root(_Record(value))。"""
+    """Start a node per the protocol: access(definition).root(_Record(value))."""
     given = reflect.access(_definition(name)).root(reflect._Record(value))
     assert isinstance(given, Ok), "取不到起点"
     return given.value
@@ -145,19 +152,20 @@ def _result(value, reflect):
 
 
 def _ok_node(value, reflect):
-    """$ok 那一支的节点。"""
+    """The node of the $ok branch."""
     result = _result(value, reflect)
     assert result.has_ok() is True, "这不是 $ok"
     return result.get_ok()
 
 
 def _ok_value(value, reflect):
-    """标量载荷：result.get_ok().value。"""
+    """Scalar payload: result.get_ok().value."""
     return _ok_node(value, reflect).value
 
 
 def _ok_data(value, reflect):
-    """载荷是 datetime / 序列 / 记录时，$ok 那一支的节点再拿 $data。"""
+    """When the payload is a datetime / sequence / record, take $data from the
+    node of the $ok branch."""
     return _ok_node(value, reflect).data
 
 
@@ -172,7 +180,7 @@ _REFERENCE_KINDS = ("screen_ref", "chat_ref", "score_ref", "terminal_control_ref
 
 
 def _reference_kind(reference, reflect):
-    """一段引用是六支里的哪一支。"""
+    """Which of the six branches a reference is."""
     node = _node(reference, "ContentReference", reflect)
     for kind in _REFERENCE_KINDS:
         if getattr(node, f"has_{kind}")():
@@ -195,7 +203,8 @@ def _message_time(message, reflect):
 
 
 def _messages(ctx, sdk, reflect):
-    """会议里的聊天消息（区间端点从 sdk 取，不写死时刻）。"""
+    """The chat messages in the meeting (interval endpoints come from sdk,
+    no hard-coded moments)."""
     first = _ok_data(sdk.first_chunk_time(ctx), reflect)
     last = _ok_data(sdk.last_chunk_time(ctx), reflect)
     return _ok_node(sdk.chat_messages(ctx, first, last), reflect).data
@@ -225,7 +234,7 @@ def ctx():
 
 
 # =====================================================================
-# 时间与流
+# Time and streams
 # =====================================================================
 
 def test_case_first_and_last_chunk_time_bound_the_meeting(ctx, sdk, reflect):
@@ -240,7 +249,8 @@ def test_case_chunk_times_follow_the_streams(ctx, sdk, reflect):
     last = _ok_data(sdk.last_chunk_time(ctx), reflect)
     payload = _ok_node(sdk.chunk_times(ctx, first, last), reflect).data
     moments = [_node(m, "datetime", reflect).get_microsecond().value for m in payload]
-    # 控制 _T0 起；屏幕一条、聊天一条都在 _T1；评分在 _T2
+    # control starts at _T0; one screen and one chat are both at _T1;
+    # the score is at _T2
     assert moments == [1, 2, 2, 3]
 
 
@@ -259,7 +269,7 @@ def test_case_streams_between_lists_the_stream_names(ctx, sdk, reflect):
 
 
 # =====================================================================
-# 聊天与评分
+# Chat and scores
 # =====================================================================
 
 def test_case_chat_messages_read_through_the_design(ctx, sdk, reflect):
@@ -346,7 +356,7 @@ def test_case_make_chat_reference_points_back_at_the_message(ctx, sdk, reflect):
 
 
 # =====================================================================
-# 屏幕
+# Screen
 # =====================================================================
 
 def _screen_reference(ctx, sdk, reflect):
@@ -378,7 +388,7 @@ def test_case_resolve_screen_reference(ctx, sdk, reflect):
 
 
 # =====================================================================
-# 人
+# People
 # =====================================================================
 
 def test_case_participants(ctx, sdk, reflect):
@@ -395,7 +405,7 @@ def test_case_roles(ctx, sdk, reflect):
 
 def test_case_owner_at_reads_the_control_intervals(ctx, sdk, reflect):
     alice = _message_of(_messages(ctx, sdk, reflect), _ALICE, reflect)
-    # alice 发言那一刻（_T1）终端还是她的
+    # at the moment alice speaks (_T1) the terminal is still hers
     assert _ok_value(sdk.owner_at(ctx, _message_time(alice, reflect)), reflect) == "alice"
     handback = _control_references(ctx, sdk, reflect)[1]
     assert _ok_value(
@@ -419,7 +429,7 @@ def test_case_control_owner_of_a_handover(ctx, sdk, reflect):
 
 
 # =====================================================================
-# 文件层
+# File layer
 # =====================================================================
 
 def test_case_file_id_by_path_finds_a_direct_file(ctx, sdk, reflect):
@@ -458,7 +468,7 @@ def test_case_files_at_only_lists_what_existed(ctx, sdk, reflect):
     first = _ok_data(sdk.first_chunk_time(ctx), reflect)
     last = _ok_data(sdk.last_chunk_time(ctx), reflect)
     before = _ok_node(sdk.files_at(ctx, first), reflect).data
-    assert sorted(before) == ["f1"]                      # b.py 那一版是后来才有的
+    assert sorted(before) == ["f1"]                      # b.py's version is later
     after = _ok_node(sdk.files_at(ctx, last), reflect).data
     assert sorted(after) == ["f1", "f2"]
     assert _node(after["f2"], "FileState", reflect).get_content().value == "print(2)"
@@ -476,7 +486,8 @@ def _file_references(ctx, sdk, reflect):
 def test_case_resolve_versioned_file_reference_is_as_of(ctx, sdk, reflect):
     resolved = [r for r in _file_references(ctx, sdk, reflect)
                 if _result(sdk.resolve_versioned_file_reference(ctx, r), reflect).has_ok()]
-    # 数据里两条文件引用：一条赶上了那一版，一条太早
+    # two file references in the data: one caught that version, one is too
+    # early
     assert len(resolved) == 1
     state = _ok_node(sdk.resolve_versioned_file_reference(ctx, resolved[0]), reflect).data
     assert _node(state, "FileState", reflect).get_name().value == "a.py"
@@ -502,7 +513,7 @@ def test_case_make_versioned_file_content_reference_takes_the_region(ctx, sdk, r
 
 
 # =====================================================================
-# 写：open_file / write_text（只往版本链上追加）
+# Writing: open_file / write_text (only append to the version chain)
 # =====================================================================
 
 
@@ -532,7 +543,7 @@ def test_case_open_file_creates_a_new_file_once(ctx, sdk, reflect):
     state = _node(_ok_node(sdk.latest_file(ctx, first), reflect).data, "FileState", reflect)
     assert state.get_name().value == "c.py"
     assert state.get_content().value == ""
-    assert state.get_meta().leaf.value is None           # 状态链空着 = 可写（nil）
+    assert state.get_meta().leaf.value is None           # empty chain = writable (nil)
 
 
 def test_case_open_file_creates_inside_a_fold(ctx, sdk, reflect):
@@ -565,14 +576,14 @@ def test_case_write_text_appends_a_version_and_keeps_the_old_one(ctx, sdk, refle
     file_id = _ok_node(sdk.open_file(ctx, "/ws/c.py", first, _ALICE), reflect).data
     assert _result(sdk.write_text(ctx, file_id, "print(3)", last, _ALICE),
                    reflect).has_ok()
-    assert _version_times(ctx, sdk, reflect, file_id) == [1, 3]      # 新建那一版 + 写这一版
+    assert _version_times(ctx, sdk, reflect, file_id) == [1, 3]      # opened version + this write
 
     latest = _node(_ok_node(sdk.read_text(ctx, file_id), reflect).data, "FileState", reflect)
     assert latest.get_content().value == "print(3)"
     ref = sdk.make_versioned_file_reference(file_id, first)
     old = _node(_ok_node(sdk.resolve_versioned_file_reference(ctx, ref), reflect).data,
                 "FileState", reflect)
-    assert old.get_content().value == ""                 # 旧版原样留着
+    assert old.get_content().value == ""                 # the old version is kept as is
 
 
 def test_case_read_text_is_latest_file(ctx, sdk, reflect):

@@ -1,24 +1,35 @@
-"""meeting_sdk — meeting_sdk.viba 的 Python 实现：从一场会议里取数的只读接口。
+"""meeting_sdk -- the Python implementation of meeting_sdk.viba: the read-only
+interface that takes data out of a meeting.
 
-The design (signatures) is the "The data interface" chapter of MEETING_ADT.md (module name meeting_sdk)：每个函数带泛型
-参数 ``Ctx``、吃一个 ``$ctx``，返回 Result，签名里只有稳定类型。这一层是它的实现。
+The design (signatures) is the data-interface chapter of MEETING_ADT.md
+(module name meeting_sdk): every function carries the generic parameter ``Ctx``,
+takes a ``$ctx``, and returns a Result; the signature mentions only stable
+types. This layer is its implementation.
 
-**对外的接口就是 meeting_sdk.viba 里的那 34 个**：名字落 snake_case，参数、返回都照设计，不多导出
-任何东西——签名里那些类型（``mc.ChatReference``、``mc.AgentRole``…）属于 meeting_core，不从这里拿。
+**The public interface is exactly the 34 in meeting_sdk.viba**: names fall in
+snake_case, parameters and returns follow the design, and nothing else is
+exported -- the types in the signatures (``mc.ChatReference``,
+``mc.AgentRole``...) belong to meeting_core and are not taken from here.
 
-这一版的绑定（协议说 Ctx / Data 由实现方绑）：
+The bindings of this version (the interface says Ctx / Data are bound by the
+implementation):
 
-* ``Ctx`` = :class:`meeting_adt.MeetingData`：一份会议记录。
-* ``Result[T]`` = viba 的 ``Ok`` / ``Err``（meeting_core_reflect 能把它们读成 Result 的两支）。
-* 有名字的稳定类型用 meeting_adt 里同名的 dataclass：``FileId`` / ``VersionedFile`` /
-  ``ChatMessage`` / ``ScoreMessage`` / 各种 Reference（`FileKvStore` 是记录层的类型）。
-* 屏幕那一份状态（``mc.ScreenContent``）与文件那一份状态（``mc.FileState``）用 ``dict``，
-  键就是设计里的 tag 名：``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
-  "captured_at"}``、``{"name", "meta", "content"}``。
+* ``Ctx`` = :class:`meeting_adt.MeetingData`: a meeting record.
+* ``Result[T]`` = viba's ``Ok`` / ``Err`` (meeting_core_reflect can read them as
+  Result's two branches).
+* Named stable types use the dataclass of the same name in meeting_adt:
+  ``FileId`` / ``VersionedFile`` / ``ChatMessage`` / ``ScoreMessage`` / the
+  various References (`FileKvStore` is a record-layer type).
+* The screen state (``mc.ScreenContent``) and the file state (``mc.FileState``)
+  use ``dict``, keyed by the design's tag names:
+  ``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
+  "captured_at"}``, ``{"name", "meta", "content"}``.
 
-读是主：取数函数一律返回 Result——查不到是 ``Err``，不是异常。写只有文件层那两个
-（``open_file`` / ``write_text``），而且只往版本链上追加：旧版永远留着，读某一刻的状态照旧读得到。
-末尾那组 ``make_*`` 不吃 ``ctx``，只把引用这类值造出来。
+Reading is primary: getters always return a Result -- a miss is an ``Err``, not
+an exception. The only writes are the file layer's two (``open_file`` /
+``write_text``), and they only append to version chains: old versions always
+stay, so the state read at a moment still reads them. The ``make_*`` group at
+the end takes no ``ctx``; it only builds values such as references.
 """
 
 from __future__ import annotations
@@ -30,7 +41,8 @@ from typing import Dict, List, Optional, Sequence
 
 import meeting_adt as adt
 
-# viba 是子模块，包在它的根目录下面；把子模块根加进 sys.path，import 才找得到。
+# viba is a submodule, packed under its own root directory; add the submodule
+# root to sys.path so the import finds it.
 _VENDORED_VIBA = Path(__file__).resolve().parent / "viba"
 if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VENDORED_VIBA) not in sys.path:
     sys.path.insert(0, str(_VENDORED_VIBA))
@@ -41,16 +53,17 @@ _REFERENCE_TYPES = (adt.ScreenReference, adt.ChatReference, adt.ScoreReference,
                     adt.TerminalControlReference, adt.VersionedFileReference,
                     adt.VersionedFileContentReference)
 
-Ctx = adt.MeetingData  # 这一版的绑定：Ctx 就是一份会议记录（协议说 Ctx 由实现方绑）
+Ctx = adt.MeetingData  # this version's binding: Ctx is a meeting record (the
+# interface says Ctx is bound by the implementation)
 
 
 # ----------------------------------------------------------------------
-# 取数：时间与流
+# Getters: time and streams
 # ----------------------------------------------------------------------
 
 
 def chunk_times(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
-    """这段时间里每条 chunk 的时刻。"""
+    """The moment of every chunk in this span."""
     moments = []
     for chunk in ctx.sorted_stream_chunks:
         moment = _chunk_time(chunk)
@@ -60,7 +73,7 @@ def chunk_times(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
 
 
 def streams_between(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
-    """这段时间里出现过的流名。"""
+    """The stream names seen in this span."""
     names = []
     for chunk in ctx.sorted_stream_chunks:
         moment = _chunk_time(chunk)
@@ -72,7 +85,7 @@ def streams_between(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result
 
 
 # ----------------------------------------------------------------------
-# 取数：聊天与评分
+# Getters: chat and scores
 # ----------------------------------------------------------------------
 
 
@@ -85,7 +98,7 @@ def score_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
 
 
 def chat_message_at(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
-    """一个人在一个时刻只有一条。"""
+    """One person has one message at a moment."""
     for message in _records(ctx, adt.ChatStreamChunk):
         if message.time == time and message.user_name == user:
             return _Ok(message)
@@ -97,7 +110,7 @@ def resolve_chat_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Result:
 
 
 def resolve_chat_content_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Result:
-    """引用那一段的原文。"""
+    """The text the reference points at."""
     given = resolve_chat_reference(ctx, ref)
     if isinstance(given, _Err):
         return given
@@ -112,7 +125,7 @@ def resolve_score_reference(ctx: Ctx, ref: "adt.ScoreReference") -> _Result:
 
 
 def chat_message_references(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
-    """这条消息带的引用，按出现顺序。"""
+    """The references this message carries, in order."""
     given = chat_message_at(ctx, time, user)
     if isinstance(given, _Err):
         return given
@@ -120,7 +133,7 @@ def chat_message_references(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
 
 
 def score_message_reference(ctx: Ctx, time: _dt.datetime, judge: str) -> _Result:
-    """这条评分带的引用。"""
+    """The reference this score carries."""
     given = resolve_score_reference(ctx, adt.ScoreReference(judge_time=time, judge_name=judge))
     if isinstance(given, _Err):
         return given
@@ -130,7 +143,7 @@ def score_message_reference(ctx: Ctx, time: _dt.datetime, judge: str) -> _Result
 
 
 def first_chunk_time(ctx: Ctx) -> _Result:
-    """会议里第一条 chunk 的时刻。"""
+    """The moment of the meeting's first chunk."""
     moments = [m for m in (_chunk_time(c) for c in ctx.sorted_stream_chunks) if m is not None]
     if not moments:
         return _Err("这场会议没有任何 chunk")
@@ -138,7 +151,7 @@ def first_chunk_time(ctx: Ctx) -> _Result:
 
 
 def last_chunk_time(ctx: Ctx) -> _Result:
-    """最后一条。"""
+    """The last one."""
     moments = [m for m in (_chunk_time(c) for c in ctx.sorted_stream_chunks) if m is not None]
     if not moments:
         return _Err("这场会议没有任何 chunk")
@@ -146,12 +159,12 @@ def last_chunk_time(ctx: Ctx) -> _Result:
 
 
 # ----------------------------------------------------------------------
-# 取数：屏幕
+# Getters: screen
 # ----------------------------------------------------------------------
 
 
 def screen_at(ctx: Ctx, time: _dt.datetime) -> _Result:
-    """这一时刻那一屏（内容，不是抓屏记录本身）。"""
+    """The content of that screen at this moment (not the capture record)."""
     for capture in _records(ctx, adt.ScreenStreamChunk):
         if capture.captured_at == time:
             return _Ok(_screen_state(capture))
@@ -166,7 +179,7 @@ def resolve_screen_reference(ctx: Ctx, ref: "adt.ScreenReference") -> _Result:
 
 
 # ----------------------------------------------------------------------
-# 取数：人
+# Getters: people
 # ----------------------------------------------------------------------
 
 
@@ -179,12 +192,12 @@ def roles(ctx: Ctx) -> _Result:
 
 
 def owner_at(ctx: Ctx, time: _dt.datetime) -> _Result:
-    """哪一刻谁拿着终端；nil = 此刻无人控制。"""
+    """Who holds the terminal at a moment; nil = nobody holds it then."""
     return _Ok(adt.owner_at(time, _records(ctx, adt.TerminalControlStreamChunk)))
 
 
 def control_owner_of(ctx: Ctx, ref: "adt.TerminalControlReference") -> _Result:
-    """那一次接管 / 交还的接管人；nil = 交还之后没人接手。"""
+    """The taker of that take-over / hand-back; nil = nobody took over then."""
     for control in _records(ctx, adt.TerminalControlStreamChunk):
         if control.start_time == ref.start_time and (control.user_name or None) == ref.user_name:
             return _Ok(control.user_name or None)
@@ -192,14 +205,15 @@ def control_owner_of(ctx: Ctx, ref: "adt.TerminalControlReference") -> _Result:
 
 
 # ----------------------------------------------------------------------
-# 取数：文件层
+# Getters: the file layer
 # ----------------------------------------------------------------------
 
 
 def file_id_by_path(ctx: Ctx, path: str) -> _Result:
-    """/workspace_name/entry_name 或 /workspace_name/fold_name/entry_name。
+    """/workspace_name/entry_name or /workspace_name/fold_name/entry_name.
 
-    每层名字唯一（见记录层 FileDesktop 的 Assert），所以路径定得到一条。
+    Names are unique per level (see the record layer's FileDesktop Assert), so a
+    path picks exactly one.
     """
     parts = [p for p in path.split("/") if p]
     if len(parts) == 2:
@@ -227,7 +241,8 @@ def file_id_by_path(ctx: Ctx, path: str) -> _Result:
 
 
 def file_datetimes(ctx: Ctx, file: "adt.FileId") -> _Result:
-    """这个文件改过的那些时刻：三条链上所有版本时刻的并集，去重升序。"""
+    """The moments this file changed: the union of all version times on the
+    three chains, deduplicated and ascending."""
     versioned_file = ctx.file_kv_store.file_id2file.get(file.file_id)
     if versioned_file is None:
         return _Err(f"文件库里没有 {file.file_id!r}")
@@ -237,7 +252,8 @@ def file_datetimes(ctx: Ctx, file: "adt.FileId") -> _Result:
 
 
 def files_at(ctx: Ctx, time: _dt.datetime) -> _Result:
-    """某一时刻每个文件是什么（那一刻还没有的版本，这个文件就不在里面）。"""
+    """What each file is at a moment (a file whose version does not exist yet at
+    that moment is not in there)."""
     out: Dict[str, dict] = {}
     for file_id, versioned_file in ctx.file_kv_store.file_id2file.items():
         state = _file_state_at(versioned_file, time)
@@ -247,7 +263,7 @@ def files_at(ctx: Ctx, time: _dt.datetime) -> _Result:
 
 
 def latest_file(ctx: Ctx, file: "adt.FileId") -> _Result:
-    """最新的那一份状态。"""
+    """The latest state."""
     versioned_file = ctx.file_kv_store.file_id2file.get(file.file_id)
     if versioned_file is None:
         return _Err(f"文件库里没有 {file.file_id!r}")
@@ -255,7 +271,7 @@ def latest_file(ctx: Ctx, file: "adt.FileId") -> _Result:
 
 
 def resolve_versioned_file_reference(ctx: Ctx, ref: "adt.VersionedFileReference") -> _Result:
-    """引用那一刻的文件状态。"""
+    """The file state at the moment cited."""
     versioned_file = ctx.file_kv_store.file_id2file.get(ref.file_id.file_id)
     if versioned_file is None:
         return _Err(f"文件库里没有 {ref.file_id.file_id!r}")
@@ -267,7 +283,7 @@ def resolve_versioned_file_reference(ctx: Ctx, ref: "adt.VersionedFileReference"
 
 def resolve_versioned_file_content_reference(
         ctx: Ctx, ref: "adt.VersionedFileContentReference") -> _Result:
-    """引用那一段的原文。"""
+    """The text the reference points at."""
     given = resolve_versioned_file_reference(ctx, ref.versioned_file_ref)
     if isinstance(given, _Err):
         return given
@@ -275,15 +291,17 @@ def resolve_versioned_file_content_reference(
 
 
 # ----------------------------------------------------------------------
-# 写：只写文件层，而且只加版本（旧版永远留着）
+# Writes: the file layer only, appending versions (old ones always stay)
 # ----------------------------------------------------------------------
 
 
 def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _Result:
-    """按路径打开；路径上没有就新建。同一路径来回都是同一个 FileId。
+    """Open by path; create it if the path has none. The same path always gives
+    the same FileId.
 
-    新建的文件：name = 路径末段、content = ""（各记一版），状态链空着（可写）；
-    成员多了一个，$reorder_indexes 跟着记一版。
+    A new file: name = the last path segment, content = "" (one version each),
+    and the status chain empty (writable); one more member means
+    $reorder_indexes gets a new version too.
     """
     parts = [p for p in file_path.split("/") if p]
     if len(parts) not in (2, 3):
@@ -301,7 +319,7 @@ def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _
                     if member.fold_name == entry_name:
                         return _Err(f"{file_path!r} 那一层已经有同名的 fold")
                 elif member.entry_name == entry_name:
-                    return _Ok(member)          # 已经有：打开
+                    return _Ok(member)          # already there: open it
             opened = adt.FileId(file_id=_new_file_id(ctx), entry_name=entry_name)
             workspace.member_files.append(opened)
             _mount_new_file(ctx, opened, time, user_name)
@@ -312,7 +330,7 @@ def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _
                 continue
             for existing in member.member_file_ids:
                 if existing.entry_name == entry_name:
-                    return _Ok(existing)        # 已经有：打开
+                    return _Ok(existing)        # already there: open it
             opened = adt.FileId(file_id=_new_file_id(ctx), entry_name=entry_name)
             member.member_file_ids.append(opened)
             _mount_new_file(ctx, opened, time, user_name)
@@ -323,7 +341,8 @@ def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _
 
 def write_text(ctx: Ctx, file_id: "adt.FileId", text_content: str, time: _dt.datetime,
                user_name: str) -> _Result:
-    """往文件的内容链上加一版：新版 = 旧全文 + 这段，旧的版本原样留着。"""
+    """One more version on the file's content chain: the new version = the old
+    full text + this span; older versions stay untouched."""
     versioned_file = ctx.file_kv_store.file_id2file.get(file_id.file_id)
     if versioned_file is None:
         return _Err(f"文件库里没有 {file_id.file_id!r}")
@@ -338,12 +357,12 @@ def write_text(ctx: Ctx, file_id: "adt.FileId", text_content: str, time: _dt.dat
 
 
 def read_text(ctx: Ctx, file: "adt.FileId") -> _Result:
-    """read_text := latest_file（设计里的写法就是别名）。"""
+    """read_text := latest_file (the design's spelling is an alias)."""
     return latest_file(ctx, file)
 
 
 # ----------------------------------------------------------------------
-# 构造：造引用这类值（只造值，不碰记录）
+# Construction: making values such as references (never touches a record)
 # ----------------------------------------------------------------------
 
 
@@ -387,7 +406,7 @@ def make_versioned_file_content_reference(
 
 
 # ----------------------------------------------------------------------
-# 私有小工具（这一层认识 meeting_adt 的记录）
+# Private helpers (this layer knows meeting_adt's records)
 # ----------------------------------------------------------------------
 
 
@@ -437,7 +456,8 @@ def _region_of(text: str, region: Optional["adt.TextRegion"]) -> str:
 
 
 def _screen_state(capture: "adt.ScreenCapture") -> dict:
-    """设计里那个匿名积：$text * $segments * $cursor_x * $cursor_y * $width * $height * $captured_at"""
+    """The anonymous product in the design: $text * $segments * $cursor_x *
+    $cursor_y * $width * $height * $captured_at"""
     return {
         "text": capture.screen_data,
         "segments": list(capture.terminal_text_content),
@@ -450,16 +470,19 @@ def _screen_state(capture: "adt.ScreenCapture") -> dict:
 
 
 def _file_state(versioned_file: "adt.VersionedFile") -> dict:
-    """设计里那个 FileState：$name * $meta * $content，各取链尾。"""
+    """The FileState in the design: $name * $meta * $content, each taking the
+    tail of its chain."""
     return {key: _latest_of(chain) for key, chain in _chains(versioned_file)}
 
 
 def _file_state_at(versioned_file: "adt.VersionedFile",
                    moment: _dt.datetime) -> Optional[dict]:
-    """某一刻那一份状态：每个部件取链上 ≤ moment 的最后一版。
+    """The state at a moment: each part takes the last version on its chain with
+    time <= moment.
 
-    name / content 那一刻还没有 -> 这个文件在那一刻不存在（None）；
-    meta 那一刻还没有 -> 缺省，可写（$meta nil）。
+    name / content not there yet at that moment -> the file does not exist at
+    that moment (None);
+    meta not there yet at that moment -> default, writable ($meta nil).
     """
     state = {}
     for key, chain in _chains(versioned_file):
@@ -471,18 +494,19 @@ def _file_state_at(versioned_file: "adt.VersionedFile",
 
 
 def _chains(versioned_file: "adt.VersionedFile"):
-    """三个部件各自的版本链，键就是设计里的 tag 名。"""
+    """The version chain of each of the three parts, keyed by the design's tag
+    names."""
     return (("name", versioned_file.file_name), ("meta", versioned_file.file_meta),
             ("content", versioned_file.file_content))
 
 
 def _latest_of(chain: List) -> object:
-    """链尾就是最新的那一版的值；空链给 None。"""
+    """The chain tail is the latest version's value; an empty chain -> None."""
     return chain[-1].data if chain else None
 
 
 def _version_at(chain: List, moment: Optional[_dt.datetime]):
-    """链上 time ≤ moment 的最后一版；一版都没有就是 None。"""
+    """The last version on the chain with time <= moment; otherwise None."""
     found = None
     for version in chain:
         if moment is not None and version.time is not None and version.time > moment:
@@ -492,7 +516,7 @@ def _version_at(chain: List, moment: Optional[_dt.datetime]):
 
 
 def _new_file_id(ctx: Ctx) -> str:
-    """文件库里没用过的内部 id。"""
+    """An internal id not used yet in the file store."""
     taken = set(ctx.file_kv_store.file_id2file.keys())
     number = 1
     while f"f{number}" in taken:
@@ -502,10 +526,11 @@ def _new_file_id(ctx: Ctx) -> str:
 
 def _mount_new_file(ctx: Ctx, file_id: "adt.FileId", time: _dt.datetime,
                     user_name: str) -> None:
-    """新建文件：三条链各一版；成员多了一个，桌面顺序快照跟着记一版。"""
+    """A new file: one version on each of the three chains; one more member
+    means the desktop order snapshot gets a version too."""
     ctx.file_kv_store.file_id2file[file_id.file_id] = adt.VersionedFile(
         file_name=[adt.Versioned(file_id.entry_name, time, user_name)],
-        file_meta=[],                                 # 状态链空着 = 可写
+        file_meta=[],                                 # empty status chain = writable
         file_content=[adt.Versioned("", time, user_name)],
     )
     desktop = ctx.file_desktop

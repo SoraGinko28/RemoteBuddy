@@ -1,7 +1,8 @@
 """Tests for meeting_core_reflect: the access side of viba-reflect.md on MEETING_ADT's stable types.
 
 Design = the "Stable types" chapter of MEETING_ADT.md; data = the Python record in meeting_adt.py.
-起点不核版本（viba-reflect.md：root 只把描述符和数据配成对），这一层也不提供核对。
+The starting point does not check the version (viba-reflect.md: root only pairs the
+descriptor with the data), and this layer provides no checking either.
 """
 
 import datetime as _dt
@@ -10,14 +11,15 @@ import pytest
 
 import meeting_adt as adt
 import meeting_core_reflect as reflect
-from viba.type import Err, Ok  # noqa: E402  （协议里的 Ok / Err）
+from viba.type import Err, Ok  # noqa: E402  (Ok / Err in the protocol)
 
 
-from viba.viba_type_descriptor import pool_find_definition  # noqa: E402  （描述侧的协议查询）
+from viba.viba_type_descriptor import pool_find_definition  # noqa: E402  (description-side query)
 
 
 def _definition_result(name: str):
-    """描述侧的协议查询 PoolFindDefinition：按全名取定义描述符。"""
+    """The description-side protocol query PoolFindDefinition: fetch a
+    definition descriptor by full name."""
     full_name = name if "." in name else f"meeting_core.{name}"
     return pool_find_definition(reflect._design_pool(), full_name)
 
@@ -29,7 +31,7 @@ def _definition(name: str):
 
 
 def _open(record, name: str):
-    """按协议起一个节点：access(definition).root(_Record(record))。"""
+    """Start a node per the protocol: access(definition).root(_Record(record))."""
     accessor = reflect.access(_definition(name))
     given = accessor.root(reflect._Record(record))
     assert isinstance(given, Ok), given
@@ -86,7 +88,8 @@ class TestDesign:
 
 
 # =====================================================================
-# 起点：只配 (描述符, 数据)，版本交给上层
+# Starting point: only pairs (descriptor, data); the version is left to the
+# layer above
 # =====================================================================
 
 class TestRoot:
@@ -103,7 +106,7 @@ class TestRoot:
 
 
 # =====================================================================
-# 六格：has / get / leaf / length / keys
+# Six cells: has / get / leaf / length / keys
 # =====================================================================
 
 class TestSevenCells:
@@ -113,7 +116,8 @@ class TestSevenCells:
         assert [step.value for step in inner.path] == ["$file_name"]
 
     def test_leaf_kinds(self) -> None:
-        """UserName 是和：值挂在 $agent_name 那一支底下，得走进去才是叶子。"""
+        """UserName is a sum: the value hangs under the $agent_name branch, so
+        you have to walk in to reach a leaf."""
         node = _open(_versioned_file(), "VersionedFile")
         name = node.get_file_name().at_index(0).get_author()
         with pytest.raises(reflect.VibaReflectError, match="not a leaf"):
@@ -144,7 +148,7 @@ class TestSevenCells:
 
 
 # =====================================================================
-# 地址：by_tag / by_field_index / at_index / at_key
+# Addresses: by_tag / by_field_index / at_index / at_key
 # =====================================================================
 
 class TestAddressing:
@@ -180,7 +184,7 @@ class TestAddressing:
 
 
 # =====================================================================
-# 和类型：类名对定义名，枚举值对 tag
+# Sum types: class name vs definition name, enum value vs tag
 # =====================================================================
 
 class TestSumBranches:
@@ -196,12 +200,13 @@ class TestSumBranches:
         assert node.has_passive_discriminator() is False
 
     def test_nil_valued_optional_field_is_present_with_nil(self) -> None:
-        """字段在、值是 nil：has 为真，读出来是 nil（不是"没有这一段"）。"""
+        """The field is present and the value is nil: has is true, and reading
+        gives nil (not "this piece is missing")."""
         segment = adt.TerminalTextSegment(text="x", bg=None)
         node = _open(segment, "TerminalTextSegment")
         assert node.has_bg() is True
         assert node.get_bg().leaf.value is None
-        assert node.has_field_1() is False               # 位置成员只有 fg / bg
+        assert node.has_field_1() is False               # positional members are only fg / bg
 
     def test_content_reference_branch_matches_by_class_name(self) -> None:
         message = adt.ChatMessage(
@@ -228,7 +233,7 @@ class TestSumBranches:
 
 
 # =====================================================================
-# 第 5.4 节的 Python 落点
+# The Python landing of section 5.4
 # =====================================================================
 
 class TestPythonLanding:
@@ -242,7 +247,7 @@ class TestPythonLanding:
 
     def test_missing_value_is_ok_none_not_an_exception(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
-        assert node.try_get_data().value is None          # 数据里没有这个 key
+        assert node.try_get_data().value is None          # the data has no such key
         with pytest.raises(reflect.VibaReflectError, match="has no value"):
             node.get_data()
 
@@ -263,7 +268,7 @@ class TestPythonLanding:
 
 
 # =====================================================================
-# 便利函数
+# Convenience functions
 # =====================================================================
 
 class TestConvenience:
@@ -275,10 +280,11 @@ class TestConvenience:
         assert reflect.viba_get_by_path(node, path).value.value == "print(1)"
 
     def test_a_missing_step_with_more_steps_left_is_an_err(self) -> None:
-        """数据里没有那一段、后面还有 step：Err，不能拿 None 接着走。"""
+        """The piece is missing in the data and there are more steps after it:
+        Err, None cannot be carried on with."""
         data = {"file_name": [adt.Versioned("a.py", _moment(), "alice")]}
         node = _open(data, "VersionedFile")
-        assert node.try_get_file_meta().value is None        # 单独一步：Ok(nil)
+        assert node.try_get_file_meta().value is None        # a single step: Ok(nil)
         given = reflect.viba_resolve(node, [reflect.by_tag("file_meta"),
                                             reflect.at_index(0)])
         assert isinstance(given, Err) and given.message == "this step has no value"
@@ -312,7 +318,8 @@ class TestResult:
         assert err.has_ok() is False
 
     def test_ok_payload_is_the_value_itself(self) -> None:
-        """$ok T 的载荷就是 T：Ok 只有一格，取出来的是那一格。"""
+        """The payload of $ok T is T itself: Ok has only one cell, and what
+        comes out is that cell."""
         from viba.type import Ok
 
         node = _open(Ok("body"), "Result")
@@ -334,7 +341,7 @@ class TestResult:
 
 
 # =====================================================================
-# 整棵树：体检
+# The whole tree: health check
 # =====================================================================
 
 class TestWalk:
