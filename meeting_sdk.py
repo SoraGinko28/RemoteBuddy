@@ -17,7 +17,7 @@ The design (signatures) is the "The data interface" chapter of MEETING_ADT.md (m
   "captured_at"}``、``{"name", "meta", "content"}``。
 
 读是主：取数函数一律返回 Result——查不到是 ``Err``，不是异常。写只有文件层那两个
-（``open_file`` / ``write_text``），而且只往版本链上追加：旧版永远留着，as-of 照旧读得到。
+（``open_file`` / ``write_text``），而且只往版本链上追加：旧版永远留着，读某一刻的状态照旧读得到。
 末尾那组 ``make_*`` 不吃 ``ctx``，只把引用这类值造出来。
 """
 
