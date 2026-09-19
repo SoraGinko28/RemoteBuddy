@@ -725,6 +725,9 @@ remote_version_hint := Hint[{
 	every api should be backed by REST URL
 	usage:
   	import meeting_remote_sdk as sdk
+  	
+ 	every api should return a valid viba script as result with definition of 'entry := ...'
+ 	
 }]
 ```
 
