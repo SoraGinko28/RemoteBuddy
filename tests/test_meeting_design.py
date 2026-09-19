@@ -1,9 +1,10 @@
-"""MEETING_ADT.md 里的两份设计是不是完备的（viba 的 is_complete）。
+"""Are the two designs in MEETING_ADT.md complete (viba's is_complete).
 
-`meeting_core.viba` = the code block of the "Stable types" chapter; `meeting_sdk.viba` = the "The data interface" chapter,
-要拿前者当库（`import meeting_core as mc`）。
+`meeting_core.viba` = the code block of the "Stable types" chapter; `meeting_sdk.viba` = the data-interface chapter,
+the former is used as a library (`import meeting_core as mc`).
 
-完备 = 从每个定义出发，图上每个坐标都走得到叶子；走不进去的只有 CodeBlock，
+Complete = starting from every definition, every coordinate on the graph can be
+walked to a leaf; the only one that cannot be entered is CodeBlock,
 The three prose words (`Assert` / `Appendix` / `Hint`) are defined as units, so a
 code block is never reached and no terminator is needed.
 """
@@ -13,7 +14,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# viba 是子模块，包在它自己的根目录下面；加进 sys.path 才 import 得到
+# viba is a submodule nested under its own root directory; add it to sys.path
+# to be able to import it
 sys.path.insert(0, str(REPO_ROOT / "viba"))
 
 from viba.is_complete import is_complete  # noqa: E402
@@ -25,7 +27,7 @@ SDK_CHAPTER = "The data interface"
 
 
 def _chapter_source(title: str) -> str:
-    """章标题下面第一个代码块里的原文，就是那份 .viba。"""
+    """The source in the first code block under the chapter heading is that .viba."""
     text = DESIGN_PATH.read_text(encoding="utf-8").replace("\r\n", "\n")
     heading = re.search(r"(?m)^##\s*" + re.escape(title), text)
     assert heading is not None, f"MEETING_ADT.md 里没有「{title}」这一章"

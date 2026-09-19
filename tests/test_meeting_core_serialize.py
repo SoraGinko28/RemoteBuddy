@@ -1,15 +1,16 @@
-"""meeting_core_serialize 的用例：那份交换图。
+"""Tests for meeting_core_serialize: the commutative diagram.
 
     rule_reflect ∘ serialize ≡ meeting_core_reflect
 
-每个 case 干两件事：
+Each case does two things:
 
-1. 写出来的那段 viba 代码是那个定义的居民（``is_compliant``）；
-2. 同一条路径，两边读出来一模一样——一边是 viba.rule.reflect 读序列化结果，
-   一边是 meeting_core_reflect 直接读 Python 数据。
+1. The written viba code is a resident of that definition (``is_compliant``);
+2. On the same path, both sides read exactly the same thing — one side is
+   viba.rule.reflect reading the serialized result, the other is
+   meeting_core_reflect reading the Python data directly.
 
-第 2 条不是挑几条路径手写，而是把 Python 那一侧的整棵树走一遍，
-每条能读到叶子的路径都拿去两边对。
+Point 2 does not hand-pick a few paths; it walks the whole tree on the Python
+side and compares every path that reaches a leaf.
 """
 
 import datetime as _dt
@@ -24,8 +25,9 @@ from viba.rule import reflect as rule_reflect  # noqa: E402
 from viba.rule.is_compliant import is_compliant  # noqa: E402
 from viba.type import AstNodeType, Err, Ok, custom_module  # noqa: E402
 
-# viba 那边的已知缺口：泛型别名（AppendOnlyList[T] := list[T]）不认 ListLiteral 居民，
-# 直接写 list[T] 就认。等 viba 修好，这张表就空掉。
+# Known gap on the viba side: a generic alias (AppendOnlyList[T] := list[T]) does
+# not accept a ListLiteral resident, while writing list[T] directly is. Once viba
+# is fixed this table goes empty.
 KNOWN_VIBA_GAPS = {
     "VersionedFile": "AppendOnlyList[T] := list[T] 展开后不认 ListLiteral 居民",
 }
@@ -39,7 +41,7 @@ def _moment(microsecond: int = 7) -> _dt.datetime:
 
 
 def _samples():
-    """(定义名, 数据)：稳定类型章里绑得上的那些。"""
+    """(definition name, data): those binding in the "Stable types" chapter."""
     v = _moment()
     file_id = adt.FileId("f1", "a.py")
     file_ref = adt.VersionedFileReference(file_id=file_id, version_time=v)
@@ -81,7 +83,7 @@ def _samples():
 
 
 def _witness(name: str, data):
-    """序列化 -> 解析回来的 witness 体（就是那份数据的写法）。"""
+    """serialize -> the parsed-back witness body (the spelling of that data)."""
     given = serialize.serialize(name, data)
     assert isinstance(given, Ok), given
     module = viba_ast.parse(given.value)
@@ -91,7 +93,8 @@ def _witness(name: str, data):
 
 
 def _same_step(step):
-    """把 Python 侧的一步换成 viba.rule.reflect 侧的同一步。"""
+    """Translate a step on the Python side into the same step on the
+    viba.rule.reflect side."""
     return {"by_tag": rule_reflect.by_tag, "by_field_index": rule_reflect.by_field_index,
             "at_index": rule_reflect.at_index, "at_key": rule_reflect.at_key}[step.kind](
         step.value)
@@ -115,7 +118,7 @@ def test_the_written_code_is_a_resident_of_the_definition(name, data) -> None:
 
 @pytest.mark.parametrize("name,data", _samples(), ids=lambda x: None)
 def test_both_readers_read_the_same_thing(name, data) -> None:
-    """整棵树走一遍：每条路径两边读出来的叶子必须一样。"""
+    """Walk the whole tree: every path must read the same leaf on both sides."""
     body = _witness(name, data)
     definition = reflect._definition(name)
     access = reflect.access(definition)
@@ -134,7 +137,8 @@ def test_both_readers_read_the_same_thing(name, data) -> None:
 
 
 def test_an_empty_container_has_no_viba_spelling(ctx=None) -> None:
-    """已知缺口：字面量至少要一个元素，空 list / set / dict 现在写不出来。"""
+    """Known gap: a literal needs at least one element, so an empty
+    list / set / dict cannot be written yet."""
     given = serialize.serialize("VersionedFile", adt.VersionedFile(
         file_name=[adt.Versioned("a.py", _moment(), "alice")],
         file_meta=[],
@@ -144,7 +148,8 @@ def test_an_empty_container_has_no_viba_spelling(ctx=None) -> None:
 
 
 def test_a_chat_part_that_does_not_bind_is_refused() -> None:
-    """已知缺口：$raw_msg 跟 RawMessage 对不上，宁可不写，也不硬凑 nil。"""
+    """Known gap: $raw_msg does not match RawMessage; better to write nothing
+    than to force a nil."""
     given = serialize.serialize("ChatMessage", adt.ChatMessage(
         user_name="alice", time=_moment(), message=[adt.RawMessage("hi")]))
     assert isinstance(given, Err)

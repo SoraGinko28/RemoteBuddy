@@ -475,7 +475,8 @@ class ScoreReference:
 class TerminalControlReference:
     """$start_time datetime * $user_name Optional[UserName] * $region TextRegion
 
-    user_name 为空 = 那次交还之后没人接手。落盘走 references.py 那一套，这里只是 ADT 的镜子。
+    An empty user_name = nobody took over after that hand-back. Persistence goes
+    through the references.py set; this is only the ADT's mirror.
     """
 
     start_time: Optional[_dt.datetime]
@@ -485,7 +486,8 @@ class TerminalControlReference:
 
 @dataclass(frozen=True)
 class VersionedFileReference:
-    """$file_id FileId * $version_time datetime —— 取该时刻（含）之前的最近一版。"""
+    """$file_id FileId * $version_time datetime -- the latest version at or
+    before that moment."""
 
     file_id: "FileId"
     version_time: Optional[_dt.datetime] = None
@@ -503,7 +505,7 @@ ContentReference = (ScreenReference | ChatReference | ScoreReference
                     | TerminalControlReference | VersionedFileReference
                     | VersionedFileContentReference)
 
-# $message 的一支可以是一段引用（G8 的六种）
+# a part of $message can be a reference (the six of G8)
 _REFERENCE_TYPES = (ScreenReference, ChatReference, ScoreReference,
                     TerminalControlReference, VersionedFileReference,
                     VersionedFileContentReference)
@@ -1003,22 +1005,27 @@ __all__ += [
 # VersionedFile := Object * $file_name AppendOnlyList[Versioned[str]]
 #   * $file_meta AppendOnlyList[Versioned[DataStatus]]
 #   * $file_content AppendOnlyList[Versioned[str]]
-#   (三条链：读某一刻取链上 time ≤ 时刻的最后一版；状态链空着 = 可写)
+#   (three chains: reading at a moment takes the last version on the chain with
+#    time <= that moment; an empty status chain = writable)
 # FileKvStore := Object * $file_id2file dict[str, VersionedFile]
 # FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileId]
 # FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileId]
 #   * $workspace_name Optional[str] * $workspace_status Optional[DataStatus]
 # FileDesktop := Object * $workspaces AppendOnlyList[FileWorkspace]
 #   * $reorder_indexes Versioned[DesktopMemberOrder]
-#   * Assert[{ 同一层里名字唯一：workspace_name 两两不同；同一个 workspace 里 fold 的
-#               fold_name 与直接挂着的文件的 entry_name 两两不同；同一个 fold 里各文件的
-#               entry_name 两两不同 }]
+#   * Assert[{ names are unique within a level: the workspace_name are pairwise
+#               different; inside one workspace, a fold's fold_name and the
+#               entry_name of a file hanging directly under it are pairwise
+#               different; inside one fold, the entry_name of the files are
+#               pairwise different }]
 # DesktopMemberOrder := Object * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]
-#   * Assert[{ workspace_index 恰好是 0..len(workspaces)-1 的一个排列 }]
+#   * Assert[{ the workspace_index are exactly a permutation of
+#               0..len(workspaces)-1 }]
 # WorkspaceMemberOrder := Object * $workspace_index int
 #   * $file_indexes ReadOnlyList[($file_index int, Optional[FoldMemberOrder])]
-#   * Assert[{ file_index 恰好是 0..len(member_files)-1 的一个排列；每个 fold 的
-#               member_indexes 恰好是 0..len(member_file_ids)-1 的一个排列 }]
+#   * Assert[{ the file_index are exactly a permutation of
+#               0..len(member_files)-1; every fold's member_indexes are exactly
+#               a permutation of 0..len(member_file_ids)-1 }]
 # FoldMemberOrder := Object * $member_indexes ReadOnlyList[$member_index int]
 #
 # Persisted JSON:
@@ -1026,7 +1033,7 @@ __all__ += [
 #   Versioned[T]: {"data": ..., "time": iso|null, "author": user_name}
 #   FileId: {"file_id": id, "entry_name": name}
 #   VersionedFile: {"file_name": [Versioned[str]], "file_meta": [Versioned[status|null]],
-#                   "file_content": [Versioned[str]]}   # 每个部件一条链
+#                   "file_content": [Versioned[str]]}   # one chain per part
 #   FileKvStore: {"file_id2file": {file_id: VersionedFile}}
 #   FileFold: {"fold_name": name|null, "member_file_ids": [FileId]}
 #   FileWorkspace: {"member_files": [{"fold": FileFold} | {"file": FileId}],

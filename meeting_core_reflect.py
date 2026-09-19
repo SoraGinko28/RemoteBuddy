@@ -1,54 +1,72 @@
 """meeting_core_reflect — read the stable types of MEETING_ADT.md as a map over a Python record.
 
-这是 viba-reflect.md 的访问侧，落在稳定 ADT 上：
+This is the access side of viba-reflect.md, landing on the stable ADT:
 
-- **设计**（地图）：the "Stable types" chapter of MEETING_ADT.md (module name meeting_core)，由描述符侧
-  （viba.viba_type_descriptor）编译成描述符池。地图只跟文档有关，跟实现无关。
-- **材料**（Data）：meeting_adt.py 那份 Python 记录——dataclass 实例、list / tuple /
-  set / dict、以及标量。协议不规定 Data 长什么样，这一层把它绑到 Python 对象上。
+- **Design** (the map): the "Stable types" chapter of MEETING_ADT.md (module
+  name meeting_core), compiled into a descriptor pool by the descriptor side
+  (viba.viba_type_descriptor). The map only concerns the document, not the
+  implementation.
+- **Material** (Data): the Python record in meeting_adt.py — dataclass
+  instances, list / tuple / set / dict, and scalars. The protocol does not
+  specify what Data looks like; this layer binds it to Python objects.
 
-名字照 viba.rule.reflect 对 viba-reflect.md 的老规矩来：协议里的类名原样保留（``VibaStep``、
-``VibaPath``、``VibaNode``、``VibaAccess``），函数落 snake_case（``viba_resolve`` /
-``viba_get_by_path`` / ``viba_list_fields``），四支地址是 ``by_tag`` /
-``by_field_index`` / ``at_index`` / ``at_key``；六格在 ``VibaAccess`` 上：``root`` /
-``has`` / ``get`` / ``leaf`` / ``length`` / ``keys``。
+Names follow viba.rule.reflect's old convention for viba-reflect.md: class
+names from the protocol are kept as they are (``VibaStep``, ``VibaPath``,
+``VibaNode``, ``VibaAccess``), functions land in snake_case (``viba_resolve`` /
+``viba_get_by_path`` / ``viba_list_fields``), the four address branches are
+``by_tag`` / ``by_field_index`` / ``at_index`` / ``at_key``; the six cells live
+on ``VibaAccess``: ``root`` / ``has`` / ``get`` / ``leaf`` / ``length`` /
+``keys``.
 
-协议里没给名字的，才是本层自己的：
+Only what the protocol leaves unnamed is this layer's own:
 
-    Data 这个形参         -> _Record：一份 Python 记录
-    第 5.4 节"直接抛异常"  -> VibaReflectError（第 5.4 节的 Python 落点名字）
-    读图与遍历            -> VibaAccess 上的下划线方法、以及本模块的下划线函数
-    设计从哪读            -> 私有的 _design_source / _design_hash / _design_pool / _definition
+    the Data parameter           -> _Record: one Python record
+    section 5.4 "throw directly" -> VibaReflectError (5.4's Python landing name)
+    reading the map and traversal -> underscore methods on VibaAccess and this
+                                     module's underscore functions
+    where the design is read from -> the private _design_source / _design_hash /
+                                     _design_pool / _definition
 
-两条协议里的规矩：
+Two rules from the protocol:
 
-* ``root`` 只把 (描述符, 数据) 配成对。版本协议不管：一份材料对着哪一版设计做的，
-  是上层自己的事。
-* ``has`` 只答真假——设计里没这个坐标、数据里没这一段，都是 ``False``。
-  ``get`` 里"数据里没有"是 ``Ok(nil)``，只有"图上压根没这个坐标"才是 ``Err``；
-  ``leaf`` / ``length`` / ``keys`` 取不到就是 ``Err``。
+* ``root`` only pairs (descriptor, data). The version protocol does not care:
+  which version of the design a piece of material was made against is the upper
+  layer's own business.
+* ``has`` only answers true or false — no such coordinate in the design and no
+  such piece in the data are both ``False``.
+  In ``get``, "not in the data" is ``Ok(nil)``; only "no such coordinate on the
+  map at all" is ``Err``; ``leaf`` / ``length`` / ``keys`` give ``Err`` when
+  they get nothing.
 
-起点按协议起：``access(_definition(name)).root(_Record(record))``，回来的 ``Ok`` 里就是节点
-（``Err`` 是根本没对上）。协议里的 ``Ok`` / ``Err`` 就是本模块露出的这两个。
+The entry point starts as the protocol says:
+``access(_definition(name)).root(_Record(record))``, and the ``Ok`` that comes
+back holds the node (``Err`` means it never matched at all). The protocol's
+``Ok`` / ``Err`` are exactly the two this module exposes.
 
-第 5.4 节的 Python 落点在 VibaNode 上：``get_{name}()`` / ``has_{name}()`` /
-``in`` / ``try_get_{name}()`` / ``node[i]`` / ``node.value`` / ``len(node)`` /
-迭代 / ``keys()`` / ``values()`` / ``items()``。取值的那一类抛异常，问有没有的
-那一类永不抛。
+The Python landing of section 5.4 is on VibaNode: ``get_{name}()`` /
+``has_{name}()`` / ``in`` / ``try_get_{name}()`` / ``node[i]`` / ``node.value``
+/ ``len(node)`` / iteration / ``keys()`` / ``values()`` / ``items()``. The
+value-taking kind raises; the asking-whether kind never raises.
 
-数据怎么跟设计对上（本层的绑定规则）：
+How the data matches the design (this layer's binding rules):
 
-* dataclass 的字段名就是 tag 去掉 ``$`` 之后的名字：``$file_id`` 对 ``file_id``。
-* 容器：list / tuple / set 按下标走，dict 按键走（键按字符串比）。
-* 和类型的分支看三条：数据的类名就是那一支指向的定义（``$screen_ref`` 对
-  ``ScreenReference``）；分支名跟类名对得上（``$ok`` / ``$err`` 对 ``Ok`` / ``Err``）；
-  或者那一支是单位元、而枚举对得上这个 tag（``$deleted ()`` 对 ``DataStatus.DELETED``，
-  ``$generator ()`` 对 ``AgentRole.GENERATOR``——值、带 $ 的值、成员名都认）。
-  名字比大小写不敏感。
-* 内建叶子按 Python 标量认：bool / int / float / str / None。
+* a dataclass field name is the tag with ``$`` removed: ``$file_id`` matches
+  ``file_id``.
+* containers: list / tuple / set go by index, dict goes by key (keys compared
+  as strings).
+* a sum-type branch matches by three things: the data's class name is the
+  definition the branch points to (``$screen_ref`` matches ``ScreenReference``);
+  the branch name matches the class name (``$ok`` / ``$err`` match ``Ok`` /
+  ``Err``); or the branch is the unit and the enum matches this tag
+  (``$deleted ()`` matches ``DataStatus.DELETED``, ``$generator ()`` matches
+  ``AgentRole.GENERATOR`` — the value, the value with $, and the member name all
+  count). Names are compared case-insensitively.
+* built-in leaves are recognised as Python scalars: bool / int / float / str /
+  None.
 
-对不上的地方就是读不出来（``Err`` 或 ``False``）——那是 Python 那边跟文档不一致
-（比如把 ``$palette int`` 包成了 ``PaletteColor`` 类），不是这一层的事。
+A mismatch means nothing can be read (``Err`` or ``False``) — that is the
+Python side disagreeing with the document (for example wrapping ``$palette
+int`` in a ``PaletteColor`` class), not this layer's business.
 """
 
 from __future__ import annotations
@@ -61,7 +79,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-# viba 是子模块，包在它的根目录下面；把子模块根加进 sys.path，import 才找得到。
+# viba is a submodule, bundled under its own root directory; adding that root to
+# sys.path is what makes the import findable.
 _VENDORED_VIBA = Path(__file__).resolve().parent / "viba"
 if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VENDORED_VIBA) not in sys.path:
     sys.path.insert(0, str(_VENDORED_VIBA))
@@ -105,7 +124,7 @@ LEAF_NAMES = ("bool", "int", "float", "str", "nil", "void", "None")
 UNIT_HEADS = ("Object", "nil", "Oneof", "never")
 SCALAR_KINDS = (bool, int, float, str)
 _MISSING = object()
-_NIL = object()  # 显式的 nil：分支命中了，里面装的就是 nil
+_NIL = object()  # explicit nil: the branch matched and what it holds is nil
 
 
 # ----------------------------------------------------------------------
@@ -132,13 +151,15 @@ def _design_source() -> str:
 
 @lru_cache(maxsize=1)
 def _design_hash() -> str:
-    """这一版设计的哈希：原文按 \\n 统一换行，再对 UTF-8 字节算 SHA-256。"""
+    """Hash of this version of the design: newlines normalised to \\n, then
+    SHA-256 over the UTF-8 bytes."""
     return hashlib.sha256(_design_source().encode("utf-8")).hexdigest()
 
 
 @lru_cache(maxsize=1)
 def _design_pool() -> VibaPool:
-    """把这一章编进一个池子；池子就是描述符侧的那份地图。"""
+    """Compile this chapter into a pool; the pool is the descriptor side's
+    map."""
     pool = empty_pool()
     parsed = parse_viba_file(pool, _design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
     if isinstance(parsed, Err):
@@ -151,7 +172,8 @@ def _design_pool() -> VibaPool:
 
 @lru_cache(maxsize=None)
 def _definition(name: str) -> VibaDefinitionDescriptor:
-    """按名字取定义描述符；``'FileId'`` 与 ``'meeting_core.FileId'`` 都认。"""
+    """Look up a definition descriptor by name; both ``'FileId'`` and
+    ``'meeting_core.FileId'`` work."""
     full_name = name if "." in name else f"{DESIGN_MODULE_NAME}.{name}"
     found = pool_find_definition(_design_pool(), full_name)
     if isinstance(found, Err):
@@ -160,12 +182,12 @@ def _definition(name: str) -> VibaDefinitionDescriptor:
 
 
 # ----------------------------------------------------------------------
-# VibaStep 与 VibaPath
+# VibaStep and VibaPath
 # ----------------------------------------------------------------------
 
 
 class VibaStep:
-    """地址的一步：四支之一。"""
+    """One step of an address: one of the four branches."""
 
     __slots__ = ("kind", "value")
 
@@ -203,7 +225,7 @@ VibaPath = List[VibaStep]
 
 
 def _tag_of(name: str) -> str:
-    """链式写法里名字不带 $；带上也认。"""
+    """In chain style the name has no $; one with $ also works."""
     return name if name.startswith("$") else "$" + name
 
 
@@ -212,22 +234,26 @@ def _tag_name(tag: str) -> str:
 
 
 class VibaReflectError(Exception):
-    """取值那一路失败时抛的异常，带的是协议那句 ``Err`` 的话。
+    """Raised when the value-taking path fails, carrying the protocol's ``Err``
+    message.
 
-    第 5.4 节的 Python 落点：取值那一类失败都抛这个，``Err`` 的话原样在信息里。
+    The section 5.4 Python landing: the value-taking kind raises this on
+    failure, with the ``Err`` message kept as it is.
     """
 
 
 # ----------------------------------------------------------------------
-# Data 的绑定
+# Binding of Data
 # ----------------------------------------------------------------------
 
 
 class _Record:
-    """本层对协议里 Data 形参的绑定：一份 Python 记录。
+    """This layer's binding of the protocol's Data parameter: one Python record.
 
-    协议没规定 Data 长什么样。这边绑的是 meeting_adt.py 那份记录（dataclass 实例、
-    容器、标量都算）。版本之类的信息由上层自己带，协议不管。
+    The protocol does not specify what Data looks like. What is bound here is
+    the record in meeting_adt.py (dataclass instances, containers and scalars
+    all count). Version and the like are carried by the upper layer; the
+    protocol does not care.
     """
 
     __slots__ = ("record",)
@@ -245,10 +271,12 @@ class _Record:
 
 
 class VibaNode:
-    """一个节点：设计侧的一段描述符 + 实现侧的一段数据。
+    """One node: a piece of descriptor on the design side, a piece of data on
+    the implementation side.
 
-    ``path`` 是从起点走到这里的 VibaPath（协议的节点上没有这一栏，是本层为了让
-    地址可存、可打印、可比较而留的痕）。
+    ``path`` is the VibaPath walked from the entry point to here (the
+    protocol's node has no such slot; this layer keeps it so addresses can be
+    stored, printed and compared).
     """
 
     __slots__ = ("_access", "descriptor", "data", "path")
@@ -264,7 +292,7 @@ class VibaNode:
         where = ".".join(repr(step) for step in self.path) or "root"
         return f"VibaNode({where})"
 
-    # ---- 第 5.4 节的节点访问器：取值那一路抛异常 ----
+    # ---- Section 5.4 node accessors: the value-taking path raises ----
 
     def by_tag(self, name: str) -> "VibaNode":
         return self._access._unwrap(self._access.get(self, by_tag(name)))
@@ -284,10 +312,11 @@ class VibaNode:
 
     @property
     def value(self):
-        """第 5.4 节的 Python 落点：``leaf`` 落到原生标量。"""
+        """The section 5.4 Python landing: ``leaf`` lands on the native
+        scalar."""
         return self.leaf.value
 
-    # ---- 形状：只看写出来的链头，不展开名字 ----
+    # ---- Shape: only the written chain head, names are not unfolded ----
 
     @property
     def is_list(self) -> bool:
@@ -322,7 +351,7 @@ class VibaNode:
             return self._access._unwrap(self._access.get(self, at_index(key)))
         return self._access._unwrap(self._access.get(self, at_key(str(key))))
 
-    # ---- Python 落点的魔术方法 ----
+    # ---- The Python landing's magic methods ----
 
     def _has_tag(self, name: str) -> bool:
         given = self._access.has(self, by_tag(name))
@@ -372,7 +401,8 @@ class VibaNode:
 
 
 class VibaAccess:
-    """绑好一段稳定类型的访问器：第 5.2 节的六格，加本层的读图辅助。"""
+    """An accessor bound to one stable type: the six cells of section 5.2, plus
+    this layer's map-reading helpers."""
 
     def __init__(self, definition: VibaDefinitionDescriptor):
         self.definition = definition
@@ -381,14 +411,15 @@ class VibaAccess:
     def __repr__(self):
         return f"VibaAccess({self.definition.full_name!r})"
 
-    # ---- 协议六格 ----
+    # ---- The protocol's six cells ----
 
     def root(self, data: _Record) -> Result:
-        """起点：给出 (描述符, 数据) 这一对。"""
+        """The entry point: gives the (descriptor, data) pair."""
         return Ok(VibaNode(self, self.definition.body, data.record))
 
     def has(self, node: VibaNode, step: VibaStep) -> Result:
-        """VibaHas：这一步有没有。设计里没这个坐标、数据里没这一段，都是 false。"""
+        """VibaHas: whether this step exists. No such coordinate in the design
+        and no such piece in the data are both false."""
         slots = self._members(node)
         if not self._knows(node, step, slots):
             return Ok(False)
@@ -396,7 +427,8 @@ class VibaAccess:
         return Ok(self._pick(node, step, target) is not None)
 
     def get(self, node: VibaNode, step: VibaStep) -> Result:
-        """VibaGet：往里走一步。数据里没有是 Ok(nil)，图上没这个坐标才是 Err。"""
+        """VibaGet: walk one step in. Not in the data is Ok(nil); only no such
+        coordinate on the map is Err."""
         slots = self._members(node)
         if not self._knows(node, step, slots):
             return Err(f"the design has no such address: {step} ({node!r})")
@@ -409,10 +441,12 @@ class VibaAccess:
         return Ok(VibaNode(self, target, piece, tuple(node.path) + (step,)))
 
     def leaf(self, node: VibaNode) -> Result:
-        """VibaLeaf：走到叶子取值，五种。
+        """VibaLeaf: walk to a leaf and take its value, five kinds.
 
-        和、积、元组、容器都还不是叶子——它们得再往里走一步；
-        值本身是 nil（显式的单位元支、或字段在但值是 nil）也算叶子。
+        Sums, products, tuples and containers are not yet leaves — they have to
+        be walked one step further in; a value that is itself nil (an explicit
+        unit branch, or a field that is present but holds nil) also counts as a
+        leaf.
         """
         data = node.data
         if data is _NIL:
@@ -423,25 +457,27 @@ class VibaAccess:
                     or self._container_kind(shape) is not None):
                 return Err(f"this piece is not a leaf: {node!r}")
             if shape.kind == SUM and not self._branch_is_a_leaf(node):
-                # 和要往里走一步：$agent_name 那一支才是叶子；
-                # 只有字面量那种和（Style）与 Optional[float] 才是"值自己就是那一支"
+                # A sum has to be walked one step further in: the $agent_name
+                # branch is the leaf; only the literal kind of sum (Style) and
+                # Optional[float] are "the value is itself that branch"
                 return Err(f"this piece is not a leaf: {node!r}")
             return Ok(_constant_value(data))
         return Err(f"this piece is not a leaf: {node!r}")
 
     def length(self, node: VibaNode) -> Result:
-        """VibaLength：list / set / tuple 的元素个数，dict 的键数。"""
+        """VibaLength: the number of elements of a list / set / tuple, the
+        number of keys of a dict."""
         if not isinstance(node.data, (list, tuple, set, frozenset, dict)):
             return Err(f"this piece is not a container: {node!r}")
         return Ok(len(node.data))
 
     def keys(self, node: VibaNode) -> Result:
-        """VibaKeys：dict 的键，按实现给的顺序。"""
+        """VibaKeys: the dict's keys, in implementation order."""
         if not isinstance(node.data, dict):
             return Err(f"this piece is not a dict: {node!r}")
         return Ok([str(key) for key in node.data.keys()])
 
-    # ---- 私有：取值那一路（Err 与 Ok(nil) 都抛） ----
+    # ---- Private: the value-taking path (raises on both Err and Ok(nil)) ----
 
     def _unwrap(self, given: Result):
         if isinstance(given, Err):
@@ -450,14 +486,16 @@ class VibaAccess:
             raise VibaReflectError("this piece has no value")
         return given.value
 
-    # ---- 私有：地图（把描述符读成可寻址的形状） ----
+    # ---- Private: the map (descriptors read into an addressable shape) ----
 
     def _unfold(self, descriptor: VibaTypeDescriptor,
                 seen: Optional[set] = None) -> VibaTypeDescriptor:
-        """把写成名字的那一段展开到能寻址的形状。
+        """Unfold the piece written as a name into an addressable shape.
 
-        两件事，都按池子里的定义来：名字展开成定义体；泛型应用代入实参，
-        也落到定义体上。和/积/指数一个规矩，没有别的例外。
+        Two things, both by the definitions in the pool: a name unfolds into its
+        definition body; a generic application substitutes its arguments and
+        lands on the definition body too. Sums / products / exponents follow one
+        rule, no other exceptions.
         """
         seen = seen or set()
         if id(descriptor) in seen:
@@ -475,7 +513,8 @@ class VibaAccess:
         return descriptor
 
     def _apply_generic(self, descriptor: VibaTypeDescriptor) -> Optional[VibaTypeDescriptor]:
-        """构造子指向一个泛型定义时，给出代入实参后的定义体描述符。"""
+        """When the constructor points at a generic definition, give the
+        definition body descriptor with the arguments substituted in."""
         payload = descriptor.payload
         if payload.resolvable_type is None:
             return None
@@ -497,7 +536,8 @@ class VibaAccess:
 
     def _substitute(self, descriptor: VibaTypeDescriptor,
                     bindings: dict) -> VibaTypeDescriptor:
-        """按名字把形参换成实参描述符；只碰写名字的那一支。"""
+        """Replace parameters by name with argument descriptors; only the branch
+        written as a name is touched."""
         payload = descriptor.payload
         if descriptor.kind == TYPE_REF:
             return bindings.get(payload.type_name, descriptor)
@@ -520,37 +560,42 @@ class VibaAccess:
         return descriptor
 
     def _resolve_ref(self, descriptor: VibaTypeDescriptor) -> Optional[VibaTypeDescriptor]:
-        """一个名字指向一个透明定义时，给出那个定义体的描述符。"""
+        """When a name points at a transparent definition, give that definition
+        body's descriptor."""
         resolvable = descriptor.payload.resolvable_type
         if resolvable is None:
             return None
         resolved = module_get_type(resolvable.container_module, descriptor.payload.type_name)
         if isinstance(resolved, Err) or not isinstance(resolved.value, AstNodeType):
-            return None  # 内建叶子、泛型形参之类：到此为止
+            return None  # built-in leaves, generic parameters etc: stop here
         target = resolved.value
         if not isinstance(target.ast_node, viba_ast.TypeDefinition):
-            return None  # 泛型定义要带实参才有体，裸名字到此为止
+            return None  # a generic definition needs arguments; bare names stop
         from viba.viba_type_descriptor import _build_type
 
         return _build_type(self.pool, target.container_module, target.ast_node.body)
 
     def _container_kind(self, descriptor: VibaTypeDescriptor) -> Optional[str]:
-        """list / set / dict 三种内建容器；元组不算，它是按位置对位的积。"""
+        """The three built-in containers list / set / dict; a tuple does not
+        count, it is a product aligned by position."""
         if descriptor.kind == TYPE_APP and descriptor.payload.constructor_name in CONTAINERS:
             return descriptor.payload.constructor_name
         return None
 
     def _has_elements_by_index(self, descriptor: VibaTypeDescriptor) -> bool:
-        """能按下标数、按下标取的：list / set / tuple。
+        """What can be counted and taken by index: list / set / tuple.
 
-        dict 不算：它的元素靠 keys + at_key 取，按下标问就是图上没这个坐标。
+        A dict does not count: its elements are taken with keys + at_key, so
+        asking by index means there is no such coordinate on the map.
         """
         return self._container_kind(descriptor) in ("list", "set") or descriptor.kind == TUPLE
 
     def _members(self, node: VibaNode) -> Optional[List[tuple]]:
-        """这一段有哪些成员：[(tag 或 None, 描述符), ...]；没有成员就给 None。
+        """Which members this piece has: [(tag or None, descriptor), ...]; None
+        when it has no members.
 
-        和链、积链、指数链一个规矩：成员就是 $elements；链头是单位元就不算。
+        Sum chains, product chains and exponent chains follow one rule: the
+        members are $elements; a chain head that is the unit does not count.
         """
         descriptor = self._unfold(node.descriptor)
         elements = None
@@ -571,7 +616,8 @@ class VibaAccess:
         return slots
 
     def _member_steps(self, node: VibaNode) -> List[tuple]:
-        """[(标签或 None, 那一步, 描述符)]：标签为 None 的按位置走。"""
+        """[(tag or None, that step, descriptor)]: a None tag goes by
+        position."""
         out = []
         positional = 0
         for tag, member in self._members(node) or []:
@@ -621,25 +667,28 @@ class VibaAccess:
             return shape.payload.args[1]
         return None
 
-    # ---- 私有：数据侧（Python 记录） ----
+    # ---- Private: the data side (the Python record) ----
 
     def _pick(self, node: VibaNode, step: VibaStep,
               target: Optional[VibaTypeDescriptor] = None):
-        """数据里对应的那一段；没有就是 None。
+        """The piece in the data that corresponds; None when there is none.
 
-        按 tag 取的是记录字段；取不到时再看这一 tag 是不是和类型里的那一支
-        （数据的类名对定义名，枚举值对 tag）。按位置取的是元组的下标；
-        数据不是元组时，同样看它是不是这个位置那一支。
+        Taking by tag takes a record field; when that fails it then checks
+        whether this tag is a sum-type branch (the data's class name against the
+        definition name, the enum value against the tag). Taking by position is
+        a tuple index; when the data is not a tuple it likewise checks whether
+        it is the branch for this position.
         """
         data = node.data
         if step.kind == "by_tag":
             tag_name = _tag_name(step.value)
-            # 和类型先认分支：认上哪一支就走哪一支。数据里正好有个同名字段
-            # 不算（VersionedFileContentReference 身上就有 $versioned_file_ref）。
+            # A sum type recognises its branch first: whichever branch matches
+            # is the one walked. A same-named field in the data does not count
+            # (VersionedFileContentReference itself has $versioned_file_ref).
             if self._unfold(node.descriptor).kind != SUM:
                 found = _attribute(data, tag_name)
                 if found is not _MISSING:
-                    return _present(found)      # 字段在、值是 nil 也算在
+                    return _present(found)      # field present; nil counts too
             if target is not None and self._shape_matches(target, data, tag_name):
                 return _payload(target, data)
             return None
@@ -664,12 +713,13 @@ class VibaAccess:
         return None
 
     def _branch_is_a_leaf(self, node: VibaNode) -> bool:
-        """和命中的那一支自己是不是叶子形状（字面量 / 内建叶子 / 单位元）。"""
+        """Whether the sum branch that matched is itself a leaf shape (literal /
+        built-in leaf / unit)."""
         for tag, step, member in self._member_steps(node):
             if self._pick(node, step, member) is None:
                 continue
             if tag:
-                return False        # 带标签的支：值挂在那个 tag 底下，还得走一步
+                return False        # tagged branch: value hangs under that tag
             shape = self._unfold(member)
             if shape.kind in (LITERAL, NIL, NEVER):
                 return True
@@ -679,17 +729,20 @@ class VibaAccess:
 
     def _shape_matches(self, descriptor: VibaTypeDescriptor, data,
                        tag_name: Optional[str]) -> bool:
-        """数据这一段是不是描述符这一段。
+        """Whether this piece of data is this piece of descriptor.
 
-        四条认法：数据那个类的名字就是这一段指向的定义（``ScreenReference`` 之于
-        ``$screen_ref ScreenReference``，``Rgb`` 之于 ``$truecolor Rgb``）；枚举值
-        正好叫这个 tag（``DataStatus.DELETED`` 之于 ``$deleted ()``）；和类型往分支
-        里递归；最后是内建叶子对 Python 标量。
+        Four ways to recognise: the data's class name is the definition this
+        piece points to (``ScreenReference`` for
+        ``$screen_ref ScreenReference``, ``Rgb`` for ``$truecolor Rgb``); the
+        enum value is called exactly this tag (``DataStatus.DELETED`` for
+        ``$deleted ()``); a sum type recurses into its branches; and finally
+        a built-in leaf against a Python scalar.
         """
         if tag_name is not None:
             if isinstance(data, Enum) and _enum_matches(data, tag_name):
                 return True
-            # 分支名跟数据那个类的名字对得上（$ok / $err 对 Ok / Err）
+            # branch name matches the data's class name
+            # ($ok / $err for Ok / Err)
             if tag_name.lower() == type(data).__name__.lower():
                 return True
         if descriptor.kind == TYPE_REF:
@@ -710,7 +763,7 @@ class VibaAccess:
             if isinstance(data, Enum) and _enum_matches(data, tag):
                 return True
             if _is_unit_descriptor(self._unfold(descriptor.payload.tagged_type)):
-                return False        # 单位元支：只有 tag / 枚举值对得上才算命中
+                return False        # unit branch: only tag / enum value match
             return self._shape_matches(descriptor.payload.tagged_type, data, tag)
         if descriptor.kind == SUM:
             return any(self._shape_matches(element, data, _element_tag(element))
@@ -726,14 +779,15 @@ class VibaAccess:
             return list(data)
         return None
 
-    # ---- 私有：成员遍历（VibaListFields 与 walk 用） ----
+    # ---- Private: member traversal (used by VibaListFields and walk) ----
 
     def _is_unit_member(self, member) -> bool:
         written = _member_type_name(member)
         return written in UNIT_HEADS
 
     def _walk(self, node: VibaNode) -> List[VibaNode]:
-        """把这张图上能走到的坐标全走一遍（体检表用）。"""
+        """Walk every coordinate reachable on this map (used for the check
+        list)."""
         out = [node]
         positional = 0
         members = self._members(node) or []
@@ -742,7 +796,7 @@ class VibaAccess:
             if tag:
                 step = by_tag(tag)
             elif untagged_is_the_value:
-                continue        # 和的无标签支（Style / Optional 的 T）：值自己就是那一支
+                continue        # untagged sum branch: the value is that branch
             else:
                 step = by_field_index(positional)
                 positional += 1
@@ -768,15 +822,16 @@ class VibaAccess:
 
 
 # ----------------------------------------------------------------------
-# 第 5.3 节的便利函数
+# Section 5.3 convenience functions
 # ----------------------------------------------------------------------
 
 
 def viba_resolve(node: VibaNode, path: Sequence[VibaStep]) -> Result:
-    """VibaResolve：逐个 step 走 VibaGet。
+    """VibaResolve: walk VibaGet step by step.
 
-    走到"数据里没有这一段"（``Ok(nil)``）就到此为止：后面还有 step 就是
-    ``Err("this step has no value")``，没有 step 了就把 ``Ok(nil)`` 交出去。
+    Reaching "the data has no such piece" (``Ok(nil)``) stops there: if steps
+    remain it is ``Err("this step has no value")``, and if no steps remain the
+    ``Ok(nil)`` is handed out.
     """
     current = node
     for step in path:
@@ -790,7 +845,7 @@ def viba_resolve(node: VibaNode, path: Sequence[VibaStep]) -> Result:
 
 
 def viba_get_by_path(node: VibaNode, path: Sequence[VibaStep]) -> Result:
-    """VibaGetByPath：先 VibaResolve 再 VibaLeaf。"""
+    """VibaGetByPath: VibaResolve first, then VibaLeaf."""
     resolved = viba_resolve(node, path)
     if isinstance(resolved, Err):
         return resolved
@@ -800,7 +855,8 @@ def viba_get_by_path(node: VibaNode, path: Sequence[VibaStep]) -> Result:
 
 
 def viba_list_fields(node: VibaNode, definition: VibaDefinitionDescriptor) -> Result:
-    """VibaListFields：按 DefinitionMembers 逐个 VibaGet，取到的收进表。"""
+    """VibaListFields: VibaGet one by one over DefinitionMembers, what is
+    taken goes into the list."""
     accessor = node._access
     members = _definition_members(definition)
     if isinstance(members, Err):
@@ -816,24 +872,27 @@ def viba_list_fields(node: VibaNode, definition: VibaDefinitionDescriptor) -> Re
             step = by_field_index(positional)
             positional += 1
         given = accessor.get(node, step)
-        # 取到的收进表；缺的（含这一段压根不是积/和，问不出来的）不进表。
+        # what is taken goes into the list; what is missing (including this
+        # piece not being a product/sum at all, so nothing can be asked) does
+        # not.
         if isinstance(given, Ok) and given.value is not None:
             out.append(given.value)
     return Ok(out)
 
 
 # ----------------------------------------------------------------------
-# 入口
+# Entry point
 # ----------------------------------------------------------------------
 
 
 def access(definition_descriptor: VibaDefinitionDescriptor) -> VibaAccess:
-    """把一段稳定类型（定义描述符）当图，返回访问器。"""
+    """Treat one stable type (a definition descriptor) as a map and return an
+    accessor."""
     return VibaAccess(definition_descriptor)
 
 
 # ----------------------------------------------------------------------
-# 私有小工具
+# Private small helpers
 # ----------------------------------------------------------------------
 
 
@@ -855,14 +914,16 @@ def _is_unit_descriptor(descriptor: VibaTypeDescriptor) -> bool:
     if descriptor.kind in (NIL, NEVER):
         return True
     if descriptor.kind == TUPLE and not descriptor.payload.elements:
-        return True                                     # ()：单位元
+        return True                                     # (): the unit
     return descriptor.kind == TYPE_REF and descriptor.payload.type_name in UNIT_HEADS
 
 
 def _attribute(data, name: str):
-    """记录里的一个字段：dict 按键、对象按属性；没有就给 _MISSING。
+    """One field in the record: a dict by key, an object by attribute; _MISSING
+    when there is none.
 
-    标量与容器不给按属性取——它们身上的方法不是数据。
+    Scalars and containers are not taken by attribute — the methods on them are
+    not data.
     """
     if name.startswith("_"):
         return _MISSING
@@ -874,16 +935,19 @@ def _attribute(data, name: str):
 
 
 def _enum_matches(data: Enum, tag_name: str) -> bool:
-    """枚举跟 tag 对得上：值本身、值带 $ 的写法、或者成员名（去掉大小写）都算。"""
+    """The enum matches the tag: the value itself, the value written with $, or
+    the member name (case-insensitively) all count."""
     value = str(data.value)
     return tag_name in (value, value.lstrip("$")) or data.name.lower() == tag_name.lower()
 
 
 def _payload_of(data):
-    """分支命中了一个只有一格的对象，那一格就是这一支的载荷。
+    """When a branch matched an object with a single slot, that slot is this
+    branch's payload.
 
-    ``$ok T`` 命中 ``Ok``（只有 ``value`` 一格）时，取到的是载荷本身，所以
-    ``result.get_ok().value`` 读得出值；枚举不动（它自己就是那一支的值）。
+    When ``$ok T`` matches ``Ok`` (a single ``value`` slot), what is taken is
+    the payload itself, so ``result.get_ok().value`` reads the value; an enum
+    is left alone (it is itself that branch's value).
     """
     if isinstance(data, Enum):
         return data
@@ -899,19 +963,21 @@ def _payload_of(data):
 
 
 def _present(payload):
-    """分支命中了就是"这一支在"：里面装的是 nil 时给 _NIL，而不是"没有这一段"。"""
+    """A matched branch means "this branch is there": when it holds nil, _NIL is
+    given, not "no such piece"."""
     return _NIL if payload is None else payload
 
 
 def _payload(target: VibaTypeDescriptor, data):
-    """分支的载荷：单位元那一支是 nil，别的支按单槽包装拆一层。"""
+    """The branch's payload: the unit branch is nil, other branches are
+    unwrapped one layer of single-slot wrapping."""
     if _is_unit_descriptor(target):
         return _NIL
     return _present(_payload_of(data))
 
 
 def _leaf_matches(written: str, data) -> bool:
-    """写出来的内建叶子名字对不对得上这一份 Python 数据。"""
+    """Whether the written built-in leaf name matches this Python data."""
     if written == "str":
         return isinstance(data, str)
     if written == "bool":
@@ -926,7 +992,8 @@ def _leaf_matches(written: str, data) -> bool:
 
 
 def _literal_matches(written: VibaConstantValue, data) -> bool:
-    """字面量那一支：写的值和数据的值一样才算。"""
+    """The literal branch: it matches only if the written value equals the
+    data's value."""
     try:
         given = _constant_value(data)
     except TypeError:

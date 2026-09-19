@@ -1722,8 +1722,8 @@ class TestMemberOrderAfterOpenFile:
         moment = _datetime(2026, 9, 18, 12, 0, 0, 5, tzinfo=_dt_timezone.utc)
 
         assert isinstance(meeting_sdk.open_file(meeting, "/ws/a.py", moment, "alice"), Ok)
-        adt.assert_file_desktop_member_order(desktop)         # 打开已有的：没动成员
+        adt.assert_file_desktop_member_order(desktop)         # opening an existing one: members untouched
 
         assert isinstance(meeting_sdk.open_file(meeting, "/ws/c.py", moment, "alice"), Ok)
-        adt.assert_file_desktop_member_order(desktop)         # 新建：快照跟着记了一版
+        adt.assert_file_desktop_member_order(desktop)         # creating: the snapshot records a version too
         assert sorted(meeting.file_kv_store.file_id2file) == ["f1", "f2"]
