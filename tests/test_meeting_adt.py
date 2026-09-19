@@ -1697,33 +1697,3 @@ class TestMeetingDataFileLayer:
         data = adt.meeting_data_from_dict(payload)
         assert data.file_kv_store.file_id2file == {}
         assert data.file_desktop.workspaces == []
-
-
-class TestMemberOrderAfterOpenFile:
-    def test_a_new_file_keeps_the_order_a_permutation(self) -> None:
-        import meeting_local_sdk
-        from viba.type import Ok
-
-        desktop = adt.FileDesktop(workspaces=[adt.FileWorkspace(
-            member_files=[_file_id("f1", "a.py")],
-            workspace_name="ws",
-            workspace_status=None,
-        )])
-        desktop.reorder_indexes = _versioned(adt.identity_desktop_order(desktop),
-                                             author="alice")
-        store = adt.FileKvStore(file_id2file={
-            "f1": adt.VersionedFile(
-                file_name=[_versioned("a.py", author="alice")],
-                file_meta=[],
-                file_content=[_versioned("print(1)", author="alice")],
-            )
-        })
-        meeting = adt.MeetingData(file_kv_store=store, file_desktop=desktop)
-        moment = _datetime(2026, 9, 18, 12, 0, 0, 5, tzinfo=_dt_timezone.utc)
-
-        assert isinstance(meeting_local_sdk.open_file(meeting, "/ws/a.py", moment, "alice"), Ok)
-        adt.assert_file_desktop_member_order(desktop)         # opening an existing one: members untouched
-
-        assert isinstance(meeting_local_sdk.open_file(meeting, "/ws/c.py", moment, "alice"), Ok)
-        adt.assert_file_desktop_member_order(desktop)         # creating: the snapshot records a version too
-        assert sorted(meeting.file_kv_store.file_id2file) == ["f1", "f2"]

@@ -232,12 +232,6 @@ def _apply_meeting_effort(config: ModelApiConfig, store: MeetingStore) -> ModelA
     return config
 
 
-# The meeting sdk apis that would write; a record loaded from a journal has
-# nowhere to put a write, and the harness owns writes. They are routed like the
-# rest, and refused here.
-_SDK_WRITE_APIS = ("open_file", "write_text")
-
-
 class MeetingWebService:
     def __init__(
         self,
@@ -308,8 +302,6 @@ class MeetingWebService:
 
     def _sdk_result(self, meeting_id: str, api: str, args: Dict[str, Any]):
         """The api's own Result, evaluated over the record this server holds."""
-        if api in _SDK_WRITE_APIS:
-            return _SdkErr(f"{api} writes; the sdk is read-only over the wire")
         function = getattr(meeting_local_sdk, api)
         return function(self.sdk_meeting_data(meeting_id),
                         **meeting_sdk_json.decode(args or {}))
