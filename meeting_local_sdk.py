@@ -11,7 +11,7 @@ The design (signatures) is the data-interface chapter of MEETING_ADT.md
 takes a ``$ctx``, and returns a Result; the signature mentions only stable
 types. This layer is its implementation.
 
-**The public interface is exactly the 35 in meeting_sdk.viba**: names fall in
+**The public interface is exactly the 33 in meeting_sdk.viba**: names fall in
 snake_case, parameters and returns follow the design, and nothing else is
 exported -- the types in the signatures (``mc.ChatReference``,
 ``mc.AgentRole``...) belong to meeting_core and are not taken from here.
@@ -30,11 +30,10 @@ implementation):
   ``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
   "captured_at"}``, ``{"name", "meta", "content"}``.
 
-Reading is primary: getters always return a Result -- a miss is an ``Err``, not
-an exception. The only writes are the file layer's two (``open_file`` /
-``write_text``), and they only append to version chains: old versions always
-stay, so the state read at a moment still reads them. The ``make_*`` group at
-the end takes no ``ctx``; it only builds values such as references.
+Reading only: getters always return a Result -- a miss is an ``Err``, not an
+exception. ``open_file`` opens a path that is already there and creates nothing;
+no api writes, writes are the harness's job. The ``make_*`` group at the end
+takes no ``ctx``; it only builds values such as references.
 """
 
 from __future__ import annotations
@@ -312,65 +311,16 @@ def resolve_versioned_file_content_reference(
 # ----------------------------------------------------------------------
 
 
-def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _Result:
-    """Open by path; create it if the path has none. The same path always gives
-    the same FileId.
+def open_file(ctx: Ctx, file_path: str) -> _Result:
+    """Open an existing file by path; nothing is created here.
 
-    A new file: name = the last path segment, content = "" (one version each),
-    and the status chain empty (writable); one more member means
-    $reorder_indexes gets a new version too.
+    A bad path shape, or no workspace / fold / entry with that name, is an Err.
+    Writes are the harness's job; this layer only reads.
     """
-    parts = [p for p in file_path.split("/") if p]
-    if len(parts) not in (2, 3):
-        return _Err(f"a path is either /workspace/entry or /workspace/fold/entry: {file_path!r}")
-    workspace_name = parts[0]
-    for workspace in ctx.file_desktop.workspaces:
-        if workspace.workspace_name != workspace_name:
-            continue
-        if workspace.workspace_status == adt.DataStatus.READ_ONLY:
-            return _Err(f"workspace {workspace_name!r} is read-only, cannot create a file")
-        if len(parts) == 2:
-            entry_name = parts[1]
-            for member in workspace.member_files:
-                if isinstance(member, adt.FileFold):
-                    if member.fold_name == entry_name:
-                        return _Err(f"that level already has a fold named {file_path!r}")
-                elif member.entry_name == entry_name:
-                    return _Ok(member)          # already there: open it
-            opened = adt.FileId(file_id=_new_file_id(ctx), entry_name=entry_name)
-            workspace.member_files.append(opened)
-            _mount_new_file(ctx, opened, time, user_name)
-            return _Ok(opened)
-        fold_name, entry_name = parts[1], parts[2]
-        for member in workspace.member_files:
-            if not isinstance(member, adt.FileFold) or member.fold_name != fold_name:
-                continue
-            for existing in member.member_file_ids:
-                if existing.entry_name == entry_name:
-                    return _Ok(existing)        # already there: open it
-            opened = adt.FileId(file_id=_new_file_id(ctx), entry_name=entry_name)
-            member.member_file_ids.append(opened)
-            _mount_new_file(ctx, opened, time, user_name)
-            return _Ok(opened)
-        return _Err(f"workspace {workspace_name!r} has no fold {fold_name!r}")
-    return _Err(f"no workspace named {workspace_name!r}")
-
-
-def write_text(ctx: Ctx, file_id: "adt.FileId", text_content: str, time: _dt.datetime,
-               user_name: str) -> _Result:
-    """One more version on the file's content chain: the new version = the old
-    full text + this span; older versions stay untouched."""
-    versioned_file = ctx.file_kv_store.file_id2file.get(file_id.file_id)
-    if versioned_file is None:
-        return _Err(f"the file store has no {file_id.file_id!r}")
-    status = _latest_of(versioned_file.file_meta)
-    if status == adt.DataStatus.READ_ONLY:
-        return _Err(f"{file_id.file_id!r} is read-only")
-    if status == adt.DataStatus.DELETED:
-        return _Err(f"{file_id.file_id!r} is deleted")
-    old_content = _latest_of(versioned_file.file_content) or ""
-    versioned_file.file_content.append(adt.Versioned(old_content + text_content, time, user_name))
-    return _Ok(None)
+    opened = file_id_by_path(ctx, file_path)
+    if isinstance(opened, _Err):
+        return opened
+    return opened
 
 
 def read_text(ctx: Ctx, file: "adt.FileId") -> _Result:
@@ -532,29 +482,6 @@ def _version_at(chain: List, moment: Optional[_dt.datetime]):
     return found
 
 
-def _new_file_id(ctx: Ctx) -> str:
-    """An internal id not used yet in the file store."""
-    taken = set(ctx.file_kv_store.file_id2file.keys())
-    number = 1
-    while f"f{number}" in taken:
-        number += 1
-    return f"f{number}"
-
-
-def _mount_new_file(ctx: Ctx, file_id: "adt.FileId", time: _dt.datetime,
-                    user_name: str) -> None:
-    """A new file: one version on each of the three chains; one more member
-    means the desktop order snapshot gets a version too."""
-    ctx.file_kv_store.file_id2file[file_id.file_id] = adt.VersionedFile(
-        file_name=[adt.Versioned(file_id.entry_name, time, user_name)],
-        file_meta=[],                                 # empty status chain = writable
-        file_content=[adt.Versioned("", time, user_name)],
-    )
-    desktop = ctx.file_desktop
-    desktop.reorder_indexes = adt.Versioned(adt.identity_desktop_order(desktop), time,
-                                            user_name)
-
-
 __all__ = [
     "now",
     "chunk_times",
@@ -582,7 +509,6 @@ __all__ = [
     "resolve_versioned_file_reference",
     "resolve_versioned_file_content_reference",
     "open_file",
-    "write_text",
     "read_text",
     "make_text_region",
     "make_screen_reference",

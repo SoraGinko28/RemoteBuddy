@@ -648,26 +648,11 @@ resolve_versioned_file_content_reference[Ctx] :=
   <- $ref mc.VersionedFileContentReference
 
 open_file[Ctx] :=
-    mc.Result[mc.FileId]                       # opens it if the path has one (even read-only or deleted), creates it if not
+    mc.Result[mc.FileId]                       # opens what is already there; nothing is created
   <- $ctx Ctx
   <- $file_path str                            # /workspace/entry or /workspace/fold/entry
-  <- $time mc.datetime
-  <- $user_name mc.UserName                    # the versions a new file gets all carry this moment and author
-  # cannot create -> $err: bad path shape / no such workspace or fold / that
-  # level is read-only / that level already has a member with this name (names
-  # are unique per level); a new file gets one version each: name = last path
-  # segment, meta = nil (writable), content = "" (an empty status chain means
-  # writable); the same path always gives the same FileId; one more member means
-  # $reorder_indexes gets a new version too (the snapshot must be a permutation
-  # of the current members)
-
-write_text[Ctx] :=
-    mc.Result[nil]                             # a read-only or deleted file -> $err
-  <- $ctx Ctx
-  <- $file_id mc.FileId
-  <- $text_content str                         # append: one more version on the content chain (the old full text + this), older versions stay untouched
-  <- $time mc.datetime
-  <- $user_name mc.UserName
+  # no such path -> $err: a bad path shape, or no workspace / fold / entry with
+  # that name. Writes are the harness's job; this layer only reads.
 
 read_text[Ctx] := latest_file[Ctx]
 

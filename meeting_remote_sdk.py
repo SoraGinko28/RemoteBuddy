@@ -16,9 +16,9 @@ meeting_local_sdk over the record it holds, so the two bindings agree by
 construction. Call configure() once (the default is the local web server); the
 csrf token is fetched from /api/session on the first call.
 
-The two writers (open_file / write_text) are refused by the server: a record
-loaded from a journal has nowhere to put a write, the harness owns writes.
-The make_* group builds values and never goes over the wire.
+Nothing writes: the data interface is read-only, and open_file only opens a path
+that is already there. The make_* group builds values and never goes over the
+wire.
 """
 
 from __future__ import annotations
@@ -121,12 +121,12 @@ def _error_message(error: urllib.error.HTTPError) -> str:
 
 
 # ----------------------------------------------------------------------
-# the 35 apis of the contract
+# the 34 apis of the contract
 # ----------------------------------------------------------------------
 
 
 def now(ctx: Ctx) -> _Result:
-    """The moment the server is at."""
+    """The moment this process is at; never hands out a microsecond twice."""
     return _call("now", ctx)
 
 
@@ -243,14 +243,9 @@ def resolve_versioned_file_content_reference(ctx: Ctx, ref: 'adt.VersionedFileCo
     return _call("resolve_versioned_file_content_reference", ctx, ref=ref)
 
 
-def open_file(ctx: Ctx, file_path: str, time: _dt.datetime, user_name: str) -> _Result:
-    """Open by path; create it if the path has none. The same path always gives"""
-    return _call("open_file", ctx, file_path=file_path, time=time, user_name=user_name)
-
-
-def write_text(ctx: Ctx, file_id: 'adt.FileId', text_content: str, time: _dt.datetime, user_name: str) -> _Result:
-    """One more version on the file's content chain: the new version = the old"""
-    return _call("write_text", ctx, file_id=file_id, text_content=text_content, time=time, user_name=user_name)
+def open_file(ctx: Ctx, file_path: str) -> _Result:
+    """Open an existing file by path; nothing is created here."""
+    return _call("open_file", ctx, file_path=file_path)
 
 
 def read_text(ctx: Ctx, file: 'adt.FileId') -> _Result:
@@ -305,7 +300,6 @@ __all__ = [
     "resolve_versioned_file_reference",
     "resolve_versioned_file_content_reference",
     "open_file",
-    "write_text",
     "read_text",
     "make_text_region",
     "make_screen_reference",
