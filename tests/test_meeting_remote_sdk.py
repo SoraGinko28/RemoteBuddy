@@ -188,7 +188,7 @@ def test_the_chat_apis_hit_the_known_binding_gap(api, wired) -> None:
                  moment, "bob", local.make_text_region(0, 2)))}
     given = getattr(remote, api)(data.meeting_uid, *calls[api][1:])
     assert isinstance(given, Err)
-    assert "no branch of this sum matches" in given.err_msg
+    assert "no branch of this sum carries a value" in given.err_msg
 
 
 def test_a_failed_api_answers_its_err_branch(wired) -> None:

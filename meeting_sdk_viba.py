@@ -22,8 +22,8 @@ from functools import lru_cache
 from pathlib import Path
 
 import meeting_core_reflect as _reflect
-import meeting_core_serialize as _serialize
 import meeting_local_sdk as _local
+from viba import serialize as _serialize
 from viba.type import Err, Ok, Result, custom_module
 
 DESIGN_CHAPTER = "The data interface"
@@ -76,7 +76,7 @@ def script_for(api: str, result) -> Result:
     """A result of that api -> ``entry := ...`` (the remote answer).
 
     The result is this layer's Python data, so binding it into a node happens
-    here; the writer is handed the node.
+    here; viba.serialize writes the source from the node.
     """
     found = access_of(api)
     if isinstance(found, Err):
@@ -91,7 +91,7 @@ def script_for(api: str, result) -> Result:
 @lru_cache(maxsize=None)
 def access_of(api: str):
     """(access, definition) that reads a value of this api's return type."""
-    return _serialize.access_for(return_type(api))
+    return _reflect.access_for(return_type(api))
 
 
 @lru_cache(maxsize=None)

@@ -1,4 +1,4 @@
-"""Tests for meeting_core_serialize: the commutative diagram.
+"""Tests for the commutative diagram, written by viba.serialize:
 
     rule_reflect ∘ serialize ≡ meeting_core_reflect
 
@@ -19,7 +19,7 @@ import pytest
 
 import meeting_adt as adt
 import meeting_core_reflect as reflect
-import meeting_core_serialize as serialize
+from viba import serialize  # noqa: E402
 from viba import viba_ast  # noqa: E402
 from viba.rule import reflect as rule_reflect  # noqa: E402
 from viba.rule.is_compliant import is_compliant  # noqa: E402
@@ -153,7 +153,7 @@ def test_an_empty_container_is_written_as_an_empty_literal() -> None:
             ("list[str]", [], "ListLiteral[]"),
             ("set[str]", set(), "SetLiteral[]"),
             ("dict[str, str]", {}, "DictLiteral[]")):
-        access, definition = serialize.access_for(type_expression).ok_value
+        access, definition = reflect.access_for(type_expression).ok_value
         root = access.root(definition, reflect._Record(empty))
         assert isinstance(root, Ok), root
         given = serialize.serialize("entry", access, root.ok_value)
