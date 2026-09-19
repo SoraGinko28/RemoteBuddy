@@ -19,10 +19,15 @@ is refused where it is made. The prose words (Assert / Appendix / Hint) are not
 part of the data shape and are written nil — they are units, so a definition
 that carries them is still judged fine.
 
-A piece of the data the design has no spelling for gives Err (SerializeGap):
+What the walk is given is a ``VibaNode``: the caller binds its own data into one
+(``access.root(definition, data)``) and hands it over, so nothing below depends
+on how the data is shaped or on this layer's own binding.
+
+A piece of the design the data has no spelling for gives Err (SerializeGap):
 this module writes what the design says and never forces a spelling. Which side
-cannot be spelled — the design's definition, the judge, or this binding — is not
-something this module knows about, and no definition name is special here.
+cannot be spelled — the design's definition, the judge, or the caller's binding
+— is not something this module knows about, and no definition name is special
+here.
 """
 
 from __future__ import annotations
@@ -54,7 +59,7 @@ from viba.viba_type_descriptor import (  # noqa: E402
     TUPLE,
 )
 
-__all__ = ["serialize", "serialize_for", "access_for"]
+__all__ = ["serialize", "access_for"]
 
 
 class SerializeGap(Exception):
@@ -66,25 +71,15 @@ class SerializeGap(Exception):
 _NAMES = builder.Builder()
 
 
-def serialize(definition_name: str, data, name: str = None) -> Result:
-    """Object data -> a chunk of viba source: a definition whose body is the
-    spelling of that data (named after the design type unless ``name`` says
-    otherwise)."""
-    return _source(name or definition_name, _reflect.access,
-                   _reflect._definition(definition_name), data)
+def serialize(name: str, access, node) -> Result:
+    """A piece of the design in hand (a ``VibaNode``) -> viba source: the
+    definition ``name`` whose body is that piece's spelling.
 
-
-def serialize_for(type_expression: str, data, name: str = "entry") -> Result:
-    """The same, against a type expression instead of a named definition.
-
-    ``serialize_for("Result[list[datetime]]", result)`` is what an api of the
-    data interface answers with: a script whose ``entry`` is the witness.
+    Binding the caller's own data into a node is the caller's business —
+    ``access.root(definition, data)`` gives the node to start from — so the walk
+    below never sees anything but the accessor and the node.
     """
-    found = _expression_definition(type_expression)
-    if isinstance(found, Err):
-        return found
-    access, definition = found.ok_value
-    return _source(name, access, definition, data)
+    return _source(name, access, node)
 
 
 def access_for(type_expression: str):
@@ -120,13 +115,10 @@ def _expression_definition(type_expression: str):
 # ----------------------------------------------------------------------
 
 
-def _source(name: str, access, definition, data) -> Result:
-    """The definition's source: the data's spelling, written by the builder."""
-    root = access.root(definition, _reflect._Record(data))
-    if isinstance(root, Err):
-        return root
+def _source(name: str, access, node) -> Result:
+    """The definition's source: what the node holds, written by the builder."""
     try:
-        expression = _emit(access, root.ok_value)
+        expression = _emit(access, node)
     except SerializeGap as gap:
         return Err(str(gap))
     vb = builder.Builder()

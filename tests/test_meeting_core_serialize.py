@@ -75,9 +75,21 @@ def _samples():
     ]
 
 
+def _node(name: str, data):
+    """The Python data bound into a node: the caller's side of the writer."""
+    given = reflect.access.root(reflect._definition(name), reflect._Record(data))
+    assert isinstance(given, Ok), given
+    return given.ok_value
+
+
+def _source(name: str, data):
+    """serialize -> the viba source for that data."""
+    return serialize.serialize(name, reflect.access, _node(name, data))
+
+
 def _witness(name: str, data):
     """serialize -> the parsed-back witness body (the spelling of that data)."""
-    given = serialize.serialize(name, data)
+    given = _source(name, data)
     assert isinstance(given, Ok), given
     module = viba_ast.parse(given.ok_value)
     body = [definition for definition in module.body if definition.name == name]
@@ -141,7 +153,10 @@ def test_an_empty_container_is_written_as_an_empty_literal() -> None:
             ("list[str]", [], "ListLiteral[]"),
             ("set[str]", set(), "SetLiteral[]"),
             ("dict[str, str]", {}, "DictLiteral[]")):
-        given = serialize.serialize_for(type_expression, empty)
+        access, definition = serialize.access_for(type_expression).ok_value
+        root = access.root(definition, reflect._Record(empty))
+        assert isinstance(root, Ok), root
+        given = serialize.serialize("entry", access, root.ok_value)
         assert isinstance(given, Ok), given
         assert written in given.ok_value, given.ok_value
         assert viba_ast.parse(given.ok_value)            # and it reads back
@@ -154,7 +169,7 @@ def test_an_empty_list_among_the_chains_still_reads_the_same() -> None:
         file_name=[adt.Versioned("a.py", _moment(), "alice")],
         file_meta=[],
         file_content=[adt.Versioned("print(1)", _moment(), "alice")])
-    given = serialize.serialize("VersionedFile", data)
+    given = _source("VersionedFile", data)
     assert isinstance(given, Ok), given
     assert "ListLiteral[]" in given.ok_value
     assert _leaves_read_alike("VersionedFile", data) > 0
@@ -163,12 +178,12 @@ def test_an_empty_list_among_the_chains_still_reads_the_same() -> None:
 def test_a_chat_part_that_does_not_bind_is_refused() -> None:
     """The design's chat part is $raw_msg str; the record layer hands over a
     RawMessage. Nothing is written rather than a forced nil."""
-    given = serialize.serialize("ChatMessage", adt.ChatMessage(
+    given = _source("ChatMessage", adt.ChatMessage(
         user_name="alice", time=_moment(), message=[adt.RawMessage("hi")]))
     assert isinstance(given, Err)
     assert "no branch" in given.err_msg
 
 
 def test_serialize_refuses_a_missing_step() -> None:
-    given = serialize.serialize("datetime", {})
+    given = _source("datetime", {})
     assert isinstance(given, Err)
