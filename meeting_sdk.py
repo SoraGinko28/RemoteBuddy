@@ -3,7 +3,7 @@
 设计（签名）在 MEETING_ADT.md 的「取数据接口」那一章（模块名 meeting_sdk）：每个函数带泛型
 参数 ``Ctx``、吃一个 ``$ctx``，返回 Result，签名里只有稳定类型。这一层是它的实现。
 
-**对外的接口就是 meeting_sdk.viba 里的那 33 个**：名字落 snake_case，参数、返回都照设计，不多导出
+**对外的接口就是 meeting_sdk.viba 里的那 34 个**：名字落 snake_case，参数、返回都照设计，不多导出
 任何东西——签名里那些类型（``mc.ChatReference``、``mc.AgentRole``…）属于 meeting_core，不从这里拿。
 
 这一版的绑定（协议说 Ctx / Data 由实现方绑）：
@@ -11,7 +11,7 @@
 * ``Ctx`` = :class:`meeting_adt.MeetingData`：一份会议记录。
 * ``Result[T]`` = viba 的 ``Ok`` / ``Err``（meeting_core_reflect 能把它们读成 Result 的两支）。
 * 有名字的稳定类型用 meeting_adt 里同名的 dataclass：``FileId`` / ``VersionedFile`` /
-  ``FileKvStore`` / ``ChatMessage`` / ``ScoreMessage`` / 各种 Reference。
+  ``ChatMessage`` / ``ScoreMessage`` / 各种 Reference（`FileKvStore` 是记录层的类型）。
 * 屏幕那一份状态（``mc.ScreenContent``）与文件那一份状态（``mc.FileState``）用 ``dict``，
   键就是设计里的 tag 名：``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
   "captured_at"}``、``{"name", "meta", "content"}``。
@@ -226,8 +226,14 @@ def file_id_by_path(ctx: Ctx, path: str) -> _Result:
     return _Err(f"路径要么 /workspace/entry，要么 /workspace/fold/entry：{path!r}")
 
 
-def file_kv_store(ctx: Ctx) -> _Result:
-    return _Ok(ctx.file_kv_store)
+def file_datetimes(ctx: Ctx, file: "adt.FileId") -> _Result:
+    """这个文件改过的那些时刻：三条链上所有版本时刻的并集，去重升序。"""
+    versioned_file = ctx.file_kv_store.file_id2file.get(file.file_id)
+    if versioned_file is None:
+        return _Err(f"文件库里没有 {file.file_id!r}")
+    moments = {version.time for _, chain in _chains(versioned_file)
+               for version in chain if version.time is not None}
+    return _Ok(sorted(moments))
 
 
 def files_at(ctx: Ctx, time: _dt.datetime) -> _Result:
@@ -329,6 +335,11 @@ def write_text(ctx: Ctx, file_id: "adt.FileId", text_content: str, time: _dt.dat
     old_content = _latest_of(versioned_file.file_content) or ""
     versioned_file.file_content.append(adt.Versioned(old_content + text_content, time, user_name))
     return _Ok(None)
+
+
+def read_text(ctx: Ctx, file: "adt.FileId") -> _Result:
+    """read_text := latest_file（设计里的写法就是别名）。"""
+    return latest_file(ctx, file)
 
 
 # ----------------------------------------------------------------------
@@ -522,13 +533,14 @@ __all__ = [
     "owner_at",
     "control_owner_of",
     "file_id_by_path",
-    "file_kv_store",
+    "file_datetimes",
     "files_at",
     "latest_file",
     "resolve_versioned_file_reference",
     "resolve_versioned_file_content_reference",
     "open_file",
     "write_text",
+    "read_text",
     "make_text_region",
     "make_screen_reference",
     "make_chat_reference",

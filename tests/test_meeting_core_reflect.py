@@ -52,10 +52,6 @@ def _versioned_file() -> adt.VersionedFile:
     )
 
 
-def _store() -> adt.FileKvStore:
-    return adt.FileKvStore(file_id2file={"f1": _versioned_file()})
-
-
 # =====================================================================
 # 设计：从 MEETING_ADT.md 的「稳定类型」章编译出来
 # =====================================================================
@@ -75,9 +71,10 @@ class TestDesign:
 
     def test_pool_carries_the_stable_definitions(self) -> None:
         names = [d.def_name for d in reflect._design_pool().files[0].definitions]
-        assert len(names) == 28
+        assert len(names) == 27
         assert "FileId" in names and "ContentReference" in names and "Result" in names
         assert "ScreenContent" in names and "FileState" in names
+        assert "FileKvStore" not in names                 # 记录层的类型不在稳定类型章里
 
     def test_definition_by_short_and_full_name(self) -> None:
         assert _definition("FileId").full_name == "meeting_core.FileId"
@@ -128,13 +125,12 @@ class TestSevenCells:
         assert moment.get_microsecond().value == _moment().microsecond
 
     def test_length_and_keys_only_for_containers(self) -> None:
-        accessor = reflect.access(_definition("FileKvStore"))
-        node = accessor._unwrap(accessor.root(reflect._Record(_store())))
-        inner = node.get_file_id2file()
-        assert accessor.length(inner).value == 1
-        assert accessor.keys(inner).value == ["f1"]
+        accessor = reflect.access(_definition("VersionedFile"))
+        node = accessor._unwrap(accessor.root(reflect._Record(_versioned_file())))
+        chain = node.get_file_content()
+        assert accessor.length(chain).value == 1
+        assert accessor.keys(chain).message.startswith("这一段不是 dict")
         assert accessor.length(node).message.startswith("这一段不是容器")
-        assert accessor.keys(node).message.startswith("这一段不是 dict")
 
     def test_leaf_on_a_record_is_an_error(self) -> None:
         accessor = reflect.access(_definition("VersionedFile"))
@@ -147,10 +143,9 @@ class TestSevenCells:
 # =====================================================================
 
 class TestAddressing:
-    def test_by_tag_and_at_key_walk_the_store(self) -> None:
-        node = _open(_store(), "FileKvStore")
-        content = (node.by_tag("file_id2file").at_key("f1")
-                   .get_file_content().at_index(0).get_data())
+    def test_by_tag_and_at_index_walk_a_chain(self) -> None:
+        node = _open(_versioned_file(), "VersionedFile")
+        content = node.by_tag("file_content").at_index(0).get_data()
         assert content.value == "print(1)"
 
     def test_at_index_walks_a_version_chain(self) -> None:
@@ -245,15 +240,13 @@ class TestPythonLanding:
             node.get_data()
 
     def test_dir_lists_the_synthesised_names(self) -> None:
-        assert "get_file_id2file" in dir(_open(_store(), "FileKvStore"))
+        assert "get_file_content" in dir(_open(_versioned_file(), "VersionedFile"))
 
-    def test_dict_access_and_sequence_iteration(self) -> None:
-        node = _open(_store(), "FileKvStore").get_file_id2file()
-        assert len(node) == 1 and node.is_dict is True
-        assert node.keys() == ["f1"]
-        assert node["f1"].get_file_name().at_index(0).get_data().value == "a.py"
-        assert [value.get_file_name().at_index(0).get_data().value
-                for _, value in node.items()] == ["a.py"]
+    def test_sequence_access_and_iteration(self) -> None:
+        node = _open(_versioned_file(), "VersionedFile").get_file_content()
+        assert len(node) == 1 and node.is_dict is False
+        assert node[0].get_data().value == "print(1)"
+        assert [version.get_data().value for version in node] == ["print(1)"]
         styles = _open(adt.TerminalTextSegment(text="x", styles={"bold"}), "TerminalTextSegment").get_styles()
         assert [style.value for style in styles] == ["bold"]
 
@@ -268,9 +261,8 @@ class TestPythonLanding:
 
 class TestConvenience:
     def test_resolve_and_read(self) -> None:
-        node = _open(_store(), "FileKvStore")
-        path = [reflect.by_tag("file_id2file"), reflect.at_key("f1"),
-                reflect.by_tag("file_content"), reflect.at_index(0),
+        node = _open(_versioned_file(), "VersionedFile")
+        path = [reflect.by_tag("file_content"), reflect.at_index(0),
                 reflect.by_tag("data")]
         assert reflect.viba_resolve(node, path).value.value == "print(1)"
         assert reflect.viba_get_by_path(node, path).value.value == "print(1)"
@@ -330,9 +322,9 @@ class TestResult:
 # =====================================================================
 
 class TestWalk:
-    def test_store_walks_down_to_leaves(self) -> None:
-        accessor = reflect.access(_definition("FileKvStore"))
-        root = accessor._unwrap(accessor.root(reflect._Record(_store())))
+    def test_a_versioned_file_walks_down_to_leaves(self) -> None:
+        accessor = reflect.access(_definition("VersionedFile"))
+        root = accessor._unwrap(accessor.root(reflect._Record(_versioned_file())))
         leaves = []
         for node in accessor._walk(root):
             given = accessor.leaf(node)
