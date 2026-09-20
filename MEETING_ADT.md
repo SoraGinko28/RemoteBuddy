@@ -98,14 +98,19 @@ FoldMemberOrder :=
 
 FileWorkspace :=
     DataClass
-  * $member_files mc.AppendOnlyList[FileFold | mc.FileId]
+  * $member_files mc.AppendOnlyList[FileFold | FileEntry]
   * $workspace_name mc.Optional[str]
   * $workspace_status mc.Optional[mc.DataStatus]
 
 FileFold :=
     DataClass
   * $fold_name mc.Optional[str]
-  * $member_file_ids mc.AppendOnlyList[mc.FileId]
+  * $member_file_ids mc.AppendOnlyList[FileEntry]
+
+FileEntry :=
+    DataClass
+  * $entry_name str
+  * $file_id mc.FileId
 
 StreamChunkDict :=
     DataClass
@@ -309,7 +314,6 @@ FileState :=
 FileId :=
     Object
   * $file_id str
-  * $entry_name str
   * Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]
 
 VersionedFile :=

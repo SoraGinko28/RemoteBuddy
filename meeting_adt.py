@@ -1000,7 +1000,7 @@ __all__ += [
 # G15: file layer -- FileKvStore / FileDesktop (files, versioned parts, desktop tree)
 # =====================================================================
 #
-# FileId := Object * $file_id str * $entry_name str
+# FileId := Object * $file_id str
 #   * Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]
 # VersionedFile := Object * $file_name AppendOnlyList[Versioned[str]]
 #   * $file_meta AppendOnlyList[Versioned[DataStatus]]
@@ -1008,8 +1008,11 @@ __all__ += [
 #   (three chains: reading at a moment takes the last version on the chain with
 #    time <= that moment; an empty status chain = writable)
 # FileKvStore := Object * $file_id2file dict[str, VersionedFile]
-# FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileId]
-# FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileId]
+# FileEntry := Object * $entry_name str * $file_id FileId
+#   (the name belongs to the entry a tree holds, not to the identity: the same
+#    file can hang under a workspace or inside a fold, and a rename is a new entry)
+# FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileEntry]
+# FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileEntry]
 #   * $workspace_name Optional[str] * $workspace_status Optional[DataStatus]
 # FileDesktop := Object * $workspaces AppendOnlyList[FileWorkspace]
 #   * $reorder_indexes Versioned[DesktopMemberOrder]
@@ -1031,12 +1034,13 @@ __all__ += [
 # Persisted JSON:
 #   DataStatus: "deleted" | "read_only"
 #   Versioned[T]: {"data": ..., "time": iso|null, "author": user_name}
-#   FileId: {"file_id": id, "entry_name": name}
+#   FileId: {"file_id": id}
+#   FileEntry: {"entry_name": name, "file_id": FileId}
 #   VersionedFile: {"file_name": [Versioned[str]], "file_meta": [Versioned[status|null]],
 #                   "file_content": [Versioned[str]]}   # one chain per part
 #   FileKvStore: {"file_id2file": {file_id: VersionedFile}}
-#   FileFold: {"fold_name": name|null, "member_file_ids": [FileId]}
-#   FileWorkspace: {"member_files": [{"fold": FileFold} | {"file": FileId}],
+#   FileFold: {"fold_name": name|null, "member_file_ids": [FileEntry]}
+#   FileWorkspace: {"member_files": [{"fold": FileFold} | {"file": FileEntry}],
 #                   "workspace_name": name|null, "workspace_status": status|null}
 #   FoldMemberOrder: {"member_indexes": [int]}
 #   WorkspaceMemberOrder: {"workspace_index": int,
@@ -1102,18 +1106,43 @@ def _data_status_decode(payload: object) -> object:
 
 @dataclass
 class FileId:
-    """FileId := Object * $file_id str * $entry_name str"""
+    """FileId := Object * $file_id str
+
+    An identity: the store's key, and nothing else. Where a file hangs and what
+    it is called there is the tree's business (FileEntry).
+    """
 
     file_id: str = ""
-    entry_name: str = ""
 
 
 def file_id_to_dict(file_id: FileId) -> dict:
-    return {"file_id": file_id.file_id, "entry_name": file_id.entry_name}
+    return {"file_id": file_id.file_id}
 
 
 def file_id_from_dict(payload: dict) -> FileId:
-    return FileId(file_id=payload.get("file_id", ""), entry_name=payload.get("entry_name", ""))
+    return FileId(file_id=payload.get("file_id", ""))
+
+
+@dataclass
+class FileEntry:
+    """FileEntry := Object * $entry_name str * $file_id FileId
+
+    One name in one place: what a workspace or a fold holds. The same file may
+    hang in two places under two names, and a rename is a new entry.
+    """
+
+    entry_name: str = ""
+    file_id: FileId = field(default_factory=FileId)
+
+
+def file_entry_to_dict(entry: FileEntry) -> dict:
+    return {"entry_name": entry.entry_name, "file_id": file_id_to_dict(entry.file_id)}
+
+
+def file_entry_from_dict(payload: dict) -> FileEntry:
+    payload = payload or {}
+    return FileEntry(entry_name=payload.get("entry_name", ""),
+                     file_id=file_id_from_dict(payload.get("file_id") or {}))
 
 
 @dataclass
@@ -1180,16 +1209,17 @@ def file_kv_store_from_dict(payload: dict) -> FileKvStore:
 
 @dataclass
 class FileFold:
-    """FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileId]"""
+    """FileFold := Object * $fold_name Optional[str]
+    * $member_file_ids AppendOnlyList[FileEntry]"""
 
     fold_name: Optional[str] = None
-    member_file_ids: list = field(default_factory=list)  # list[FileId]
+    member_file_ids: list = field(default_factory=list)  # list[FileEntry]
 
 
 def file_fold_to_dict(fold: FileFold) -> dict:
     return {
         "fold_name": fold.fold_name,
-        "member_file_ids": [file_id_to_dict(f) for f in fold.member_file_ids],
+        "member_file_ids": [file_entry_to_dict(f) for f in fold.member_file_ids],
     }
 
 
@@ -1197,16 +1227,16 @@ def file_fold_from_dict(payload: dict) -> FileFold:
     payload = payload or {}
     return FileFold(
         fold_name=payload.get("fold_name"),
-        member_file_ids=[file_id_from_dict(f) for f in payload.get("member_file_ids", [])],
+        member_file_ids=[file_entry_from_dict(f) for f in payload.get("member_file_ids", [])],
     )
 
 
 @dataclass
 class FileWorkspace:
-    """FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileId]
+    """FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileEntry]
     * $workspace_name Optional[str] * $workspace_status Optional[DataStatus]"""
 
-    member_files: list = field(default_factory=list)  # list[FileFold | FileId]
+    member_files: list = field(default_factory=list)  # list[FileFold | FileEntry]
     workspace_name: Optional[str] = None
     workspace_status: Optional[DataStatus] = None
 
@@ -1214,13 +1244,13 @@ class FileWorkspace:
 def _workspace_member_to_dict(member: object) -> dict:
     if isinstance(member, FileFold):
         return {"fold": file_fold_to_dict(member)}
-    return {"file": file_id_to_dict(member)}
+    return {"file": file_entry_to_dict(member)}
 
 
 def _workspace_member_from_dict(payload: dict) -> object:
     if "fold" in payload:
         return file_fold_from_dict(payload["fold"])
-    return file_id_from_dict(payload["file"])
+    return file_entry_from_dict(payload["file"])
 
 
 def file_workspace_to_dict(workspace: FileWorkspace) -> dict:
@@ -1361,14 +1391,12 @@ def file_desktop_from_dict(payload: dict) -> FileDesktop:
 
 
 def file_ids_of_desktop(desktop: FileDesktop) -> list[FileId]:
-    """Every FileId the desktop tree carries: direct members and fold members."""
+    """Every FileId the desktop tree carries: direct entries and fold entries."""
     found: list[FileId] = []
     for workspace in desktop.workspaces:
         for member in workspace.member_files:
-            if isinstance(member, FileFold):
-                found.extend(member.member_file_ids)
-            else:
-                found.append(member)
+            entries = member.member_file_ids if isinstance(member, FileFold) else [member]
+            found.extend(entry.file_id for entry in entries)
     return found
 
 
@@ -1376,8 +1404,7 @@ def assert_file_id_in_store(file_id: FileId, store: FileKvStore) -> None:
     """Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]"""
     if file_id.file_id not in store.file_id2file:
         raise AssertionError(
-            f"file id {file_id.file_id!r} ({file_id.entry_name!r}) not in "
-            f"FileKvStore.file_id2file"
+            f"file id {file_id.file_id!r} not in FileKvStore.file_id2file"
         )
 
 
@@ -1410,7 +1437,7 @@ def assert_file_desktop_unique_names(desktop: FileDesktop) -> None:
         for member in workspace.member_files:
             if not isinstance(member, FileFold):
                 continue
-            entry_names = [f.entry_name for f in member.member_file_ids if f.entry_name]
+            entry_names = [e.entry_name for e in member.member_file_ids if e.entry_name]
             duplicates = sorted({n for n in entry_names if entry_names.count(n) > 1})
             if duplicates:
                 raise AssertionError(
@@ -1466,6 +1493,9 @@ __all__ += [
     "FileId",
     "file_id_to_dict",
     "file_id_from_dict",
+    "FileEntry",
+    "file_entry_to_dict",
+    "file_entry_from_dict",
     "VersionedFile",
     "versioned_file_to_dict",
     "versioned_file_from_dict",

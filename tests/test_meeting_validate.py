@@ -239,8 +239,8 @@ class TestValidateRunDir:
             validator.validate_run_dir(tmp_path / "no-such-run")
 
 
-def _file_id(file_id: str, entry_name: str) -> adt.FileId:
-    return adt.FileId(file_id=file_id, entry_name=entry_name)
+def _entry(file_id: str, entry_name: str) -> adt.FileEntry:
+    return adt.FileEntry(entry_name=entry_name, file_id=adt.FileId(file_id=file_id))
 
 
 def _file_store() -> adt.FileKvStore:
@@ -259,8 +259,8 @@ def _file_meeting(workspace: adt.FileWorkspace) -> adt.MeetingData:
 class TestFileLayer:
     def _workspace(self) -> adt.FileWorkspace:
         return adt.FileWorkspace(member_files=[
-            _file_id("f1", "a.py"),
-            adt.FileFold(fold_name="pkg", member_file_ids=[_file_id("f2", "b.py")]),
+            _entry("f1", "a.py"),
+            adt.FileFold(fold_name="pkg", member_file_ids=[_entry("f2", "b.py")]),
         ], workspace_name="ws")
 
     def test_valid_desktop_passes(self) -> None:
@@ -269,13 +269,13 @@ class TestFileLayer:
 
     def test_duplicate_names_flagged(self) -> None:
         workspace = adt.FileWorkspace(member_files=[
-            _file_id("f1", "pkg"), adt.FileFold(fold_name="pkg"),
+            _entry("f1", "pkg"), adt.FileFold(fold_name="pkg"),
         ], workspace_name="ws")
         report = validator.validate_meeting_data(_file_meeting(workspace))
         assert "file_desktop_unique_names" in report.by_assert()
 
     def test_missing_file_id_flagged(self) -> None:
-        workspace = adt.FileWorkspace(member_files=[_file_id("gone", "a.py")],
+        workspace = adt.FileWorkspace(member_files=[_entry("gone", "a.py")],
                                       workspace_name="ws")
         report = validator.validate_meeting_data(_file_meeting(workspace))
         assert "file_id_in_store" in report.by_assert()

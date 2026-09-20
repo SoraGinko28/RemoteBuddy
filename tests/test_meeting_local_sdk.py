@@ -54,7 +54,8 @@ def prepare_meeting_data_as_ctx():
     adt = meeting_adt
     text_region = meeting_local_sdk.make_text_region
 
-    file_id = adt.FileId(file_id="f1", entry_name="a.py")
+    file_id = adt.FileId(file_id="f1")
+    file_entry = adt.FileEntry(entry_name="a.py", file_id=file_id)
     file_ref = meeting_local_sdk.make_versioned_file_reference(file_id, _T0)
     # one that is too early: that version of a.py only exists from _T0
     stale_file_ref = meeting_local_sdk.make_versioned_file_reference(
@@ -96,9 +97,9 @@ def prepare_meeting_data_as_ctx():
                              _T1, _ALICE, text_region(0, 2))),
     ])
 
-    fold = adt.FileFold(fold_name="pkg",
-                        member_file_ids=[adt.FileId(file_id="f2", entry_name="b.py")])
-    workspace = adt.FileWorkspace(member_files=[file_id, fold], workspace_name="ws",
+    fold = adt.FileFold(fold_name="pkg", member_file_ids=[
+        adt.FileEntry(entry_name="b.py", file_id=adt.FileId(file_id="f2"))])
+    workspace = adt.FileWorkspace(member_files=[file_entry, fold], workspace_name="ws",
                                   workspace_status=None)          # default = writable
     locked = adt.FileWorkspace(member_files=[], workspace_name="locked",
                                workspace_status=adt.DataStatus.READ_ONLY)
@@ -448,7 +449,7 @@ def test_case_control_owner_of_a_handover(ctx, sdk, reflect):
 def test_case_file_id_by_path_finds_a_direct_file(ctx, sdk, reflect):
     file_id = _ok_node(sdk.file_id_by_path(ctx, "/ws/a.py"), reflect).data
     node = _node(file_id, "FileId", reflect)
-    assert node.get_entry_name().value == "a.py"
+    assert node.get_file_id().value == "f1"      # the identity: the name is the tree's
 
 
 def test_case_file_id_by_path_finds_a_file_in_a_fold(ctx, sdk, reflect):
