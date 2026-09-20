@@ -151,6 +151,7 @@ class TestStreamNames:
             "meeting_data_from_dict",
             "assert_file_desktop_member_order",
             "assert_file_desktop_unique_names",
+            "assert_file_desktop_distinct_file_ids",
             "assert_file_id_in_store",
             "data_status_from_name",
             "DataStatus",
@@ -1636,6 +1637,22 @@ class TestFileDesktopUniqueNames:
         ], workspace_name="ws")])
         with pytest.raises(AssertionError, match="duplicate entry names under fold"):
             adt.assert_file_desktop_unique_names(desktop)
+
+
+class TestFileDesktopDistinctFileIds:
+    def test_sample_desktop_is_valid(self) -> None:
+        adt.assert_file_desktop_distinct_file_ids(_sample_desktop())
+
+    def test_one_id_under_two_paths_rejected(self) -> None:
+        desktop = adt.FileDesktop(workspaces=[
+            adt.FileWorkspace(member_files=[
+                _entry("f1", "a.py"),
+                adt.FileFold(fold_name="pkg", member_file_ids=[_entry("f1", "again.py")]),
+            ], workspace_name="ws"),
+            adt.FileWorkspace(member_files=[_entry("f1", "third.py")], workspace_name="other"),
+        ])
+        with pytest.raises(AssertionError, match="one file id under two paths"):
+            adt.assert_file_desktop_distinct_file_ids(desktop)
 
 
 class TestFileDesktopMemberOrder:

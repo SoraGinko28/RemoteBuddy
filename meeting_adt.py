@@ -1021,6 +1021,8 @@ __all__ += [
 #               entry_name of a file hanging directly under it are pairwise
 #               different; inside one fold, the entry_name of the files are
 #               pairwise different }]
+#   * Assert[{ a file_id appears at most once in the tree: an entry carries a
+#               name and an identity, so no two paths reach the same file }]
 # DesktopMemberOrder := Object * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]
 #   * Assert[{ the workspace_index are exactly a permutation of
 #               0..len(workspaces)-1 }]
@@ -1420,6 +1422,18 @@ def _workspace_member_names(workspace: FileWorkspace) -> list[tuple[str, str]]:
     return named
 
 
+def assert_file_desktop_distinct_file_ids(desktop: FileDesktop) -> None:
+    """Assert: a $file_id appears at most once in the tree.
+
+    A path picks a file by the names along it; with no links in the tree, no two
+    paths may come out at the same file.
+    """
+    ids = [file_id.file_id for file_id in file_ids_of_desktop(desktop)]
+    duplicates = sorted({f for f in ids if ids.count(f) > 1})
+    if duplicates:
+        raise AssertionError(f"one file id under two paths: {duplicates}")
+
+
 def assert_file_desktop_unique_names(desktop: FileDesktop) -> None:
     """Assert: names are unique on each level, so a path resolves to one entry."""
     workspace_names = [w.workspace_name for w in desktop.workspaces if w.workspace_name]
@@ -1525,6 +1539,7 @@ __all__ += [
     "file_ids_of_desktop",
     "assert_file_id_in_store",
     "assert_file_desktop_unique_names",
+    "assert_file_desktop_distinct_file_ids",
     "assert_file_desktop_member_order",
 ]
 
