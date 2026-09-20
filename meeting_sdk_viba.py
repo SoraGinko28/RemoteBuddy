@@ -85,7 +85,7 @@ def script_for(api: str, result) -> Result:
     root = access.root(definition, _reflect._Record(result))
     if isinstance(root, Err):
         return root
-    return _serialize.serialize("entry", access, root.ok_value)
+    return _serialize.serialize("entry", root.ok_value)
 
 
 @lru_cache(maxsize=None)

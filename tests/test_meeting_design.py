@@ -18,7 +18,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # to be able to import it
 sys.path.insert(0, str(REPO_ROOT / "viba"))
 
+from viba.check_tag_and_inline import check_tag_and_inline  # noqa: E402
 from viba.is_complete import is_complete  # noqa: E402
+from viba.type import Ok  # noqa: E402
+
+import meeting_core_reflect as reflect  # noqa: E402
 
 DESIGN_PATH = REPO_ROOT / "MEETING_ADT.md"
 TERMINATORS = {"Assert", "Appendix", "Hint"}
@@ -47,6 +51,13 @@ def test_meeting_core_is_complete() -> None:
 def test_meeting_sdk_is_complete() -> None:
     library = [("meeting_core.viba", _core_source())]
     assert is_complete(_chapter_source(SDK_CHAPTER), library, (), TERMINATORS) is True
+
+
+def test_the_stable_types_have_no_repeated_tag_and_no_inline_cycle() -> None:
+    """viba's own check over the chapter: one tag holds one member, and an
+    untagged member that is a product does not come back to itself."""
+    given = check_tag_and_inline(reflect._design_pool())
+    assert isinstance(given, Ok) and given.ok_value is None, given
 
 
 def test_no_terminators_are_needed() -> None:

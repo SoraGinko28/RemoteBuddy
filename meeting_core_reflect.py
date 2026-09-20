@@ -695,7 +695,9 @@ class VibaAccess:
         when it has no members.
 
         Sum chains, product chains and exponent chains follow one rule: the
-        members are $elements; a chain head that is the unit does not count.
+        members are $elements; a chain head that is the unit does not count, and
+        a member the design writes as the product's own unit is not a member at
+        all (the prose words are written that way).
         """
         descriptor = self.unfold(node.descriptor)
         elements = None
@@ -711,9 +713,29 @@ class VibaAccess:
         for element in elements:
             if element.kind == TAGGED:
                 slots.append((element.payload.tag, element.payload.tagged_type))
+            elif descriptor.kind == PRODUCT and self._is_product_unit(element):
+                continue                # a unit: the design writes no member here
             else:
                 slots.append((None, element))
         return slots
+
+    def _is_product_unit(self, descriptor) -> bool:
+        """The product's unit: nil by kind, or a name the config calls nil.
+        never is the sum's unit and is no product unit."""
+        shape = self.unfold(descriptor)
+        if shape.kind == NIL:
+            return True
+        return (shape.kind == TYPE_REF
+                and shape.payload.type_name in self.config.nil_eqv)
+
+    def inline_cycle(self, descriptor) -> Optional[str]:
+        """The name a product's inline chain comes back to, or None.
+
+        This landing does not splice an untagged member's own product into the
+        one around it, so no chain can come back to where it started: what a
+        product writes as an untagged member stays that member.
+        """
+        return None
 
     def carries_nil(self, descriptor: VibaTypeDescriptor) -> bool:
         """Whether this written type admits nil.
