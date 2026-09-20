@@ -438,9 +438,17 @@ TerminalControlReference :=
     }]
 
 # ---------------------------------------------------------------- #
-# Assert / Appendix / Hint take a code block and nothing else: they are types whose
-# shape is the unit (Object = nil). Defining them is what lets a definition that
-# carries them be judged (is_compliant).
+# Assert / Appendix / Hint carry a note and, when there is something to run,
+# $python_code { ... }: the note is natural language and is never executed, the
+# code must be executable Python — the rule author writes it.
+#
+# They are types whose shape is the unit (Object = nil): carrying one is what
+# lets a definition be judged (is_compliant).
+#
+# What the code may read is the material it is written for. A claim whose code
+# would have to reach another object — `$file_id is among the store's keys` —
+# cannot be an Assert here: its place is a rule, whose witness carries every
+# object the code reads.
 # ---------------------------------------------------------------- #
 
 Assert[Cond] := Object
