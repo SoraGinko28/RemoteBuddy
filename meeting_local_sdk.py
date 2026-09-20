@@ -237,8 +237,8 @@ def file_id_by_path(ctx: Ctx, path: str) -> _Result:
             if workspace.workspace_name != workspace_name:
                 continue
             for member in workspace.member_files:
-                if isinstance(member, adt.FileId) and member.entry_name == entry_name:
-                    return _Ok(member)
+                if isinstance(member, adt.FileEntry) and member.entry_name == entry_name:
+                    return _Ok(member.file_id)
         return _Err(f"no file at {path!r}")
     if len(parts) == 3:
         workspace_name, fold_name, entry_name = parts
@@ -248,9 +248,9 @@ def file_id_by_path(ctx: Ctx, path: str) -> _Result:
             for member in workspace.member_files:
                 if not isinstance(member, adt.FileFold) or member.fold_name != fold_name:
                     continue
-                for file_id in member.member_file_ids:
-                    if file_id.entry_name == entry_name:
-                        return _Ok(file_id)
+                for entry in member.member_file_ids:
+                    if entry.entry_name == entry_name:
+                        return _Ok(entry.file_id)
         return _Err(f"no file at {path!r}")
     return _Err(f"a path is either /workspace/entry or /workspace/fold/entry: {path!r}")
 

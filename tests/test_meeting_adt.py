@@ -171,6 +171,9 @@ class TestStreamNames:
             "FileDesktop",
             "FileFold",
             "FileId",
+            "FileEntry",
+            "file_entry_to_dict",
+            "file_entry_from_dict",
             "FileKvStore",
             "FileWorkspace",
             "fold_member_order_from_dict",
@@ -1461,8 +1464,13 @@ def _dt_now() -> _datetime:
 # G15: file layer (FileKvStore / FileDesktop)
 # =====================================================================
 
-def _file_id(file_id: str, entry_name: str) -> adt.FileId:
-    return adt.FileId(file_id=file_id, entry_name=entry_name)
+def _file_id(file_id: str) -> adt.FileId:
+    return adt.FileId(file_id=file_id)
+
+
+def _entry(file_id: str, entry_name: str) -> adt.FileEntry:
+    """One name in one place: what a workspace or a fold holds."""
+    return adt.FileEntry(entry_name=entry_name, file_id=_file_id(file_id))
 
 
 def _versioned(data, moment=None, author: str = "") -> adt.Versioned:
@@ -1470,9 +1478,9 @@ def _versioned(data, moment=None, author: str = "") -> adt.Versioned:
 
 
 def _sample_desktop() -> adt.FileDesktop:
-    fold = adt.FileFold(fold_name="pkg", member_file_ids=[_file_id("f2", "b.py")])
+    fold = adt.FileFold(fold_name="pkg", member_file_ids=[_entry("f2", "b.py")])
     workspace = adt.FileWorkspace(
-        member_files=[_file_id("f1", "a.py"), fold],
+        member_files=[_entry("f1", "a.py"), fold],
         workspace_name="ws",
         workspace_status=adt.DataStatus.READ_ONLY,
     )
@@ -1536,13 +1544,24 @@ class TestVersionedCodec:
 
 class TestFileIdCodec:
     def test_roundtrip(self) -> None:
-        file_id = _file_id("f1", "a.py")
+        file_id = _file_id("f1")
         payload = adt.file_id_to_dict(file_id)
-        assert payload == {"file_id": "f1", "entry_name": "a.py"}
+        assert payload == {"file_id": "f1"}
         assert adt.file_id_from_dict(payload) == file_id
 
     def test_defaults(self) -> None:
         assert adt.file_id_from_dict({}) == adt.FileId()
+
+
+class TestFileEntryCodec:
+    def test_roundtrip(self) -> None:
+        entry = _entry("f1", "a.py")
+        payload = adt.file_entry_to_dict(entry)
+        assert payload == {"entry_name": "a.py", "file_id": {"file_id": "f1"}}
+        assert adt.file_entry_from_dict(payload) == entry
+
+    def test_defaults(self) -> None:
+        assert adt.file_entry_from_dict({}) == adt.FileEntry()
 
 
 class TestVersionedFileCodec:
@@ -1576,8 +1595,10 @@ class TestFileDesktopCodec:
         restored = adt.file_desktop_from_dict(adt.file_desktop_to_dict(_sample_desktop()))
         workspace = restored.workspaces[0]
         assert workspace.workspace_status is adt.DataStatus.READ_ONLY
-        assert isinstance(workspace.member_files[0], adt.FileId)
+        assert isinstance(workspace.member_files[0], adt.FileEntry)
         assert isinstance(workspace.member_files[1], adt.FileFold)
+        assert workspace.member_files[0].entry_name == "a.py"
+        assert workspace.member_files[0].file_id.file_id == "f1"
         assert workspace.member_files[1].member_file_ids[0].entry_name == "b.py"
 
     def test_empty_payload(self) -> None:
@@ -1602,7 +1623,7 @@ class TestFileDesktopUniqueNames:
 
     def test_fold_name_colliding_with_file_entry_name_rejected(self) -> None:
         desktop = adt.FileDesktop(workspaces=[adt.FileWorkspace(member_files=[
-            _file_id("f1", "pkg"),
+            _entry("f1", "pkg"),
             adt.FileFold(fold_name="pkg"),
         ], workspace_name="ws")])
         with pytest.raises(AssertionError, match="duplicate names under workspace"):
@@ -1611,7 +1632,7 @@ class TestFileDesktopUniqueNames:
     def test_duplicate_entry_names_inside_fold_rejected(self) -> None:
         desktop = adt.FileDesktop(workspaces=[adt.FileWorkspace(member_files=[
             adt.FileFold(fold_name="pkg", member_file_ids=[
-                _file_id("f1", "a.py"), _file_id("f2", "a.py")]),
+                _entry("f1", "a.py"), _entry("f2", "a.py")]),
         ], workspace_name="ws")])
         with pytest.raises(AssertionError, match="duplicate entry names under fold"):
             adt.assert_file_desktop_unique_names(desktop)
@@ -1666,7 +1687,7 @@ class TestFileIdInStore:
 
     def test_missing_id_rejected(self) -> None:
         with pytest.raises(AssertionError, match="not in"):
-            adt.assert_file_id_in_store(_file_id("nope", "x.py"), _sample_store())
+            adt.assert_file_id_in_store(_file_id("nope"), _sample_store())
 
     def test_walker_collects_direct_and_fold_members(self) -> None:
         ids = [f.file_id for f in adt.file_ids_of_desktop(_sample_desktop())]

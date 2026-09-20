@@ -42,8 +42,8 @@ def _moment() -> _dt.datetime:
     return _dt.datetime(2026, 9, 18, 12, 0, 0, tzinfo=_dt.timezone.utc)
 
 
-def _file_id(file_id: str = "f1", entry_name: str = "a.py") -> adt.FileId:
-    return adt.FileId(file_id=file_id, entry_name=entry_name)
+def _file_id(file_id: str = "f1") -> adt.FileId:
+    return adt.FileId(file_id=file_id)
 
 
 def _versioned_file() -> adt.VersionedFile:
@@ -302,7 +302,7 @@ class TestConvenience:
     def test_list_fields_keeps_what_is_there(self) -> None:
         node = _open(_file_id(), "FileId")
         given = reflect.access.list_fields(node, _definition("FileId"))
-        assert [member.value for member in given.ok_value] == ["f1", "a.py"]
+        assert [member.value for member in given.ok_value] == ["f1"]
 
 
 class TestResult:

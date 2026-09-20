@@ -36,7 +36,7 @@ def _moment(microsecond: int = 7) -> _dt.datetime:
 def _samples():
     """(definition name, data): those binding in the "Stable types" chapter."""
     v = _moment()
-    file_id = adt.FileId("f1", "a.py")
+    file_id = adt.FileId("f1")
     file_ref = adt.VersionedFileReference(file_id=file_id, version_time=v)
     return [
         ("datetime", v),
