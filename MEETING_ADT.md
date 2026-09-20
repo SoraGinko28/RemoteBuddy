@@ -439,16 +439,18 @@ TerminalControlReference :=
 
 # ---------------------------------------------------------------- #
 # Assert / Appendix / Hint carry a note and, when there is something to run,
-# $python_code { ... }: the note is natural language and is never executed, the
-# code must be executable Python — the rule author writes it.
+# $python_code { ... }: the note is natural language and is never executed; the
+# code must be executable Python and deterministic — the rule author writes it.
+#
+# The code reaches data through two interfaces only: the data interface
+# (meeting_sdk's apis) and reflect. It may follow references as far as it needs
+# to — the store's keys, the message that summoned a judge — but it never names
+# an implementation detail: no storage layout, no harness object, no Python
+# record type. A rule that could see how the data is kept would stop being a
+# rule about the meeting.
 #
 # They are types whose shape is the unit (Object = nil): carrying one is what
 # lets a definition be judged (is_compliant).
-#
-# What the code may read is the material it is written for. A claim whose code
-# would have to reach another object — `$file_id is among the store's keys` —
-# cannot be an Assert here: its place is a rule, whose witness carries every
-# object the code reads.
 # ---------------------------------------------------------------- #
 
 Assert[Cond] := Object
