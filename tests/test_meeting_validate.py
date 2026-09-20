@@ -274,6 +274,14 @@ class TestFileLayer:
         report = validator.validate_meeting_data(_file_meeting(workspace))
         assert "file_desktop_unique_names" in report.by_assert()
 
+    def test_one_id_under_two_paths_flagged(self) -> None:
+        workspace = adt.FileWorkspace(member_files=[
+            _entry("f1", "a.py"),
+            adt.FileFold(fold_name="pkg", member_file_ids=[_entry("f1", "b.py")]),
+        ], workspace_name="ws")
+        report = validator.validate_meeting_data(_file_meeting(workspace))
+        assert "file_desktop_distinct_file_ids" in report.by_assert()
+
     def test_missing_file_id_flagged(self) -> None:
         workspace = adt.FileWorkspace(member_files=[_entry("gone", "a.py")],
                                       workspace_name="ws")

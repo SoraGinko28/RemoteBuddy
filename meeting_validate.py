@@ -109,6 +109,8 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
     # ---- file layer: unique names, permutation order, file ids present in the store ----
     _check(report, "file_desktop", None, "file_desktop_unique_names",
            lambda: adt.assert_file_desktop_unique_names(meeting.file_desktop))
+    _check(report, "file_desktop", None, "file_desktop_distinct_file_ids",
+           lambda: adt.assert_file_desktop_distinct_file_ids(meeting.file_desktop))
     _check(report, "file_desktop", None, "file_desktop_member_order",
            lambda: adt.assert_file_desktop_member_order(meeting.file_desktop))
     for file_id in adt.file_ids_of_desktop(meeting.file_desktop):

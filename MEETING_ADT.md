@@ -63,6 +63,10 @@ FileDesktop :=
         inside one fold, the $entry_name of the files in $member_file_ids are
         pairwise different
     }]
+  * Assert[{
+      a $file_id appears at most once in the tree: an entry carries a name and
+      an identity, so no two paths reach the same file (there are no links)
+    }]
   * Appendix[{
       # the desktop tree shows the current state only: no mc.ContentReference
       # cites it by $version_time, so the tree carries no version chain (the only
