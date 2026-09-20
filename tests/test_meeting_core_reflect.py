@@ -77,7 +77,7 @@ class TestDesign:
         assert "FileId" in names and "ContentReference" in names and "Result" in names
         assert "ScreenContent" in names and "FileState" in names
         assert "FileKvStore" not in names                 # the record layer types are not in the stable chapter
-        assert {"Assert", "Appendix", "Hint"} <= set(names)   # the prose words are definitions too (units)
+        assert {"Assert", "Appendix", "Hint"} <= set(names)   # Assert / Appendix / Hint are definitions too (units)
 
     def test_definition_by_short_and_full_name(self) -> None:
         assert _definition("FileId").full_name == "meeting_core.FileId"

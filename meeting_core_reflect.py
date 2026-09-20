@@ -697,7 +697,7 @@ class VibaAccess:
         Sum chains, product chains and exponent chains follow one rule: the
         members are $elements; a chain head that is the unit does not count, and
         a member the design writes as the product's own unit is not a member at
-        all (the prose words are written that way).
+        all (Assert / Appendix / Hint are written that way).
         """
         descriptor = self.unfold(node.descriptor)
         elements = None
@@ -1028,7 +1028,7 @@ class VibaAccess:
 # ----------------------------------------------------------------------
 
 # The language layer's units: what viba/type.viba writes for the sum unit and
-# the product unit. Our design defines the three prose words as Object too, so
+# the product unit. Our design defines Assert / Appendix / Hint as Object too, so
 # they are units as well.
 DEFAULT_CONFIG = Config(never_eqv={"Oneof"},
                         nil_eqv={"Object", "Assert", "Appendix", "Hint"})
