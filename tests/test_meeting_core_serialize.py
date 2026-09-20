@@ -84,7 +84,7 @@ def _node(name: str, data):
 
 def _source(name: str, data):
     """serialize -> the viba source for that data."""
-    return serialize.serialize(name, reflect.access, _node(name, data))
+    return serialize.serialize(name, _node(name, data))
 
 
 def _witness(name: str, data):
@@ -156,7 +156,7 @@ def test_an_empty_container_is_written_as_an_empty_literal() -> None:
         access, definition = reflect.access_for(type_expression).ok_value
         root = access.root(definition, reflect._Record(empty))
         assert isinstance(root, Ok), root
-        given = serialize.serialize("entry", access, root.ok_value)
+        given = serialize.serialize("entry", root.ok_value)
         assert isinstance(given, Ok), given
         assert written in given.ok_value, given.ok_value
         assert viba_ast.parse(given.ok_value)            # and it reads back
