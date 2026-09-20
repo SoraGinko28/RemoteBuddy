@@ -55,7 +55,7 @@ def return_types() -> dict:
     for match in API_LINE.finditer(source):
         name, written = match.group(1), match.group(2)
         if name not in _local.__all__:
-            continue                      # the two hint definitions are prose
+            continue                      # the two hint definitions are not apis
         written = written.split("#")[0].strip()
         found[name] = re.sub(r"\s+", " ", written)
     return found

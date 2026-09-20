@@ -438,7 +438,7 @@ TerminalControlReference :=
     }]
 
 # ---------------------------------------------------------------- #
-# Assert / Appendix / Hint carry prose and nothing else: they are types whose
+# Assert / Appendix / Hint take a code block and nothing else: they are types whose
 # shape is the unit (Object = nil). Defining them is what lets a definition that
 # carries them be judged (is_compliant).
 # ---------------------------------------------------------------- #
@@ -457,7 +457,7 @@ Hint[Note] := Object
 #   print(is_complete(Path("meeting_core.viba").read_text(),
 #                     viba_paths=["."]))                       # True
 #
-# The three prose words are units (the three lines above), so the walk never
+# Assert / Appendix / Hint are units (the three lines above), so the walk never
 # reaches a code block: neither completeness nor judgment needs terminators.
 # ---------------------------------------------------------------- #
 
@@ -474,8 +474,8 @@ Hint[Note] := Object
 
 ```
 
-This chapter is complete: run viba's own `is_complete` on it and the three prose
-words are units, every other name resolves, and not one terminator is needed.
+This chapter is complete: run viba's own `is_complete` on it and Assert / Appendix /
+Hint are units, every other name resolves, and not one terminator is needed.
 
 ---
 

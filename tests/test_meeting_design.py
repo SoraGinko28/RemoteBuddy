@@ -4,9 +4,9 @@
 the former is used as a library (`import meeting_core as mc`).
 
 Complete = starting from every definition, every coordinate on the graph can be
-walked to a leaf; the only one that cannot be entered is CodeBlock,
-The three prose words (`Assert` / `Appendix` / `Hint`) are defined as units, so a
-code block is never reached and no terminator is needed.
+walked to a leaf; the only one that cannot be entered is CodeBlock.
+`Assert` / `Appendix` / `Hint` are defined as units, so a code block is never
+reached and no terminator is needed.
 """
 
 import re
