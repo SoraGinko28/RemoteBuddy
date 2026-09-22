@@ -27,12 +27,6 @@ PROFILE_SPECS: Dict[str, ProfileSpec] = {
     "fast": ProfileSpec(55, 100, 90, 200, 400, 12, 12_000),
 }
 
-# One literal is one line, and the return that ends it holds about four tenths of
-# a second: the line is what a reader follows, so the pause goes after the line,
-# not between its characters.
-LINE_PAUSE_MIN_MS = 350
-LINE_PAUSE_MAX_MS = 450
-
 STRONG_BOUNDARIES = set(":;)]}")
 MEDIUM_BOUNDARIES = set(",=+-*/%<>|&^")
 EDITOR_LITERALS = {"i", "a", "o", "O", "I", "A", "v", "V"}
@@ -68,6 +62,9 @@ def _rng(meeting_id: str, action_id: str, token_index: int, context: str) -> ran
 
 
 def _literal_context(value: str, context: str) -> str:
+    # A `$rest` token carries milliseconds, not text: only text has a context.
+    if not isinstance(value, str):
+        return context
     if context == "vim" and (value in EDITOR_LITERALS or value.startswith(":")):
         return "editor_command"
     if context in {"vim", "python"}:
@@ -104,8 +101,11 @@ def _normal_literal_steps(
 ) -> List[TypingStep]:
     """One literal goes out whole: the token grammar already refuses control
     characters, so a literal is a single line, and typing it in pieces is what
-    made the actor look like it was dribbling characters. The pause after it
-    follows the profile, and the return after that holds ``LINE_PAUSE_*``.
+    made the actor look like it was dribbling characters.
+
+    How long to hold after a line is not the harness's call — an actor that wants
+    the human to read one asks for it with ``$rest`` — so the pause here is only
+    the profile's.
     """
     spec = PROFILE_SPECS[profile]
     rng = _rng(meeting_id, action_id, token_index, context)
@@ -136,11 +136,10 @@ def _key_step(
     token_index: int,
     context: str,
 ) -> TypingStep:
-    """One key. The return is what separates lines, so it gets the line pause."""
     spec = PROFILE_SPECS[profile]
     rng = _rng(meeting_id, action_id, token_index, context + ":key")
     if key == "Enter":
-        delay = rng.randint(LINE_PAUSE_MIN_MS, LINE_PAUSE_MAX_MS)
+        delay = rng.randint(spec.semantic_min_ms, min(500, spec.semantic_max_ms))
     elif key == "Escape":
         delay = rng.randint(80, min(200, spec.semantic_max_ms))
     elif key == "C-c":

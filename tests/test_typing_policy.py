@@ -1,7 +1,6 @@
 import unittest
 
-from typing_policy import (LINE_PAUSE_MAX_MS, LINE_PAUSE_MIN_MS, PROFILE_SPECS,
-                           TYPING_PROFILES, plan_input)
+from typing_policy import PROFILE_SPECS, TYPING_PROFILES, plan_input
 
 
 class TypingPolicyTest(unittest.TestCase):
@@ -22,9 +21,10 @@ class TypingPolicyTest(unittest.TestCase):
         changed = plan_input(tokens, "balanced", "meeting-a", "action-b", "vim")
         self.assertNotEqual(balanced.steps, changed.steps)
 
-    def test_one_literal_is_one_line_and_enter_holds_the_line_pause(self):
-        """A line goes out whole, and the return after it pauses about 0.4s:
-        one step per line, one pause per return."""
+    def test_one_literal_is_one_line_and_the_return_keeps_the_profile_pace(self):
+        """A line goes out whole; the return after it is only the profile's short
+        pause. A longer hold is the actor's to ask for with `$rest`, not the
+        harness's to impose on every line."""
         tokens = [
             {"kind": "literal", "value": "def quick_sort(items):"},
             {"kind": "key", "value": "Enter"},
@@ -36,9 +36,28 @@ class TypingPolicyTest(unittest.TestCase):
                          [step.kind for step in plan.steps])
         self.assertEqual(["def quick_sort(items):", "Enter", "    return items", "Enter"],
                          [step.value for step in plan.steps])
+        spec = PROFILE_SPECS["fast"]
         for enter in (step for step in plan.steps if step.kind == "key"):
-            self.assertGreaterEqual(enter.delay_after_ms, LINE_PAUSE_MIN_MS)
-            self.assertLessEqual(enter.delay_after_ms, LINE_PAUSE_MAX_MS)
+            self.assertGreaterEqual(enter.delay_after_ms, spec.semantic_min_ms)
+            self.assertLessEqual(enter.delay_after_ms, spec.semantic_max_ms)
+
+    def test_an_actor_can_ask_for_a_longer_hold_with_a_rest(self):
+        """`$rest` is how the actor sets the pace it wants; it holds the plan."""
+        plan = plan_input(
+            [
+                {"kind": "literal", "value": "def quick_sort(items):"},
+                {"kind": "rest", "value": 400},
+                {"kind": "key", "value": "Enter"},
+            ],
+            "fast",
+            "meeting",
+            "action",
+            "vim",
+            allow_paste=False,
+        )
+        rest = next(step for step in plan.steps if step.kind == "rest")
+        self.assertEqual(400, rest.delay_after_ms)
+        self.assertEqual("rest", rest.change_kind)
 
     def test_a_line_that_ends_on_a_boundary_holds_a_little_longer(self):
         """The profile's semantic pause still lands, now after the whole line."""
