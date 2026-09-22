@@ -178,6 +178,11 @@ def last_chunk_time(ctx: Ctx) -> _Result:
 # ----------------------------------------------------------------------
 
 
+def screen_times(ctx: Ctx) -> _Result:
+    """The moments the screen stream captured, ascending."""
+    return _Ok(sorted(capture.captured_at for capture in _records(ctx, adt.ScreenStreamChunk)))
+
+
 def screen_at(ctx: Ctx, time: _dt.datetime) -> _Result:
     """The content of that screen at this moment (not the capture record)."""
     for capture in _records(ctx, adt.ScreenStreamChunk):
@@ -483,6 +488,7 @@ __all__ = [
     "score_message_reference",
     "first_chunk_time",
     "last_chunk_time",
+    "screen_times",
     "screen_at",
     "resolve_screen_reference",
     "participants",

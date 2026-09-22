@@ -1,6 +1,6 @@
 """Tests for meeting_adt: one section per goal in the G1-G14 goal chain, covering edge cases and failure paths within each section."""
 
-from datetime import datetime as _datetime, timezone as _dt_timezone
+from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _dt_timezone
 from typing import Optional
 
 import pytest
@@ -928,7 +928,10 @@ class TestResolveChat:
 
     def test_wrong_time_does_not_match(self) -> None:
         msg = adt.ChatMessage(user_name="alice", time=_dt_now())
-        ref = adt.ChatReference(msg_time=_dt_now(), user_name="alice",
+        # the reference's moment is deliberately another one: two _dt_now() calls
+        # can land on the same microsecond, and then there is nothing to miss
+        ref = adt.ChatReference(msg_time=_dt_now() - _timedelta(seconds=1),
+                                user_name="alice",
                                 region=adt.TextRegion(0, 1))
         with pytest.raises(LookupError):
             adt.resolve_chat_reference(ref, [msg])
