@@ -4,6 +4,8 @@
 - **没有用户明确的“提 PR / pr 到 wtj / 给我链接”指令，绝不创建任何 PR。**
 - **没有用户明确说“push / 推上去”，绝不 push（origin 也不许）。** 默认动作只有：建分支 → 合并到本地 main。到此为止。
 - 只有用户亲口说提 PR 时才开 PR，且一个 PR 只带一个 commit。
+- **用户说“pr”时：开（或更新）PR 之后直接 merge**，只要 token 有权限，不要再问第二遍。
+  - `gh pr merge` / `gh pr edit` 走 GraphQL，只有 `repo` 权限的 token 会被挡；改用 REST：`PUT /repos/<owner>/<repo>/pulls/<n>/merge`、`PATCH /repos/<owner>/<repo>/pulls/<n>`。
 - 不要擅自把分支推到 wtj，不要擅自合并到 wtj。
 - 讨论阶段（ADT、记忆文件等）的改动默认只留在本地。
 
