@@ -592,6 +592,10 @@ last_chunk_time[Ctx] =
 # ---------------------------------------------------------------- #
 # The assertions and notes stay in the record layer; this hands out the value.
 
+screen_times[Ctx] =
+    mc.Result[list[mc.datetime]]               # the moments the screen stream captured, ascending
+  <- $ctx Ctx
+
 screen_at[Ctx] =
     mc.Result[mc.ScreenContent]                # the content of that screen at that moment
   <- $ctx Ctx

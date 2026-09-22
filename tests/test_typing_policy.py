@@ -21,22 +21,53 @@ class TypingPolicyTest(unittest.TestCase):
         changed = plan_input(tokens, "balanced", "meeting-a", "action-b", "vim")
         self.assertNotEqual(balanced.steps, changed.steps)
 
-    def test_identifier_bursts_and_semantic_pause_follow_profile(self):
+    def test_one_literal_is_one_line_and_the_return_keeps_the_profile_pace(self):
+        """A line goes out whole; the return after it is only the profile's short
+        pause. A longer hold is the actor's to ask for with `$rest`, not the
+        harness's to impose on every line."""
+        tokens = [
+            {"kind": "literal", "value": "def quick_sort(items):"},
+            {"kind": "key", "value": "Enter"},
+            {"kind": "literal", "value": "    return items"},
+            {"kind": "key", "value": "Enter"},
+        ]
+        plan = plan_input(tokens, "fast", "meeting", "action", "vim", allow_paste=False)
+        self.assertEqual(["literal", "key", "literal", "key"],
+                         [step.kind for step in plan.steps])
+        self.assertEqual(["def quick_sort(items):", "Enter", "    return items", "Enter"],
+                         [step.value for step in plan.steps])
+        spec = PROFILE_SPECS["fast"]
+        for enter in (step for step in plan.steps if step.kind == "key"):
+            self.assertGreaterEqual(enter.delay_after_ms, spec.semantic_min_ms)
+            self.assertLessEqual(enter.delay_after_ms, spec.semantic_max_ms)
+
+    def test_an_actor_can_ask_for_a_longer_hold_with_a_rest(self):
+        """`$rest` is how the actor sets the pace it wants; it holds the plan."""
         plan = plan_input(
-            [{"kind": "literal", "value": "result=value+other;next_call()"}],
-            "balanced",
+            [
+                {"kind": "literal", "value": "def quick_sort(items):"},
+                {"kind": "rest", "value": 400},
+                {"kind": "key", "value": "Enter"},
+            ],
+            "fast",
             "meeting",
             "action",
             "vim",
+            allow_paste=False,
         )
+        rest = next(step for step in plan.steps if step.kind == "rest")
+        self.assertEqual(400, rest.delay_after_ms)
+        self.assertEqual("rest", rest.change_kind)
+
+    def test_a_line_that_ends_on_a_boundary_holds_a_little_longer(self):
+        """The profile's semantic pause still lands, now after the whole line."""
         spec = PROFILE_SPECS["balanced"]
-        identifier_steps = [
-            step for step in plan.steps if step.value and all(ch.isalnum() or ch == "_" for ch in step.value)
-        ]
-        self.assertTrue(identifier_steps)
-        self.assertTrue(all(len(step.value) <= spec.burst_max for step in identifier_steps))
-        semicolon = next(step for step in plan.steps if step.value.endswith(";"))
-        self.assertGreaterEqual(semicolon.delay_after_ms, spec.semantic_min_ms)
+        plain = plan_input([{"kind": "literal", "value": "value = other"}],
+                           "balanced", "m", "a", "vim", allow_paste=False)
+        boundary = plan_input([{"kind": "literal", "value": "value = other;"}],
+                              "balanced", "m", "a", "vim", allow_paste=False)
+        self.assertGreaterEqual(boundary.steps[0].delay_after_ms, spec.semantic_min_ms)
+        self.assertGreater(boundary.steps[0].delay_after_ms, plain.steps[0].delay_after_ms)
 
     def test_long_code_switches_to_bounded_paste(self):
         text = "value = '" + ("abc " * 130) + "'"

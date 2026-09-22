@@ -323,7 +323,8 @@ class InteractiveRunnerTest(unittest.TestCase):
             "".join(value for _pane, value in self.transport.literal_sends),
         )
         screens = [event for event in self.store.events() if event["kind"] == "screen"]
-        self.assertGreaterEqual(len(screens), 6)
+        # One frame per step: the plan is one line, so one capture.
+        self.assertEqual(len(plan.steps), len(screens))
         self.assertTrue(
             all(event["data"].get("action_id") == "paced-action" for event in screens)
         )
@@ -456,20 +457,26 @@ class InteractiveRunnerTest(unittest.TestCase):
         ]
         self.assertNotIn("import socket", typed)
 
-    def test_rule_plan_can_interrupt_between_bursts(self):
+    def test_rule_plan_can_interrupt_between_lines(self):
         pane_id = self.transport.create_workspace_session(
             self.store.meeting.session_name,
             self.store.workspace_path,
         )
         self.store.set_session(pane_id)
         plan = plan_input(
-            [{"kind": "literal", "value": "abcdefghijk"}],
+            [
+                {"kind": "literal", "value": "alpha"},
+                {"kind": "key", "value": "Enter"},
+                {"kind": "literal", "value": "beta"},
+                {"kind": "key", "value": "Enter"},
+                {"kind": "literal", "value": "gamma"},
+            ],
             "demo",
             "runner-demo",
             "interrupt-action",
             "code",
         )
-        checks = [False, False, True]
+        checks = [False, True]
 
         def interrupted():
             return checks.pop(0) if checks else True

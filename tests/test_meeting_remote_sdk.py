@@ -235,9 +235,11 @@ def test_the_make_group_is_local_and_identical() -> None:
             assert getattr(remote, name) is getattr(local, name)
 
 
-def test_the_contract_is_the_same_33() -> None:
+def test_the_contract_is_the_same_34() -> None:
+    """screen_times arrived for the critic: it needs the screen stream's
+    moments, not just the first one."""
     assert remote.__all__ == local.__all__
-    assert len(remote.__all__) == 33
+    assert len(remote.__all__) == 34
 
 
 def test_every_data_api_has_a_return_type() -> None:
