@@ -12,8 +12,6 @@ TYPING_PROFILES = ("demo", "balanced", "fast")
 
 @dataclass(frozen=True)
 class ProfileSpec:
-    burst_min: int
-    burst_max: int
     interval_min_ms: int
     interval_max_ms: int
     semantic_min_ms: int
@@ -24,10 +22,16 @@ class ProfileSpec:
 
 
 PROFILE_SPECS: Dict[str, ProfileSpec] = {
-    "demo": ProfileSpec(1, 2, 140, 220, 220, 450, 160, 6, 30_000),
-    "balanced": ProfileSpec(1, 3, 90, 150, 150, 320, 240, 8, 20_000),
-    "fast": ProfileSpec(2, 5, 55, 100, 90, 200, 400, 12, 12_000),
+    "demo": ProfileSpec(140, 220, 220, 450, 160, 6, 30_000),
+    "balanced": ProfileSpec(90, 150, 150, 320, 240, 8, 20_000),
+    "fast": ProfileSpec(55, 100, 90, 200, 400, 12, 12_000),
 }
+
+# One literal is one line, and the return that ends it holds about four tenths of
+# a second: the line is what a reader follows, so the pause goes after the line,
+# not between its characters.
+LINE_PAUSE_MIN_MS = 350
+LINE_PAUSE_MAX_MS = 450
 
 STRONG_BOUNDARIES = set(":;)]}")
 MEDIUM_BOUNDARIES = set(",=+-*/%<>|&^")
@@ -98,46 +102,16 @@ def _normal_literal_steps(
     token_index: int,
     context: str,
 ) -> List[TypingStep]:
+    """One literal goes out whole: the token grammar already refuses control
+    characters, so a literal is a single line, and typing it in pieces is what
+    made the actor look like it was dribbling characters. The pause after it
+    follows the profile, and the return after that holds ``LINE_PAUSE_*``.
+    """
     spec = PROFILE_SPECS[profile]
     rng = _rng(meeting_id, action_id, token_index, context)
-    result: List[TypingStep] = []
-    offset = 0
     tempo = rng.uniform(0.84, 1.16)
-    tempo_until = rng.randint(6, 14)
-    while offset < len(text):
-        character = text[offset]
-        if character in " \t":
-            end = offset + 1
-            while end < len(text) and text[end] in " \t" and end - offset < 8:
-                end += 1
-        elif not character.isalnum() and character != "_":
-            end = offset + 1
-            while (
-                end < len(text)
-                and text[end] == character
-                and end - offset < min(4, spec.burst_max)
-            ):
-                end += 1
-        else:
-            size = rng.randint(spec.burst_min, spec.burst_max)
-            end = offset + 1
-            while (
-                end < len(text)
-                and end - offset < size
-                and text[end] not in " \t"
-                and (text[end].isalnum() or text[end] == "_")
-            ):
-                end += 1
-        value = text[offset:end]
-        next_character = text[end] if end < len(text) else ""
-        delay = _pause_for(value, next_character, spec, rng, tempo)
-        result.append(TypingStep("literal", value, delay, "typing", context, 0))
-        tempo_until -= 1
-        if tempo_until == 0:
-            tempo = rng.uniform(0.84, 1.16)
-            tempo_until = rng.randint(6, 14)
-        offset = end
-    return result
+    delay = _pause_for(text, "", spec, rng, tempo)
+    return [TypingStep("literal", text, delay, "typing", context, 0)]
 
 
 def _paste_literal_steps(
@@ -162,10 +136,11 @@ def _key_step(
     token_index: int,
     context: str,
 ) -> TypingStep:
+    """One key. The return is what separates lines, so it gets the line pause."""
     spec = PROFILE_SPECS[profile]
     rng = _rng(meeting_id, action_id, token_index, context + ":key")
     if key == "Enter":
-        delay = rng.randint(spec.semantic_min_ms, min(500, spec.semantic_max_ms))
+        delay = rng.randint(LINE_PAUSE_MIN_MS, LINE_PAUSE_MAX_MS)
     elif key == "Escape":
         delay = rng.randint(80, min(200, spec.semantic_max_ms))
     elif key == "C-c":

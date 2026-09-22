@@ -1,6 +1,7 @@
 import unittest
 
-from typing_policy import PROFILE_SPECS, TYPING_PROFILES, plan_input
+from typing_policy import (LINE_PAUSE_MAX_MS, LINE_PAUSE_MIN_MS, PROFILE_SPECS,
+                           TYPING_PROFILES, plan_input)
 
 
 class TypingPolicyTest(unittest.TestCase):
@@ -21,22 +22,33 @@ class TypingPolicyTest(unittest.TestCase):
         changed = plan_input(tokens, "balanced", "meeting-a", "action-b", "vim")
         self.assertNotEqual(balanced.steps, changed.steps)
 
-    def test_identifier_bursts_and_semantic_pause_follow_profile(self):
-        plan = plan_input(
-            [{"kind": "literal", "value": "result=value+other;next_call()"}],
-            "balanced",
-            "meeting",
-            "action",
-            "vim",
-        )
-        spec = PROFILE_SPECS["balanced"]
-        identifier_steps = [
-            step for step in plan.steps if step.value and all(ch.isalnum() or ch == "_" for ch in step.value)
+    def test_one_literal_is_one_line_and_enter_holds_the_line_pause(self):
+        """A line goes out whole, and the return after it pauses about 0.4s:
+        one step per line, one pause per return."""
+        tokens = [
+            {"kind": "literal", "value": "def quick_sort(items):"},
+            {"kind": "key", "value": "Enter"},
+            {"kind": "literal", "value": "    return items"},
+            {"kind": "key", "value": "Enter"},
         ]
-        self.assertTrue(identifier_steps)
-        self.assertTrue(all(len(step.value) <= spec.burst_max for step in identifier_steps))
-        semicolon = next(step for step in plan.steps if step.value.endswith(";"))
-        self.assertGreaterEqual(semicolon.delay_after_ms, spec.semantic_min_ms)
+        plan = plan_input(tokens, "fast", "meeting", "action", "vim", allow_paste=False)
+        self.assertEqual(["literal", "key", "literal", "key"],
+                         [step.kind for step in plan.steps])
+        self.assertEqual(["def quick_sort(items):", "Enter", "    return items", "Enter"],
+                         [step.value for step in plan.steps])
+        for enter in (step for step in plan.steps if step.kind == "key"):
+            self.assertGreaterEqual(enter.delay_after_ms, LINE_PAUSE_MIN_MS)
+            self.assertLessEqual(enter.delay_after_ms, LINE_PAUSE_MAX_MS)
+
+    def test_a_line_that_ends_on_a_boundary_holds_a_little_longer(self):
+        """The profile's semantic pause still lands, now after the whole line."""
+        spec = PROFILE_SPECS["balanced"]
+        plain = plan_input([{"kind": "literal", "value": "value = other"}],
+                           "balanced", "m", "a", "vim", allow_paste=False)
+        boundary = plan_input([{"kind": "literal", "value": "value = other;"}],
+                              "balanced", "m", "a", "vim", allow_paste=False)
+        self.assertGreaterEqual(boundary.steps[0].delay_after_ms, spec.semantic_min_ms)
+        self.assertGreater(boundary.steps[0].delay_after_ms, plain.steps[0].delay_after_ms)
 
     def test_long_code_switches_to_bounded_paste(self):
         text = "value = '" + ("abc " * 130) + "'"
