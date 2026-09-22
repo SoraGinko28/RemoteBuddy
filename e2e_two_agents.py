@@ -41,10 +41,12 @@ class _Live:
         backend: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        task: str = GENERATOR_TASK,
     ) -> None:
         self.backend = backend
         self.provider = provider
         self.model = model
+        self.task = task
         import web_v2
         service = web_v2.MeetingWebService(
             project_root=REPO,
@@ -78,12 +80,21 @@ class _Live:
             raise RuntimeError(f"{method} {path} -> {response.status}: {parsed}")
         return parsed
 
-    def start(self) -> None:
+    def connect(self) -> None:
         self.csrf = self._req("GET", "/api/session")["csrf_token"]
+
+    def join(self, meeting_id: str) -> None:
+        """Attach to a meeting already on disk (its generator has parked)."""
+        self.connect()
+        self.meeting_id = meeting_id
+        print(f"joined meeting {meeting_id} on :{self.port}", flush=True)
+
+    def start(self) -> None:
+        self.connect()
         meeting_id = "multi-" + uuid.uuid4().hex[:8]
         payload = {
             "meeting_id": meeting_id,
-            "message": GENERATOR_TASK,
+            "message": self.task,
             "typing_profile": "fast",
             "agent_name2role": {"agent": "generator", "critic": "passive_discriminator"},
         }
@@ -146,33 +157,48 @@ def main() -> int:
                         help="agent_provider for the generator (default: config)")
     parser.add_argument("--model", default=None,
                         help="model for the generator; pass '' for the CLI default")
+    parser.add_argument("--task", default=GENERATOR_TASK,
+                        help="what the generator is asked to do")
+    parser.add_argument("--join", default=None,
+                        help="skip phase 1 and review this existing meeting id")
+    parser.add_argument("--ask", default=REVIEWER_ASK,
+                        help="the @critic message that summons the reviewer")
     options = parser.parse_args()
 
     freeze = options.stop
-    live = _Live(backend=options.backend, provider=options.provider, model=options.model)
+    live = _Live(backend=options.backend, provider=options.provider,
+                 model=options.model, task=options.task)
+    summary = {"backend": options.backend, "provider": options.provider,
+               "model": options.model, "joined": options.join}
     failed = []
-    summary = {"backend": options.backend, "provider": options.provider, "model": options.model}
     try:
-        live.start()
+        if options.join:
+            live.join(options.join)
+        else:
+            live.start()
         live._req("GET", f"/api/meetings/{live.meeting_id}/snapshot")
 
-        # Phase 1: real generator works until the meeting is idle again.
+        # Phase 1: real generator works until the meeting is idle again. A
+        # generator that has finished its work parks in completion_proposed
+        # (waiting for the human to accept), which is idle too.
         def generator_idle() -> dict:
             snap = live._req("GET", f"/api/meetings/{live.meeting_id}/snapshot")
             meeting = snap.get("meeting", {})
-            if meeting.get("phase") == "waiting_for_user" and meeting.get("control_owner") in ("none", None):
+            if meeting.get("phase") in ("waiting_for_user", "completion_proposed") \
+                    and meeting.get("control_owner") in ("none", None):
                 return meeting
             return {}
 
-        idle = _wait(generator_idle, 420, "generator to reach idle")
-        generator_chats = [e for e in live.events()
-                           if e.get("kind") == "chat" and e.get("actor") == "agent"]
-        summary["generator_chat_count"] = len(generator_chats)
-        summary["generator_phase"] = idle.get("phase")
-        print("generator idle; chats:", len(generator_chats), flush=True)
+        if not options.join:
+            idle = _wait(generator_idle, 420, "generator to reach idle")
+            generator_chats = [e for e in live.events()
+                               if e.get("kind") == "chat" and e.get("actor") == "agent"]
+            summary["generator_chat_count"] = len(generator_chats)
+            summary["generator_phase"] = idle.get("phase")
+            print("generator idle; chats:", len(generator_chats), flush=True)
 
         # Phase 2: @critic summons the second process.
-        live.send(REVIEWER_ASK)
+        live.send(options.ask)
         critic_finals = _wait(lambda: _finals(live.events(), "critic") or None,
                               240, "reviewer final chat")
         summary["critic_final"] = critic_finals[-1]["content"][:160]

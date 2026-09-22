@@ -71,3 +71,58 @@ class TestObservation:
         )
         observation = harness.build_reviewer_observation(store)
         assert "PROJECT TESTS PASSED" in observation
+
+
+# A pane that shows one function running past 15 lines, with one parameter.
+LONG_PANE = "$ cat batch.py\n" + "\n".join([
+    "def process_batch(path):",
+    "    rows = load_rows(path)",
+    "    kept = []",
+    "    for row in rows:",
+    "        if row.get('amount') is None:",
+    "            continue",
+    "        if row.get('id') is None:",
+    "            continue",
+    "        if row['amount'] < 0:",
+    "            continue",
+    "        if row['amount'] > 100:",
+    "            continue",
+    "        kept.append(row)",
+    "    if not kept:",
+    "        return 0",
+    "    return len(kept)",
+]) + "\n$ "
+
+
+class TestRuleCheck:
+    """The meeting's rules are run for the reviewer before it speaks."""
+
+    def test_the_verdicts_reach_the_reviewer_and_the_journal(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        rows = LONG_PANE.split("\n")
+        store.append_screen(LONG_PANE, "cat batch.py", str(store.workspace_path),
+                            metadata={"pane_width": 40, "pane_height": len(rows),
+                                      "cursor_x": 2, "cursor_y": len(rows) - 1})
+        seen = {}
+
+        def fake_post(payload, base_url, api_key):
+            seen["payload"] = payload
+            return {"content": [{"type": "text",
+                                 "text": "按规则看，process_batch 太长了，该拆。"}]}
+
+        assert harness.comment_once(store, "critic", post=fake_post) is True
+
+        asked = seen["payload"]["messages"][0]["content"]
+        assert "rule check" in asked
+        assert "function_length_le_15" in asked and "VIOLATED" in asked
+        assert "process_batch" in asked and "16 行" in asked
+        assert "parameter_count_le_4" in asked and "holds" in asked
+
+        filed = [event for event in store.events() if event.get("kind") == "state"
+                 and (event.get("content") or "").startswith("=== rule check")]
+        assert len(filed) == 1
+        assert filed[0]["actor"] == "critic"
+        assert [rule["verdict"] for rule in filed[0]["data"]["rule_check"]["rules"]] == \
+            ["VIOLATED", "holds"]
+        assert [event for event in store.events()
+                if event.get("kind") == "chat" and event.get("actor") == "critic"]

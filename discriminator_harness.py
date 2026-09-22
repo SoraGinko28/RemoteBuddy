@@ -10,6 +10,11 @@ still writes into the same journal/MeetingData under its own agent name.
 
 The endpoint is pluggable (``_post_messages``) so tests inject a fake without
 network.
+
+Before the reviewer speaks, the meeting's rules are run for it
+(``critic_rules.review``): the verdicts go into its context as evidence and are
+filed in the meeting as a ``state`` event under its name, so what it says about
+a violation is the rules' answer, not a guess.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ from typing import Any, Optional
 
 import meeting_v2 as m2
 from meeting_reviewer import REVIEWER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS_RETRY
+
+import critic_rules
 
 REPO = Path(__file__).resolve().parent
 MODEL_API = REPO / "model_api"
@@ -315,6 +322,15 @@ def comment_once(
         api_key = _read_api_key()
         instructions = REVIEWER_INSTRUCTIONS_RETRY if retry else REVIEWER_INSTRUCTIONS
         context = build_reviewer_observation(store)
+        # The rules the meeting enforces are run for the reviewer before it
+        # speaks: it is chat-only, so the verdicts come to it as evidence, and
+        # the meeting keeps them (a "state" event under the reviewer's name).
+        rule_section, rule_report = critic_rules.review(store)
+        try:
+            store.append_event("state", agent_name, "rule_check",
+                               content=rule_section, data={"rule_check": rule_report})
+        except Exception:  # noqa: BLE001 — the report is not worth losing a turn
+            pass
         actor_rules = build_actor_instruction_block(store)
         system = f"{persona}\n\n{instructions}"
         if actor_rules:
@@ -325,7 +341,8 @@ def comment_once(
                 latest_human = event.get("content").strip()[:500]
                 break
         question = f"The human's latest message (answer this ONLY):\n{latest_human}" if latest_human else "Answer based on the context."
-        user = question + "\n\nDo not recap or explain anything beyond answering that message.\n\nContext:\n" + context
+        user = (question + "\n\nDo not recap or explain anything beyond answering that message."
+                + "\n\n" + rule_section + "\n\nContext:\n" + context)
         with guard:
             store.refresh()
             store.update(phase="agent_thinking", control_owner="none")

@@ -3,8 +3,10 @@
 
     .venv/bin/python -m tests.critic_run
 
-This is a demo of the rule layer, not part of the product: it lives under
-``tests/``, next to the rule files it uses (``tests/critic/``).
+This is a demo of the rule layer, not the product's critic: the demo lives under
+``tests/``, the rules it runs (``critic/*.viba``), the host
+(``underlying_viba_ops.py``) and the judgment (``critic_rules.py``) are product
+code — the real critic runs the same ones.
 
 One process, no fixtures:
 
@@ -49,29 +51,21 @@ import datetime as dt
 import shutil
 import tempfile
 from pathlib import Path
-from typing import NamedTuple
 
+import critic_rules
 import meeting_adt as adt
-import meeting_core_reflect as reflect
 import meeting_loader
 import meeting_v2 as m2
 import references
-from tests import underlying_viba_ops as ops
 from tmux_transport import TmuxTransport
 from workspace_capture import capture_stable_workspace, capture_workspace
-from viba import viba_ast
-from viba.compliance import (PreparedStorage, is_compliant, measured_of,
-                             prepare_run, read_prepare)
-from viba.interpret import Environment, EnvironmentCompute, write_snapshot
-from viba.type import Ok
 
 HERE = Path(__file__).resolve().parent            # tests/
 REPO = HERE.parent                                # the checkout
-RULE = HERE / "critic" / "function_length_le_15.viba"
-PARAMETER_RULE = HERE / "critic" / "parameter_count_le_4.viba"
-RULES = (RULE, PARAMETER_RULE)
-STORE = HERE / "critic" / "store"
-DESIGN = HERE / "critic" / "design"
+RULE = critic_rules.RULES[0]
+PARAMETER_RULE = critic_rules.RULES[1]
+RULES = critic_rules.RULES
+STORE = HERE / "critic" / "store"                 # the demo's own prepared evidence
 
 LONG_CODE = '''import json
 
@@ -272,100 +266,21 @@ def _region_of(frame, code: str):
 # ----------------------------------------------------------------------
 
 
-class RuleReport(NamedTuple):
-    """How the critic words a rule's complaint, read off that rule's Prepares."""
-
-    value: str      # the Prepare holding the number the rule objected to
-    name: str       # the Prepare holding the function's name
-    wording: str    # `{value}` filled from those two; the limit stays in the rule
-
-
-# What to say when a rule objects: one entry per rule file, keyed by its name.
-RULE_REPORTS = {
-    "function_length_le_15": RuleReport(ops.LINES_NAME, ops.NAME_NAME,
-                                        "有 {value} 行，超过 15 行的上限"),
-    "parameter_count_le_4": RuleReport(ops.PARAMETERS_NAME, ops.WIDEST_NAME,
-                                       "有 {value} 个参数，超过 4 个参数的上限"),
-}
-
-
 def judge(store, screen, region, store_dir: Path, rule: Path = RULE):
-    """Judge one moment with one rule: the case is material the critic writes.
+    """Judge one moment with one rule, then say so in the meeting.
 
-    When the rule objects, the demo also says so in the meeting — a chat message
-    written here, under ``critic``'s name, citing the pane it read. The saying is
-    scripted (see the module docstring); the verdict is not.
+    The judgment is the product's (`critic_rules.judge_moment`): the rule runs,
+    the case is the material handed in, the verdict is the rule's. The *saying*
+    is this demo's, and it is scripted — see the module docstring.
     """
-    uid = store.meeting.meeting_id
-    report = RULE_REPORTS[Path(rule).stem]
-    microsecond = _captured_at(screen["captured_at"]).microsecond
-    store_dir = Path(store_dir)
-    if store_dir.exists():
-        shutil.rmtree(store_dir)
-    backup = store_dir / "backup"
-    storage = PreparedStorage("root", store_root_dir=str(store_dir / "run"),
-                              prepare_root_dir=str(backup))
-    design = DESIGN / "meeting_core.viba"
-    design.parent.mkdir(parents=True, exist_ok=True)
-    design.write_text(reflect._design_source(), encoding="utf-8")
-
-    ctx, _summary = meeting_loader.load_meeting_data_from_run(store.run_dir)
-    host = ops.MeetingOps(ctx)
-    environ = Environment(storage, EnvironmentCompute(host.get_func),
-                          viba_path=f"{design.parent}:{Path(rule).parent}")
-
-    # the evidence: this moment, this stream, this region — under the case's address
-    write_snapshot(environ.sub_env(CASE_ENV),
-                   _screen_reference_material(microsecond, region),
-                   ops.REFERENCE_SNAPSHOT)
-
-    result = {"rule": Path(rule).stem, "case": (microsecond, region), "complaint": None,
-              "backup": backup, "replayed_without_measuring": None}
-    verdict = prepare_run(str(rule), environ)
-    result["prepared"] = verdict
-    result["measured"] = host.measured
-    if not isinstance(verdict, Ok):
-        result["verdict"] = verdict
-        return result
-    measured_once = host.measured
-
-    verdict = is_compliant(str(rule), environ)
-    result["verdict"] = verdict
-    result["judged"] = host.judged
-    result["replayed_without_measuring"] = host.measured == measured_once
-
-    if isinstance(verdict, Ok) and verdict.ok_value is False:
-        case_env = environ.sub_env(CASE_ENV)
-        name = _measured(read_prepare(case_env, report.name))
-        value = _measured(read_prepare(case_env, report.value))
-        result["complaint"] = (
-            f"规则 {Path(rule).stem} 违规：{name} {report.wording.format(value=value)}。"
-            f"地址：microsecond={microsecond} 的屏幕 region {region[0]}..{region[1]}（{uid}）。")
+    result = critic_rules.judge_moment(store, screen, region, store_dir, rule)
+    if result["complaint"]:
+        microsecond, region = result["case"]
+        result["complaint"] += (
+            f"地址：microsecond={microsecond} 的屏幕 region {region[0]}..{region[1]}"
+            f"（{store.meeting.meeting_id}）。")
         cite(store, screen, result["complaint"])
     return result
-
-
-# the case's environment, as the rule declares it: its path is the case's address
-# and the place the cited reference and its evidence live
-CASE_ENV = "screen_reference_under_judgment"
-
-
-def _screen_reference_material(microsecond: int, region):
-    """The cited reference as material: `$capture_time` + `$stream_name` + `$region`."""
-    def tags(pairs):
-        return viba_ast.ProductChain([viba_ast.Tagged(tag, viba_ast.Constant(value))
-                                      for tag, value in pairs])
-    return viba_ast.ProductChain([
-        viba_ast.Tagged("$capture_time", tags([("$microsecond", microsecond)])),
-        viba_ast.Tagged("$stream_name", viba_ast.Constant(ops.SCREEN_STREAM)),
-        viba_ast.Tagged("$region", tags([("$start", region[0]), ("$end", region[1])])),
-    ])
-
-
-def _measured(prepare):
-    """What a Prepare measured: the value it holds, through viba.reflect."""
-    value, recorded = measured_of(prepare)
-    return value if recorded else None
 
 
 def cite(store, screen, complaint: str):
@@ -383,11 +298,6 @@ def cite(store, screen, complaint: str):
                       references=[reference])
 
 
-def _captured_at(text: str):
-    """The moment of a screen event, as the meeting wrote it."""
-    return dt.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
-
-
 # ----------------------------------------------------------------------
 
 
@@ -399,7 +309,7 @@ def main() -> int:
 
     complaints = 0
     for screen, region in captures:
-        microsecond = _captured_at(screen["captured_at"]).microsecond
+        microsecond = critic_rules.captured_microsecond(screen)
         for rule in RULES:
             result = judge(store, screen, region,
                            STORE / f"{microsecond}-{rule.stem}", rule)

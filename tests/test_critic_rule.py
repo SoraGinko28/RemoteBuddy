@@ -1,14 +1,14 @@
 """The second-order critic's rules, run over a real meeting.
 
-A demo of the rule layer, under ``tests/`` with the demo and the rules it uses
-(``tests/critic_run.py``, ``tests/critic/``). The rules are
-`tests/critic/function_length_le_15.viba` and
-`tests/critic/parameter_count_le_4.viba`, the host is
-`tests/underlying_viba_ops.py`, and the ``critic`` who speaks is scripted — the
-demo writes that chat message itself. Each rule judges every moment the critic
-hands in — the case is material the critic writes into the store, not source
-baked into the rule — and these cases pin the verdicts, the complaint, the
-replay, the way the file gets written, and the two constraints on the host.
+The demo is ``tests/critic_run.py``; what it runs is product code — the rules
+(`critic/function_length_le_15.viba`, `critic/parameter_count_le_4.viba`), the
+host (`underlying_viba_ops.py`) and the judgment (`critic_rules.py`), the same
+ones the real critic runs before it speaks. The ``critic`` who speaks *here* is
+scripted: the demo writes that chat message itself. Each rule judges every
+moment the critic hands in — the case is material the critic writes into the
+store, not source baked into the rule — and these cases pin the verdicts, the
+complaint, the replay, the way the file gets written, and the two constraints on
+the host.
 """
 
 from __future__ import annotations
@@ -16,11 +16,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import critic_rules
 import meeting_adt as adt
 import meeting_loader
 import meeting_v2 as m2
+import underlying_viba_ops as ops
 from tests import critic_run
-from tests import underlying_viba_ops as ops
 from viba.type import Ok
 
 
@@ -124,7 +125,7 @@ def test_the_second_judgment_replays_the_recorded_measurement(tmp_path) -> None:
     assert again.ok_value is False and host.measured == 0
 
     prepared = sorted(path.name for path in
-                      (result["backup"] / "root" / critic_run.CASE_ENV
+                      (result["backup"] / "root" / critic_rules.CASE_ENV
                        / "prepare").glob("*.viba"))
     assert prepared == ["max_function_lines.viba", "worst_function_name.viba"]
 
@@ -134,8 +135,8 @@ def test_the_case_is_material_and_travels_as_the_designs_datetime(tmp_path) -> N
     moment is one `$microsecond`, not a string we invented."""
     store, captures = _meeting(tmp_path, "subject")
     result = _judge(tmp_path, store, captures[0])
-    microsecond = critic_run._captured_at(captures[0][0]["captured_at"]).microsecond
-    prepared = (result["backup"] / "root" / critic_run.CASE_ENV / "prepare"
+    microsecond = critic_rules.captured_microsecond(captures[0][0])
+    prepared = (result["backup"] / "root" / critic_rules.CASE_ENV / "prepare"
                 / "max_function_lines.viba").read_text(encoding="utf-8")
     assert "$capture_time" in prepared and f"$microsecond {microsecond}" in prepared
     assert '$stream_name "screen"' in prepared and "$region" in prepared
@@ -195,6 +196,48 @@ class _Recorder:
 
     def send_special(self, pane_id, key):
         self.calls.append(("special", key))
+
+
+def test_the_critic_finds_the_code_on_the_screen() -> None:
+    """A pane holds more than code — the command, the prompt after it. The region
+    the critic cites is the longest block of lines the Python parser accepts."""
+    text = "$ cat batch.py\n" + critic_run.SHORT_CODE + "\n$ "
+    start, end = critic_rules.code_region(text)
+    assert text[start:end] == critic_run.SHORT_CODE
+    assert critic_rules.code_region("$ ls -la\ntotal 0\n$ ") is None
+
+
+def test_the_rule_check_reads_the_newest_screen_that_shows_python(tmp_path) -> None:
+    """What a real critic is handed before it speaks: the rules' verdicts, with
+    the frame they were run over. The newest frame here is a bare prompt, so the
+    check walks back to the one that shows the code."""
+    store, _captures = _meeting(tmp_path, "review")
+    critic_run._scripted_frame(store, critic_run.LONG_CODE)
+    store.append_screen("bash-3.2$ ", "echo", str(store.workspace_path),
+                        metadata={"pane_width": 12, "pane_height": 1,
+                                  "cursor_x": 10, "cursor_y": 0})
+
+    section, report = critic_rules.review(store, store_dir=tmp_path / "review-store")
+
+    assert "rule check" in section
+    assert "function_length_le_15" in section and "VIOLATED" in section
+    assert "process_batch" in section and "16 行" in section   # the rule's own measurement
+    assert "parameter_count_le_4" in section
+    assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED", "holds"]
+    assert report["frame"]["event_id"]                          # the frame it judged
+    assert report["frame"]["region"][1] > report["frame"]["region"][0]
+
+
+def test_the_rule_check_on_a_pane_without_python_runs_nothing(tmp_path) -> None:
+    """No code on any screen is not a violation and not a guess: it is said."""
+    store = m2.MeetingStore.create(tmp_path, "no-code", "talk", Path(__file__), "s",
+                                   model="test-model")
+    store.append_screen("bash-3.2$ ls\nbash-3.2$ ", "ls", str(store.workspace_path),
+                        metadata={"pane_width": 16, "pane_height": 2,
+                                  "cursor_x": 10, "cursor_y": 1})
+    section, report = critic_rules.review(store, store_dir=tmp_path / "no-code-store")
+    assert "no rule could run" in section
+    assert report == {"frame": None, "rules": []}
 
 
 def test_the_ops_reach_data_through_meeting_sdk_only() -> None:
