@@ -21,9 +21,11 @@ import meeting_adt as adt
 import meeting_core_reflect as reflect
 from viba import serialize  # noqa: E402
 from viba import viba_ast  # noqa: E402
-from viba.rule import reflect as rule_reflect  # noqa: E402
-from viba.rule.is_compliant import is_compliant  # noqa: E402
-from viba.type import AstNodeType, Err, Ok, custom_module  # noqa: E402
+from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,
+                         at_key as viba_at_key, by_field_index as viba_by_field_index,
+                         by_tag as viba_by_tag)  # noqa: E402
+from viba.is_sub_type import is_sub_type  # noqa: E402
+from viba.type import AstNodeType, VibaProgramErr, Ok, custom_module  # noqa: E402
 
 CORE_MODULE = custom_module(reflect._design_source())
 CORE_DEFS = {definition.name: definition for definition in CORE_MODULE.module.body}
@@ -100,14 +102,14 @@ def _witness(name: str, data):
 def _same_step(step):
     """Translate a step on the Python side into the same step on the
     viba.reflect side."""
-    return {"by_tag": rule_reflect.by_tag, "by_field_index": rule_reflect.by_field_index,
-            "at_index": rule_reflect.at_index, "at_key": rule_reflect.at_key}[step.kind](
+    return {"by_tag": viba_by_tag, "by_field_index": viba_by_field_index,
+            "at_index": viba_at_index, "at_key": viba_at_key}[step.kind](
         step.value)
 
 
 def _leaf_of(given):
-    """(kind, value): Err and Ok are told apart, the messages are not compared."""
-    if isinstance(given, Err):
+    """(kind, value): VibaProgramErr and Ok are told apart, the messages are not compared."""
+    if isinstance(given, VibaProgramErr):
         return ("err", None)
     return ("ok", given.ok_value)
 
@@ -115,7 +117,7 @@ def _leaf_of(given):
 @pytest.mark.parametrize("name,data", _samples(), ids=lambda x: None)
 def test_the_written_code_is_a_resident_of_the_definition(name, data) -> None:
     body = _witness(name, data)
-    given = is_compliant(AstNodeType(body, CORE_MODULE),
+    given = is_sub_type(AstNodeType(body, CORE_MODULE),
                          AstNodeType(CORE_DEFS[name].body, CORE_MODULE))
     assert isinstance(given, Ok) and given.ok_value is True, given
 
@@ -132,11 +134,11 @@ def _leaves_read_alike(name: str, data) -> int:
     definition = reflect._definition(name)
     access = reflect.access
     root = access.root(definition, reflect._Record(data)).ok_value
-    witness_root = rule_reflect.access.root(definition, rule_reflect.Witness(body)).ok_value
+    witness_root = viba_access.root(definition, VibaData(body)).ok_value
     compared = 0
     for node in access._walk(root):
         ours = access.leaf(node)
-        theirs = rule_reflect.access.get_by_path(
+        theirs = viba_access.get_by_path(
             witness_root, [_same_step(step) for step in node.path])
         assert _leaf_of(ours) == _leaf_of(theirs), (
             f"{name}: path {[step.value for step in node.path]} "
@@ -180,10 +182,10 @@ def test_a_chat_part_that_does_not_bind_is_refused() -> None:
     RawMessage. Nothing is written rather than a forced nil."""
     given = _source("ChatMessage", adt.ChatMessage(
         user_name="alice", time=_moment(), message=[adt.RawMessage("hi")]))
-    assert isinstance(given, Err)
+    assert isinstance(given, VibaProgramErr)
     assert "no branch" in given.err_msg
 
 
 def test_serialize_refuses_a_missing_step() -> None:
     given = _source("datetime", {})
-    assert isinstance(given, Err)
+    assert isinstance(given, VibaProgramErr)

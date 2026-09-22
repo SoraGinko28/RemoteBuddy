@@ -4,7 +4,7 @@ Ctx is a meeting uid. Every api is backed by its own url on a RemoteBuddy web
 server:
 
     POST {base_url}/api/meetings/{meeting_uid}/sdk/{api}
-    body  {"args": {...}}   ->  {"script": "entry := ..."}
+    body  {"args": {...}}   ->  {"script": "entry = ..."}
 
 The answer is a viba script whose entry is the api's own result: a failure is the
 $err branch of that result, so the script is always a resident of the api's
@@ -32,7 +32,7 @@ from typing import Optional
 import meeting_local_sdk as local
 import meeting_sdk_viba
 from meeting_sdk_json import decode, encode
-from viba.type import Err as _Err, Ok as _Ok, Result as _Result
+from viba.type import VibaProgramErr as _Err, Ok as _Ok, Result as _Result
 
 CSRF_HEADER = "X-RemoteBuddy-CSRF"          # what the server expects on a POST
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"  # the local harness web server
@@ -243,7 +243,7 @@ def resolve_versioned_file_content_reference(ctx: Ctx, ref: 'adt.VersionedFileCo
 
 
 def read_text(ctx: Ctx, file: 'adt.FileId') -> _Result:
-    """read_text := latest_file (the design's spelling is an alias)."""
+    """read_text = latest_file (the design's spelling is an alias)."""
     return _call("read_text", ctx, file=file)
 
 

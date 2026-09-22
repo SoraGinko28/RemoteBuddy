@@ -1,11 +1,11 @@
 """meeting_sdk_viba -- the data interface, in viba.
 
 Every api of the data-interface chapter is written there with its return type
-(``now[Ctx] := mc.Result[mc.datetime] <- $ctx Ctx``). This module reads those
+(``now[Ctx] = mc.Result[mc.datetime] <- $ctx Ctx``). This module reads those
 return types and turns an api's result into the viba script the remote binding
 answers with:
 
-    entry := $ok ...
+    entry = $ok ...
 
 so a remote answer is a viba witness: the rule layer reads it with
 viba.reflect, the same way meeting_core_reflect reads a local answer.
@@ -24,10 +24,10 @@ from pathlib import Path
 import meeting_core_reflect as _reflect
 import meeting_local_sdk as _local
 from viba import serialize as _serialize
-from viba.type import Err, Ok, Result, custom_module
+from viba.type import VibaProgramErr, Ok, Result, custom_module
 
 DESIGN_CHAPTER = "The data interface"
-API_LINE = re.compile(r"(?m)^(\w+)\[Ctx\] :=[ \t]*\n?[ \t]*(.*?)(?=\n[ \t]*<-|\n\w|\n#|\n\n|\Z)",
+API_LINE = re.compile(r"(?m)^(\w+)\[Ctx\] =[ \t]*\n?[ \t]*(.*?)(?=\n[ \t]*<-|\n\w|\n#|\n\n|\Z)",
                       re.DOTALL)
 
 __all__ = ["return_type", "return_types", "script_for", "access_of",
@@ -73,17 +73,17 @@ def return_type(api: str) -> str:
 
 
 def script_for(api: str, result) -> Result:
-    """A result of that api -> ``entry := ...`` (the remote answer).
+    """A result of that api -> ``entry = ...`` (the remote answer).
 
     The result is this layer's Python data, so binding it into a node happens
     here; viba.serialize writes the source from the node.
     """
     found = access_of(api)
-    if isinstance(found, Err):
+    if isinstance(found, VibaProgramErr):
         return found
     access, definition = found.ok_value
     root = access.root(definition, _reflect._Record(result))
-    if isinstance(root, Err):
+    if isinstance(root, VibaProgramErr):
         return root
     return _serialize.serialize("entry", root.ok_value)
 
@@ -98,7 +98,7 @@ def access_of(api: str):
 def _entry_module(api: str):
     """(module, the SdkEntry definition body) for that api's return type."""
     written = re.sub(r"\bmc\.", "", return_type(api))
-    source = _reflect._design_source() + f"\nSdkEntry := {written}\n"
+    source = _reflect._design_source() + f"\nSdkEntry = {written}\n"
     module = custom_module(source)
     definitions = {definition.name: definition for definition in module.module.body}
     return module, definitions["SdkEntry"].body
@@ -112,21 +112,23 @@ def definition_of(api: str):
 def is_a_valid_answer(api: str, script: str) -> Result:
     """Does this script parse, and is its ``entry`` a resident of the api's type?"""
     from viba import viba_ast
-    from viba.rule.is_compliant import is_compliant
+    from viba.is_sub_type import is_sub_type
+    from viba.reflect import language_config
     from viba.type import AstNodeType
 
     try:
         parsed = viba_ast.parse(script)
     except SyntaxError as error:
-        return Err(f"the answer is not viba code: {error}")
+        return VibaProgramErr(f"the answer is not viba code: {error}")
     entries = [definition for definition in parsed.body if definition.name == "entry"]
     if len(entries) != 1:
-        return Err("the answer has no single entry := ... definition")
+        return VibaProgramErr("the answer has no single entry = ... definition")
     module, definition = definition_of(api)
-    judged = is_compliant(AstNodeType(entries[0].body, module),
-                          AstNodeType(definition, module))
-    if isinstance(judged, Err):
+    judged = is_sub_type(AstNodeType(entries[0].body, module),
+                         AstNodeType(definition, module),
+                         config=language_config)
+    if isinstance(judged, VibaProgramErr):
         return judged
     if judged.ok_value is not True:
-        return Err(f"the entry is not a resident of {return_type(api)}")
+        return VibaProgramErr(f"the entry is not a resident of {return_type(api)}")
     return Ok(entries[0].body)

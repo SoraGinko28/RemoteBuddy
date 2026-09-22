@@ -21,7 +21,7 @@ Three rules:
    fetched with ``sdk`` (meeting_local_sdk), and whatever comes back can only be read
    through ``reflect`` (meeting_core_reflect) per the design.
 3. **Results are read through the design's interface**: Result is a type in
-   meeting_core, the SDK does not expose its own Ok / Err; always go through
+   meeting_core, the SDK does not expose its own Ok / VibaProgramErr; always go through
    ``result.has_ok()`` / ``result.get_ok().value`` (on failure ``has_err()`` /
    ``get_err().value``). When the payload is a sequence or a record, take the
    node's ``$data`` and then read it piece by piece with reflection — the T of
@@ -37,7 +37,7 @@ import pytest
 import meeting_core_reflect
 import meeting_local_sdk
 import meeting_adt  # only prepare_meeting_data_as_ctx uses this
-from viba.type import Ok  # noqa: E402  (Ok / Err in the protocol)
+from viba.type import Ok  # noqa: E402  (Ok / VibaProgramErr in the protocol)
 from viba.viba_type_descriptor import pool_find_definition  # noqa: E402
 
 # In the design datetime is in "microseconds" ($microsecond int), so these
@@ -527,7 +527,7 @@ def test_case_make_versioned_file_content_reference_takes_the_region(ctx, sdk, r
 
 
 # =====================================================================
-# Opening a file: the path answers its FileId, or an Err
+# Opening a file: the path answers its FileId, or an VibaProgramErr
 # =====================================================================
 
 

@@ -63,7 +63,7 @@ import meeting_loader
 import meeting_local_sdk
 import meeting_sdk_json
 import meeting_sdk_viba
-from viba.type import Err as _SdkErr
+from viba.type import VibaProgramErr as _SdkErr
 from references import reference_from_event
 from model_api_client import (
     MODEL_RE,
@@ -287,7 +287,7 @@ class MeetingWebService:
     def sdk_call(self, meeting_id: str, api: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """One meeting-sdk api, run here over the record this server holds.
 
-        The answer is a viba script (``entry := ...``) whatever happened: an api
+        The answer is a viba script (``entry = ...``) whatever happened: an api
         that failed answers its own $err branch, so the script is always a
         resident of that api's return type.
         """
