@@ -27,3 +27,5 @@ model_api/config.toml
 .venv/
 .local/
 .gh/
+critic/design/
+tests/critic/store/

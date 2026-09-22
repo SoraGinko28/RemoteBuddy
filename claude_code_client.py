@@ -956,10 +956,13 @@ class ClaudeCodeBackend:
             + "- For terminal input, prefer the `keystrokes` action. Its `keys` array accepts the DSL "
             + "`$text <literal text>`, `$ctrl <named key>`, and `$rest <milliseconds>` (a pause that "
             + "sends nothing). Send quotes/brackets as explicit paired keystrokes (e.g. `$text \"`, "
-            + "then later `$text \"`) instead of dumping one whole line. Use `$rest` only where a "
-            + "human would naturally hesitate: right before the Enter that submits a command line, "
-            + "pause about `$rest 400`. Do not add rests elsewhere — not while typing text, moving "
-            + "the cursor, or pressing other keys.\n"
+            + "then later `$text \"`) instead of dumping one whole line. The harness types each "
+            + "`$text` as one whole line and pauses only briefly on Enter, so the pace between lines "
+            + "is yours to set: use `$rest` where a human would naturally hesitate — about "
+            + "`$rest 400` before the Enter that submits a command line, and after a line you want "
+            + "the human to read before typing the next one. A run of lines that is mere work "
+            + "(`:wq`, a quick `ls`, closing braces) needs no rest. Do not put a rest inside a line "
+            + "or use one while moving the cursor.\n"
         )
 
     def _redact(self, text: str) -> str:
