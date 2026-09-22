@@ -20,7 +20,7 @@ The bindings of this version (the interface says Ctx / Data are bound by the
 implementation):
 
 * ``Ctx`` = :class:`meeting_adt.MeetingData`: a meeting record.
-* ``Result[T]`` = viba's ``Ok`` / ``Err`` (meeting_core_reflect can read them as
+* ``Result[T]`` = viba's ``Ok`` / ``VibaProgramErr`` (meeting_core_reflect can read them as
   Result's two branches).
 * Named stable types use the dataclass of the same name in meeting_adt:
   ``FileId`` / ``VersionedFile`` / ``ChatMessage`` / ``ScoreMessage`` / the
@@ -30,7 +30,7 @@ implementation):
   ``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
   "captured_at"}``, ``{"name", "meta", "content"}``.
 
-Reading only: getters always return a Result -- a miss is an ``Err``, not an
+Reading only: getters always return a Result -- a miss is an ``VibaProgramErr``, not an
 exception, and no api writes (writes are the harness's job). The ``make_*`` group
 at the end takes no ``ctx``; it only builds values such as references.
 """
@@ -50,7 +50,7 @@ _VENDORED_VIBA = Path(__file__).resolve().parent / "viba"
 if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VENDORED_VIBA) not in sys.path:
     sys.path.insert(0, str(_VENDORED_VIBA))
 
-from viba.type import Err as _Err, Ok as _Ok, Result as _Result  # noqa: E402
+from viba.type import VibaProgramErr as _Err, Ok as _Ok, Result as _Result  # noqa: E402
 
 _REFERENCE_TYPES = (adt.ScreenReference, adt.ChatReference, adt.ScoreReference,
                     adt.TerminalControlReference, adt.VersionedFileReference,
@@ -311,7 +311,7 @@ def resolve_versioned_file_content_reference(
 
 
 def read_text(ctx: Ctx, file: "adt.FileId") -> _Result:
-    """read_text := latest_file (the design's spelling is an alias)."""
+    """read_text = latest_file (the design's spelling is an alias)."""
     return latest_file(ctx, file)
 
 

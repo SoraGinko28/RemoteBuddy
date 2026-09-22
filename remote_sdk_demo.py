@@ -9,7 +9,7 @@ All in this one process, no fixtures from the test suite:
    (meeting.json + streams/events.jsonl, the shape meeting_loader reads);
 2. start the harness web server on a free local port over that journal;
 3. point meeting_remote_sdk at it and drive the apis of the data-interface
-   chapter -- every answer is a viba script (``entry := ...``);
+   chapter -- every answer is a viba script (``entry = ...``);
 4. read those scripts with viba.reflect -- the landing's sugar:
    ``get_ok()`` / ``get_microsecond()`` / ``node["agent"]`` / ``has_err()`` /
    ``node.value`` -- and check what came out.
@@ -31,8 +31,10 @@ from pathlib import Path
 
 import meeting_remote_sdk as remote
 import meeting_sdk_viba as viba_sdk
-from viba.rule import reflect as rule_reflect
-from viba.type import Err, Ok
+from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,
+                         at_key as viba_at_key, by_field_index as viba_by_field_index,
+                         by_tag as viba_by_tag)
+from viba.type import VibaProgramErr, Ok
 from meeting_v2 import MeetingStore
 from web_v2 import MeetingWebService, RemoteBuddyHTTPServer
 
@@ -81,11 +83,11 @@ def leaf_value(node) -> object:
 def answer(api: str, *args):
     """Call one api over the wire; give back (the script, the entry's node)."""
     given = getattr(remote, api)(MEETING_ID, *args)
-    if isinstance(given, Err):
+    if isinstance(given, VibaProgramErr):
         raise SystemExit(f"{api}: {given.err_msg}")
     entry = viba_sdk.is_a_valid_answer(api, given.ok_value).ok_value
     _access, definition = viba_sdk.access_of(api).ok_value
-    node = rule_reflect.access.root(definition, rule_reflect.Witness(entry)).ok_value
+    node = viba_access.root(definition, VibaData(entry)).ok_value
     return given.ok_value, node
 
 
@@ -164,7 +166,7 @@ def run_checks(report: Report, capture_time: dt.datetime) -> None:
 
     given = remote.chat_messages(MEETING_ID, now - dt.timedelta(minutes=5),
                                  now + dt.timedelta(minutes=5))
-    report.note("chat_messages", given.err_msg if isinstance(given, Err) else "served")
+    report.note("chat_messages", given.err_msg if isinstance(given, VibaProgramErr) else "served")
     print()
     print("one answer, as the server sent it:")
     for line in script.rstrip("\n").splitlines():

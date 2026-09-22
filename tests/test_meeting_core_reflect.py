@@ -11,7 +11,7 @@ import pytest
 
 import meeting_adt as adt
 import meeting_core_reflect as reflect
-from viba.type import Err, Ok  # noqa: E402  (Ok / Err in the protocol)
+from viba.type import VibaProgramErr, Ok  # noqa: E402  (Ok / VibaProgramErr in the protocol)
 
 
 from viba.viba_type_descriptor import pool_find_definition  # noqa: E402  (description-side query)
@@ -61,10 +61,10 @@ def _versioned_file() -> adt.VersionedFile:
 class TestDesign:
     def test_source_is_the_stable_chapter(self) -> None:
         source = reflect._design_source()
-        assert "FileId :=" in source and "VersionedFile :=" in source
+        assert "FileId =" in source and "VersionedFile =" in source
         # the record layer chapter is not part of this design
-        assert "MeetingData :=" not in source
-        assert "FileDesktop :=" not in source
+        assert "MeetingData =" not in source
+        assert "FileDesktop =" not in source
 
     def test_hash_is_sha256_of_the_source(self) -> None:
         import hashlib
@@ -84,7 +84,7 @@ class TestDesign:
         assert _definition("meeting_core.FileId").full_name == "meeting_core.FileId"
 
     def test_unknown_definition_is_an_err(self) -> None:
-        assert isinstance(_definition_result("FileDesktop"), Err)
+        assert isinstance(_definition_result("FileDesktop"), VibaProgramErr)
 
 
 # =====================================================================
@@ -282,13 +282,13 @@ class TestConvenience:
 
     def test_a_missing_step_with_more_steps_left_is_an_err(self) -> None:
         """The piece is missing in the data and there are more steps after it:
-        Err, None cannot be carried on with."""
+        VibaProgramErr, None cannot be carried on with."""
         data = {"file_name": [adt.Versioned("a.py", _moment(), "alice")]}
         node = _open(data, "VersionedFile")
         assert node.try_get_file_meta().ok_value is None        # a single step: Ok(nil)
         given = reflect.access.resolve(node, [reflect.by_tag("file_meta"),
                                             reflect.at_index(0)])
-        assert isinstance(given, Err) and given.err_msg == "this step has no value"
+        assert isinstance(given, VibaProgramErr) and given.err_msg == "this step has no value"
 
     def test_read_reports_a_missing_step(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
@@ -309,12 +309,12 @@ class TestResult:
     """Result is a stable type too: $ok / $err match by class name."""
 
     def test_ok_and_err_branches_match(self) -> None:
-        from viba.type import Err, Ok
+        from viba.type import VibaProgramErr, Ok
 
         ok = _open(Ok("body"), "Result")
         assert ok.has_ok() is True
         assert ok.has_err() is False
-        err = _open(Err("boom"), "Result")
+        err = _open(VibaProgramErr("boom"), "Result")
         assert err.has_err() is True
         assert err.has_ok() is False
 

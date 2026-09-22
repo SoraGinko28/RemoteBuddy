@@ -1,6 +1,6 @@
 """Tests for meeting_remote_sdk: the same contract, over the wire, in viba.
 
-Every api answers with a viba script (``entry := ...``) that is a resident of the
+Every api answers with a viba script (``entry = ...``) that is a resident of the
 api's return type in the data-interface chapter; the script is read with
 viba.reflect and must read exactly what meeting_local_sdk answers here.
 
@@ -19,8 +19,10 @@ import meeting_local_sdk as local
 import meeting_remote_sdk as remote
 import meeting_sdk_viba as viba_sdk
 from tests.test_meeting_local_sdk import prepare_meeting_data_as_ctx
-from viba.rule import reflect as rule_reflect
-from viba.type import Err, Ok
+from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,
+                         at_key as viba_at_key, by_field_index as viba_by_field_index,
+                         by_tag as viba_by_tag)
+from viba.type import VibaProgramErr, Ok
 from web_v2 import MeetingWebService, RemoteBuddyHTTPServer
 
 
@@ -61,14 +63,14 @@ def _wired():
 
 def _step(step):
     """One step of a local path, as the rule layer spells it."""
-    return {"by_tag": rule_reflect.by_tag, "by_field_index": rule_reflect.by_field_index,
-            "at_index": rule_reflect.at_index, "at_key": rule_reflect.at_key}[step.kind](
+    return {"by_tag": viba_by_tag, "by_field_index": viba_by_field_index,
+            "at_index": viba_at_index, "at_key": viba_at_key}[step.kind](
         step.value)
 
 
 def _leaf(given):
-    """(kind, value): Err and Ok are told apart, the messages are not compared."""
-    if isinstance(given, Err):
+    """(kind, value): VibaProgramErr and Ok are told apart, the messages are not compared."""
+    if isinstance(given, VibaProgramErr):
         return ("err", None)
     return ("ok", given.ok_value)
 
@@ -78,11 +80,11 @@ def _reads_the_same(api, local_result, script) -> int:
     access, definition = viba_sdk.access_of(api).ok_value
     local_root = access.root(definition, reflect._Record(local_result)).ok_value
     entry = viba_sdk.is_a_valid_answer(api, script).ok_value
-    witness_root = rule_reflect.access.root(definition, rule_reflect.Witness(entry)).ok_value
+    witness_root = viba_access.root(definition, VibaData(entry)).ok_value
     compared = 0
     for node in access._walk(local_root):
         ours = access.leaf(node)
-        theirs = rule_reflect.access.get_by_path(witness_root,
+        theirs = viba_access.get_by_path(witness_root,
                                                [_step(step) for step in node.path])
         assert _leaf(ours) == _leaf(theirs), (
             f"{api}: path {[step.value for step in node.path]} reads {ours!r} here and "
@@ -187,7 +189,7 @@ def test_the_chat_apis_hit_the_known_binding_gap(api, wired) -> None:
              "resolve_chat_reference": (data, local.make_chat_reference(
                  moment, "bob", local.make_text_region(0, 2)))}
     given = getattr(remote, api)(data.meeting_uid, *calls[api][1:])
-    assert isinstance(given, Err)
+    assert isinstance(given, VibaProgramErr)
     assert "no branch of this sum carries a value" in given.err_msg
 
 
@@ -198,7 +200,7 @@ def test_a_failed_api_answers_its_err_branch(wired) -> None:
     assert isinstance(given, Ok)
     entry = viba_sdk.is_a_valid_answer("chat_message_at", given.ok_value).ok_value
     access, definition = viba_sdk.access_of("chat_message_at").ok_value
-    witness_root = rule_reflect.access.root(definition, rule_reflect.Witness(entry)).ok_value
+    witness_root = viba_access.root(definition, VibaData(entry)).ok_value
     assert witness_root.get_err().value        # the sentence rides the $err branch
 
 
@@ -210,14 +212,14 @@ def test_a_missing_path_is_an_err_inside_the_script(wired) -> None:
 
 def test_an_unknown_api_is_a_404(wired) -> None:
     given = remote._call("no_such_api", wired.meeting_uid)
-    assert isinstance(given, Err)
+    assert isinstance(given, VibaProgramErr)
     assert "404" in given.err_msg
 
 
 def test_a_value_builder_is_not_served_over_the_wire(wired) -> None:
     """make_* builds a value; asking the server for one is a 400."""
     given = remote._call("make_text_region", wired.meeting_uid, start=0, end=2)
-    assert isinstance(given, Err)
+    assert isinstance(given, VibaProgramErr)
     assert "builds a value" in given.err_msg
 
 

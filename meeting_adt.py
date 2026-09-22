@@ -48,7 +48,7 @@ __all__ = [
 # G2: UserName / AgentRole (record-layer naming)
 # =====================================================================
 #
-# UserName := Oneof | $agent_name str | $human ()
+# UserName = Oneof | $agent_name str | $human ()
 # Storage/JSON representation: an agent is stored as its name string; human as the reserved "$human" sentinel.
 # "$human" is reserved: no agent name may equal it (is_human is the predicate).
 
@@ -60,7 +60,7 @@ def is_human(user_name: str) -> bool:
     return user_name == HUMAN_USER_NAME
 
 
-# AgentRole := Oneof | $generator | $active_discriminator | $passive_discriminator
+# AgentRole = Oneof | $generator | $active_discriminator | $passive_discriminator
 # Storage/JSON representation: enum name -> "$"-prefixed string, one-to-one with the role map JSON.
 class AgentRole(Enum):
     GENERATOR = "$generator"
@@ -77,7 +77,7 @@ def agent_role_from_name(role_name: str) -> AgentRole:
 # G3: ScreenCapture (screen-stream record; pure field layer)
 # =====================================================================
 #
-# ScreenCapture := DataClass
+# ScreenCapture = DataClass
 #   * $screen_data str                   # plain text; rows right-trimmed of trailing spaces
 #   * $terminal_text_content list[TerminalTextSegment]   # styled segments; defined in G6
 #   * $cursor_x / $cursor_y int          # cell coordinates, 0-based
@@ -102,10 +102,10 @@ class ScreenCapture:
 # =====================================================================
 #
 # ADT Appendix helpers (copied verbatim from MEETING_ADT.md; names unchanged):
-#   frame_rows(s) := s.split('\n')
-#   row_plain(row) := row.rstrip(' ')
-#   concat_text_field_of_list(list) := ''.join(seg.text for seg in list)
-#   plain_of(list) := '\n'.join(row_plain(r)
+#   frame_rows(s) = s.split('\n')
+#   row_plain(row) = row.rstrip(' ')
+#   concat_text_field_of_list(list) = ''.join(seg.text for seg in list)
+#   plain_of(list) = '\n'.join(row_plain(r)
 #                               for r in frame_rows(concat_text_field_of_list(list)))
 #
 # Assert functions share one signature: take a record, raise AssertionError on violation (locating it via captured_at),
@@ -159,7 +159,7 @@ def cell_width(row: str) -> int:
 
 
 def seg_attrs(segment: "TerminalTextSegment") -> tuple:
-    """ADT Appendix: seg_attrs(seg) := (seg.fg, seg.bg, frozenset(seg.styles))"""
+    """ADT Appendix: seg_attrs(seg) = (seg.fg, seg.bg, frozenset(seg.styles))"""
     return (segment.fg, segment.bg, frozenset(segment.styles))
 
 
@@ -227,10 +227,10 @@ __all__ += [
 # G6: TerminalTextSegment / Color / Rgb / Style (screen style layer)
 # =====================================================================
 #
-# Style := Oneof | "bold" | "underline" | "italic" | "reverse" | "blink" | "dim"
-# Color := Oneof | $palette int(0..255) | $truecolor Rgb
-# Rgb   := DataClass r/g/b int each in 0..255
-# TerminalTextSegment :=
+# Style = Oneof | "bold" | "underline" | "italic" | "reverse" | "blink" | "dim"
+# Color = Oneof | $palette int(0..255) | $truecolor Rgb
+# Rgb   = DataClass r/g/b int each in 0..255
+# TerminalTextSegment =
 #     DataClass
 #   * $text str                    # consecutive text sharing identical attributes; may contain \n
 #   * $fg / $bg Optional[Color]    # None = terminal default foreground/background
@@ -280,7 +280,7 @@ class PaletteColor:
             raise ValueError(f"palette index out of range: {self.index}")
 
 
-# Color := Oneof | $palette int | $truecolor Rgb
+# Color = Oneof | $palette int | $truecolor Rgb
 Color = PaletteColor | Rgb
 
 
@@ -319,7 +319,7 @@ __all__ += [
 # G7: ChatMessage / ChatStreamChunk (chat stream)
 # =====================================================================
 #
-# ChatMessage := DataClass
+# ChatMessage = DataClass
 #   * $message list[$raw_msg str | $at_user_name UserName | $reference ContentReference]
 #   * $user_name UserName
 #   * $time datetime
@@ -333,7 +333,7 @@ __all__ += [
 #
 # ChatMessage persisted JSON:
 #   {"user_name": <str>, "time": <ISO8601>, "message": [part_json, ...]}
-#   part_json := {"raw": str} | {"at_user_name": str} | {"ref": {...G8}}
+#   part_json = {"raw": str} | {"at_user_name": str} | {"ref": {...G8}}
 # ChatStreamChunk persisted JSON:
 #   {"stream_name": "chat", "chunks": [ChatMessage_json, ...]}
 
@@ -427,11 +427,11 @@ def chat_stream_chunk_from_dict(payload: dict) -> ChatStreamChunk:
 # G8: the three ContentReference variants + resolve()
 # =====================================================================
 #
-# TextRegion := DataClass $start int $end int
-# ScreenReference := $capture_time datetime $stream_name str $region TextRegion
-# ChatReference   := $msg_time datetime $user_name UserName $region TextRegion
-# ScoreReference  := $judge_time datetime $judge_name UserName
-# ContentReference := Oneof | $screen_ref | $chat_ref | $score_ref
+# TextRegion = DataClass $start int $end int
+# ScreenReference = $capture_time datetime $stream_name str $region TextRegion
+# ChatReference   = $msg_time datetime $user_name UserName $region TextRegion
+# ScoreReference  = $judge_time datetime $judge_name UserName
+# ContentReference = Oneof | $screen_ref | $chat_ref | $score_ref
 #
 # Storage design: references store keys only (time + user/stream), never a copy of the referenced content;
 # resolve() looks the key up in the same meeting's streams; no match or several matches both count as a dangling reference (raised, for validation to collect).
@@ -671,7 +671,7 @@ __all__ += [
 # G9: ScoreMessage / ScoreStreamChunk (score stream)
 # =====================================================================
 #
-# ScoreMessage := DataClass
+# ScoreMessage = DataClass
 #   * $tag str
 #   * $score Optional[float]
 #   * $comment Optional[str]
@@ -679,7 +679,7 @@ __all__ += [
 #   * $time datetime
 #   * $reference ContentReference
 #   * Appendix[{
-#       summon_chained := role($judge_name) != $passive_discriminator
+#       summon_chained = role($judge_name) != $passive_discriminator
 #                         or the message's $reference resolves to a message that summoned it
 #     }]
 #   * Assert[{ summon_chained }]
@@ -798,18 +798,18 @@ __all__ += [
 # G10: Keystroke (harness-internal, never persisted) / TerminalControl
 # =====================================================================
 #
-# KeystrokeStr := Oneof | $text str | $ctrl str | $rest ($millisecond int)
-# Keystroke := DataClass
+# KeystrokeStr = Oneof | $text str | $ctrl str | $rest ($millisecond int)
+# Keystroke = DataClass
 #   * $data KeystrokeStr
 #   * $user_name UserName
 #   * $stroke_time datetime
-# TerminalControl := DataClass
+# TerminalControl = DataClass
 #   * $tmux_window_name str
 #   * $tmux_pane int
 #   * $user_name UserName
 #   * $start_time datetime
 #   * Assert[{ user_name == $human or role(user_name)==$generator }]   # terminal_capable
-#   * Appendix[{ owner_at(t) := the user_name of the control interval containing t; intervals are delimited by start_time }]
+#   * Appendix[{ owner_at(t) = the user_name of the control interval containing t; intervals are delimited by start_time }]
 #   * Assert[{ ∀ keystroke k: owner_at(k.stroke_time) == k.user_name }]
 #
 # Persistence mapping for real-journal control events (actor/phase/data.status=acquired|released):
@@ -947,7 +947,7 @@ def owner_at(moment: _dt.datetime,
 
 
 def terminal_capable(user_name: str, role_of: object) -> bool:
-    """terminal_capable := { $human() } ∪ { a | role(a)==$generator }"""
+    """terminal_capable = { $human() } ∪ { a | role(a)==$generator }"""
     if is_human(user_name):
         return True
     role = role_of(user_name) if callable(role_of) else None
@@ -1000,21 +1000,21 @@ __all__ += [
 # G15: file layer -- FileKvStore / FileDesktop (files, versioned parts, desktop tree)
 # =====================================================================
 #
-# FileId := Object * $file_id str
+# FileId = Object * $file_id str
 #   * Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]
-# VersionedFile := Object * $file_name AppendOnlyList[Versioned[str]]
+# VersionedFile = Object * $file_name AppendOnlyList[Versioned[str]]
 #   * $file_meta AppendOnlyList[Versioned[DataStatus]]
 #   * $file_content AppendOnlyList[Versioned[str]]
 #   (three chains: reading at a moment takes the last version on the chain with
 #    time <= that moment; an empty status chain = writable)
-# FileKvStore := Object * $file_id2file dict[str, VersionedFile]
-# FileEntry := Object * $entry_name str * $file_id FileId
+# FileKvStore = Object * $file_id2file dict[str, VersionedFile]
+# FileEntry = Object * $entry_name str * $file_id FileId
 #   (the name belongs to the entry a tree holds, not to the identity: the same
 #    file can hang under a workspace or inside a fold, and a rename is a new entry)
-# FileFold := Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileEntry]
-# FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileEntry]
+# FileFold = Object * $fold_name Optional[str] * $member_file_ids AppendOnlyList[FileEntry]
+# FileWorkspace = Object * $member_files AppendOnlyList[FileFold | FileEntry]
 #   * $workspace_name Optional[str] * $workspace_status Optional[DataStatus]
-# FileDesktop := Object * $workspaces AppendOnlyList[FileWorkspace]
+# FileDesktop = Object * $workspaces AppendOnlyList[FileWorkspace]
 #   * $reorder_indexes Versioned[DesktopMemberOrder]
 #   * Assert[{ names are unique within a level: the workspace_name are pairwise
 #               different; inside one workspace, a fold's fold_name and the
@@ -1023,15 +1023,15 @@ __all__ += [
 #               pairwise different }]
 #   * Assert[{ a file_id appears at most once in the tree: an entry carries a
 #               name and an identity, so no two paths reach the same file }]
-# DesktopMemberOrder := Object * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]
+# DesktopMemberOrder = Object * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]
 #   * Assert[{ the workspace_index are exactly a permutation of
 #               0..len(workspaces)-1 }]
-# WorkspaceMemberOrder := Object * $workspace_index int
+# WorkspaceMemberOrder = Object * $workspace_index int
 #   * $file_indexes ReadOnlyList[($file_index int, Optional[FoldMemberOrder])]
 #   * Assert[{ the file_index are exactly a permutation of
 #               0..len(member_files)-1; every fold's member_indexes are exactly
 #               a permutation of 0..len(member_file_ids)-1 }]
-# FoldMemberOrder := Object * $member_indexes ReadOnlyList[$member_index int]
+# FoldMemberOrder = Object * $member_indexes ReadOnlyList[$member_index int]
 #
 # Persisted JSON:
 #   DataStatus: "deleted" | "read_only"
@@ -1052,7 +1052,7 @@ __all__ += [
 
 
 class DataStatus(Enum):
-    """DataStatus := Oneof | $deleted () | $read_only ()"""
+    """DataStatus = Oneof | $deleted () | $read_only ()"""
 
     DELETED = "deleted"
     READ_ONLY = "read_only"
@@ -1070,7 +1070,7 @@ _T = TypeVar("_T")
 
 @dataclass
 class Versioned(Generic[_T]):
-    """Versioned[T] := Object * $data T * $time datetime * $author UserName"""
+    """Versioned[T] = Object * $data T * $time datetime * $author UserName"""
 
     data: _T
     time: Optional[_dt.datetime] = None
@@ -1108,7 +1108,7 @@ def _data_status_decode(payload: object) -> object:
 
 @dataclass
 class FileId:
-    """FileId := Object * $file_id str
+    """FileId = Object * $file_id str
 
     An identity: the store's key, and nothing else. Where a file hangs and what
     it is called there is the tree's business (FileEntry).
@@ -1127,7 +1127,7 @@ def file_id_from_dict(payload: dict) -> FileId:
 
 @dataclass
 class FileEntry:
-    """FileEntry := Object * $entry_name str * $file_id FileId
+    """FileEntry = Object * $entry_name str * $file_id FileId
 
     One name in one place: what a workspace or a fold holds. The same file may
     hang in two places under two names, and a rename is a new entry.
@@ -1149,7 +1149,7 @@ def file_entry_from_dict(payload: dict) -> FileEntry:
 
 @dataclass
 class VersionedFile:
-    """VersionedFile := Object * $file_name AppendOnlyList[Versioned[str]]
+    """VersionedFile = Object * $file_name AppendOnlyList[Versioned[str]]
     * $file_meta AppendOnlyList[Versioned[DataStatus]]
     * $file_content AppendOnlyList[Versioned[str]]
 
@@ -1185,7 +1185,7 @@ def versioned_file_from_dict(payload: dict) -> VersionedFile:
 
 @dataclass
 class FileKvStore:
-    """FileKvStore := Object * $file_id2file dict[str, VersionedFile]"""
+    """FileKvStore = Object * $file_id2file dict[str, VersionedFile]"""
 
     file_id2file: dict = field(default_factory=dict)  # dict[str, VersionedFile]
 
@@ -1211,7 +1211,7 @@ def file_kv_store_from_dict(payload: dict) -> FileKvStore:
 
 @dataclass
 class FileFold:
-    """FileFold := Object * $fold_name Optional[str]
+    """FileFold = Object * $fold_name Optional[str]
     * $member_file_ids AppendOnlyList[FileEntry]"""
 
     fold_name: Optional[str] = None
@@ -1235,7 +1235,7 @@ def file_fold_from_dict(payload: dict) -> FileFold:
 
 @dataclass
 class FileWorkspace:
-    """FileWorkspace := Object * $member_files AppendOnlyList[FileFold | FileEntry]
+    """FileWorkspace = Object * $member_files AppendOnlyList[FileFold | FileEntry]
     * $workspace_name Optional[str] * $workspace_status Optional[DataStatus]"""
 
     member_files: list = field(default_factory=list)  # list[FileFold | FileEntry]
@@ -1274,7 +1274,7 @@ def file_workspace_from_dict(payload: dict) -> FileWorkspace:
 
 @dataclass
 class FoldMemberOrder:
-    """FoldMemberOrder := Object * $member_indexes ReadOnlyList[$member_index int]"""
+    """FoldMemberOrder = Object * $member_indexes ReadOnlyList[$member_index int]"""
 
     member_indexes: list = field(default_factory=list)  # list[int]
 
@@ -1290,7 +1290,7 @@ def fold_member_order_from_dict(payload: dict) -> FoldMemberOrder:
 
 @dataclass
 class WorkspaceMemberOrder:
-    """WorkspaceMemberOrder := Object * $workspace_index int
+    """WorkspaceMemberOrder = Object * $workspace_index int
     * $file_indexes ReadOnlyList[($file_index int, Optional[FoldMemberOrder])]"""
 
     workspace_index: int = 0
@@ -1321,7 +1321,7 @@ def workspace_member_order_from_dict(payload: dict) -> WorkspaceMemberOrder:
 
 @dataclass
 class DesktopMemberOrder:
-    """DesktopMemberOrder := Object * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]"""
+    """DesktopMemberOrder = Object * $workspace_indexes ReadOnlyList[WorkspaceMemberOrder]"""
 
     workspace_indexes: list = field(default_factory=list)  # list[WorkspaceMemberOrder]
 
@@ -1364,7 +1364,7 @@ def identity_desktop_order(desktop: FileDesktop) -> DesktopMemberOrder:
 
 @dataclass
 class FileDesktop:
-    """FileDesktop := Object * $workspaces AppendOnlyList[FileWorkspace]
+    """FileDesktop = Object * $workspaces AppendOnlyList[FileWorkspace]
     * $reorder_indexes Versioned[DesktopMemberOrder]"""
 
     workspaces: list = field(default_factory=list)  # list[FileWorkspace]
@@ -1548,18 +1548,18 @@ __all__ += [
 # G11: screen chunk containers + MeetingData (the meeting record proper)
 # =====================================================================
 #
-# ScreenStreamChunk := DataClass
+# ScreenStreamChunk = DataClass
 #   * $stream_name str
 #   * $owner_user_name UserName
 #   * $chunks list[ScreenCapture]
 #
-# MeetingData := DataClass
+# MeetingData = DataClass
 #   * $meeting_uid str
 #   * $meeting_name str
 #   * $sorted_stream_chunks list[StreamChunk]   # time-ordered within and across streams
 #   * $agent_name2role dict[str, AgentRole]
 #   * Appendix[{
-#       user_names := every UserName appearing across all chunks
+#       user_names = every UserName appearing across all chunks
 #                      (screen.owner / chat.user_name / score.judge_name /
 #                       terminal_control.user_name)
 #     }]

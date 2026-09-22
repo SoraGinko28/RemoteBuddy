@@ -18,7 +18,7 @@ this layer.
 ```bash
 import meeting_core as mc
 
-MeetingData :=
+MeetingData =
     DataClass
   * $meeting_uid str     # basically uuid
   * $meeting_name str
@@ -27,7 +27,7 @@ MeetingData :=
   * $file_kv_store mc.FileKvStore
   * $file_desktop FileDesktop
   * Appendix[{
-      user_names := every mc.UserName that appears in any chunk
+      user_names = every mc.UserName that appears in any chunk
                      (screen.owner / chat.user_name / score.judge_name /
                       terminal_control.user_name)
                    ∪ every mc.Versioned.author in the file layer
@@ -41,17 +41,17 @@ MeetingData :=
                    : r carries an mc.ContentReference that resolves to m
     }]
   * Appendix[{
-      owner_at(t) := the TerminalControl.user_name of the control interval
+      owner_at(t) = the TerminalControl.user_name of the control interval
                      that contains t
                      (the interval starts at TerminalControl.start_time; absent
                       = nobody holds the terminal at that moment)
     }]
 
-FileKvStore :=
+FileKvStore =
     Object
   * $file_id2file dict[str, mc.VersionedFile]
 
-FileDesktop :=
+FileDesktop =
     DataClass
   * $workspaces mc.AppendOnlyList[FileWorkspace]
   * $reorder_indexes mc.Versioned[DesktopMemberOrder]
@@ -74,7 +74,7 @@ FileDesktop :=
       # $reorder_indexes records the time and author of the last reordering
     }]
 
-DesktopMemberOrder :=
+DesktopMemberOrder =
     DataClass
   * $workspace_indexes mc.ReadOnlyList[WorkspaceMemberOrder]
   * Assert[{
@@ -82,75 +82,75 @@ DesktopMemberOrder :=
           a permutation of 0 .. len(MeetingData.file_desktop.workspaces) - 1
     }]
 
-WorkspaceMemberOrder :=
+WorkspaceMemberOrder =
     DataClass
   * $workspace_index int
   * $file_indexes mc.ReadOnlyList[($file_index int, mc.Optional[FoldMemberOrder])]
   * Assert[{
-      ws := MeetingData.file_desktop.workspaces[$workspace_index]
+      ws = MeetingData.file_desktop.workspaces[$workspace_index]
       { $file_index | ($file_index, _) ∈ $file_indexes } == 0 .. len(ws.member_files) - 1
       and for every ($file_index, Some(fo)):
           fo.$member_indexes == 0 .. len((ws.member_files[$file_index] as $fold).member_file_ids) - 1
     }]
 
-FoldMemberOrder :=
+FoldMemberOrder =
     DataClass
   * $member_indexes mc.ReadOnlyList[$member_index int]
   # this object only ever appears as some ($file_index, Some(this object));
   # the WorkspaceMemberOrder that holds it asserts that it is the member order of
   # the fold ws.member_files[$file_index]
 
-FileWorkspace :=
+FileWorkspace =
     DataClass
   * $member_files mc.AppendOnlyList[FileFold | FileEntry]
   * $workspace_name mc.Optional[str]
   * $workspace_status mc.Optional[mc.DataStatus]
 
-FileFold :=
+FileFold =
     DataClass
   * $fold_name mc.Optional[str]
   * $member_file_ids mc.AppendOnlyList[FileEntry]
 
-FileEntry :=
+FileEntry =
     DataClass
   * $entry_name str
   * $file_id mc.FileId
 
-StreamChunkDict :=
+StreamChunkDict =
     DataClass
   * $stream_name2stream_chunk dict[str, StreamChunk]
   * $start mc.datetime
   * $end mc.Optional[mc.datetime]
 
-StreamChunk :=
+StreamChunk =
     Oneof
   | $screen_stream_chunk ScreenStreamChunk
   | $chat_stream_chunk ChatStreamChunk
   | $score_stream_chunk ScoreStreamChunk
   | $terminal_control_stream_chunk TerminalControlStreamChunk
 
-ScreenStreamChunk :=
+ScreenStreamChunk =
     DataClass
   * $chunks list[ScreenCapture]
   * $stream_name str
   * $owner_user_name mc.UserName
 
-ChatStreamChunk :=
+ChatStreamChunk =
     DataClass
   * $stream_name str
   * $chunks list[mc.ChatMessage]
   * Appendix[{
-      the chat pane shows := this meeting's chat-stream records merged with its
+      the chat pane shows = this meeting's chat-stream records merged with its
                     terminal_control stream records, by time
                     (a view for the display layer; every item still belongs to
                      its own stream)
     }]
 
-ScoreStreamChunk :=
+ScoreStreamChunk =
     DataClass
   * $chunks list[mc.ScoreMessage]
 
-TerminalControlStreamChunk :=
+TerminalControlStreamChunk =
     DataClass
   * $chunks list[TerminalControl]
   * Appendix[{
@@ -162,7 +162,7 @@ TerminalControlStreamChunk :=
           # differs from the previous one is there a hold or a hand-back
     }]
 
-TerminalControl :=
+TerminalControl =
     DataClass
   * $tmux_window_name str
   * $tmux_pane int
@@ -175,7 +175,7 @@ TerminalControl :=
       user_name is absent, or user_name ∈ participants(user_names(MeetingData))
     }]
   * Appendix[{
-      terminal_capable := { $human nil } ∪ { a | role(a) == $generator }   # role looks up the meeting's agent_name2role
+      terminal_capable = { $human nil } ∪ { a | role(a) == $generator }   # role looks up the meeting's agent_name2role
     }]
   * Assert[{
         user_name is absent, or
@@ -183,7 +183,7 @@ TerminalControl :=
         the role of user_name's agent == $generator
     }]
 
-ScreenCapture :=
+ScreenCapture =
     DataClass
   * $screen_data str                       # plain text (the coordinates the model / references / scores use); every row right-trimmed
   * $terminal_text_content list[mc.TerminalTextSegment]
@@ -199,12 +199,12 @@ ScreenCapture :=
   * Assert[{ 0 <= $cursor_y < $screen_height and 0 <= $cursor_x < $screen_width }]
   * Assert[{ ∀ i: seg_attrs($terminal_text_content[i]) != seg_attrs($terminal_text_content[i+1]) }]
   * Appendix[{
-      frame_rows(s)      := s.split('\n')                       # a row = a content row, right-trimmed; no trailing blank rows
-      concat_text_field_of_list(list) := ''.join(seg.text for seg in list)
-      row_plain(row)     := row.rstrip(' ')
-      plain_of(list)     := '\n'.join(row_plain(r) for r in frame_rows(concat_text_field_of_list(list)))
-      cell_width(row)    := sum(wcwidth(ch) for ch in row)      # a CJK character is 2 cells wide
-      seg_attrs(seg)     := (seg.fg, seg.bg, frozenset(seg.styles))
+      frame_rows(s)      = s.split('\n')                       # a row = a content row, right-trimmed; no trailing blank rows
+      concat_text_field_of_list(list) = ''.join(seg.text for seg in list)
+      row_plain(row)     = row.rstrip(' ')
+      plain_of(list)     = '\n'.join(row_plain(r) for r in frame_rows(concat_text_field_of_list(list)))
+      cell_width(row)    = sum(wcwidth(ch) for ch in row)      # a CJK character is 2 cells wide
+      seg_attrs(seg)     = (seg.fg, seg.bg, frozenset(seg.styles))
     }]
 ```
 
@@ -221,16 +221,16 @@ the work goes on, and the record layers of the later chapters are built on them.
 # 1. Time, optional values, append-only lists, read-only lists
 # ---------------------------------------------------------------- #
 
-datetime :=
+datetime =
     Object
   * $microsecond int                    # time identity inside a meeting: microseconds, unique by construction
 
-Optional[T] := T | nil                  # absence is nil; a sum shape, not a tag
+Optional[T] = T | nil                  # absence is nil; a sum shape, not a tag
 
-AppendOnlyList[T] := list[T]            # append-only: position is identity. A convention, not a structure
-ReadOnlyList[T] := list[T]              # read-only: written once, never changed. Same as above
+AppendOnlyList[T] = list[T]            # append-only: position is identity. A convention, not a structure
+ReadOnlyList[T] = list[T]              # read-only: written once, never changed. Same as above
 
-Result[T] :=
+Result[T] =
     Oneof
   | $ok T                               # success: carries a value
   | $err str                            # failure: carries one sentence
@@ -239,45 +239,45 @@ Result[T] :=
 # 2. Small stable types
 # ---------------------------------------------------------------- #
 
-AgentRole :=
+AgentRole =
     Oneof
   | $generator nil                      # holds the terminal
   | $active_discriminator nil           # comments at will
   | $passive_discriminator nil          # comments when summoned
 
-UserName :=
+UserName =
     Oneof
   | $agent_name str
   | $human nil
 
-DataStatus :=
+DataStatus =
     Oneof
   | $deleted nil
   | $read_only nil
 
-Versioned[T] :=
+Versioned[T] =
     Object
   * $data T
   * $time datetime
   * $author UserName
 
-TextRegion :=
+TextRegion =
     Object
   * $start int
   * $end int
 
-Rgb :=
+Rgb =
     Object
   * $r int                              # 0..255
   * $g int
   * $b int
 
-Color :=
+Color =
     Oneof
   | $palette int                        # SGR palette index 0..255
   | $truecolor Rgb
 
-Style :=
+Style =
     Oneof
   | "bold"
   | "underline"
@@ -286,7 +286,7 @@ Style :=
   | "blink"
   | "dim"
 
-TerminalTextSegment :=
+TerminalTextSegment =
     Object
   * $text str                           # one run of text with the same attributes; may contain \n (a background color does not break across rows)
   * $fg Optional[Color]                 # nil = the terminal's default foreground
@@ -295,7 +295,7 @@ TerminalTextSegment :=
 
 # The two states the data interface hands out: one for the screen, one for a file.
 
-ScreenContent :=
+ScreenContent =
     Object
   * $text str
   * $segments list[TerminalTextSegment]
@@ -305,7 +305,7 @@ ScreenContent :=
   * $height int
   * $captured_at datetime
 
-FileState :=
+FileState =
     Object
   * $name str
   * $meta Optional[DataStatus]           # nil = writable (the default)
@@ -315,12 +315,12 @@ FileState :=
 # 3. References, chat and score records
 # ---------------------------------------------------------------- #
 
-FileId :=
+FileId =
     Object
   * $file_id str
   * Assert[{ $file_id ∈ keys(FileKvStore.file_id2file) }]
 
-VersionedFile :=
+VersionedFile =
     Object
   * $file_name AppendOnlyList[Versioned[str]]                    # the name chain: a rename is one more version
   * $file_meta AppendOnlyList[Versioned[DataStatus]]             # the status chain: no version on it = the default, writable
@@ -333,13 +333,13 @@ VersionedFile :=
       # on later, writable is the default
     }]
 
-ChatMessage :=
+ChatMessage =
     Object
   * $message list[$raw_msg str | $at_user_name UserName | $reference ContentReference]
   * $user_name UserName
   * $time datetime
 
-ScoreMessage :=
+ScoreMessage =
     Object
   * $tag str
   * $score Optional[float]
@@ -348,13 +348,13 @@ ScoreMessage :=
   * $time datetime
   * $reference ContentReference
   * Appendix[{
-      summon_chained := role($judge_name) != $passive_discriminator
+      summon_chained = role($judge_name) != $passive_discriminator
                         ∨ this message's $reference resolves to a message that
                           summoned it
     }]
   * Assert[{ summon_chained }]
 
-ContentReference :=
+ContentReference =
     Oneof
   * Assert[{
       one kind per StreamChunk:
@@ -377,65 +377,65 @@ ContentReference :=
   | $versioned_file_ref VersionedFileReference
   | $versioned_file_content_ref VersionedFileContentReference
 
-VersionedFileReference :=
+VersionedFileReference =
     Object
   * $file_id FileId
   * $version_time datetime
   * Appendix[{
       # reading at a moment: the newest version at or before that moment
-      resolve($ref) := the last version on $file_id's chain that satisfies
+      resolve($ref) = the last version on $file_id's chain that satisfies
           (Versioned.time ≤ $ref.version_time)
       # name / meta / content are three independent version chains, each resolved
       # by the same rule; an empty content chain at that moment (no version yet)
       # -> this reference has no answer
     }]
 
-VersionedFileContentReference :=
+VersionedFileContentReference =
     Object
   * $versioned_file_ref VersionedFileReference
   * $region TextRegion
   * Appendix[{
-      resolve($ref) := the $region slice of the content of resolve($ref.$versioned_file_ref)
+      resolve($ref) = the $region slice of the content of resolve($ref.$versioned_file_ref)
     }]
 
-ScreenReference :=
+ScreenReference =
     Object
   * $capture_time datetime
   * $stream_name str
   * $region TextRegion
   * Appendix[{
-        resolve($screen_ref) := the record in the $stream_name stream that satisfies
+        resolve($screen_ref) = the record in the $stream_name stream that satisfies
             (ScreenCapture.captured_at == $screen_ref.capture_time)
     }]
 
-ChatReference :=
+ChatReference =
     Object
   * $msg_time datetime
   * $user_name UserName
   * $region TextRegion
   * Appendix[{
-        resolve($chat_ref) := the record in the chat stream that satisfies
+        resolve($chat_ref) = the record in the chat stream that satisfies
             (ChatMessage.time == $chat_ref.msg_time
              ∧ ChatMessage.user_name == $chat_ref.user_name)
     }]
 
-ScoreReference :=
+ScoreReference =
     Object
   * $judge_time datetime
   * $judge_name UserName
   * Appendix[{
-        resolve($score_ref) := the record in the score stream that satisfies
+        resolve($score_ref) = the record in the score stream that satisfies
             (ScoreMessage.judge_name == $score_ref.judge_name
              ∧ ScoreMessage.time == $score_ref.judge_time)
     }]
 
-TerminalControlReference :=
+TerminalControlReference =
     Object
   * $start_time datetime
   * $user_name Optional[UserName]
   * $region TextRegion
   * Appendix[{
-        resolve($ctrl_ref) := the record in the control stream that satisfies
+        resolve($ctrl_ref) = the record in the control stream that satisfies
             (TerminalControl.start_time == $ctrl_ref.start_time
              ∧ TerminalControl.user_name == $ctrl_ref.user_name)
     }]
@@ -461,11 +461,11 @@ TerminalControlReference :=
 # lets a definition be judged (is_compliant).
 # ---------------------------------------------------------------- #
 
-Assert[Cond] := Object
+Assert[Cond] = Object
 
-Appendix[Note] := Object
+Appendix[Note] = Object
 
-Hint[Note] := Object
+Hint[Note] = Object
 
 # ---------------------------------------------------------------- #
 # Completeness check (run inside the viba submodule):
@@ -513,17 +513,17 @@ import meeting_core as mc
 # Time: time is identity
 # ---------------------------------------------------------------- #
 
-now[Ctx] :=
+now[Ctx] =
 		mc.Result[mc.datetime]
 	<- $ctx Ctx 
 
-chunk_times[Ctx] :=
+chunk_times[Ctx] =
     mc.Result[list[mc.datetime]]               # the moment of every chunk in this span
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
 
-streams_between[Ctx] :=
+streams_between[Ctx] =
     mc.Result[list[str]]                       # the stream names seen in this span
   <- $ctx Ctx
   <- $start mc.datetime
@@ -533,56 +533,56 @@ streams_between[Ctx] :=
 # Chat and scores
 # ---------------------------------------------------------------- #
 
-chat_messages[Ctx] :=
+chat_messages[Ctx] =
     mc.Result[list[mc.ChatMessage]]
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
 
-score_messages[Ctx] :=
+score_messages[Ctx] =
     mc.Result[list[mc.ScoreMessage]]
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
 
-chat_message_at[Ctx] :=
+chat_message_at[Ctx] =
     mc.Result[mc.ChatMessage]                  # one person has one message at a moment
   <- $ctx Ctx
   <- $time mc.datetime
   <- $user mc.UserName
 
-resolve_chat_reference[Ctx] :=
+resolve_chat_reference[Ctx] =
     mc.Result[mc.ChatMessage]
   <- $ctx Ctx
   <- $ref mc.ChatReference
 
-resolve_chat_content_reference[Ctx] :=
+resolve_chat_content_reference[Ctx] =
     mc.Result[str]                             # the text the reference points at
   <- $ctx Ctx
   <- $ref mc.ChatReference
 
-resolve_score_reference[Ctx] :=
+resolve_score_reference[Ctx] =
     mc.Result[mc.ScoreMessage]
   <- $ctx Ctx
   <- $ref mc.ScoreReference
 
-chat_message_references[Ctx] :=
+chat_message_references[Ctx] =
     mc.Result[list[mc.ContentReference]]       # the references this message carries, in order
   <- $ctx Ctx
   <- $time mc.datetime
   <- $user mc.UserName
 
-score_message_reference[Ctx] :=
+score_message_reference[Ctx] =
     mc.Result[mc.ContentReference]             # the reference this score carries
   <- $ctx Ctx
   <- $time mc.datetime
   <- $judge mc.UserName
 
-first_chunk_time[Ctx] :=
+first_chunk_time[Ctx] =
     mc.Result[mc.datetime]                     # the moment of the meeting's first chunk
   <- $ctx Ctx
 
-last_chunk_time[Ctx] :=
+last_chunk_time[Ctx] =
     mc.Result[mc.datetime]                     # the last one
   <- $ctx Ctx
 
@@ -592,12 +592,12 @@ last_chunk_time[Ctx] :=
 # ---------------------------------------------------------------- #
 # The assertions and notes stay in the record layer; this hands out the value.
 
-screen_at[Ctx] :=
+screen_at[Ctx] =
     mc.Result[mc.ScreenContent]                # the content of that screen at that moment
   <- $ctx Ctx
   <- $time mc.datetime
 
-resolve_screen_reference[Ctx] :=
+resolve_screen_reference[Ctx] =
     mc.Result[mc.ScreenContent]
   <- $ctx Ctx
   <- $ref mc.ScreenReference
@@ -606,20 +606,20 @@ resolve_screen_reference[Ctx] :=
 # People: who is in the meeting, and who holds the terminal at a moment
 # ---------------------------------------------------------------- #
 
-participants[Ctx] :=
+participants[Ctx] =
     mc.Result[list[mc.UserName]]
   <- $ctx Ctx
 
-roles[Ctx] :=
+roles[Ctx] =
     mc.Result[dict[str, mc.AgentRole]]
   <- $ctx Ctx
 
-owner_at[Ctx] :=
+owner_at[Ctx] =
     mc.Result[(mc.UserName | nil)]             # nil = nobody holds the terminal at that moment
   <- $ctx Ctx
   <- $time mc.datetime
 
-control_owner_of[Ctx] :=
+control_owner_of[Ctx] =
     mc.Result[(mc.UserName | nil)]             # nil = nobody took over after that hand-back
   <- $ctx Ctx
   <- $ref mc.TerminalControlReference
@@ -635,94 +635,94 @@ control_owner_of[Ctx] :=
 # /workspace_name/fold_name/entry_name. Names are unique per level (see
 # FileDesktop's Assert), so a path picks exactly one file.
 
-file_id_by_path[Ctx] :=
+file_id_by_path[Ctx] =
     mc.Result[mc.FileId]
   <- $ctx Ctx
   <- $path str
 
-file_datetimes[Ctx] :=
+file_datetimes[Ctx] =
     mc.Result[list[mc.datetime]]
   <- $ctx Ctx
   <- $file mc.FileId
 
-files_at[Ctx] :=
+files_at[Ctx] =
     mc.Result[dict[str, mc.FileState]]
   <- $ctx Ctx
   <- $time mc.datetime
 
-latest_file[Ctx] :=
+latest_file[Ctx] =
     mc.Result[mc.FileState]                    # the latest state
   <- $ctx Ctx
   <- $file mc.FileId
 
-resolve_versioned_file_reference[Ctx] :=
+resolve_versioned_file_reference[Ctx] =
     mc.Result[mc.FileState]                    # the file's state at the moment cited
   <- $ctx Ctx
   <- $ref mc.VersionedFileReference
 
-resolve_versioned_file_content_reference[Ctx] :=
+resolve_versioned_file_content_reference[Ctx] =
     mc.Result[str]                             # the text the reference points at
   <- $ctx Ctx
   <- $ref mc.VersionedFileContentReference
 
-read_text[Ctx] := latest_file[Ctx]
+read_text[Ctx] = latest_file[Ctx]
 
 # ---------------------------------------------------------------- #
 # Building reference values: no ctx (never touches a record), always named make_*
 # ---------------------------------------------------------------- #
 
-make_text_region :=
+make_text_region =
     mc.TextRegion
   <- $start int
   <- $end int
 
-make_screen_reference :=
+make_screen_reference =
     mc.ScreenReference
   <- $capture_time mc.datetime
   <- $stream_name str
   <- $region mc.TextRegion
 
-make_chat_reference :=
+make_chat_reference =
     mc.ChatReference
   <- $msg_time mc.datetime
   <- $user_name mc.UserName
   <- $region mc.TextRegion
 
-make_score_reference :=
+make_score_reference =
     mc.ScoreReference
   <- $judge_time mc.datetime
   <- $judge_name mc.UserName
 
-make_terminal_control_reference :=
+make_terminal_control_reference =
     mc.TerminalControlReference
   <- $start_time mc.datetime
   <- $user_name mc.UserName | nil          # absent = nobody took over after that hand-back
   <- $region mc.TextRegion
 
-make_versioned_file_reference :=
+make_versioned_file_reference =
     mc.VersionedFileReference
   <- $file_id mc.FileId
   <- $version_time mc.datetime
 
-make_versioned_file_content_reference :=
+make_versioned_file_content_reference =
     mc.VersionedFileContentReference
   <- $versioned_file_ref mc.VersionedFileReference
   <- $region mc.TextRegion
 
 
-local_version_hint := Hint[{
+local_version_hint = Hint[{
 	Ctx is python object in current process
 	usage:
   	import meeting_local_sdk as sdk
 }]
 
-remote_version_hint := Hint[{
+remote_version_hint = Hint[{
 	Ctx is meeting uid
 	every api should be backed by REST URL
 	usage:
   	import meeting_remote_sdk as sdk
   	
- 	every api should return a valid viba script as result with definition of 'entry := ...'
+ 	every api should return a valid viba script as result with definition of 'entry = ...'
  	
 }]
 ```
@@ -736,19 +736,19 @@ remote_version_hint := Hint[{
 ```bash
 # The concepts in this section only constrain RemoteBuddy's own Harness; what
 # they record is never written to storage and belongs to no stream.
-Keystroke :=
+Keystroke =
     DataClass
   * $data KeystrokeStr
   * $user_name mc.UserName
   * $stroke_time mc.datetime
   * Appendix[{
-      owner_at(t) := see the Appendix of the same name on MeetingData
+      owner_at(t) = see the Appendix of the same name on MeetingData
       $user_name must equal owner_at($stroke_time):
       only whoever holds the terminal at that moment produces a keystroke, and
       nobody produces one while nobody holds it
     }]
 
-KeystrokeStr :=
+KeystrokeStr =
     Oneof
   | $text str
   | $ctrl str
@@ -762,12 +762,12 @@ KeystrokeStr :=
 
 
 ```bash
-LazyEvaluated[T] :=
+LazyEvaluated[T] =
     Object
   * $cached mc.Optional[T]
   * $getter (Result[T] <- $ctx Any)
 
-Tree[T] :=
+Tree[T] =
     Object
   * $data T
   * $parent LazyEvaluated[mc.Optional[Tree[T]]]
@@ -783,67 +783,67 @@ Tree[T] :=
 ```bash
 # RemoteBuddy supports decentralized collaboration.
 # i.e. Agents may come from different service-provider companies.
-ServiceProvider :=
+ServiceProvider =
     Object
   * $service_provider_uid UUID[str]
   * ...
 
 # environments dockable like OS/Library/Application and Codex/ClaudeCode/...
-RunningEnvironment :=
+RunningEnvironment =
     Object
   * $running_env_uid UUID[str]
   * ...
 
-Configuration :=
+Configuration =
     Object
   * $configuration_uid UUID[str]
   * ...
 
 # context like session/trajectory/meeting_record: mainly time-series data.
-ContextData :=
+ContextData =
     Object
   * $context_data_uid UUID[str]
   * ...
 
 # abstraction for working directory whose payload is of type T.
-Workspace[T] :=
+Workspace[T] =
     Object
   * $workspace_uuid UUID[str]
   * ...
   * Appendix[{ the data in workspace is of type T }]
 
 # Composition / inheritance
-AgentServiceProvider   := ServiceProvider
-AgentRunningEnvironment := RunningEnvironment
-AgentConfiguration     := Configuration
-AgentContextData       := ContextData
-AgentWorkspace         := Workspace[{Any data used by agent}]
+AgentServiceProvider   = ServiceProvider
+AgentRunningEnvironment = RunningEnvironment
+AgentConfiguration     = Configuration
+AgentContextData       = ContextData
+AgentWorkspace         = Workspace[{Any data used by agent}]
 
-MeetingServiceProvider   := ServiceProvider
-MeetingRunningEnvironment := RunningEnvironment
-MeetingConfiguration     := Configuration
-MeetingContextData       := MeetingData
-MeetingWorkspace         := Workspace[MeetingData]
+MeetingServiceProvider   = ServiceProvider
+MeetingRunningEnvironment = RunningEnvironment
+MeetingConfiguration     = Configuration
+MeetingContextData       = MeetingData
+MeetingWorkspace         = Workspace[MeetingData]
 
 # ---- lineage ----
-AgentTreeNode :=
+AgentTreeNode =
     Object
   * $uid UUID[str]
   * $data LazyEvaluated[AgentContextData]    # a handle to this lineage point's record, read from the agent workspace
 
-AgentTree := Tree[AgentTreeNode]
+AgentTree = Tree[AgentTreeNode]
 
-MeetingTreeNode :=
+MeetingTreeNode =
     Object
   * $uid UUID[str]
   * $data LazyEvaluated[MeetingContextData]  # a handle to this lineage point's record, read from the meeting workspace
   * $agent_name2agent_node dict[str, AgentTreeNode]
   * Assert[{ keys(agent_name2agent_node) are user names in MeetingContextData }]
 
-MeetingTree := Tree[MeetingTreeNode]
+MeetingTree = Tree[MeetingTreeNode]
 
 # ---- images (immutable lineage snapshots; tree_node = None ⇔ never committed) ----
-AgentPrototypeImage :=
+AgentPrototypeImage =
     Object
   * $service_provider AgentServiceProvider
   * $running_env ReadOnly[AgentRunningEnvironment]
@@ -852,7 +852,7 @@ AgentPrototypeImage :=
   * Assert[{ $service_provider interprets $running_env.running_env_uid,
              $configuration.configuration_uid, and $agent_tree_node.uid }]
 
-MeetingPrototypeImage :=
+MeetingPrototypeImage =
     Object
   * $service_provider MeetingServiceProvider
   * $running_env ReadOnly[MeetingRunningEnvironment]
@@ -864,13 +864,13 @@ MeetingPrototypeImage :=
   * Assert[{ keys($agent_name2agent_prototype_image) are user names in $meeting_tree_node.data }]
 
 # ---- instances (alive: always has an image; the live tail is appended in the workspace) ----
-AgentInstance :=
+AgentInstance =
     Object
   * $agent_prototype_image AgentPrototypeImage
   * $workspace AgentWorkspace
   * Assert[{ $agent_prototype_image.service_provider interprets $workspace.workspace_uid }]
 
-MeetingInstance :=
+MeetingInstance =
     Object
   * $agent_prototype_image MeetingPrototypeImage
   * $workspace MeetingWorkspace
@@ -887,9 +887,9 @@ MeetingInstance :=
 
 
 ```bash
-GetTreeFromAgentTreeNode := Result[AgentTree] <- AgentTreeNode
+GetTreeFromAgentTreeNode = Result[AgentTree] <- AgentTreeNode
 
-InstantiateAgent :=
+InstantiateAgent =
     Result[AgentInstance]
     <- $service_provider ServiceProvider
     <- $running_env ReadOnly[AgentRunningEnvironment]
@@ -898,20 +898,20 @@ InstantiateAgent :=
     <- Assert[{ $service_provider interprets $running_env.running_env_uid,
                 $configuration.configuration_uid, and $workspace.workspace_uid }]
 
-SpawnAgent :=
+SpawnAgent =
     Result[AgentInstance]
     <- $image AgentPrototypeImage
     <- $workspace AgentWorkspace
     <- Assert[{ $image.service_provider interprets $workspace.workspace_uid }]
 
-MakeAgentPrototypeImage := Result[$ret AgentPrototypeImage] <- $self AgentInstance <- Hint[{
+MakeAgentPrototypeImage = Result[$ret AgentPrototypeImage] <- $self AgentInstance <- Hint[{
     1. (old context data) + (data in workspace) -> (new context data).
     2. create child node in AgentTree
 }]
 
-GetTreeFromMeetingTreeNode := Result[MeetingTree] <- $node MeetingTreeNode
+GetTreeFromMeetingTreeNode = Result[MeetingTree] <- $node MeetingTreeNode
 
-InstantiateMeeting :=
+InstantiateMeeting =
     Result[MeetingInstance]
     <- $service_provider MeetingServiceProvider
     <- $running_env ReadOnly[MeetingRunningEnvironment]
@@ -920,7 +920,7 @@ InstantiateMeeting :=
     <- Assert[{ $service_provider interprets $running_env.running_env_uid,
                 $configuration.configuration_uid, and $workspace.workspace_uid }]
 
-SpawnMeeting :=
+SpawnMeeting =
     Result[MeetingInstance]
     <- $image MeetingPrototypeImage
     <- $workspace MeetingWorkspace
@@ -938,14 +938,14 @@ SpawnMeeting :=
                 ⊆ keys($image.agent_name2agent_prototype_image) }]
     <- Assert[{ $image.service_provider interprets $workspace.workspace_uid }]
 
-MakeMeetingPrototypeImage := Result[$ret MeetingPrototypeImage] <- $self MeetingInstance <- Hint[{
+MakeMeetingPrototypeImage = Result[$ret MeetingPrototypeImage] <- $self MeetingInstance <- Hint[{
     1. (old context data) + (data in workspace) -> (new context data).
     2. join Map[MakeAgentPrototypeImage]($agent_name2agent_instance) and $self.agent_prototype_image.agent_name2agent_prototype_image
        into $ret.agent_name2agent_prototype_image.
     3. create child node in MeetingTree.
 }]
 
-JoinMeeting :=
+JoinMeeting =
     Result[$self MeetingInstance]
     <- $self MeetingInstance
     <- $agent_name str

@@ -35,13 +35,13 @@ Two rules from the protocol:
 * ``has`` only answers true or false — no such coordinate in the design and no
   such piece in the data are both ``False``.
   In ``get``, "not in the data" is ``Ok(nil)``; only "no such coordinate on the
-  map at all" is ``Err``; ``leaf`` / ``length`` / ``keys`` give ``Err`` when
+  map at all" is ``VibaProgramErr``; ``leaf`` / ``length`` / ``keys`` give ``VibaProgramErr`` when
   they get nothing.
 
 The entry point starts as the protocol says:
 ``access(_definition(name)).root(_Record(record))``, and the ``Ok`` that comes
-back holds the node (``Err`` means it never matched at all). The protocol's
-``Ok`` / ``Err`` are exactly the two this module exposes.
+back holds the node (``VibaProgramErr`` means it never matched at all). The protocol's
+``Ok`` / ``VibaProgramErr`` are exactly the two this module exposes.
 
 The Python landing of section 5.4 is on VibaNode: ``get_{name}()`` /
 ``has_{name}()`` / ``in`` / ``try_get_{name}()`` / ``node[i]`` / ``node.value``
@@ -57,14 +57,14 @@ How the data matches the design (this layer's binding rules):
 * a sum-type branch matches by three things: the data's class name is the
   definition the branch points to (``$screen_ref`` matches ``ScreenReference``);
   the branch name matches the class name (``$ok`` / ``$err`` match ``Ok`` /
-  ``Err``); or the branch is the unit and the enum matches this tag
+  ``VibaProgramErr``); or the branch is the unit and the enum matches this tag
   (``$deleted ()`` matches ``DataStatus.DELETED``, ``$generator ()`` matches
   ``AgentRole.GENERATOR`` — the value, the value with $, and the member name all
   count). Names are compared case-insensitively.
 * built-in leaves are recognised as Python scalars: bool / int / float / str /
   None.
 
-A mismatch means nothing can be read (``Err`` or ``False``) — that is the
+A mismatch means nothing can be read (``VibaProgramErr`` or ``False``) — that is the
 Python side disagreeing with the document (for example wrapping ``$palette
 int`` in a ``PaletteColor`` class), not this layer's business.
 """
@@ -86,7 +86,7 @@ if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VEND
     sys.path.insert(0, str(_VENDORED_VIBA))
 
 from viba import viba_ast
-from viba.type import AstNodeType, Err, Ok, Result, module_get_type
+from viba.type import AstNodeType, VibaProgramErr, Ok, Result, module_get_type
 from viba.viba_type_descriptor import (
     CODE_BLOCK,
     ELLIPSIS,
@@ -160,10 +160,10 @@ def _design_pool() -> VibaPool:
     map."""
     pool = empty_pool()
     parsed = parse_viba_file(pool, _design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
-    if isinstance(parsed, Err):
+    if isinstance(parsed, VibaProgramErr):
         raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not compile: {parsed.err_msg}")
     added = pool_add_file(pool, parsed.ok_value)
-    if isinstance(added, Err):
+    if isinstance(added, VibaProgramErr):
         raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not go into the pool: {added.err_msg}")
     return added.ok_value
 
@@ -174,7 +174,7 @@ def _definition(name: str) -> VibaDefinitionDescriptor:
     ``'meeting_core.FileId'`` work."""
     full_name = name if "." in name else f"{DESIGN_MODULE_NAME}.{name}"
     found = pool_find_definition(_design_pool(), full_name)
-    if isinstance(found, Err):
+    if isinstance(found, VibaProgramErr):
         raise VibaReflectError(found.err_msg)
     return found.ok_value
 
@@ -188,16 +188,16 @@ def _expression_definition(type_expression: str):
     it resolves inside the stable-types module.
     """
     written = re.sub(r"\bmc\.", "", type_expression).strip()
-    source = _design_source() + f"\nSdkEntry := {written}\n"
+    source = _design_source() + f"\nSdkEntry = {written}\n"
     pool = empty_pool()
     parsed = parse_viba_file(pool, source, "sdk_entry.viba", DESIGN_MODULE_NAME)
-    if isinstance(parsed, Err):
-        return Err(f"cannot compile the return type {type_expression!r}: {parsed.err_msg}")
+    if isinstance(parsed, VibaProgramErr):
+        return VibaProgramErr(f"cannot compile the return type {type_expression!r}: {parsed.err_msg}")
     added = pool_add_file(pool, parsed.ok_value)
-    if isinstance(added, Err):
+    if isinstance(added, VibaProgramErr):
         return added
     found = pool_find_definition(added.ok_value, f"{DESIGN_MODULE_NAME}.SdkEntry")
-    if isinstance(found, Err):
+    if isinstance(found, VibaProgramErr):
         return found
     return Ok((access, found.ok_value))
 
@@ -260,11 +260,11 @@ def _tag_name(tag: str) -> str:
 
 
 class VibaReflectError(Exception):
-    """Raised when the value-taking path fails, carrying the protocol's ``Err``
+    """Raised when the value-taking path fails, carrying the protocol's ``VibaProgramErr``
     message.
 
     The section 5.4 Python landing: the value-taking kind raises this on
-    failure, with the ``Err`` message kept as it is.
+    failure, with the ``VibaProgramErr`` message kept as it is.
     """
 
 
@@ -476,13 +476,13 @@ class VibaAccess:
 
     def get(self, node: VibaNode, step: VibaStep) -> Result:
         """VibaGet: walk one step in. Not in the data is Ok(nil); only no such
-        coordinate on the map is Err."""
+        coordinate on the map is VibaProgramErr."""
         slots = self.members(node)
         if not self._knows(node, step, slots):
-            return Err(f"the design has no such address: {step} ({node!r})")
+            return VibaProgramErr(f"the design has no such address: {step} ({node!r})")
         target = self.target_of(node, step, slots)
         if target is None:
-            return Err(f"the design has no such address: {step} ({node!r})")
+            return VibaProgramErr(f"the design has no such address: {step} ({node!r})")
         piece = self._pick(node, step, target)
         if piece is None:
             return Ok(None)
@@ -503,26 +503,26 @@ class VibaAccess:
             shape = self.unfold(node.descriptor)
             if (shape.kind in (PRODUCT, TUPLE)
                     or self.container_kind(shape) is not None):
-                return Err(f"this piece is not a leaf: {node!r}")
+                return VibaProgramErr(f"this piece is not a leaf: {node!r}")
             if shape.kind == SUM and not self._branch_is_a_leaf(node):
                 # A sum has to be walked one step further in: the $agent_name
                 # branch is the leaf; only the literal kind of sum (Style) and
                 # Optional[float] are "the value is itself that branch"
-                return Err(f"this piece is not a leaf: {node!r}")
+                return VibaProgramErr(f"this piece is not a leaf: {node!r}")
             return Ok(data)
-        return Err(f"this piece is not a leaf: {node!r}")
+        return VibaProgramErr(f"this piece is not a leaf: {node!r}")
 
     def length(self, node: VibaNode) -> Result:
         """VibaLength: the number of elements of a list / set / tuple, the
         number of keys of a dict."""
         if not isinstance(node.data, (list, tuple, set, frozenset, dict)):
-            return Err(f"this piece is not a container: {node!r}")
+            return VibaProgramErr(f"this piece is not a container: {node!r}")
         return Ok(len(node.data))
 
     def keys(self, node: VibaNode) -> Result:
         """VibaKeys: the dict's keys, in implementation order."""
         if not isinstance(node.data, dict):
-            return Err(f"this piece is not a dict: {node!r}")
+            return VibaProgramErr(f"this piece is not a dict: {node!r}")
         return Ok([str(key) for key in node.data.keys()])
 
 
@@ -530,15 +530,15 @@ class VibaAccess:
         """VibaResolve: walk VibaGet step by step.
 
         Reaching "the data has no such piece" (``Ok(nil)``) stops there: if steps
-        remain it is ``Err("this step has no value")``, and if no steps remain the
+        remain it is ``VibaProgramErr("this step has no value")``, and if no steps remain the
         ``Ok(nil)`` is handed out.
         """
         current = node
         for step in path:
             if current is None:
-                return Err("this step has no value")
+                return VibaProgramErr("this step has no value")
             given = node._access.get(current, step)
-            if isinstance(given, Err):
+            if isinstance(given, VibaProgramErr):
                 return given
             current = given.ok_value
         return Ok(current)
@@ -546,10 +546,10 @@ class VibaAccess:
     def get_by_path(self, node: VibaNode, path: Sequence[VibaStep]) -> Result:
         """VibaGetByPath: VibaResolve first, then VibaLeaf."""
         resolved = self.resolve(node, path)
-        if isinstance(resolved, Err):
+        if isinstance(resolved, VibaProgramErr):
             return resolved
         if resolved.ok_value is None:
-            return Err("this step has no value")
+            return VibaProgramErr("this step has no value")
         return node._access.leaf(resolved.ok_value)
 
     def list_fields(self, node: VibaNode, definition: VibaDefinitionDescriptor) -> Result:
@@ -557,7 +557,7 @@ class VibaAccess:
         taken goes into the list."""
         accessor = self
         members = _definition_members(definition)
-        if isinstance(members, Err):
+        if isinstance(members, VibaProgramErr):
             return members
         out = []
         positional = 0
@@ -577,10 +577,10 @@ class VibaAccess:
                 out.append(given.ok_value)
         return Ok(out)
 
-    # ---- Private: the value-taking path (raises on both Err and Ok(nil)) ----
+    # ---- Private: the value-taking path (raises on both VibaProgramErr and Ok(nil)) ----
 
     def _unwrap(self, given: Result):
-        if isinstance(given, Err):
+        if isinstance(given, VibaProgramErr):
             raise VibaReflectError(given.err_msg)
         if given.ok_value is None:
             raise VibaReflectError("this piece has no value")
@@ -620,7 +620,7 @@ class VibaAccess:
             return None
         resolved = module_get_type(payload.resolvable_type.container_module,
                                    payload.constructor_name)
-        if isinstance(resolved, Err) or not isinstance(resolved.ok_value, AstNodeType):
+        if isinstance(resolved, VibaProgramErr) or not isinstance(resolved.ok_value, AstNodeType):
             return None
         target = resolved.ok_value
         if not isinstance(target.ast_node, viba_ast.GenericDefinition):
@@ -666,7 +666,7 @@ class VibaAccess:
         if resolvable is None:
             return None
         resolved = module_get_type(resolvable.container_module, descriptor.payload.type_name)
-        if isinstance(resolved, Err) or not isinstance(resolved.ok_value, AstNodeType):
+        if isinstance(resolved, VibaProgramErr) or not isinstance(resolved.ok_value, AstNodeType):
             return None  # built-in leaves, generic parameters etc: stop here
         target = resolved.ok_value
         if not isinstance(target.ast_node, viba_ast.TypeDefinition):
@@ -941,8 +941,11 @@ class VibaAccess:
         if tag_name is not None:
             if isinstance(data, Enum) and _enum_matches(data, tag_name):
                 return True
+            # viba's two Result branches are matched as what they are: their
+            # class names belong to the protocol, not to the design's tags.
+            if tag_name == _result_branch_tag(data):
+                return True
             # branch name matches the data's class name
-            # ($ok / $err for Ok / Err)
             if tag_name.lower() == type(data).__name__.lower():
                 return True
         if descriptor.kind == TYPE_REF:
@@ -1120,6 +1123,15 @@ def _payload(target: VibaTypeDescriptor, data):
     if _is_unit_descriptor(target):
         return _NIL
     return _present(_payload_of(data))
+
+
+def _result_branch_tag(data) -> Optional[str]:
+    """The design tag of a viba Result branch: $ok for Ok, $err otherwise."""
+    if isinstance(data, Ok):
+        return "ok"
+    if isinstance(data, VibaProgramErr):
+        return "err"
+    return None
 
 
 def _leaf_matches(written: str, data) -> bool:
