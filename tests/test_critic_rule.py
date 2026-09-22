@@ -224,8 +224,16 @@ def test_the_rule_check_reads_the_newest_screen_that_shows_python(tmp_path) -> N
     assert "process_batch" in section and "16 行" in section   # the rule's own measurement
     assert "parameter_count_le_4" in section
     assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED", "holds"]
+    assert report["rules"][0]["function"] == "process_batch"   # which function, as data
+    assert report["rules"][1]["function"] is None               # the rule that held names nobody
+    assert "你必须在回复里点名" in section and "process_batch" in section
     assert report["frame"]["event_id"]                          # the frame it judged
     assert report["frame"]["region"][1] > report["frame"]["region"][0]
+    # and it is cited: the reference points at that frame and that region
+    assert report["citation"]["kind"] == "screen"
+    assert report["citation"]["event_id"] == report["frame"]["event_id"]
+    assert [report["citation"]["region"]["start"], report["citation"]["region"]["end"]] == \
+        report["frame"]["region"]
 
 
 def test_the_rule_check_on_a_pane_without_python_runs_nothing(tmp_path) -> None:
@@ -237,7 +245,7 @@ def test_the_rule_check_on_a_pane_without_python_runs_nothing(tmp_path) -> None:
                                   "cursor_x": 10, "cursor_y": 1})
     section, report = critic_rules.review(store, store_dir=tmp_path / "no-code-store")
     assert "no rule could run" in section
-    assert report == {"frame": None, "rules": []}
+    assert report == {"frame": None, "citation": None, "rules": []}
 
 
 def test_the_ops_reach_data_through_meeting_sdk_only() -> None:

@@ -24,6 +24,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import meeting_core_reflect as reflect
 import meeting_loader
+import references
 import underlying_viba_ops as ops
 from viba import viba_ast
 from viba.compliance import (PreparedStorage, is_compliant, measured_of,
@@ -122,6 +123,9 @@ def judge_moment(store, screen, region, store_dir, rule: Path) -> Dict[str, Any]
         case_env = environ.sub_env(CASE_ENV)
         name = measured_value(read_prepare(case_env, wording.name))
         value = measured_value(read_prepare(case_env, wording.value))
+        # Which function and which number, kept as data: the meeting records the
+        # offender next to the rule, not only inside a sentence.
+        result["offender"] = {"function": name, "value": value}
         result["complaint"] = (f"规则 {Path(rule).stem} 违规：{name} "
                               f"{wording.wording.format(value=value)}。")
     return result
@@ -243,10 +247,30 @@ def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
         report = {"frame": {"event_id": screen.get("event_id"),
                             "captured_at": screen.get("captured_at"),
                             "region": list(region)},
+                  "citation": frame_reference(screen, region),
                   "rules": [{"rule": result["rule"], "verdict": verdict_word(result),
+                             "function": (result.get("offender") or {}).get("function"),
                              "complaint": result.get("complaint")} for result in results]}
         return _section(screen, region, results), report
-    return (_NO_CODE_SECTION, {"frame": None, "rules": []})
+    return (_NO_CODE_SECTION, {"frame": None, "citation": None, "rules": []})
+
+
+def frame_reference(screen, region: Tuple[int, int]) -> Dict[str, Any]:
+    """The frame a check judged, as a reference: that event, that region of it.
+
+    A critic cites what it read: the pane at one moment and the span the rules
+    were run over. Whoever quotes the verdict carries this, so the claim points
+    at the frame instead of describing where it is.
+    """
+    return references.reference_from_event(
+        screen, {"kind": "screen", "event_id": screen["event_id"],
+                 "region": {"start": region[0], "end": region[1]}})
+
+
+def citation(report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The reference a report carries, or None when no frame was judged."""
+    found = report.get("citation")
+    return found if isinstance(found, dict) else None
 
 
 _NO_CODE_SECTION = (
@@ -267,6 +291,16 @@ def _section(screen, region, results) -> str:
         if result.get("complaint"):
             line += f" — {result['complaint']}"
         lines.append(line)
-    lines.append("These verdicts are the rules' answers, computed for you; quote them as "
-                 "they are instead of judging the code yourself.")
+    offenders = [result for result in results
+                 if (result.get("offender") or {}).get("function")]
+    if offenders:
+        named = "；".join(f"规则 {result['rule']} 违规，函数 {result['offender']['function']}"
+                          for result in offenders)
+        lines.append(f"你必须在回复里点名：{named}（照抄上面的名字，不要改写）。")
+    else:
+        lines.append("没有规则被违反：直说没有违规，不要自己另外找毛病。")
+    lines.append("These verdicts are the rules' answers, computed for you: name the rule "
+                 "and the function exactly as written above, and do not judge the code "
+                 "yourself. The frame they were run over is cited as a reference on your "
+                 "reply, so point at it with that citation instead of describing where it is.")
     return "\n".join(lines)

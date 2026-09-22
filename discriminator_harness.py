@@ -326,6 +326,9 @@ def comment_once(
         # speaks: it is chat-only, so the verdicts come to it as evidence, and
         # the meeting keeps them (a "state" event under the reviewer's name).
         rule_section, rule_report = critic_rules.review(store)
+        # What the rules judged is cited, not described: the reviewer's reply
+        # carries the reference to that frame and to the region the rules read.
+        cited = critic_rules.citation(rule_report)
         try:
             store.append_event("state", agent_name, "rule_check",
                                content=rule_section, data={"rule_check": rule_report})
@@ -374,7 +377,8 @@ def comment_once(
             store.refresh()
             if store.meeting.status in {"completed", "failed", "interrupted"}:
                 return False
-            store.append_chat(agent_name, comment, "final")
+            store.append_chat(agent_name, comment, "final",
+                              references=[cited] if cited else None)
             store.append_event(
                 "action", agent_name, "agent_acting",
                 data={"action_id": f"reviewer-{agent_name}", "status": "completed",
