@@ -1,10 +1,11 @@
-"""The second-order critic's first rule, run over a real meeting.
+"""The second-order critic's rules, run over a real meeting.
 
-The rule is `critic/function_length_le_15.viba`, the host is
-`underlying_viba_ops`, and the critic is the meeting's ``critic`` participant.
-One rule judges every moment the critic hands in — the case is material the
-critic writes into the store, not source baked into the rule — and these cases
-pin the verdicts, the complaint, the replay, and the two constraints on the host.
+The rules are `critic/function_length_le_15.viba` and
+`critic/parameter_count_le_4.viba`, the host is `underlying_viba_ops`, and the
+critic is the meeting's ``critic`` participant. Each rule judges every moment
+the critic hands in — the case is material the critic writes into the store, not
+source baked into the rule — and these cases pin the verdicts, the complaint,
+the replay, the way the file gets written, and the two constraints on the host.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _meeting(tmp_path: Path, name: str):
-    """A meeting with two captures (long function, then short).
+    """A meeting with three captures: a long function, a wide one, a clean one.
 
     No terminal: the frames are written the way a capture would be, which is
     what the design's screen asserts are about. `critic_run.py` starts a live
@@ -34,23 +35,32 @@ def _meeting(tmp_path: Path, name: str):
     return store, captures
 
 
-def _judge(tmp_path: Path, store, capture, store_dir: Path = None):
+def _judge(tmp_path: Path, store, capture, store_dir: Path = None,
+           rule: Path = critic_run.RULE):
     screen, region = capture
-    return critic_run.judge(store, screen, region, store_dir or tmp_path / "store")
+    return critic_run.judge(store, screen, region, store_dir or tmp_path / "store", rule)
 
 
-def test_one_rule_judges_every_moment_the_critic_hands_in(tmp_path) -> None:
-    """The rule never changes; the case does. The long one violates, the short
-    one does not — both are found, not just the first."""
+def test_each_rule_judges_every_moment_the_critic_hands_in(tmp_path) -> None:
+    """The rules never change; the case does. Both rules judge all three
+    versions, and they object to different ones: the length rule to the long
+    function only, the parameter rule to the wide one only."""
     store, captures = _meeting(tmp_path, "every-moment")
-    long_result = _judge(tmp_path, store, captures[0], tmp_path / "store-long")
-    short_result = _judge(tmp_path, store, captures[-1], tmp_path / "store-short")
+    length = [_judge(tmp_path, store, capture, tmp_path / f"length-{index}")
+              for index, capture in enumerate(captures)]
+    params = [_judge(tmp_path, store, capture, tmp_path / f"params-{index}",
+                     critic_run.PARAMETER_RULE)
+              for index, capture in enumerate(captures)]
 
-    assert long_result["verdict"].ok_value is False
-    assert "process_batch" in long_result["complaint"]
-    assert "16 行" in long_result["complaint"]      # the function's real length
-    assert short_result["verdict"].ok_value is True
-    assert short_result["complaint"] is None
+    assert [result["verdict"].ok_value for result in length] == [False, True, True]
+    assert [result["verdict"].ok_value for result in params] == [True, False, True]
+
+    assert "process_batch" in length[0]["complaint"]
+    assert "16 行" in length[0]["complaint"]      # the function's real length
+    assert "keep_row" in params[1]["complaint"]
+    assert "5 个参数" in params[1]["complaint"]   # its real parameter count
+    assert length[1]["complaint"] is None and length[2]["complaint"] is None
+    assert params[0]["complaint"] is None and params[2]["complaint"] is None
 
 
 def test_the_complaint_lands_in_the_meeting_chat_with_the_pane_it_read(tmp_path) -> None:
@@ -76,15 +86,18 @@ def test_the_capture_is_prepared_the_way_the_design_demands(tmp_path) -> None:
     data, _summary = meeting_loader.load_meeting_data_from_run(store.run_dir)
     screens = [chunk for chunk in data.sorted_stream_chunks
                if isinstance(chunk, adt.ScreenStreamChunk)][-1].chunks
-    assert len(screens) == 2
+    assert len(screens) == 3
     for capture in screens:
         adt.assert_screen_plain_matches(capture)
         adt.assert_screen_rows_match_height(capture)
         adt.assert_screen_row_widths_fit(capture)
         adt.assert_cursor_in_bounds(capture)
         adt.assert_segments_valid(capture)
-    assert screens[0].screen_data[captures[0][1][0]:captures[0][1][1]] == critic_run.LONG_CODE
-    assert screens[-1].screen_data[captures[-1][1][0]:captures[-1][1][1]] == critic_run.SHORT_CODE
+    for capture, code, screen in zip(captures, (critic_run.LONG_CODE,
+                                                critic_run.WIDE_CODE,
+                                                critic_run.SHORT_CODE), screens):
+        start, end = capture[1]
+        assert screen.screen_data[start:end] == code
 
 
 def test_the_second_judgment_replays_the_recorded_measurement(tmp_path) -> None:
@@ -136,6 +149,51 @@ def test_a_moment_this_meeting_never_had_is_no_verdict(tmp_path) -> None:
     invented["captured_at"] = "2026-01-01T00:00:00.000Z"
     result = _judge(tmp_path, store, (invented, region), tmp_path / "store")
     assert not isinstance(result["verdict"], Ok)
+
+
+def test_the_generator_writes_the_file_in_vi_line_by_line() -> None:
+    """The live meeting's file is written by editing in vi, not by a heredoc.
+
+    The pane is told to open the editor, the code is typed one line at a time
+    (blank lines as real returns, the last line without a newline after it), and
+    the edit ends with Escape and `:wq`. No `cat >`, no `<<` anywhere in it.
+    """
+    transport = _Recorder()
+    critic_run._edit_with_vi("%1", transport, "batch.py", critic_run.WIDE_CODE)
+    calls = transport.calls
+    lines = critic_run.WIDE_CODE.splitlines()
+
+    assert calls[0] == ("keys", "vi batch.py")          # a real editor, first thing
+    assert calls[-1] == ("keys", ":wq")                 # and the edit is saved by it
+    assert calls.index(("literal", "ggdG")) < calls.index(("literal", "i"))
+    assert ("special", "Escape") in calls[:-1]
+
+    typed = [text for kind, text in calls
+             if kind == "keys" and text not in ("vi batch.py", ":wq")]
+    assert typed == [line for line in lines if line][:-1]     # every line but the last
+    assert [text for kind, text in calls if kind == "literal"
+            and text not in ("i", "ggdG")] == [lines[-1]]     # which is typed, unentered
+    assert [kind for kind, _ in calls].count("enter") == sum(1 for line in lines if not line)
+    assert not any("<<" in text or "cat >" in text for _, text in calls)
+
+
+class _Recorder:
+    """A transport that only writes down what it was told to do."""
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def send_keys(self, pane_id, text):
+        self.calls.append(("keys", text))
+
+    def send_literal(self, pane_id, text):
+        self.calls.append(("literal", text))
+
+    def send_enter(self, pane_id):
+        self.calls.append(("enter", ""))
+
+    def send_special(self, pane_id, key):
+        self.calls.append(("special", key))
 
 
 def test_the_ops_reach_data_through_meeting_sdk_only() -> None:

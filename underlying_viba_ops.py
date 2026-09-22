@@ -1,4 +1,4 @@
-"""underlying_viba_ops — the host side of the critic's first rule.
+"""underlying_viba_ops — the host side of the critic's rules.
 
 Two rules hold for everything in this module:
 
@@ -39,9 +39,14 @@ SCREEN_STREAM = "screen"
 
 REFERENCE_NAME = "cited_screen_reference"
 REFERENCE_SNAPSHOT = "cited_screen_reference"   # what the critic leaves there
+# the first rule: a function may not run past 15 lines
 LINES_NAME = "max_function_lines"
 NAME_NAME = "worst_function_name"
 LIMIT_NAME = "within_limit"
+# the second rule: a function may not take more than 4 parameters
+PARAMETERS_NAME = "max_function_parameters"
+WIDEST_NAME = "widest_function_name"
+PARAMETER_LIMIT_NAME = "within_parameter_limit"
 
 
 class MeetingOps:
@@ -60,6 +65,9 @@ class MeetingOps:
             LINES_NAME: self.max_function_lines,
             NAME_NAME: self.worst_function_name,
             LIMIT_NAME: self.within_limit,
+            PARAMETERS_NAME: self.max_function_parameters,
+            WIDEST_NAME: self.widest_function_name,
+            PARAMETER_LIMIT_NAME: self.within_parameter_limit,
         }.get(func_name)
 
     # ---- the rule's functions ----
@@ -100,6 +108,29 @@ class MeetingOps:
         """Is that function within the limit? Pure: every judgment runs it."""
         self.judged += 1
         return lines.value <= limit.value
+
+    def max_function_parameters(self, env, subject):
+        """How many parameters the widest function in that region takes (measured).
+
+        Its own name, so its own Prepare: the second rule's number, like the
+        first rule's, is the thing a complaint has to quote.
+        """
+        def compute(prepared):
+            self.measured += 1
+            return _widest(_functions(_code(self.ctx, prepared)))[1]
+        return measure(env, PARAMETERS_NAME, subject, compute)
+
+    def widest_function_name(self, env, subject):
+        """Which function that is — measured as well, so the complaint can name it."""
+        def compute(prepared):
+            self.measured += 1
+            return _widest(_functions(_code(self.ctx, prepared)))[0]
+        return measure(env, WIDEST_NAME, subject, compute)
+
+    def within_parameter_limit(self, env, count, name, limit):
+        """Is that function's parameter count within the limit? Pure."""
+        self.judged += 1
+        return count.value <= limit.value
 
 
 # ----------------------------------------------------------------------
@@ -187,15 +218,27 @@ def _root(type_expression: str, data):
 # ----------------------------------------------------------------------
 
 
-def _functions(code: str) -> List[Tuple[str, int]]:
-    """(name, lines) for every function in this code, longest first."""
+def _functions(code: str) -> List[Tuple[str, int, int]]:
+    """(name, lines, parameters) for every function in this code."""
     tree = _parse(code)
     if tree is None:
         return []
-    found = [(node.name, (node.end_lineno or node.lineno) - node.lineno + 1)
-             for node in ast.walk(tree)
-             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    return sorted(found, key=lambda item: item[1], reverse=True)
+    return [(node.name, _body_lines(node), _parameters(node))
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _body_lines(node) -> int:
+    """How many lines the function's body spans, its `def` included."""
+    return (node.end_lineno or node.lineno) - node.lineno + 1
+
+
+def _parameters(node) -> int:
+    """Every named slot the function takes: positional, keyword-only, `*args`,
+    `**kwargs` — the width of its door."""
+    args = node.args
+    return (len(args.posonlyargs) + len(args.args) + len(args.kwonlyargs)
+            + (1 if args.vararg else 0) + (1 if args.kwarg else 0))
 
 
 def _parse(source: str):
@@ -205,9 +248,18 @@ def _parse(source: str):
         return None
 
 
-def _longest(found: List[Tuple[str, int]]) -> Tuple[str, int]:
-    return max(found, key=lambda item: item[1]) if found else ("", 0)
+def _longest(found: List[Tuple[str, int, int]]) -> Tuple[str, int]:
+    """The function with the most lines, or nothing if there is none."""
+    best = max(found, key=lambda item: item[1], default=("", 0, 0))
+    return best[0], best[1]
+
+
+def _widest(found: List[Tuple[str, int, int]]) -> Tuple[str, int]:
+    """The function with the most parameters, or nothing if there is none."""
+    best = max(found, key=lambda item: item[2], default=("", 0, 0))
+    return best[0], best[2]
 
 
 __all__ = ["MeetingOps", "REFERENCE_NAME", "REFERENCE_SNAPSHOT", "LINES_NAME",
-           "NAME_NAME", "LIMIT_NAME", "SCREEN_STREAM"]
+           "NAME_NAME", "LIMIT_NAME", "PARAMETERS_NAME", "WIDEST_NAME",
+           "PARAMETER_LIMIT_NAME", "SCREEN_STREAM"]

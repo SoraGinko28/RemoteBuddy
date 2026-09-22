@@ -1,29 +1,34 @@
 #!/usr/bin/env python3
-"""The meeting critic runs the second-order critic's first rule.
+"""The meeting critic runs the second-order critic's rules.
 
     .venv/bin/python critic_run.py
 
 One process, no fixtures:
 
 1. a real meeting is started in ``runs/`` by the harness's own writer. The
-   generator writes ``batch.py`` — a function runs past 15 lines — and the pane
-   shows it; later it shortens the function and the pane shows that too. Both
-   captures are what a terminal capture is: the command, the file it printed,
-   the prompt, and the parameters a frame needs (row count, width, cursor), all
-   checked by ``adt``'s own screen asserts;
+   generator edits ``batch.py`` in a real ``vi`` in the pane — it opens the
+   editor and types the file one line at a time, so what the pane shows is the
+   edit itself, and the frames of the edit are journaled as they happen. Three
+   versions go by, each one captured as a terminal capture is: the pane's own
+   text, its parameters (row count, width, cursor) and the moment, all checked
+   by ``adt``'s own screen asserts. The first version has a function running
+   past 15 lines, the second has a short function taking five parameters, the
+   third has neither fault;
 2. the critic takes the evidence for each moment it wants judged: a
    ``mc.ScreenReference`` — the moment as the design's datetime (one
    ``$microsecond``), the screen stream, and the region of the pane it read —
-   written into the store under that case's address. The rule is one file and
-   never changes: the case is material the critic hands in;
-3. the rule runs: ``prepare_run`` measures through the host (reading the meeting
-   is the one impure step, so it becomes a Prepare in the backup), then
+   written into the store under that case's address. The rules are two files
+   and never change: the case is material the critic hands in;
+3. each rule runs: ``prepare_run`` measures through the host (reading the
+   meeting is the one impure step, so it becomes a Prepare in the backup), then
    ``is_compliant`` replays that evidence and answers the verdict;
 4. the critic says so in the meeting: a chat message from ``critic`` naming the
-   function that broke the rule, its line count, and the pane it read.
+   rule, the function that broke it, the number it measured, and the pane it
+   read. The length rule objects to the first version, the parameter rule to
+   the second, and neither to the third — that is what a second rule buys.
 
-The rule is viba source; the host is ``underlying_viba_ops``, which reaches the
-meeting through ``meeting_sdk`` only and reads what it gets through
+The rules are viba source; the host is ``underlying_viba_ops``, which reaches
+the meeting through ``meeting_sdk`` only and reads what it gets through
 ``viba.reflect``.
 """
 
@@ -33,6 +38,7 @@ import datetime as dt
 import shutil
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 import meeting_adt as adt
 import meeting_core_reflect as reflect
@@ -50,6 +56,8 @@ from viba.type import Ok
 
 REPO = Path(__file__).resolve().parent
 RULE = REPO / "critic" / "function_length_le_15.viba"
+PARAMETER_RULE = REPO / "critic" / "parameter_count_le_4.viba"
+RULES = (RULE, PARAMETER_RULE)
 STORE = REPO / "critic" / "store"
 DESIGN = REPO / "critic" / "design"
 
@@ -80,6 +88,32 @@ def process_batch(path):
         kept.append({"id": row["id"], "amount": row["amount"]})
     if not kept:
         return {"count": 0, "total": 0}
+    return {"count": len(kept), "total": total(kept)}
+'''
+
+WIDE_CODE = '''import json
+
+
+def load_rows(path):
+    with open(path) as handle:
+        return json.load(handle)
+
+
+def total(rows):
+    return sum(row["amount"] for row in rows)
+
+
+def keep_row(row, low, high, allow_zero, strict):
+    amount = row.get("amount")
+    if amount is None:
+        return False
+    if strict and not allow_zero:
+        return low < amount < high
+    return low <= amount <= high
+
+
+def process_batch(path):
+    kept = [row for row in load_rows(path) if keep_row(row, 0, 100, False, True)]
     return {"count": len(kept), "total": total(kept)}
 '''
 
@@ -119,9 +153,9 @@ def start_meeting(root: Path, meeting_id: str, live: bool = True):
     (`workspace_capture.capture_workspace`) — plain text, ANSI segments, and the
     cursor and size the terminal reports, not numbers written down here.
 
-    The generator's turn is scripted (write the file, print it), but the session
-    is real: the workspace page can take the terminal over, and the frames are
-    what the terminal actually showed.
+    The generator's turn is scripted (edit the file in vi, print it), but the
+    session is real: the workspace page can take the terminal over, and the
+    frames are what the terminal actually showed.
     """
     # the harness only reads the skill text; it is kept out of the checkout
     skill = Path(tempfile.mkdtemp(prefix="critic-skill-")) / "SKILL.md"
@@ -145,13 +179,13 @@ def start_meeting(root: Path, meeting_id: str, live: bool = True):
         capture_workspace(store, transport)        # the opening frame
 
     captures = []
-    for code in (LONG_CODE, SHORT_CODE):
+    for code in (LONG_CODE, WIDE_CODE, SHORT_CODE):
         if live:
             # the generator edits in the terminal, and the pane shows it: the
             # frames of the edit are journaled as they happen, then the file is
             # printed for a clean look at what it now says
-            _type_file(pane_id, transport, "batch.py", code)
-            _capture(store, transport)
+            _edit_with_vi(pane_id, transport, "batch.py", code,
+                          lambda: _capture(store, transport))
             transport.send_keys(pane_id, "clear && cat batch.py")
             frame = _capture(store, transport)
             region = _region_of(frame, code)
@@ -165,15 +199,35 @@ def start_meeting(root: Path, meeting_id: str, live: bool = True):
     return store, captures, transport
 
 
-def _type_file(pane_id: str, transport, name: str, code: str) -> None:
-    """Write the file by typing it into the pane, the way a generator would."""
-    transport.send_keys(pane_id, f"cat > {name} <<'REMOTEBUDDY_EOF'")
-    for line in code.splitlines():
+def _edit_with_vi(pane_id: str, transport, name: str, code: str, look=None) -> None:
+    """Produce the file the way a generator would: in vi, one line at a time.
+
+    No heredoc and no `cat >`: the pane runs a real editor, and the file is what
+    the typing left behind. Whatever the file said before is taken out first
+    (`ggdG`), so each version is an edit of the file rather than an append to
+    it. There is no newline after the last line: the editor writes it.
+
+    ``look`` is called while the edit is on screen — mid-typing, and again once
+    the last line is down — so the frames that show the editing come from the
+    pane at the time it happened, still in insert mode, before anything is saved.
+    """
+    transport.send_keys(pane_id, f"vi {name}")       # a real editor, not a heredoc
+    transport.send_literal(pane_id, "ggdG")          # the old text goes
+    transport.send_literal(pane_id, "i")             # insert mode: typing is writing
+    lines = code.splitlines()
+    for index, line in enumerate(lines[:-1]):
         if line:
             transport.send_keys(pane_id, line)
         else:
-            transport.send_enter(pane_id)      # a blank line is an empty line
-    transport.send_keys(pane_id, "REMOTEBUDDY_EOF")
+            transport.send_enter(pane_id)            # a blank line is an empty line
+        if look is not None and index + 1 == len(lines) // 2:
+            look()                                   # the edit itself, mid-typing
+    if lines[-1]:
+        transport.send_literal(pane_id, lines[-1])   # the last line, no newline after it
+    if look is not None:
+        look()                                       # the whole file, still in the editor
+    transport.send_special(pane_id, "Escape")        # command mode: the file is what it says
+    transport.send_keys(pane_id, ":wq")              # save and quit
 
 
 def _capture(store, transport):
@@ -206,13 +260,31 @@ def _region_of(frame, code: str):
 # ----------------------------------------------------------------------
 
 
+class RuleReport(NamedTuple):
+    """How the critic words a rule's complaint, read off that rule's Prepares."""
+
+    value: str      # the Prepare holding the number the rule objected to
+    name: str       # the Prepare holding the function's name
+    wording: str    # `{value}` filled from those two; the limit stays in the rule
+
+
+# What to say when a rule objects: one entry per rule file, keyed by its name.
+RULE_REPORTS = {
+    "function_length_le_15": RuleReport(ops.LINES_NAME, ops.NAME_NAME,
+                                        "有 {value} 行，超过 15 行的上限"),
+    "parameter_count_le_4": RuleReport(ops.PARAMETERS_NAME, ops.WIDEST_NAME,
+                                       "有 {value} 个参数，超过 4 个参数的上限"),
+}
+
+
 def judge(store, screen, region, store_dir: Path, rule: Path = RULE):
-    """Judge one moment: the case is material the critic writes, not source.
+    """Judge one moment with one rule: the case is material the critic writes.
 
     The critic also says the verdict in the meeting when the rule objects — the
     complaint is a chat message from ``critic``, citing the pane it read.
     """
     uid = store.meeting.meeting_id
+    report = RULE_REPORTS[Path(rule).stem]
     microsecond = _captured_at(screen["captured_at"]).microsecond
     store_dir = Path(store_dir)
     if store_dir.exists():
@@ -234,8 +306,8 @@ def judge(store, screen, region, store_dir: Path, rule: Path = RULE):
                    _screen_reference_material(microsecond, region),
                    ops.REFERENCE_SNAPSHOT)
 
-    result = {"case": (microsecond, region), "complaint": None, "backup": backup,
-              "replayed_without_measuring": None}
+    result = {"rule": Path(rule).stem, "case": (microsecond, region), "complaint": None,
+              "backup": backup, "replayed_without_measuring": None}
     verdict = prepare_run(str(rule), environ)
     result["prepared"] = verdict
     result["measured"] = host.measured
@@ -251,10 +323,10 @@ def judge(store, screen, region, store_dir: Path, rule: Path = RULE):
 
     if isinstance(verdict, Ok) and verdict.ok_value is False:
         case_env = environ.sub_env(CASE_ENV)
-        name = _measured(read_prepare(case_env, ops.NAME_NAME))
-        lines = _measured(read_prepare(case_env, ops.LINES_NAME))
+        name = _measured(read_prepare(case_env, report.name))
+        value = _measured(read_prepare(case_env, report.value))
         result["complaint"] = (
-            f"规则 function_length_le_15 违规：{name} 有 {lines} 行，超过 15 行的上限。"
+            f"规则 {Path(rule).stem} 违规：{name} {report.wording.format(value=value)}。"
             f"地址：microsecond={microsecond} 的屏幕 region {region[0]}..{region[1]}（{uid}）。")
         cite(store, screen, result["complaint"])
     return result
@@ -302,25 +374,31 @@ def _captured_at(text: str):
 
 
 def main() -> int:
-    meeting_id = f"{dt.datetime.now():%Y%m%d-%H%M%S}-critic-rule-15"
+    meeting_id = f"{dt.datetime.now():%Y%m%d-%H%M%S}-critic-rules"
     store, captures, transport = start_meeting(REPO, meeting_id)
     print(f"meeting: {meeting_id}  ({store.run_dir})")
     _check_captures(store)
 
+    complaints = 0
     for screen, region in captures:
         microsecond = _captured_at(screen["captured_at"]).microsecond
-        result = judge(store, screen, region, STORE / str(microsecond))
-        print(f"\nmoment microsecond={microsecond}  region {region[0]}..{region[1]}")
-        print(f"  prepared: {result.get('prepared')!r}  "
-              f"measuring {result.get('measured')} time(s)")
-        print(f"  judged:   {result['verdict']!r}  "
-              f"({'replayed, no new measurement' if result['replayed_without_measuring'] else 'measured again'})"
-              f", compared {result.get('judged')}")
-        if result["complaint"]:
-            print(f"  critic: {result['complaint']}")
-        else:
-            print("  critic: 没有违规，不说话")
+        for rule in RULES:
+            result = judge(store, screen, region,
+                           STORE / f"{microsecond}-{rule.stem}", rule)
+            print(f"\nmoment microsecond={microsecond}  region {region[0]}..{region[1]}"
+                  f"  rule {result['rule']}")
+            print(f"  prepared: {result.get('prepared')!r}  "
+                  f"measuring {result.get('measured')} time(s)")
+            print(f"  judged:   {result['verdict']!r}  "
+                  f"({'replayed, no new measurement' if result['replayed_without_measuring'] else 'measured again'})"
+                  f", compared {result.get('judged')}")
+            if result["complaint"]:
+                complaints += 1
+                print(f"  critic: {result['complaint']}")
+            else:
+                print("  critic: 没有违规，不说话")
 
+    print(f"\n{len(captures)} 个时刻 × {len(RULES)} 条规则 → {complaints} 次发言")
     print()
     print((store.run_dir / "conversation.md").read_text(encoding="utf-8").strip())
     print()
