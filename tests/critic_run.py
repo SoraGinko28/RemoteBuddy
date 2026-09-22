@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """The meeting critic runs the second-order critic's rules.
 
-    .venv/bin/python critic_run.py
+    .venv/bin/python -m tests.critic_run
+
+This is a demo of the rule layer, not part of the product: it lives under
+``tests/``, next to the rule files it uses (``tests/critic/``).
 
 One process, no fixtures:
 
@@ -27,6 +30,14 @@ One process, no fixtures:
    read. The length rule objects to the first version, the parameter rule to
    the second, and neither to the third — that is what a second rule buys.
 
+Honest about its own limits: the *speaking* here is scripted. The demo writes
+that chat message itself, under the critic's name, from the rule's Prepares
+(``judge``/``cite``); the generator's three versions are constants too. What is
+not scripted is the rule, the measurement and the verdict — those are the
+product's own layers (``viba.compliance``, ``meeting_sdk``, ``viba.reflect``).
+The participant that would read the meeting and decide to speak for real is
+``meeting_reviewer``/``discriminator_harness``, and this demo does not use it.
+
 The rules are viba source; the host is ``underlying_viba_ops``, which reaches
 the meeting through ``meeting_sdk`` only and reads what it gets through
 ``viba.reflect``.
@@ -45,7 +56,7 @@ import meeting_core_reflect as reflect
 import meeting_loader
 import meeting_v2 as m2
 import references
-import underlying_viba_ops as ops
+from tests import underlying_viba_ops as ops
 from tmux_transport import TmuxTransport
 from workspace_capture import capture_stable_workspace, capture_workspace
 from viba import viba_ast
@@ -54,12 +65,13 @@ from viba.compliance import (PreparedStorage, is_compliant, measured_of,
 from viba.interpret import Environment, EnvironmentCompute, write_snapshot
 from viba.type import Ok
 
-REPO = Path(__file__).resolve().parent
-RULE = REPO / "critic" / "function_length_le_15.viba"
-PARAMETER_RULE = REPO / "critic" / "parameter_count_le_4.viba"
+HERE = Path(__file__).resolve().parent            # tests/
+REPO = HERE.parent                                # the checkout
+RULE = HERE / "critic" / "function_length_le_15.viba"
+PARAMETER_RULE = HERE / "critic" / "parameter_count_le_4.viba"
 RULES = (RULE, PARAMETER_RULE)
-STORE = REPO / "critic" / "store"
-DESIGN = REPO / "critic" / "design"
+STORE = HERE / "critic" / "store"
+DESIGN = HERE / "critic" / "design"
 
 LONG_CODE = '''import json
 
@@ -280,8 +292,9 @@ RULE_REPORTS = {
 def judge(store, screen, region, store_dir: Path, rule: Path = RULE):
     """Judge one moment with one rule: the case is material the critic writes.
 
-    The critic also says the verdict in the meeting when the rule objects — the
-    complaint is a chat message from ``critic``, citing the pane it read.
+    When the rule objects, the demo also says so in the meeting — a chat message
+    written here, under ``critic``'s name, citing the pane it read. The saying is
+    scripted (see the module docstring); the verdict is not.
     """
     uid = store.meeting.meeting_id
     report = RULE_REPORTS[Path(rule).stem]
@@ -356,7 +369,12 @@ def _measured(prepare):
 
 
 def cite(store, screen, complaint: str):
-    """The critic says it in the meeting, citing the pane it read."""
+    """The demo puts the complaint in the meeting under ``critic``'s name.
+
+    A scripted participant, not a model: it appends the chat message straight to
+    the journal, with a screen reference to the pane the rule's evidence came
+    from. A real reviewer would take this turn itself.
+    """
     content = screen.get("content") or ""
     reference = references.reference_from_event(
         screen, {"kind": "screen", "event_id": screen["event_id"],

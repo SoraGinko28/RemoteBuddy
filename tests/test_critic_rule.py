@@ -1,11 +1,14 @@
 """The second-order critic's rules, run over a real meeting.
 
-The rules are `critic/function_length_le_15.viba` and
-`critic/parameter_count_le_4.viba`, the host is `underlying_viba_ops`, and the
-critic is the meeting's ``critic`` participant. Each rule judges every moment
-the critic hands in — the case is material the critic writes into the store, not
-source baked into the rule — and these cases pin the verdicts, the complaint,
-the replay, the way the file gets written, and the two constraints on the host.
+A demo of the rule layer, under ``tests/`` with the demo and the rules it uses
+(``tests/critic_run.py``, ``tests/critic/``). The rules are
+`tests/critic/function_length_le_15.viba` and
+`tests/critic/parameter_count_le_4.viba`, the host is
+`tests/underlying_viba_ops.py`, and the ``critic`` who speaks is scripted — the
+demo writes that chat message itself. Each rule judges every moment the critic
+hands in — the case is material the critic writes into the store, not source
+baked into the rule — and these cases pin the verdicts, the complaint, the
+replay, the way the file gets written, and the two constraints on the host.
 """
 
 from __future__ import annotations
@@ -13,14 +16,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import critic_run
 import meeting_adt as adt
 import meeting_loader
 import meeting_v2 as m2
-import underlying_viba_ops as ops
+from tests import critic_run
+from tests import underlying_viba_ops as ops
 from viba.type import Ok
-
-REPO = Path(__file__).resolve().parent.parent
 
 
 def _meeting(tmp_path: Path, name: str):
@@ -197,8 +198,8 @@ class _Recorder:
 
 
 def test_the_ops_reach_data_through_meeting_sdk_only() -> None:
-    """What `underlying_viba_ops` may import and call, read off its own source."""
-    tree = ast.parse((REPO / "underlying_viba_ops.py").read_text(encoding="utf-8"))
+    """What the host may import and call, read off its own source."""
+    tree = ast.parse(Path(ops.__file__).read_text(encoding="utf-8"))
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
