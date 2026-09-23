@@ -2,7 +2,7 @@
 Claude Code process and never touches the shared terminal.
 
 Why separate from InteractiveRunner: the runner's loop is written for the
-generator that OWNS the terminal (it gates on ``control_owner == its name``
+actor that OWNS the terminal (it gates on ``control_owner == its name``
 and drives tmux actions). A discriminator must not hold or act on the
 terminal; this module is a deliberately small, chat-only sibling that:
 
@@ -11,10 +11,10 @@ terminal; this module is a deliberately small, chat-only sibling that:
 - is allowed to emit only ``chat`` / ``done`` actions (no terminal action
   types are ever accepted),
 - appends its final comment to the journal under its own agent name,
-- restores the meeting to ``waiting_for_user`` so the generator can run next.
+- restores the meeting to ``waiting_for_user`` so the actor can run next.
 
 Single-writer rule: callers only summon a reviewer while the meeting is idle
-(no generator turn in flight, no human takeover), so the shared phase field
+(no actor turn in flight, no human takeover), so the shared phase field
 is never written by two agents at once.
 """
 

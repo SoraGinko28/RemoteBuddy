@@ -34,7 +34,8 @@ from viba.type import Ok
 
 REPO = Path(__file__).resolve().parent
 RULES = (REPO / "critic" / "function_length_le_15.viba",
-         REPO / "critic" / "parameter_count_le_4.viba")
+         REPO / "critic" / "parameter_count_le_4.viba",
+         REPO / "critic" / "statements_per_line_le_1.viba")
 DESIGN = REPO / "critic" / "design"     # generated from meeting_core_reflect
 
 # The case's environment, as the rules declare it: its path is the case's
@@ -54,18 +55,23 @@ class RuleWording(NamedTuple):
     """One rule in words: what it is about, and how to say what it answered."""
 
     title: str      # what the rule is about, for whoever quotes the verdict
+    offender: str   # what the rule names its offender as: a function, or a line
     value: str      # the Prepare holding the number the rule objected to
-    name: str       # the Prepare holding the function's name
+    name: str       # the Prepare holding the name of that offender
     wording: str    # `{value}` filled in from those two; the limit stays in the rule
 
 
 RULE_WORDINGS = {
     "function_length_le_15": RuleWording(
-        "no function may run past 15 lines",
+        "no function may run past 15 lines", "函数",
         ops.LINES_NAME, ops.NAME_NAME, "有 {value} 行，超过 15 行的上限"),
     "parameter_count_le_4": RuleWording(
-        "no function may take more than 4 parameters",
+        "no function may take more than 4 parameters", "函数",
         ops.PARAMETERS_NAME, ops.WIDEST_NAME, "有 {value} 个参数，超过 4 个参数的上限"),
+    "statements_per_line_le_1": RuleWording(
+        "no line may put several statements on it with `;`", "位置",
+        ops.FOLDED_NAME, ops.WORST_FOLDED_NAME,
+        "把 {value} 条语句用 ; 压在一行里，每行只允许一条"),
 }
 
 
@@ -123,9 +129,10 @@ def judge_moment(store, screen, region, store_dir, rule: Path) -> Dict[str, Any]
         case_env = environ.sub_env(CASE_ENV)
         name = measured_value(read_prepare(case_env, wording.name))
         value = measured_value(read_prepare(case_env, wording.value))
-        # Which function and which number, kept as data: the meeting records the
-        # offender next to the rule, not only inside a sentence.
-        result["offender"] = {"function": name, "value": value}
+        # Who and how much, kept as data: the meeting records the offender next
+        # to the rule, not only inside a sentence. For a line rule the offender
+        # is a line, not a function — the wording says which it is.
+        result["offender"] = {"name": name, "value": value}
         result["complaint"] = (f"规则 {Path(rule).stem} 违规：{name} "
                               f"{wording.wording.format(value=value)}。")
     return result
@@ -249,7 +256,7 @@ def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
                             "region": list(region)},
                   "citation": frame_reference(screen, region),
                   "rules": [{"rule": result["rule"], "verdict": verdict_word(result),
-                             "function": (result.get("offender") or {}).get("function"),
+                             "offender": (result.get("offender") or {}).get("name"),
                              "complaint": result.get("complaint")} for result in results]}
         return _section(screen, region, results), report
     return (_NO_CODE_SECTION, {"frame": None, "citation": None, "rules": []})
@@ -292,10 +299,11 @@ def _section(screen, region, results) -> str:
             line += f" — {result['complaint']}"
         lines.append(line)
     offenders = [result for result in results
-                 if (result.get("offender") or {}).get("function")]
+                 if (result.get("offender") or {}).get("name")]
     if offenders:
-        named = "；".join(f"规则 {result['rule']} 违规，函数 {result['offender']['function']}"
-                          for result in offenders)
+        named = "；".join(
+            f"规则 {result['rule']} 违规，{RULE_WORDINGS[result['rule']].offender} "
+            f"{result['offender']['name']}" for result in offenders)
         lines.append(f"你必须在回复里点名：{named}（照抄上面的名字，不要改写）。")
     else:
         lines.append("没有规则被违反：直说没有违规，不要自己另外找毛病。")

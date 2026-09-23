@@ -60,12 +60,12 @@ def is_human(user_name: str) -> bool:
     return user_name == HUMAN_USER_NAME
 
 
-# AgentRole = Oneof | $generator | $active_discriminator | $passive_discriminator
+# AgentRole = Oneof | $actor | $active_discriminator | $critic
 # Storage/JSON representation: enum name -> "$"-prefixed string, one-to-one with the role map JSON.
 class AgentRole(Enum):
-    GENERATOR = "$generator"
+    ACTOR = "$actor"
     ACTIVE_DISCRIMINATOR = "$active_discriminator"
-    PASSIVE_DISCRIMINATOR = "$passive_discriminator"
+    CRITIC = "$critic"
 
 
 def agent_role_from_name(role_name: str) -> AgentRole:
@@ -679,7 +679,7 @@ __all__ += [
 #   * $time datetime
 #   * $reference ContentReference
 #   * Appendix[{
-#       summon_chained = role($judge_name) != $passive_discriminator
+#       summon_chained = role($judge_name) != $critic
 #                         or the message's $reference resolves to a message that summoned it
 #     }]
 #   * Assert[{ summon_chained }]
@@ -760,8 +760,8 @@ def score_summon_chained(message: ScoreMessage,
     passive check: chained only when the reference resolves to a summoning message that mentions @judge.
     """
     role = role_of(message.judge_name) if callable(role_of) else None
-    if role != AgentRole.PASSIVE_DISCRIMINATOR:
-        return True  # generator / active / non-agent (e.g. human) never needs a summon
+    if role != AgentRole.CRITIC:
+        return True  # actor / active / non-agent (e.g. human) never needs a summon
     if referenced_message is None:
         return False
     mention = getattr(referenced_message, "message", None)
@@ -808,7 +808,7 @@ __all__ += [
 #   * $tmux_pane int
 #   * $user_name UserName
 #   * $start_time datetime
-#   * Assert[{ user_name == $human or role(user_name)==$generator }]   # terminal_capable
+#   * Assert[{ user_name == $human or role(user_name)==$actor }]   # terminal_capable
 #   * Appendix[{ owner_at(t) = the user_name of the control interval containing t; intervals are delimited by start_time }]
 #   * Assert[{ ∀ keystroke k: owner_at(k.stroke_time) == k.user_name }]
 #
@@ -947,15 +947,15 @@ def owner_at(moment: _dt.datetime,
 
 
 def terminal_capable(user_name: str, role_of: object) -> bool:
-    """terminal_capable = { $human() } ∪ { a | role(a)==$generator }"""
+    """terminal_capable = { $human() } ∪ { a | role(a)==$actor }"""
     if is_human(user_name):
         return True
     role = role_of(user_name) if callable(role_of) else None
-    return role == AgentRole.GENERATOR
+    return role == AgentRole.ACTOR
 
 
 def assert_terminal_control_capable(control: TerminalControl, role_of: object) -> None:
-    """Assert[{ user_name == $human or role==$generator }]"""
+    """Assert[{ user_name == $human or role==$actor }]"""
     if not terminal_capable(control.user_name, role_of):
         raise AssertionError(
             f"terminal_control owner {control.user_name!r} not terminal_capable "
@@ -1569,7 +1569,7 @@ __all__ += [
 #   - agent_name2role only grows: added on join, fixed once frozen; never modified in place.
 #   - Frozen = the meeting record is read-only; increments only append to events.jsonl.
 #   - Manifest JSON (stream chunks are told apart by stream_name):
-#     {"meeting_uid":..., "meeting_name":..., "agent_name2role":{name: "$generator"...},
+#     {"meeting_uid":..., "meeting_name":..., "agent_name2role":{name: "$actor"...},
 #      "sorted_stream_chunks":[{stream_name:"screen",...}|{stream_name:"chat",...}|...]}
 
 @dataclass

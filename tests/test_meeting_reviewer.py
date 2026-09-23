@@ -59,7 +59,7 @@ def multi_store(tmp_path):
     return m2.MeetingStore.create(
         tmp_path, "meeting-review", "please build hello world", SKILL,
         "s", model="deepseek-v4-flash",
-        agent_name2role={"agent": "generator", "critic": "passive_discriminator"},
+        agent_name2role={"agent": "actor", "critic": "critic"},
     )
 
 
@@ -76,7 +76,7 @@ class TestReviewerTurn:
         assert multi_store.meeting.phase == "waiting_for_user"
         assert multi_store.meeting.control_owner == "none"
 
-    def test_generator_is_never_the_reviewer_actor(self, multi_store) -> None:
+    def test_actor_is_never_the_reviewer_actor(self, multi_store) -> None:
         client = FakeClient([("done", "noted", "final")])
         reviewer.run_reviewer_turn(multi_store, client, "agent")
         chats = [e for e in multi_store.events() if e["kind"] == "chat"]

@@ -1,0 +1,67 @@
+# 二阶 critic 的第三条规则：一行里最多一条语句，不许用 ; 把多条折成一行。
+#
+# 和前面两条一样，规则是一个程序：environ 进、bool 出。它不认任何一场会议、任何一个时刻——
+# 案子是低阶 critic 交进来的材料（一条 mc.ScreenReference：哪一刻、哪个流、屏幕上哪一段），
+# 读它的地址由批判者选。所以同一条规则可以判任何一刻。
+#
+# 前两条看的是函数的长度和门面的宽度，这一条看的是行：把好几条语句用 ; 压进一行，
+# 读的人得自己在一行里找出语句边界，diff 也说不清改了哪一句。三件事互不相干，
+# 所以同一个时刻可能只犯其中一条——加一条规则，就是多一种能发现的东西。
+#
+# 读会议是唯一不纯的一步，走 measure：答案存成这个案子的 Prepare，此后每次判定直接回放。
+# 每条调用只给一个环境，而且给的是案子的环境——证据就落在案子的地址下面。
+
+import meeting_core as mc
+
+# 这次判定的案子：低阶 critic 呈上来的屏幕引用放在这条子环境下面，规则从那儿读
+subject_env = environ.sub_env << "screen_reference_under_judgment"
+
+cited_screen_reference =
+    mc.ScreenReference
+    <- $env Environment
+    <- {
+        低阶 critic 呈上来的那条屏幕引用：哪一刻、哪个流、屏幕上哪一段
+    }
+
+max_folded_statements =
+    int
+    <- $env Environment
+    <- $subject mc.ScreenReference
+    <- {
+        这份材料里被 ; 折得最狠的那一行，一共压了几条语句
+    }
+
+worst_folded_line =
+    str
+    <- $env Environment
+    <- $subject mc.ScreenReference
+    <- {
+        折得最狠的是哪一行、在哪个函数里：问句里要指名道姓
+    }
+
+within_fold_limit =
+    bool
+    <- $env Environment
+    <- $count int
+    <- $name str
+    <- $limit int
+    <- {
+        这一行有没有超过每行一条语句的上限
+    }
+
+# 这次判定的主体：批判者呈上来的那条引用
+the_subject = cited_screen_reference << $env subject_env
+
+# 测量：读会议、找出折得最狠的那一行
+most_folded = max_folded_statements << $env subject_env << $subject the_subject
+
+worst = worst_folded_line << $env subject_env << $subject the_subject
+
+# 规则的判断：门槛是规则自己给的，换个门槛写的还是同一个函数
+limit = 1
+
+__ret__ = within_fold_limit
+    << $env subject_env
+    << $count most_folded
+    << $name worst
+    << $limit limit

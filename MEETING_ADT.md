@@ -36,7 +36,7 @@ MeetingData =
   * Assert[{ keys($agent_name2role) ⊆ user_names(this record) }]
   * Hint[{
       reply reminder: ∀ chat message m in the chat stream, if m carries
-                 $at_user_name == P and role(P) == $passive_discriminator,
+                 $at_user_name == P and role(P) == $critic,
                  then ∃ a later record r (a chat or score produced by P)
                    : r carries an mc.ContentReference that resolves to m
     }]
@@ -175,12 +175,12 @@ TerminalControl =
       user_name is absent, or user_name ∈ participants(user_names(MeetingData))
     }]
   * Appendix[{
-      terminal_capable = { $human nil } ∪ { a | role(a) == $generator }   # role looks up the meeting's agent_name2role
+      terminal_capable = { $human nil } ∪ { a | role(a) == $actor }   # role looks up the meeting's agent_name2role
     }]
   * Assert[{
         user_name is absent, or
         user_name == $human nil, or
-        the role of user_name's agent == $generator
+        the role of user_name's agent == $actor
     }]
 
 ScreenCapture =
@@ -241,9 +241,9 @@ Result[T] =
 
 AgentRole =
     Oneof
-  | $generator nil                      # holds the terminal
+  | $actor nil                          # holds the terminal
   | $active_discriminator nil           # comments at will
-  | $passive_discriminator nil          # comments when summoned
+  | $critic nil                         # comments when summoned
 
 UserName =
     Oneof
@@ -348,7 +348,7 @@ ScoreMessage =
   * $time datetime
   * $reference ContentReference
   * Appendix[{
-      summon_chained = role($judge_name) != $passive_discriminator
+      summon_chained = role($judge_name) != $critic
                         ∨ this message's $reference resolves to a message that
                           summoned it
     }]

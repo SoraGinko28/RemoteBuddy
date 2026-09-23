@@ -43,7 +43,7 @@ class TestReportBasics:
         chunk = adt.ScreenStreamChunk(owner_user_name="alice",
                                       chunks=[_valid_screen()])
         meeting = _meeting([chunk])
-        meeting.agent_name2role = {"alice": adt.AgentRole.GENERATOR}
+        meeting.agent_name2role = {"alice": adt.AgentRole.ACTOR}
         report = validator.validate_meeting_data(meeting)
         assert report.ok, report.violations
 
@@ -57,7 +57,7 @@ class TestScreenAsserts:
     def _report_for(self, capture: adt.ScreenCapture, owner: str = "alice"):
         chunk = adt.ScreenStreamChunk(owner_user_name=owner, chunks=[capture])
         meeting = _meeting([chunk])
-        meeting.agent_name2role = {"alice": adt.AgentRole.GENERATOR}
+        meeting.agent_name2role = {"alice": adt.AgentRole.ACTOR}
         return validator.validate_meeting_data(meeting)
 
     def test_plain_mismatch_recorded(self) -> None:
@@ -110,7 +110,7 @@ class TestScreenAsserts:
         bad2 = _valid_screen(text="xyz", width=2, moment=_later(2))
         chunk = adt.ScreenStreamChunk(owner_user_name="alice", chunks=[bad1, bad2])
         meeting = _meeting([chunk])
-        meeting.agent_name2role = {"alice": adt.AgentRole.GENERATOR}
+        meeting.agent_name2role = {"alice": adt.AgentRole.ACTOR}
         report = validator.validate_meeting_data(meeting)
         assert report.by_assert()["row_widths_fit"] == 2
 
@@ -123,7 +123,7 @@ class TestTerminalControl:
         chunk = adt.TerminalControlStreamChunk(chunks=[
             adt.TerminalControl(user_name="pas", start_time=_now())])
         meeting = _meeting([chunk])
-        meeting.agent_name2role = {"pas": adt.AgentRole.PASSIVE_DISCRIMINATOR}
+        meeting.agent_name2role = {"pas": adt.AgentRole.CRITIC}
         report = validator.validate_meeting_data(meeting)
         assert "terminal_control_capable" in report.by_assert()
 
@@ -149,21 +149,21 @@ class TestScoreSummon:
         return meeting
 
     def test_passive_without_summon_flagged(self) -> None:
-        roles = {"pas": adt.AgentRole.PASSIVE_DISCRIMINATOR}
+        roles = {"pas": adt.AgentRole.CRITIC}
         score_chunk = adt.ScoreStreamChunk(chunks=[self._score("pas")])
         meeting = self._meeting_with([score_chunk], roles)
         report = validator.validate_meeting_data(meeting)
         assert "score_summon_chained" in report.by_assert()
 
-    def test_generator_score_never_flagged(self) -> None:
-        roles = {"gen": adt.AgentRole.GENERATOR}
+    def test_actor_score_never_flagged(self) -> None:
+        roles = {"gen": adt.AgentRole.ACTOR}
         score_chunk = adt.ScoreStreamChunk(chunks=[self._score("gen")])
         meeting = self._meeting_with([score_chunk], roles)
         report = validator.validate_meeting_data(meeting)
         assert report.ok, report.violations
 
     def test_passive_summoned_by_chat_reference_ok(self) -> None:
-        roles = {"pas": adt.AgentRole.PASSIVE_DISCRIMINATOR}
+        roles = {"pas": adt.AgentRole.CRITIC}
         chat = self._chat_with_mention("pas")
         ref = adt.ChatReference(msg_time=chat.time, user_name=chat.user_name,
                                 region=adt.TextRegion(0, 1))
@@ -176,7 +176,7 @@ class TestScoreSummon:
         assert report.ok, report.violations
 
     def test_passive_ref_missing_from_stream_flagged(self) -> None:
-        roles = {"pas": adt.AgentRole.PASSIVE_DISCRIMINATOR}
+        roles = {"pas": adt.AgentRole.CRITIC}
         ref = adt.ChatReference(msg_time=_later(2), user_name="nobody",
                                 region=adt.TextRegion(0, 1))
         score_chunk = adt.ScoreStreamChunk(chunks=[self._score("pas", ref)])
@@ -190,8 +190,8 @@ class TestMeetingLevel:
         chunk = adt.ScreenStreamChunk(owner_user_name="alice",
                                       chunks=[_valid_screen()])
         meeting = _meeting([chunk])
-        meeting.agent_name2role = {"alice": adt.AgentRole.GENERATOR,
-                                   "ghost": adt.AgentRole.GENERATOR}
+        meeting.agent_name2role = {"alice": adt.AgentRole.ACTOR,
+                                   "ghost": adt.AgentRole.ACTOR}
         report = validator.validate_meeting_data(meeting)
         assert "role_map_keys_in_user_names" in report.by_assert()
 

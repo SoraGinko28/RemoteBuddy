@@ -160,14 +160,14 @@ class TestMapping:
         assert all(not isinstance(c, adt.TerminalControlStreamChunk)
                    for c in meeting.sorted_stream_chunks)
 
-    def test_role_map_infers_generator_for_agents_only(self, tmp_path) -> None:
+    def test_role_map_infers_actor_for_agents_only(self, tmp_path) -> None:
         events = [
             _ev(1, "chat", "2026-09-02T07:35:37.684Z", content="hi", actor="human"),
             _ev(2, "chat", "2026-09-02T07:35:38.000Z", content="ok", actor="agent"),
         ]
         run_dir = _write_run(tmp_path, events)
         meeting, _ = loader.load_meeting_data_from_run(run_dir)
-        assert meeting.agent_name2role == {"agent": adt.AgentRole.GENERATOR}
+        assert meeting.agent_name2role == {"agent": adt.AgentRole.ACTOR}
 
     def test_role_map_assert_holds_on_loaded_data(self, tmp_path) -> None:
         events = [

@@ -14,7 +14,7 @@ def _store(tmp_path) -> m2.MeetingStore:
     return m2.MeetingStore.create(
         tmp_path, "meeting-obs", "build hello world", SKILL, "s",
         model="deepseek-v4-flash",
-        agent_name2role={"actor": "generator", "critic": "passive_discriminator"},
+        agent_name2role={"actor": "actor", "critic": "critic"},
     )
 
 
@@ -124,8 +124,8 @@ class TestRuleCheck:
         assert len(filed) == 1
         assert filed[0]["actor"] == "critic"
         check = filed[0]["data"]["rule_check"]
-        assert [rule["verdict"] for rule in check["rules"]] == ["VIOLATED", "holds"]
-        assert check["rules"][0]["function"] == "process_batch"
+        assert [rule["verdict"] for rule in check["rules"]] == ["VIOLATED", "holds", "holds"]
+        assert check["rules"][0]["offender"] == "process_batch"
 
         # The reply cites the frame it was judged on: that event, that region.
         comments = [event for event in store.events()
