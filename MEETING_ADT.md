@@ -242,7 +242,7 @@ Result[T] =
 AgentRole =
     Oneof
   | $actor nil                          # holds the terminal
-  | $active_discriminator nil           # comments at will
+  | $assistant nil                      # comments at will
   | $critic nil                         # comments when summoned
 
 UserName =

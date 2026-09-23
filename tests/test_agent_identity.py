@@ -35,12 +35,12 @@ class TestDefaults:
         # human @-mentions it, so a second member costs nothing up front.
         assert store.meeting.agent_name2role == {
             m2.DEFAULT_AGENT_NAME: "actor",
-            m2.DEFAULT_DISCRIMINATOR_NAME: "critic",
+            m2.DEFAULT_REVIEWER_NAME: "critic",
         }
 
     def test_helpers_see_default_team(self, store) -> None:
         assert store.meeting.agent_names() == {m2.DEFAULT_AGENT_NAME,
-                                               m2.DEFAULT_DISCRIMINATOR_NAME}
+                                               m2.DEFAULT_REVIEWER_NAME}
         assert store.meeting.role_of("actor") == "actor"
         assert store.meeting.role_of("critic") == "critic"
         assert store.meeting.is_agent_name("actor")
@@ -89,7 +89,7 @@ class TestNamedControlOwner:
 
 class TestMentions:
     def test_mentions_only_role_members_in_order(self) -> None:
-        roles = {"actor": "actor", "critic": "active_discriminator"}
+        roles = {"actor": "actor", "critic": "assistant"}
         assert m2.mentioned_agent_names("@critic please look", roles) == ["critic"]
 
     def test_unknown_and_human_ignored(self) -> None:
@@ -114,7 +114,7 @@ class TestMentions:
 
 class TestExplicitRoles:
     def test_multi_agent_roles_roundtrip(self, tmp_path) -> None:
-        roles = {"coder": "actor", "critic": "active_discriminator",
+        roles = {"coder": "actor", "critic": "assistant",
                  "sparring": "critic"}
         store = m2.MeetingStore.create(tmp_path, "meeting-multi", "hi", SKILL,
                                        "s", model="m", agent_backend="responses",
@@ -145,7 +145,7 @@ class TestValidation:
         {"": "actor"},
         {"a": "root"},
         {"a": "actor", "b": 3},
-        {"only_critic": "active_discriminator"},  # no actor
+        {"only_critic": "assistant"},  # no actor
         {"only_passive": "critic"},
     ])
     def test_invalid_role_maps_rejected(self, bad) -> None:
@@ -191,8 +191,8 @@ class TestAppendMembership:
         assert controls[-1]["data"]["tmux_window_name"] == store.meeting.session_name
         assert controls[-1]["data"]["start_time"]
 
-    def test_terminal_control_rejects_discriminator_or_stranger(self, store) -> None:
-        store.add_agent_role("auditor", "active_discriminator")
+    def test_terminal_control_rejects_reviewer_or_stranger(self, store) -> None:
+        store.add_agent_role("auditor", "assistant")
         with pytest.raises(m2.MeetingError, match="human or the actor"):
             store.note_terminal_control("auditor")
         with pytest.raises(m2.MeetingError, match="human or the actor"):
@@ -218,7 +218,7 @@ class TestJoinAgent:
     def test_role_change_rejected(self, store) -> None:
         store.add_agent_role("critic", "critic")
         with pytest.raises(m2.MeetingError, match="immutable"):
-            store.add_agent_role("critic", "active_discriminator")
+            store.add_agent_role("critic", "assistant")
 
     def test_join_human_or_bad_role_rejected(self, store) -> None:
         with pytest.raises(m2.MeetingError, match="reserved"):

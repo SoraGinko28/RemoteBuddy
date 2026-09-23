@@ -42,8 +42,8 @@ VALID_OWNERS = {"agent", "human", "none"}
 # Agent roles follow the Meeting ADT (agent_name2role). "human" is reserved
 # and never appears as an agent name. A meeting always has exactly one
 # actor agent that owns the shared terminal (multi-agent slices keep
-# this invariant; additional agents join as discriminators).
-VALID_AGENT_ROLES = {"actor", "active_discriminator", "critic"}
+# this invariant; additional agents join as reviewers).
+VALID_AGENT_ROLES = {"actor", "assistant", "critic"}
 HUMAN_USER = "human"
 
 
@@ -87,10 +87,10 @@ DEFAULT_AGENT_NAME = "actor"
 # A new meeting already has its reviewer on the member list. The reviewer is
 # lazy (it only runs when the human @-mentions it) and can never own the shared
 # terminal, so the second participant costs nothing until it is asked for.
-DEFAULT_DISCRIMINATOR_NAME = "critic"
+DEFAULT_REVIEWER_NAME = "critic"
 DEFAULT_AGENT_ROLE_MAP = {
     DEFAULT_AGENT_NAME: "actor",
-    DEFAULT_DISCRIMINATOR_NAME: "critic",
+    DEFAULT_REVIEWER_NAME: "critic",
 }
 # Pre-identity manifests recorded the lone agent as "agent"; loading them
 # keeps that exact name so historical records stay coherent.
@@ -862,7 +862,7 @@ class MeetingStore:
         so the Agent-visible journal shape does not grow new kinds.
         """
         # ADT terminal_capable: only the human or the actor agent may own
-        # the shared pane; discriminators never hold the terminal.
+        # the shared pane; reviewers never hold the terminal.
         if user_name is not None and not (
             user_name == HUMAN_USER or self.meeting.role_of(user_name) == "actor"
         ):
