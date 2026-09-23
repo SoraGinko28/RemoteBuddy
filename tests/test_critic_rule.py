@@ -230,6 +230,33 @@ def test_the_critic_finds_the_code_on_the_screen() -> None:
     assert critic_rules.code_region("$ ls -la\ntotal 0\n$ ") is None
 
 
+def test_the_edit_is_judged_before_the_screen_that_printed_it(tmp_path) -> None:
+    """The rules are about the edit: when the code is still on an editor frame,
+    that frame is judged — a newer frame that printed the file next to a test
+    run's output is not where the problem is, even though the code is on it."""
+    store, _captures = _meeting(tmp_path, "first-scene")
+    code = critic_run.SHORT_CODE
+
+    def append(pane, command):
+        rows = [row.rstrip(" ") for row in pane.split("\n")]
+        return store.append_screen(pane, command, str(store.workspace_path),
+                                   metadata={"pane_width": max(adt.cell_width(r) for r in rows) + 1,
+                                             "pane_height": len(rows),
+                                             "cursor_x": 0, "cursor_y": len(rows) - 1})
+
+    editor = append(code + "\n" + "\n".join("~" for _ in range(6)) + "\n-- INSERT --",
+                    "vim quicksort.py")
+    printed = append("$ cat -n quicksort.py\n" + code + "\n$ python3 quicksort.py\n"
+                     "[1, 2, 3] [1, 2, 3]\n$ ", "cat -n quicksort.py")
+
+    _section, report = critic_rules.review(store, store_dir=tmp_path / "store")
+
+    assert report["frame"]["event_id"] == editor["event_id"]
+    assert report["frame"]["event_id"] != printed["event_id"]
+    assert report["citation"]["event_id"] == editor["event_id"]
+    assert report["citation"]["excerpt"].startswith("import json")
+
+
 def test_the_rule_check_reads_the_newest_screen_that_shows_python(tmp_path) -> None:
     """What a real critic is handed before it speaks: the rules' verdicts, with
     the frame they were run over. The newest frame here is a bare prompt, so the

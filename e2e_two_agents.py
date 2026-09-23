@@ -177,6 +177,9 @@ def main() -> int:
                         help="what the actor is asked to do")
     parser.add_argument("--join", default=None,
                         help="skip phase 1 and review this existing meeting id")
+    parser.add_argument("--wait-verify", type=float, default=0.0,
+                        help="after the actor answers, wait this long for the "
+                             "critic to look at that answer again")
     parser.add_argument("--wait-answer", type=float, default=0.0,
                         help="after the critic speaks, wait this long for the actor "
                              "to answer it (the assistant reminds it to)")
@@ -241,6 +244,22 @@ def main() -> int:
                             "the actor to answer the critic")
             summary["actor_answer"] = answers[-1]["content"][:160]
             print("actor answered:", answers[-1]["content"][:80], flush=True)
+
+            # Phase 4 (optional): the answer has to be looked at again — the
+            # assistant is the one that makes sure the critic does.
+            if options.wait_verify:
+                answered_at = answers[-1].get("captured_at") or ""
+
+                def verified() -> list:
+                    again = [e for e in live.events()
+                             if e.get("kind") == "chat" and e.get("actor") == "critic"
+                             and (e.get("captured_at") or "") > answered_at]
+                    return again or None
+
+                checks = _wait(verified, options.wait_verify,
+                               "the critic to look at the actor's answer")
+                summary["verified"] = checks[-1]["content"][:160]
+                print("critic verified:", checks[-1]["content"][:80], flush=True)
 
         events = live.events()
         summary["meeting_id"] = live.meeting_id
