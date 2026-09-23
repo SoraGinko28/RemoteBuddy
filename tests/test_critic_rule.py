@@ -26,7 +26,8 @@ from viba.type import Ok
 
 
 def _meeting(tmp_path: Path, name: str):
-    """A meeting with three captures: a long function, a wide one, a clean one.
+    """A meeting with four captures: a long function, a wide one, a folded one,
+    and a clean one.
 
     No terminal: the frames are written the way a capture would be, which is
     what the design's screen asserts are about. `critic_run.py` starts a live
@@ -48,21 +49,29 @@ def test_each_rule_judges_every_moment_the_critic_hands_in(tmp_path) -> None:
     versions, and they object to different ones: the length rule to the long
     function only, the parameter rule to the wide one only."""
     store, captures = _meeting(tmp_path, "every-moment")
-    length = [_judge(tmp_path, store, capture, tmp_path / f"length-{index}")
-              for index, capture in enumerate(captures)]
-    params = [_judge(tmp_path, store, capture, tmp_path / f"params-{index}",
-                     critic_run.PARAMETER_RULE)
-              for index, capture in enumerate(captures)]
 
-    assert [result["verdict"].ok_value for result in length] == [False, True, True]
-    assert [result["verdict"].ok_value for result in params] == [True, False, True]
+    def judged(rule, name):
+        return [_judge(tmp_path, store, capture, tmp_path / f"{name}-{index}", rule)
+                for index, capture in enumerate(captures)]
+
+    length = judged(critic_run.RULE, "length")
+    params = judged(critic_run.PARAMETER_RULE, "params")
+    folded = judged(critic_run.FOLDED_RULE, "folded")
+
+    assert [result["verdict"].ok_value for result in length] == [False, True, True, True]
+    assert [result["verdict"].ok_value for result in params] == [True, False, True, True]
+    assert [result["verdict"].ok_value for result in folded] == [True, True, False, True]
 
     assert "process_batch" in length[0]["complaint"]
     assert "16 行" in length[0]["complaint"]      # the function's real length
     assert "keep_row" in params[1]["complaint"]
     assert "5 个参数" in params[1]["complaint"]   # its real parameter count
-    assert length[1]["complaint"] is None and length[2]["complaint"] is None
-    assert params[0]["complaint"] is None and params[2]["complaint"] is None
+    assert "process_batch" in folded[2]["complaint"]
+    assert "2 条语句" in folded[2]["complaint"]   # what that line folded
+    assert all(result["complaint"] is None
+               for result in (length[1], length[2], length[3],
+                              params[0], params[2], params[3],
+                              folded[0], folded[1], folded[3]))
 
 
 def test_the_complaint_lands_in_the_meeting_chat_with_the_pane_it_read(tmp_path) -> None:
@@ -88,7 +97,7 @@ def test_the_capture_is_prepared_the_way_the_design_demands(tmp_path) -> None:
     data, _summary = meeting_loader.load_meeting_data_from_run(store.run_dir)
     screens = [chunk for chunk in data.sorted_stream_chunks
                if isinstance(chunk, adt.ScreenStreamChunk)][-1].chunks
-    assert len(screens) == 3
+    assert len(screens) == 4
     for capture in screens:
         adt.assert_screen_plain_matches(capture)
         adt.assert_screen_rows_match_height(capture)
@@ -97,6 +106,7 @@ def test_the_capture_is_prepared_the_way_the_design_demands(tmp_path) -> None:
         adt.assert_segments_valid(capture)
     for capture, code, screen in zip(captures, (critic_run.LONG_CODE,
                                                 critic_run.WIDE_CODE,
+                                                critic_run.FOLDED_CODE,
                                                 critic_run.SHORT_CODE), screens):
         start, end = capture[1]
         assert screen.screen_data[start:end] == code
@@ -223,9 +233,9 @@ def test_the_rule_check_reads_the_newest_screen_that_shows_python(tmp_path) -> N
     assert "function_length_le_15" in section and "VIOLATED" in section
     assert "process_batch" in section and "16 行" in section   # the rule's own measurement
     assert "parameter_count_le_4" in section
-    assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED", "holds"]
-    assert report["rules"][0]["function"] == "process_batch"   # which function, as data
-    assert report["rules"][1]["function"] is None               # the rule that held names nobody
+    assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED", "holds", "holds"]
+    assert report["rules"][0]["offender"] == "process_batch"   # which function, as data
+    assert report["rules"][1]["offender"] is None               # the rule that held names nobody
     assert "你必须在回复里点名" in section and "process_batch" in section
     assert report["frame"]["event_id"]                          # the frame it judged
     assert report["frame"]["region"][1] > report["frame"]["region"][0]
@@ -257,7 +267,7 @@ def test_the_ops_reach_data_through_meeting_sdk_only() -> None:
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    assert imported <= {"__future__", "ast", "typing",
+    assert imported <= {"__future__", "ast", "io", "tokenize", "typing",
                         "meeting_core_reflect", "meeting_local_sdk", "viba"}
 
     called = {node.func.attr for node in ast.walk(tree)

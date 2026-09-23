@@ -24,7 +24,9 @@ its answer is written as this case's Prepare and replayed on every later run
 from __future__ import annotations
 
 import ast
-from typing import List, Tuple
+import io
+import tokenize
+from typing import Dict, List, Tuple
 
 import meeting_core_reflect as reflect
 import meeting_local_sdk as sdk
@@ -47,6 +49,10 @@ LIMIT_NAME = "within_limit"
 PARAMETERS_NAME = "max_function_parameters"
 WIDEST_NAME = "widest_function_name"
 PARAMETER_LIMIT_NAME = "within_parameter_limit"
+# the third rule: one statement per line, nothing folded with `;`
+FOLDED_NAME = "max_folded_statements"
+WORST_FOLDED_NAME = "worst_folded_line"
+FOLD_LIMIT_NAME = "within_fold_limit"
 
 
 class MeetingOps:
@@ -68,6 +74,9 @@ class MeetingOps:
             PARAMETERS_NAME: self.max_function_parameters,
             WIDEST_NAME: self.widest_function_name,
             PARAMETER_LIMIT_NAME: self.within_parameter_limit,
+            FOLDED_NAME: self.max_folded_statements,
+            WORST_FOLDED_NAME: self.worst_folded_line,
+            FOLD_LIMIT_NAME: self.within_fold_limit,
         }.get(func_name)
 
     # ---- the rule's functions ----
@@ -129,6 +138,25 @@ class MeetingOps:
 
     def within_parameter_limit(self, env, count, name, limit):
         """Is that function's parameter count within the limit? Pure."""
+        self.judged += 1
+        return count.value <= limit.value
+
+    def max_folded_statements(self, env, subject):
+        """How many statements the worst `;`-folded line holds (measured)."""
+        def compute(prepared):
+            self.measured += 1
+            return _worst_folding(_code(self.ctx, prepared))[1]
+        return measure(env, FOLDED_NAME, subject, compute)
+
+    def worst_folded_line(self, env, subject):
+        """Where that line is, and which function it is in — measured as well."""
+        def compute(prepared):
+            self.measured += 1
+            return _worst_folding(_code(self.ctx, prepared))[0]
+        return measure(env, WORST_FOLDED_NAME, subject, compute)
+
+    def within_fold_limit(self, env, count, name, limit):
+        """Does one line hold at most the allowed number of statements? Pure."""
         self.judged += 1
         return count.value <= limit.value
 
@@ -260,6 +288,48 @@ def _widest(found: List[Tuple[str, int, int]]) -> Tuple[str, int]:
     return best[0], best[2]
 
 
+def _semicolon_lines(code: str) -> Dict[int, int]:
+    """Line -> how many `;` statement separators it holds.
+
+    The tokenizer is what knows a `;` is a separator and not text: a `;` inside
+    a string or a comment is part of that token, never an `OP`.
+    """
+    counts: Dict[int, int] = {}
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(code).readline):
+            if token.type == tokenize.OP and token.string == ";":
+                counts[token.start[0]] = counts.get(token.start[0], 0) + 1
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return {}
+    return counts
+
+
+def _worst_folding(code: str) -> Tuple[str, int]:
+    """Where the worst `;`-folding is, and how many statements that line holds."""
+    counts = _semicolon_lines(code)
+    if not counts:
+        return "", 0
+    line = max(counts, key=lambda number: (counts[number], -number))
+    where = f"第 {line} 行"
+    inside = _enclosing_function(code, line)
+    # Named like the other rules' offenders (the function first), with the line
+    # after it: "quick_sort 第 5 行".
+    return (f"{inside} {where}" if inside else where), counts[line] + 1
+
+
+def _enclosing_function(code: str, line: int) -> str:
+    """The innermost function that line is inside, or "" at module level."""
+    tree = _parse(code)
+    if tree is None:
+        return ""
+    found = [((node.end_lineno or node.lineno) - node.lineno, node.name)
+             for node in ast.walk(tree)
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and node.lineno <= line <= (node.end_lineno or node.lineno)]
+    return min(found)[1] if found else ""
+
+
 __all__ = ["MeetingOps", "REFERENCE_NAME", "REFERENCE_SNAPSHOT", "LINES_NAME",
            "NAME_NAME", "LIMIT_NAME", "PARAMETERS_NAME", "WIDEST_NAME",
-           "PARAMETER_LIMIT_NAME", "SCREEN_STREAM"]
+           "PARAMETER_LIMIT_NAME", "FOLDED_NAME", "WORST_FOLDED_NAME",
+           "FOLD_LIMIT_NAME", "SCREEN_STREAM"]
