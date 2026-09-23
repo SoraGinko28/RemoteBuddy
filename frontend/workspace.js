@@ -114,7 +114,7 @@ function agentStateForPhase(phase) {
 }
 
 // Per-member state for the header chips. The actor follows terminal
-// ownership; every other member (discriminator/reviewer) is "active" while
+// ownership; every other member (a reviewer) is "active" while
 // the newest thinking/acting band in the timeline belongs to it.
 const IDLE_PHASE_BOUNDARY = new Set([
   "created", "waiting_for_user", "human_control", "completion_proposed", "cycle_timeout", "api_error",

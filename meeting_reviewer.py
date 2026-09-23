@@ -1,9 +1,9 @@
-"""meeting_reviewer — one-turn reviewer (discriminator) that runs in its own
+"""meeting_reviewer — one-turn reviewer that runs in its own
 Claude Code process and never touches the shared terminal.
 
 Why separate from InteractiveRunner: the runner's loop is written for the
 actor that OWNS the terminal (it gates on ``control_owner == its name``
-and drives tmux actions). A discriminator must not hold or act on the
+and drives tmux actions). A reviewer must not hold or act on the
 terminal; this module is a deliberately small, chat-only sibling that:
 
 - opens its own backend client (its own claude-code subprocess),

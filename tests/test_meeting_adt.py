@@ -1240,7 +1240,7 @@ class TestTerminalCapable:
     def test_actor_capable(self) -> None:
         assert adt.terminal_capable("gen", self._role_of()) is True
 
-    def test_discriminators_not_capable(self) -> None:
+    def test_reviewers_not_capable(self) -> None:
         assert adt.terminal_capable("act", self._role_of()) is False
         assert adt.terminal_capable("pas", self._role_of()) is False
 

@@ -58,7 +58,7 @@ from meeting_v2 import (
     sha256_text,
     utc_now,
 )
-import discriminator_harness
+import reviewer_harness
 import meeting_loader
 import meeting_local_sdk
 import meeting_sdk_json
@@ -1058,7 +1058,7 @@ class MeetingWebService:
                 typing_profile=typing_profile,
                 agent_provider=config.agent_provider,
                 # The actor agent drives the terminal. Additional role
-                # members (discriminators) are declared through
+                # members (reviewers) are declared through
                 # agent_name2role and are summoned by @mention at runtime;
                 # they never hold terminal control.
                 agent_ordinal=1,
@@ -1166,7 +1166,7 @@ class MeetingWebService:
                 return
             role = store.meeting.role_of(agent_name)
             if not role or role == "actor":
-                trace("skip", "not_a_discriminator")
+                trace("skip", "not_a_reviewer")
                 return
             if self._reviewer_busy(meeting_id):
                 trace("skip", "reviewer_busy")
@@ -1203,7 +1203,7 @@ class MeetingWebService:
             attempts += 1
             try:
                 store = self.load_store(meeting_id)
-                outcome = discriminator_harness.comment_once(
+                outcome = reviewer_harness.comment_once(
                     store, agent_name, retry=attempts > 1
                 )
             except Exception as exc:  # noqa: BLE001  worker must never die silently

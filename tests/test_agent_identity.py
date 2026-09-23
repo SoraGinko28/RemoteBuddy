@@ -35,12 +35,12 @@ class TestDefaults:
         # human @-mentions it, so a second member costs nothing up front.
         assert store.meeting.agent_name2role == {
             m2.DEFAULT_AGENT_NAME: "actor",
-            m2.DEFAULT_DISCRIMINATOR_NAME: "critic",
+            m2.DEFAULT_REVIEWER_NAME: "critic",
         }
 
     def test_helpers_see_default_team(self, store) -> None:
         assert store.meeting.agent_names() == {m2.DEFAULT_AGENT_NAME,
-                                               m2.DEFAULT_DISCRIMINATOR_NAME}
+                                               m2.DEFAULT_REVIEWER_NAME}
         assert store.meeting.role_of("actor") == "actor"
         assert store.meeting.role_of("critic") == "critic"
         assert store.meeting.is_agent_name("actor")
@@ -191,7 +191,7 @@ class TestAppendMembership:
         assert controls[-1]["data"]["tmux_window_name"] == store.meeting.session_name
         assert controls[-1]["data"]["start_time"]
 
-    def test_terminal_control_rejects_discriminator_or_stranger(self, store) -> None:
+    def test_terminal_control_rejects_reviewer_or_stranger(self, store) -> None:
         store.add_agent_role("auditor", "assistant")
         with pytest.raises(m2.MeetingError, match="human or the actor"):
             store.note_terminal_control("auditor")

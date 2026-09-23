@@ -1,9 +1,9 @@
-"""discriminator_harness — an independent harness for reviewer (non-actor)
-participants.
+"""reviewer_harness — an independent harness for the reviewers (the members
+that comment but never act).
 
 Design (per MEETING_ADT object layer): agents may come from different
 harnesses/service providers; they only converge in MeetingData. The actor
-uses the terminal-bound Claude-Code action harness. The discriminator must
+uses the terminal-bound Claude-Code action harness. A reviewer must
 NOT touch the shared terminal, so this module runs it against a plain
 chat endpoint (no tools, no local terminal bridge) — a separate harness that
 still writes into the same journal/MeetingData under its own agent name.
@@ -223,7 +223,7 @@ def _read_provider_config() -> dict:
     providers = config.get("providers", {})
     provider = providers.get(DEFAULT_PROVIDER)
     if not isinstance(provider, dict):
-        raise m2.MeetingError(f"discriminator harness: provider {DEFAULT_PROVIDER!r} not configured")
+        raise m2.MeetingError(f"reviewer harness: provider {DEFAULT_PROVIDER!r} not configured")
     return dict(provider)
 
 
@@ -231,10 +231,10 @@ def _read_api_key() -> str:
     try:
         auth = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise m2.MeetingError(f"discriminator harness: cannot read auth.json: {exc}") from exc
+        raise m2.MeetingError(f"reviewer harness: cannot read auth.json: {exc}") from exc
     key = auth.get("DEEPSEEK_API_KEY") if DEFAULT_PROVIDER == "deepseek" else auth.get("OPENAI_API_KEY")
     if not isinstance(key, str) or not key.strip():
-        raise m2.MeetingError("discriminator harness: API key is missing")
+        raise m2.MeetingError("reviewer harness: API key is missing")
     return key.strip()
 
 
@@ -260,14 +260,14 @@ def _post_messages(payload: dict, base_url: str, api_key: str,
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
         raise m2.MeetingError(
-            f"discriminator harness: HTTP {exc.code}: {detail}"
+            f"reviewer harness: HTTP {exc.code}: {detail}"
         ) from exc
     except (urllib.error.URLError, OSError) as exc:
-        raise m2.MeetingError(f"discriminator harness: request failed: {exc}") from exc
+        raise m2.MeetingError(f"reviewer harness: request failed: {exc}") from exc
     try:
         parsed = json.loads(raw)
     except ValueError as exc:
-        raise m2.MeetingError("discriminator harness: non-JSON response") from exc
+        raise m2.MeetingError("reviewer harness: non-JSON response") from exc
     return parsed
 
 
@@ -277,7 +277,7 @@ def _extract_text(response: dict) -> str:
             text = block.get("text")
             if isinstance(text, str) and text.strip():
                 return text.strip()
-    raise m2.MeetingError("discriminator harness: no text content in response")
+    raise m2.MeetingError("reviewer harness: no text content in response")
 
 
 def _record(store: m2.MeetingStore, agent_name: str, phase: str,
@@ -352,7 +352,7 @@ def comment_once(
             store.append_event(
                 "action", agent_name, "agent_thinking",
                 data={"action_id": f"reviewer-{agent_name}", "status": "received",
-                      "harness": "discriminator-plain-chat"},
+                      "harness": "reviewer-plain-chat"},
             )
             _record(store, agent_name, store.meeting.phase, {"status": "started"})
         response = post(
@@ -372,7 +372,7 @@ def comment_once(
         )
         comment = _extract_text(response)
         if len(comment) < 12:
-            raise m2.MeetingError("discriminator harness: response too short to be a comment")
+            raise m2.MeetingError("reviewer harness: response too short to be a comment")
         with guard:
             store.refresh()
             if store.meeting.status in {"completed", "failed", "interrupted"}:
@@ -382,7 +382,7 @@ def comment_once(
             store.append_event(
                 "action", agent_name, "agent_acting",
                 data={"action_id": f"reviewer-{agent_name}", "status": "completed",
-                      "harness": "discriminator-plain-chat"},
+                      "harness": "reviewer-plain-chat"},
             )
             store.update(phase="waiting_for_user", control_owner="none",
                          pending_action_id=None)

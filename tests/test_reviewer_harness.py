@@ -1,9 +1,9 @@
-"""discriminator_harness observation tests: the reviewer must see chat,
+"""reviewer_harness observation tests: the reviewer must see chat,
 who typed what, and past screen frames (no network involved)."""
 
 from pathlib import Path
 
-import discriminator_harness as harness
+import reviewer_harness as harness
 import meeting_v2 as m2
 
 REPO = Path(__file__).resolve().parents[1]
