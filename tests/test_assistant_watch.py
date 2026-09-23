@@ -46,7 +46,8 @@ class TestOneLook:
         look = reviewer_harness.assistant_turn(store, "assistant", post=post)
 
         assert look.action == "summon"
-        assert look.line == "@critic 刚写进 quicksort.py 的代码值得过一遍"
+        # The line is the assistant's own words, exactly as it wrote them.
+        assert look.line == "刚写进 quicksort.py 的代码值得过一遍"
         assert len(post.asked) == 1
         assert post.asked[0]["messages"][0]["content"]        # it looked at the meeting
         looks = [event for event in store.events() if event.get("kind") == "state"
@@ -110,7 +111,7 @@ class TestWatch:
             post=post,
         )
         # Decided while the actor was working, said once it parked, and only once.
-        assert [look.line for look in woken] == ["@critic 看一下刚写好的 quicksort.py"]
+        assert [look.line for look in woken] == ["看一下刚写好的 quicksort.py"]
 
     def test_silence_all_the_way_through_wakes_nobody(self, tmp_path) -> None:
         store = _store(tmp_path)
@@ -243,7 +244,6 @@ class TestTheRulesItCarries:
             self, tmp_path, monkeypatch) -> None:
         """The human's own words can ask for a violation; then nothing is owed."""
         import assistant_rules
-        from reviewer_harness import _forced_by_rules
 
         monkeypatch.setattr(m2, "utc_now", lambda: "2026-09-23T00:00:00.000Z")
         store = _store(tmp_path, "conflicting-prompt")
@@ -260,19 +260,17 @@ class TestTheRulesItCarries:
         verdicts = {rule["rule"]: rule["verdict"] for rule in report["rules"]}
         assert verdicts["human_prompt_conflicts_le_0"] == "VIOLATED"
         assert "quick_sort(items, key=None, reverse=False, lo=0, hi=None)" in section
-        # Before the critic has been heard the review still has to happen: the
-        # conflict is not a reason to skip it, only a reason not to chase the actor.
-        action, line = _forced_by_rules(report, "critic", "actor", reviewed=False)
-        assert action == "summon" and "请复核" in line
+        # The rules say what happened; the words are the assistant's own. The
+        # harness keeps only the action the assistant chose.
+        assert not hasattr(reviewer_harness, "_forced_by_rules")
+        done = reviewer_harness.parse_assistant_answer(
+            "DONE: 你点名要的签名就是规则禁止的那个，actor 没法两全，这一轮按你说的算完成。",
+            case=report["cases"]["human_prompt_conflicts_le_0"], owed=True)
+        assert done.action == "done"
+        assert done.line.startswith("你点名要的签名")
 
-        # Once the critic has spoken, the meeting can end on the human's terms —
-        # and it says so to the human, not to itself.
-        action, line = _forced_by_rules(report, "critic", "actor", reviewed=True)
-        assert action == "done"
-        assert line.startswith("你的要求「")
-        assert "这一轮按你的要求算完成" in line
-
-    def test_the_look_carries_the_rules_and_asks_the_actor(self, tmp_path, monkeypatch) -> None:
+    def test_the_look_carries_the_rules_and_the_assistant_writes_the_line(
+            self, tmp_path, monkeypatch) -> None:
         store = self._meeting_with_an_unanswered_critic(tmp_path, "remind", monkeypatch)
         seen = {}
 
@@ -283,6 +281,8 @@ class TestTheRulesItCarries:
         look = reviewer_harness.assistant_turn(store, "assistant", post=post)
 
         assert look.action == "remind"
-        assert look.line.startswith("@actor ")
+        # The harness adds nothing: the line is what the model wrote, addressed
+        # or not (the instructions are what ask for the @name).
+        assert look.line == "请回应 critic 的两条违规"
         assert look.case                                    # the message it is about
         assert "该催的是" in seen["asked"]                   # the rules reached it

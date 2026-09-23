@@ -282,48 +282,6 @@ def _extract_text(response: dict) -> str:
     raise m2.MeetingError("reviewer harness: no text content in response")
 
 
-# Which member a rule's objection is addressed to: the rule says what is wrong,
-# and the wrong thing says who can fix it.
-RULE_ADDRESSEE = {
-    "unanswered_seconds_le_30": "remind",            # the actor owes an answer
-    "unreviewed_replies_le_0": "summon",             # the critic owes a re-check
-    "human_prompt_conflicts_le_0": "done",           # nobody owes anything: the
-                                                     # human asked for a violation
-}
-
-
-def _forced_by_rules(rule_report, critic_name: str, actor_name: str,
-                     reviewed: bool = False):
-    """(action, line) for the first rule that objects, or None.
-
-    ``reviewed`` says whether the critic has spoken since the actor's last word:
-    a conflict in the human's prompt only ends the meeting *after* the review,
-    never instead of it.
-    """
-    for rule in rule_report.get("rules", []):
-        if rule.get("verdict") != "VIOLATED":
-            continue
-        addressee = RULE_ADDRESSEE.get(str(rule.get("rule")))
-        if addressee is None:
-            continue
-        complaint = rule.get("complaint") or ""
-        who = rule.get("offender") or actor_name
-        if addressee == "remind":
-            return "remind", f"@{who} 请回应 critic：{complaint}"
-        if addressee == "summon":
-            return "summon", f"@{critic_name} 请复核 {who} 的回应：{complaint}"
-        # The human's own words ask for what a rule forbids. The review still
-        # has to happen — that is the critic's word, and it is the only thing
-        # that can say whether anything *else* is wrong; the conflict only says
-        # that this one objection is the human's, not the actor's.
-        if not reviewed:
-            return "summon", (f"@{critic_name} 请复核 {who} 的工作：人类的要求与规则冲突"
-                              f"（{complaint}），确认除此之外没有别的问题。")
-        return "done", (f"你的要求「{who}」和会议的规则冲突（{complaint}），"
-                        f"actor 没法两全；这一轮按你的要求算完成。")
-    return None
-
-
 def _critic_spoke_last(store: m2.MeetingStore) -> bool:
     """Whether the critic has been heard since the actor last said anything."""
     roles = store.meeting.effective_role_map
@@ -522,22 +480,30 @@ ASSISTANT_PERSONA = (
 )
 
 ASSISTANT_INSTRUCTIONS = (
-    "Answer with exactly one of these three lines:\n"
-    "SUMMON: <what the critic should look at>\n"
-    "REMIND: <what the actor should answer>\n"
+    "You write every word you say; nothing is added for you, so the line you "
+    "give is the line the meeting reads. Address the member you are talking to "
+    "by name in that line (`@critic`, `@actor`): the meeting wakes people by "
+    "name, and a line addressed to nobody wakes nobody.\n"
+    "Answer with exactly one of these four lines:\n"
+    "SUMMON: <one sentence to the critic>\n"
+    "REMIND: <one sentence to the actor>\n"
+    "DONE: <one sentence to the human>\n"
     "SILENT\n"
-    "Choose SUMMON when work that the meeting cares about has just happened and "
-    "the critic has not looked at it yet; say in one short sentence what to look "
-    "at (name the file or the change). Choose SUMMON as well when the rules below "
-    "say the actor has replied and nobody has reviewed that reply: an answer "
-    "nobody looked at is not an answer yet, so ask the critic to check whether "
-    "the problem is actually gone. Choose REMIND when the rules say an "
-    "answer is owed and late: say in one short sentence what the actor should "
-    "answer, and address it to the member the rules name. Choose SILENT when "
-    "nothing changed, when the change is cosmetic, or when the critic has already "
-    "looked at it — silence is the normal answer. Do not review the work and do "
-    "not answer in the actor's place: the rules hold the verdict, and the members "
-    "answer for themselves."
+    "The rules below are the meeting's verdicts, measured by others: quote what "
+    "they say, name the rule and the member they name, and never judge the work "
+    "yourself or answer in someone's place.\n"
+    "- SUMMON when the critic should look at something: work just landed and has "
+    "not been reviewed, or the actor has answered and nobody has checked that "
+    "answer — an answer nobody looked at is not an answer yet.\n"
+    "- REMIND when the rules say an answer is owed and late: tell the actor, in "
+    "your own words, what it owes.\n"
+    "- DONE when the rules say the human's own request is what the rules forbid: "
+    "the actor cannot satisfy both, there is nothing left to chase, and the "
+    "human is the one who has to decide. Say that to the human, once, plainly, "
+    "quoting the request and the rule — not as a complaint about being asked, and "
+    "not addressed to a member.\n"
+    "- SILENT when nothing changed, when the change is cosmetic, or when "
+    "everything owed has been said — silence is the normal answer."
 )
 
 
@@ -552,23 +518,19 @@ class Look(NamedTuple):
     subject: str = ""      # the actor's newest word, so a summon is asked once
 
 
-def parse_assistant_answer(answer: str, critic_name: str = "critic",
-                           actor_name: str = "actor", case: str = "",
+def parse_assistant_answer(answer: str, case: str = "",
                            owed: bool = False, pending: bool = False) -> Look:
-    """What to do with one answer: a look. Silence is a look too.
+    """What to do with one answer: the action the assistant chose, and its words.
 
-    Only `SUMMON: ...` (the critic should look) and `REMIND: ...` (the actor owes
-    an answer) are lines to say; anything else is silence.
+    The line is the assistant's own text, kept as written: the harness adds
+    nothing to it. `SUMMON` wakes the critic, `REMIND` the actor, `DONE` ends the
+    meeting by telling the human; anything else is silence.
     """
     head, separator, rest = (answer or "").strip().partition(":")
     kind = head.strip().upper()
-    if kind not in {"SUMMON", "REMIND"} or not separator or not rest.strip():
+    if kind not in {"SUMMON", "REMIND", "DONE"} or not separator or not rest.strip():
         return Look("silent", "", case, owed, pending)
-    line = " ".join(rest.split())
-    target = critic_name if kind == "SUMMON" else actor_name
-    if target and f"@{target}" not in line:
-        line = f"@{target} {line}"
-    return Look(kind.lower(), line, case, owed, pending)
+    return Look(kind.lower(), rest.strip(), case, owed, pending)
 
 
 def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
@@ -615,17 +577,10 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
         return Look("silent", "", case, owed, pending)
     look = parse_assistant_answer(answer, case=case, owed=owed, pending=pending)
     look = look._replace(subject=_newest_actor_message(store))
-    roles = store.meeting.effective_role_map
-    critic_name = next((name for name, role in roles.items() if role == "critic"), "critic")
-    actor_name = next((name for name, role in roles.items() if role == "actor"), "actor")
-    forced = _forced_by_rules(rule_report, critic_name, actor_name,
-                              reviewed=_critic_spoke_last(store))
-    if forced is not None:
-        # A rule objects, and which rule it is decides who is addressed: an
-        # answer that is late is the actor's to give, a reply nobody looked at
-        # is the critic's to look at. Leaving that to the model produced
-        # monologues addressed to the wrong member.
-        look = look._replace(action=forced[0], line=forced[1])
+    # What the meeting needs is the rules' answer, not the model's opinion of it;
+    # who hears about it, and in what words, is the model's — guided by the
+    # instructions above and by the rule check in its context, never by a
+    # sentence written here.
     # The look is part of the record either way: what it saw, and what it said.
     _record(store, agent_name, store.meeting.phase,
             {"status": "looked", "answer": answer[:400],
