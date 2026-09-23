@@ -285,8 +285,10 @@ def _extract_text(response: dict) -> str:
 # Which member a rule's objection is addressed to: the rule says what is wrong,
 # and the wrong thing says who can fix it.
 RULE_ADDRESSEE = {
-    "unanswered_seconds_le_30": "remind",     # the actor owes an answer
-    "unreviewed_replies_le_0": "summon",      # the critic owes a re-check
+    "unanswered_seconds_le_30": "remind",            # the actor owes an answer
+    "unreviewed_replies_le_0": "summon",             # the critic owes a re-check
+    "human_prompt_conflicts_le_0": "done",           # nobody owes anything: the
+                                                     # human asked for a violation
 }
 
 
@@ -302,7 +304,12 @@ def _forced_by_rules(rule_report, critic_name: str, actor_name: str):
         who = rule.get("offender") or actor_name
         if addressee == "remind":
             return "remind", f"@{who} 请回应 critic：{complaint}"
-        return "summon", f"@{critic_name} 请复核 {who} 的回应：{complaint}"
+        if addressee == "summon":
+            return "summon", f"@{critic_name} 请复核 {who} 的回应：{complaint}"
+        # The human's own words ask for what a rule forbids: the actor cannot
+        # satisfy both, so the task is as done as it can be and the watch stops.
+        return "done", (f"任务按人类的要求已完成：{who} 与规则冲突"
+                        f"（{complaint}），继续催办没有意义。")
     return None
 
 
@@ -634,6 +641,8 @@ def watch(store: m2.MeetingStore, agent_name: str, *, actor_busy: Any,
                 summoned.add(waiting.subject)
             act(waiting)
             waiting = None
+            if look.action == "done":
+                return                       # the human asked for the violation: stop
         if not look.pending and not (critic_busy and critic_busy()):
             return                           # nothing owed, nobody working: done
 

@@ -1217,9 +1217,19 @@ class MeetingWebService:
 
     def _assistant_acts(self, meeting_id: str, assistant: str, critic: str,
                         look) -> None:
-        """Do what a look decided: wake the critic, or ask the actor for an answer."""
+        """Do what a look decided: wake the critic, ask the actor — or stop.
+
+        `done` is the meeting's own verdict that there is nothing left to ask
+        for: the human's prompt itself asks for what a rule forbids. The
+        assistant says so, once, and nobody is woken.
+        """
         if look.action == "remind":
             self._assistant_reminds(meeting_id, assistant, look.line)
+        elif look.action == "done":
+            try:
+                self.load_store(meeting_id).append_chat(assistant, look.line, "final")
+            except Exception:  # noqa: BLE001
+                pass
         else:
             self._assistant_summons(meeting_id, assistant, critic, look.line)
 

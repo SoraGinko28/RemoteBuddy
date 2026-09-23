@@ -62,6 +62,21 @@ SILENT_NAME = "unanswered_member"
 GRACE_NAME = "within_answer_grace"
 UNREVIEWED_NAME = "unreviewed_replies"
 REVIEW_LIMIT_NAME = "within_review_limit"
+# the assistant's third rule: the human's own words break a rule
+PROMPT_NAME = "cited_human_prompt"
+PROMPT_SNAPSHOT = "cited_human_prompt"     # what the assistant leaves there
+CONFLICTS_NAME = "prompt_rule_conflicts"
+CONFLICT_QUOTE_NAME = "prompt_conflict_quote"
+CONFLICT_LIMIT_NAME = "within_conflict_limit"
+
+# What each rule forbids, as the human's prompt would have to say it to be in
+# conflict with it. The limits are the rules' own (see critic/*.viba and the
+# first assistant rule): a prompt that asks for more is asking for a violation.
+MOST_PARAMETERS = 4
+MOST_STATEMENTS_PER_LINE = 1
+MOST_LINES = 15
+LINES_IN_PROMPT = re.compile(r"(\d+)\s*行")
+SIGNATURE_IN_PROMPT = re.compile(r"\b([A-Za-z_]\w*)\s*\(([^()]*)\)")
 
 
 class MeetingOps:
@@ -92,6 +107,10 @@ class MeetingOps:
             GRACE_NAME: self.within_answer_grace,
             UNREVIEWED_NAME: self.unreviewed_replies,
             REVIEW_LIMIT_NAME: self.within_review_limit,
+            PROMPT_NAME: self.cited_human_prompt,
+            CONFLICTS_NAME: self.prompt_rule_conflicts,
+            CONFLICT_QUOTE_NAME: self.prompt_conflict_quote,
+            CONFLICT_LIMIT_NAME: self.within_conflict_limit,
         }.get(func_name)
 
     # ---- the rule's functions ----
@@ -221,6 +240,33 @@ class MeetingOps:
         """Have the replies been reviewed yet? Pure."""
         self.judged += 1
         return replies.value <= limit.value
+
+    def cited_human_prompt(self, env):
+        """The human's own words, the ones the assistant cited."""
+        cited = read_snapshot(env, PROMPT_SNAPSHOT)
+        if cited is None:
+            raise ValueError(f"no human prompt at {PROMPT_SNAPSHOT!r} "
+                             f"under this case's address")
+        return cited
+
+    def prompt_rule_conflicts(self, env, subject):
+        """How many of the meeting's rules the human's own words break (measured)."""
+        def compute(prepared):
+            self.measured += 1
+            return _prompt_conflicts(_prompt_text(self.ctx, prepared))[0]
+        return measure(env, CONFLICTS_NAME, subject, compute)
+
+    def prompt_conflict_quote(self, env, subject):
+        """The words that did it — measured as well, so the verdict can quote them."""
+        def compute(prepared):
+            self.measured += 1
+            return _prompt_conflicts(_prompt_text(self.ctx, prepared))[1]
+        return measure(env, CONFLICT_QUOTE_NAME, subject, compute)
+
+    def within_conflict_limit(self, env, conflicts, quote, limit):
+        """Does the human's prompt stay inside what the rules allow? Pure."""
+        self.judged += 1
+        return conflicts.value <= limit.value
 
 
 # ----------------------------------------------------------------------
@@ -447,6 +493,71 @@ def _chat_window(ctx) -> List[Tuple[Any, str]]:
     found = _ok_root("Result[list[ChatMessage]]", sdk.chat_messages(ctx, start, end))
     return [(found[index].get_time().data, _message_author(found[index]))
             for index in range(len(found))]
+
+
+def _prompt_text(ctx, subject) -> str:
+    """The cited message's words: the human's prompt, as the meeting recorded it."""
+    cited_us = _given(subject.get_msg_time(), "microsecond")
+    region = subject.get_region()
+    start = _given(region, "start")
+    end = _given(region, "end")
+    for when, _author in _chat_window(ctx):
+        if _moment_us(when) != cited_us:
+            continue
+        # The newest message at that moment: the case is the human's latest
+        # words, and a moment is an identity only together with its author.
+        found = ""
+        for message in _chat_message_nodes(ctx):
+            if _moment_us(message.get_time().data) == cited_us:
+                found = _message_text(message)
+        return found[start:end]
+    raise ValueError(f"this meeting has no message with microsecond {cited_us}")
+
+
+def _chat_message_nodes(ctx) -> List[Any]:
+    start = _ok_root("Result[datetime]", sdk.first_chunk_time(ctx)).data
+    end = _ok_root("Result[datetime]", sdk.now(ctx)).data
+    found = _ok_root("Result[list[ChatMessage]]", sdk.chat_messages(ctx, start, end))
+    return [found[index] for index in range(len(found))]
+
+
+def _message_text(message) -> str:
+    """What a message says: its text pieces, in order.
+
+    The record layer keeps a text piece as a record of its own rather than as a
+    tagged union member, so the words are read off that piece's `text` field;
+    the parts that are not text (a mention, a reference) contribute nothing.
+    """
+    parts = message.get_message()
+    words = []
+    for index in range(len(parts)):
+        text = getattr(parts[index].data, "text", None)
+        if isinstance(text, str):
+            words.append(text)
+    return "".join(words)
+
+
+def _prompt_conflicts(text: str) -> Tuple[int, str]:
+    """(how many rules the human's words break, the words that did it).
+
+    The prompt is prose, so the rules are looked for as the human would write
+    them: a signature with more than four parameters, a statement folded onto a
+    line with `;`, or a line budget above fifteen. A prompt that asks for one of
+    those is asking for a violation, and the work that follows is the human's,
+    not the actor's.
+    """
+    conflicts = []
+    for match in SIGNATURE_IN_PROMPT.finditer(text):
+        parameters = [part for part in match.group(2).split(",") if part.strip()]
+        if len(parameters) > MOST_PARAMETERS:
+            conflicts.append(match.group(0).strip())
+    for line in text.split("\n"):
+        if ";" in line and len([part for part in line.split(";") if part.strip()]) > MOST_STATEMENTS_PER_LINE:
+            conflicts.append(line.strip())
+    for match in LINES_IN_PROMPT.finditer(text):
+        if int(match.group(1)) > MOST_LINES:
+            conflicts.append(match.group(0).strip())
+    return len(conflicts), (conflicts[0] if conflicts else "")
 
 
 def _moment_us(value) -> int:

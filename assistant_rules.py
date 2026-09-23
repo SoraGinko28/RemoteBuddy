@@ -26,10 +26,13 @@ from viba import viba_ast
 
 REPO = Path(__file__).resolve().parent
 RULES = (REPO / "assistant" / "unanswered_seconds_le_30.viba",
-         REPO / "assistant" / "unreviewed_replies_le_0.viba")
+         REPO / "assistant" / "unreviewed_replies_le_0.viba",
+         REPO / "assistant" / "human_prompt_conflicts_le_0.viba")
 
 # The case's environment, as the rule declares it; its path is the case's address.
 CASE_ENV = "unanswered_message_under_judgment"
+# The human's prompt is a case of its own: the conflict rule judges that.
+PROMPT_CASE_ENV = "human_prompt_under_judgment"
 
 # Where a meeting keeps the evidence of the assistant's checks.
 EVIDENCE_DIR = "assistant_rules"
@@ -41,6 +44,9 @@ RULE_WORDINGS = {
     "unreviewed_replies_le_0": RuleWording(
         "a reply the critic has not looked at is not an answer yet", "成员",
         ops.UNREVIEWED_NAME, ops.SILENT_NAME, "有 {value} 句回应还没被复查"),
+    "human_prompt_conflicts_le_0": RuleWording(
+        "the human's own words may not ask for what a rule forbids", "要求",
+        ops.CONFLICTS_NAME, ops.CONFLICT_QUOTE_NAME, "本身就要求了 {value} 处规则禁止的东西"),
 }
 
 
@@ -61,6 +67,15 @@ def chat_reference_material(event, region: Tuple[int, int]):
 
 # The assistant's rules judge a message; their case is a chat reference.
 CHAT_CASE = critic_rules.Case(CASE_ENV, ops.CHAT_SNAPSHOT, chat_reference_material)
+# ... and the conflict rule judges the human's prompt, which is another message.
+PROMPT_CASE = critic_rules.Case(PROMPT_CASE_ENV, ops.PROMPT_SNAPSHOT, chat_reference_material)
+
+# Which message each rule judges.
+RULE_CASES = {
+    "unanswered_seconds_le_30": CHAT_CASE,
+    "unreviewed_replies_le_0": CHAT_CASE,
+    "human_prompt_conflicts_le_0": PROMPT_CASE,
+}
 
 
 def review(store, store_dir: Optional[Path] = None,
@@ -81,26 +96,51 @@ def review(store, store_dir: Optional[Path] = None,
 
 
 def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
-    message = _last_critic_message(store)
-    if message is None:
-        return (_NO_MESSAGE_SECTION, {"message": None, "citation": None, "rules": []})
-    region = (0, len(str(message.get("content") or "")))
+    """Judge every rule over the message it is about.
+
+    Most rules are about what the critic just said; the conflict rule is about
+    what the human asked for, which is a different message in the same meeting.
+    """
     results = []
+    judged: Dict[str, Any] = {}
     for rule in rules:
+        case = RULE_CASES.get(rule.stem, CHAT_CASE)
+        message = (_last_critic_message(store) if case is CHAT_CASE
+                   else _human_prompt(store))
+        if message is None:
+            continue
+        judged[rule.stem] = message
+        region = (0, len(str(message.get("content") or "")))
         where = Path(store_dir) if store_dir else Path(store.run_dir) / EVIDENCE_DIR
         results.append(critic_rules.judge_moment(
             store, message, region, where / rule.stem, rule,
-            case=CHAT_CASE, wordings=RULE_WORDINGS))
+            case=case, wordings=RULE_WORDINGS))
+    if not results:
+        return (_NO_MESSAGE_SECTION, {"message": None, "citation": None, "rules": []})
+    # The report keeps the case each verdict came from: a reader can tell what
+    # was judged, and the citation points at the message the rules read.
+    message = judged.get("unanswered_seconds_le_30") or next(iter(judged.values()))
+    region = (0, len(str(message.get("content") or "")))
     report = {"message": {"event_id": message.get("event_id"),
                           "captured_at": message.get("captured_at"),
                           "actor": message.get("actor"),
                           "region": list(region)},
               "citation": chat_reference(message, region),
+              "cases": {stem: event.get("event_id") for stem, event in judged.items()},
               "rules": [{"rule": result["rule"], "verdict": verdict_word(result),
                          "offender": (result.get("offender") or {}).get("name"),
                          "value": (result.get("measured_value") or {}).get("value"),
                          "complaint": result.get("complaint")} for result in results]}
-    return _section(message, region, results), report
+    return _section(judged, results), report
+
+
+def _human_prompt(store) -> Optional[Dict[str, Any]]:
+    """The human's newest words: the task being asked for."""
+    for event in reversed(store.events()):
+        if event.get("kind") == "chat" and event.get("actor") == "human":
+            if (event.get("content") or "").strip():
+                return event
+    return None
 
 
 def _last_critic_message(store) -> Optional[Dict[str, Any]]:
@@ -137,10 +177,11 @@ _NO_MESSAGE_SECTION = (
 )
 
 
-def _section(message, region, results) -> str:
-    lines = ["=== rule check (the assistant's rules, run over the critic's newest message) ===",
-             f"message {message.get('event_id')} by {message.get('actor')} at "
-             f"{message.get('captured_at')}, region {region[0]}..{region[1]}"]
+def _section(judged, results) -> str:
+    lines = ["=== rule check (the assistant's rules) ==="]
+    for stem, message in judged.items():
+        lines.append(f"rule {stem} judged message {message.get('event_id')} by "
+                     f"{message.get('actor')} at {message.get('captured_at')}")
     for result in results:
         wording = RULE_WORDINGS[result["rule"]]
         line = f"- {result['rule']} ({wording.title}): {verdict_word(result)}"

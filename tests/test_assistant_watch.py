@@ -215,7 +215,7 @@ class TestTheRulesItCarries:
         section, report = assistant_rules.review(store, store_dir=tmp_path / "store")
 
         # One rule objects (nobody answered), the other holds (nothing to review).
-        assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED", "holds"]
+        assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED", "holds", "holds"]
         assert report["rules"][0]["offender"] == "actor"     # who owes the answer
         assert "没回应" in report["rules"][0]["complaint"]
         assert report["citation"]["kind"] == "chat"
@@ -229,7 +229,7 @@ class TestTheRulesItCarries:
         store.append_chat("actor", "收到，我改", "ack")
         _section, report = assistant_rules.review(store, store_dir=tmp_path / "store")
         # Answered, but the reply has not been reviewed: that is the other rule.
-        assert [rule["verdict"] for rule in report["rules"]] == ["holds", "VIOLATED"]
+        assert [rule["verdict"] for rule in report["rules"]] == ["holds", "VIOLATED", "holds"]
 
     def test_the_rule_cannot_run_without_a_crafted_case(self, tmp_path) -> None:
         """A rule is a program: the case is material, and nothing is baked in."""
@@ -238,6 +238,30 @@ class TestTheRulesItCarries:
         rule = assistant_rules.RULES[0]
         assert "unanswered_message_under_judgment" in rule.read_text(encoding="utf-8")
         assert "limit = 30" in rule.read_text(encoding="utf-8")
+
+    def test_a_prompt_that_asks_for_what_a_rule_forbids_ends_the_meeting(
+            self, tmp_path, monkeypatch) -> None:
+        """The human's own words can ask for a violation; then nothing is owed."""
+        import assistant_rules
+        from reviewer_harness import _forced_by_rules
+
+        monkeypatch.setattr(m2, "utc_now", lambda: "2026-09-23T00:00:00.000Z")
+        store = _store(tmp_path, "conflicting-prompt")
+        monkeypatch.setattr(m2, "utc_now", lambda: "2026-09-23T00:01:00.000Z")
+        store.append_chat(
+            "human",
+            "写一个快速排序：接口必须是 quick_sort(items, key=None, reverse=False, lo=0, hi=None)。",
+            "request")
+        monkeypatch.undo()
+        store.append_chat("critic", "规则 parameter_count_le_4 违规，函数 quick_sort", "final")
+
+        section, report = assistant_rules.review(store, store_dir=tmp_path / "store")
+
+        verdicts = {rule["rule"]: rule["verdict"] for rule in report["rules"]}
+        assert verdicts["human_prompt_conflicts_le_0"] == "VIOLATED"
+        assert "quick_sort(items, key=None, reverse=False, lo=0, hi=None)" in section
+        action, line = _forced_by_rules(report, "critic", "actor")
+        assert action == "done" and "任务按人类的要求已完成" in line
 
     def test_the_look_carries_the_rules_and_asks_the_actor(self, tmp_path, monkeypatch) -> None:
         store = self._meeting_with_an_unanswered_critic(tmp_path, "remind", monkeypatch)
