@@ -284,24 +284,58 @@ def review(store, store_dir: Optional[Path] = None,
 def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
     screens = [event for event in store.events()
                if event.get("kind") == "screen" and (event.get("content") or "").strip()]
-    for screen in reversed(screens[-FRAMES_TO_SEARCH:]):
-        region = code_region(screen["content"])
-        if region is None:
-            continue                       # a dump of values is not a file to judge
-        results = []
-        for rule in rules:
-            where = Path(store_dir) if store_dir else Path(store.run_dir) / EVIDENCE_DIR
-            results.append(judge_moment(store, screen, region, where / rule.stem, rule,
-                                        case=SCREEN_CASE))
-        report = {"frame": {"event_id": screen.get("event_id"),
-                            "captured_at": screen.get("captured_at"),
-                            "region": list(region)},
-                  "citation": frame_reference(screen, region),
-                  "rules": [{"rule": result["rule"], "verdict": verdict_word(result),
-                             "offender": (result.get("offender") or {}).get("name"),
-                             "complaint": result.get("complaint")} for result in results]}
-        return _section(screen, region, results), report
-    return (_NO_CODE_SECTION, {"frame": None, "citation": None, "rules": []})
+    found = _frame_to_judge(screens[-FRAMES_TO_SEARCH:])
+    if found is None:
+        return (_NO_CODE_SECTION, {"frame": None, "citation": None, "rules": []})
+    screen, region = found
+    results = []
+    for rule in rules:
+        where = Path(store_dir) if store_dir else Path(store.run_dir) / EVIDENCE_DIR
+        results.append(judge_moment(store, screen, region, where / rule.stem, rule,
+                                    case=SCREEN_CASE))
+    report = {"frame": {"event_id": screen.get("event_id"),
+                        "captured_at": screen.get("captured_at"),
+                        "region": list(region)},
+              "citation": frame_reference(screen, region),
+              "rules": [{"rule": result["rule"], "verdict": verdict_word(result),
+                         "offender": (result.get("offender") or {}).get("name"),
+                         "complaint": result.get("complaint")} for result in results]}
+    return _section(screen, region, results), report
+
+
+def _frame_to_judge(screens):
+    """The newest frame the rules should judge: the edit, not the output.
+
+    A frame where the code was typed is the first scene, and it wins even when
+    a newer frame still shows the same code next to what a test run printed: a
+    citation into the output scene answers about the wrong place.
+    """
+    for editor_only in (True, False):
+        for screen in reversed(list(screens)):
+            if editor_only and not _is_editor_view(screen["content"]):
+                continue
+            region = code_region(screen["content"])
+            if region is not None:
+                return screen, region
+    return None
+
+
+def _is_editor_view(text: str) -> bool:
+    """Whether the pane shows the file in an editor rather than printed out.
+
+    vim fills the rows after the file with `~` and writes its mode on the last
+    line (`-- INSERT (paste) --`); a printed file leaves a shell prompt and the
+    command that printed it. The difference matters because the rules are about
+    the edit: judging the screen where the output was read answers about the
+    wrong scene, even when the same code is on it.
+    """
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped and set(stripped) == {"~"}:
+            return True
+        if stripped.startswith("--") and stripped.endswith("--") and len(stripped) > 4:
+            return True
+    return False
 
 
 def frame_reference(screen, region: Tuple[int, int]) -> Dict[str, Any]:
