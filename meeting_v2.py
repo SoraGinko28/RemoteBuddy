@@ -85,12 +85,17 @@ def fill_terminal_control_lines(events: List[Dict[str, Any]]) -> None:
 # New meetings default their single actor to this readable name.
 DEFAULT_AGENT_NAME = "actor"
 # A new meeting already has its reviewer on the member list. The reviewer is
-# lazy (it only runs when the human @-mentions it) and can never own the shared
+# lazy (it only runs when someone @-mentions it) and can never own the shared
 # terminal, so the second participant costs nothing until it is asked for.
 DEFAULT_REVIEWER_NAME = "critic"
+# The assistant is the human's delegate: it never acts on the terminal and never
+# judges the work, it looks while the actor works and decides whether the critic
+# should be woken (reviewer_harness.watch). One assistant per meeting.
+DEFAULT_ASSISTANT_NAME = "assistant"
 DEFAULT_AGENT_ROLE_MAP = {
     DEFAULT_AGENT_NAME: "actor",
     DEFAULT_REVIEWER_NAME: "critic",
+    DEFAULT_ASSISTANT_NAME: "assistant",
 }
 # Pre-identity manifests recorded the lone agent as "agent"; loading them
 # keeps that exact name so historical records stay coherent.

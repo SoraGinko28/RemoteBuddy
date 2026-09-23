@@ -31,18 +31,22 @@ def store(tmp_path):
 
 class TestDefaults:
     def test_create_defaults_to_the_default_team(self, store) -> None:
-        # The reviewer ships with every new meeting: it only runs when the
-        # human @-mentions it, so a second member costs nothing up front.
+        # The reviewer ships with every new meeting (it only runs when someone
+        # @-mentions it), and so does the assistant, which looks while the actor
+        # works. Neither touches the terminal.
         assert store.meeting.agent_name2role == {
             m2.DEFAULT_AGENT_NAME: "actor",
             m2.DEFAULT_REVIEWER_NAME: "critic",
+            m2.DEFAULT_ASSISTANT_NAME: "assistant",
         }
 
     def test_helpers_see_default_team(self, store) -> None:
         assert store.meeting.agent_names() == {m2.DEFAULT_AGENT_NAME,
-                                               m2.DEFAULT_REVIEWER_NAME}
+                                               m2.DEFAULT_REVIEWER_NAME,
+                                               m2.DEFAULT_ASSISTANT_NAME}
         assert store.meeting.role_of("actor") == "actor"
         assert store.meeting.role_of("critic") == "critic"
+        assert store.meeting.role_of("assistant") == "assistant"
         assert store.meeting.is_agent_name("actor")
         assert not store.meeting.is_agent_name("human")
         assert store.meeting.actor_name() == "actor"
@@ -207,7 +211,8 @@ class TestJoinAgent:
         assert store.meeting.agent_name2role["critic"] == "critic"
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
         assert reloaded.meeting.agent_name2role == {"actor": "actor",
-                                                    "critic": "critic"}
+                                                    "critic": "critic",
+                                                    "assistant": "assistant"}
         store.append_chat("critic", "noted", "ack")  # now a member
 
     def test_resume_same_role_is_noop(self, store) -> None:

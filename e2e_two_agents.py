@@ -96,7 +96,13 @@ class _Live:
             "meeting_id": meeting_id,
             "message": self.task,
             "typing_profile": "fast",
-            "agent_name2role": {"agent": "actor", "critic": "critic"},
+            # The three members a meeting ships with: the actor drives the
+            # terminal, the critic answers when summoned, and the assistant
+            # looks while the actor works and decides whether to wake the critic
+            # — which is what this run leaves it to do, with nobody @-mentioning
+            # the critic by hand.
+            "agent_name2role": {"agent": "actor", "critic": "critic",
+                                "assistant": "assistant"},
         }
         # Only send the harness fields the caller asked for; otherwise the
         # meeting keeps the configured default (claude-code/deepseek).
@@ -162,7 +168,8 @@ def main() -> int:
     parser.add_argument("--join", default=None,
                         help="skip phase 1 and review this existing meeting id")
     parser.add_argument("--ask", default=REVIEWER_ASK,
-                        help="the @critic message that summons the reviewer")
+                        help="the @critic message that summons the reviewer; "
+                             "empty means nobody asks and the assistant decides")
     options = parser.parse_args()
 
     freeze = options.stop
@@ -197,10 +204,12 @@ def main() -> int:
             summary["actor_phase"] = idle.get("phase")
             print("actor idle; chats:", len(actor_chats), flush=True)
 
-        # Phase 2: @critic summons the second process.
-        live.send(options.ask)
+        # Phase 2: @critic summons the second process — unless the human says
+        # nothing, and the assistant is the one that decides to wake it.
+        if options.ask:
+            live.send(options.ask)
         critic_finals = _wait(lambda: _finals(live.events(), "critic") or None,
-                              240, "reviewer final chat")
+                              400, "reviewer final chat")
         summary["critic_final"] = critic_finals[-1]["content"][:160]
         print("critic final recorded", flush=True)
 

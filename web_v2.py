@@ -259,6 +259,7 @@ class MeetingWebService:
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
         self.reviewer_jobs: Dict[str, Dict[str, threading.Thread]] = {}
+        self.assistant_jobs: Dict[str, threading.Thread] = {}
         self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool]] = {}
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
@@ -1111,6 +1112,9 @@ class MeetingWebService:
             self.jobs[meeting_id] = worker
             self.active_backends[meeting_id] = client
             worker.start()
+        # Watching starts with the work: the assistant looks while the actor is
+        # busy and once more when it parks.
+        self._ensure_assistant_worker(store)
 
     def _summon_reviewer_after_idle(self, meeting_id: str, agent_name: str) -> None:
         """Parked actor got interrupted: summon the reviewer once its
@@ -1138,6 +1142,86 @@ class MeetingWebService:
                 if thread and thread.is_alive():
                     return True
         return False
+
+    def _actor_actively_running(self, meeting_id: str) -> bool:
+        """Whether the actor is mid-turn, as opposed to parked between turns.
+
+        The actor's worker parks in ``waiting_for_user`` but keeps its job slot:
+        that is idle, not busy. Only a turn in flight blocks a reviewer.
+        """
+        if not self._job_alive(meeting_id):
+            return False
+        store = self.load_store(meeting_id)
+        return not (
+            store.meeting.status == "running"
+            and store.meeting.phase == "waiting_for_user"
+            and store.meeting.control_owner == "none"
+            and store.meeting.pending_action_id is None
+        )
+
+    def _ensure_assistant_worker(self, store: MeetingStore) -> None:
+        """Start the assistant's watch when the meeting has one.
+
+        The assistant looks while the actor works, at most every
+        ``reviewer_harness.WATCH_INTERVAL_SECONDS``, and decides whether the
+        critic should be woken. One watcher per meeting.
+        """
+        meeting_id = store.meeting.meeting_id
+        roles = store.meeting.effective_role_map
+        assistant = next((name for name, role in roles.items() if role == "assistant"), None)
+        critic = next((name for name, role in roles.items() if role == "critic"), None)
+        if not assistant or not critic:
+            return
+        with self.lock:
+            current = self.assistant_jobs.get(meeting_id)
+            if current and current.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._assistant_watch,
+                args=(meeting_id, assistant, critic),
+                name=f"assistant-{assistant}-{meeting_id}",
+                daemon=True,
+            )
+            self.assistant_jobs[meeting_id] = thread
+        thread.start()
+
+    def _assistant_watch(self, meeting_id: str, assistant: str, critic: str) -> None:
+        def stop() -> bool:
+            try:
+                store = self.load_store(meeting_id)
+            except Exception:  # noqa: BLE001
+                return True
+            return (store.meeting.status in TERMINAL_STATUSES
+                    or store.meeting.session_state == "stopped")
+
+        try:
+            reviewer_harness.watch(
+                self.load_store(meeting_id),
+                assistant,
+                actor_busy=lambda: self._actor_actively_running(meeting_id),
+                wake_critic=lambda line: self._assistant_summons(
+                    meeting_id, assistant, critic, line),
+                stop=stop,
+            )
+        except Exception as exc:  # noqa: BLE001 — a watcher must not die loudly
+            try:
+                self.load_store(meeting_id).append_event(
+                    "error", "harness", "assistant_watch_error", content=f"{exc!r}")
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            with self.lock:
+                if self.assistant_jobs.get(meeting_id) is threading.current_thread():
+                    self.assistant_jobs.pop(meeting_id, None)
+
+    def _assistant_summons(self, meeting_id: str, assistant: str, critic: str,
+                           line: str) -> None:
+        """The assistant says what to look at, and the critic is woken."""
+        try:
+            self.load_store(meeting_id).append_chat(assistant, line, "request")
+        except Exception:  # noqa: BLE001
+            pass
+        self._start_reviewer(meeting_id, critic)
 
     def _start_reviewer(self, meeting_id: str, agent_name: str) -> None:
         """Summon a non-actor member in its own Claude Code process.
@@ -1171,19 +1255,9 @@ class MeetingWebService:
             if self._reviewer_busy(meeting_id):
                 trace("skip", "reviewer_busy")
                 return
-            # The actor worker parks in waiting_for_user between turns but
-            # keeps its job slot; that is idle, not busy. Only an actor
-            # mid-turn (thinking/acting/queued) blocks a reviewer summon.
-            actor_actively_running = (
-                self._job_alive(meeting_id)
-                and not (
-                    store.meeting.status == "running"
-                    and store.meeting.phase == "waiting_for_user"
-                    and store.meeting.control_owner == "none"
-                    and store.meeting.pending_action_id is None
-                )
-            )
-            if actor_actively_running:
+            # Only a turn in flight blocks a reviewer summon; the actor parked
+            # between turns is idle.
+            if self._actor_actively_running(meeting_id):
                 trace("skip", "actor_job_busy")
                 return
             trace("start", "ok")

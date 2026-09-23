@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -280,6 +281,22 @@ def _extract_text(response: dict) -> str:
     raise m2.MeetingError("reviewer harness: no text content in response")
 
 
+def _latest_summon(store: m2.MeetingStore, agent_name: str) -> str:
+    """The newest chat that names this reviewer, from anyone but the reviewer.
+
+    The human can summon it by hand; so can the assistant, on its own. Whoever
+    did, that message is the question the reviewer answers.
+    """
+    roles = store.meeting.effective_role_map
+    for event in reversed(store.events()):
+        if event.get("kind") != "chat" or event.get("actor") == agent_name:
+            continue
+        content = (event.get("content") or "").strip()
+        if content and agent_name in m2.mentioned_agent_names(content, roles):
+            return content[:500]
+    return ""
+
+
 def _record(store: m2.MeetingStore, agent_name: str, phase: str,
             data: dict, content: str = "") -> None:
     try:
@@ -338,12 +355,16 @@ def comment_once(
         system = f"{persona}\n\n{instructions}"
         if actor_rules:
             system += "\n\n===== the actor actor operates under these instructions (know them so you can judge it fairly) =====\n" + actor_rules
-        latest_human = ""
-        for event in reversed(store.events()):
-            if event.get("kind") == "chat" and event.get("actor") == "human" and (event.get("content") or "").strip():
-                latest_human = event.get("content").strip()[:500]
-                break
-        question = f"The human's latest message (answer this ONLY):\n{latest_human}" if latest_human else "Answer based on the context."
+        summon = _latest_summon(store, agent_name)
+        if summon:
+            question = f"The message that summoned you (answer this ONLY):\n{summon}"
+        else:
+            latest_human = ""
+            for event in reversed(store.events()):
+                if event.get("kind") == "chat" and event.get("actor") == "human" and (event.get("content") or "").strip():
+                    latest_human = event.get("content").strip()[:500]
+                    break
+            question = f"The human's latest message (answer this ONLY):\n{latest_human}" if latest_human else "Answer based on the context."
         user = (question + "\n\nDo not recap or explain anything beyond answering that message."
                 + "\n\n" + rule_section + "\n\nContext:\n" + context)
         with guard:
@@ -409,3 +430,119 @@ def comment_once(
             pass
         settled()
         return False
+
+
+# ----------------------------------------------------------------------
+# the assistant: it looks while the actor works, and wakes the critic
+# ----------------------------------------------------------------------
+
+# How often the assistant may look. It is the floor, not a schedule: a look
+# never comes sooner than this.
+WATCH_INTERVAL_SECONDS = 10.0
+
+ASSISTANT_PERSONA = (
+    "You are the human's delegate at this meeting, not a participant in the "
+    "work: you never touch the terminal and you never judge the work yourself. "
+    "Your one job is to decide whether the critic should be woken up to look at "
+    "what just happened. Answer with one line, in the human's language, and "
+    "nothing else."
+)
+
+ASSISTANT_INSTRUCTIONS = (
+    "Answer with exactly one of these two lines:\n"
+    "SUMMON: <what the critic should look at>\n"
+    "SILENT\n"
+    "Choose SUMMON when work that the meeting cares about has just happened and "
+    "the critic has not looked at it yet; say in one short sentence what to look "
+    "at (name the file or the change), as a message addressed to @critic. Choose "
+    "SILENT when nothing changed, when the change is cosmetic, or when the critic "
+    "has already looked at it — silence is the normal answer. Do not review the "
+    "work: the critic holds the rules, and its answer is the one that counts."
+)
+
+
+def parse_assistant_answer(answer: str, critic_name: str = "critic"):
+    """The line to send to the critic, or None to stay silent.
+
+    Only `SUMMON: ...` is an answer to act on; anything else means silence.
+    """
+    head, separator, rest = (answer or "").strip().partition(":")
+    if head.strip().upper() != "SUMMON" or not separator or not rest.strip():
+        return None
+    line = " ".join(rest.split())
+    if critic_name and f"@{critic_name}" not in line:
+        line = f"@{critic_name} {line}"
+    return line
+
+
+def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
+                   *, post: Any = None, observer: Any = None):
+    """One look at the meeting: what, if anything, the critic should be told.
+
+    Returns the line to say to the critic, or None to stay silent. The look is
+    recorded in the meeting either way, so what the assistant saw and decided is
+    readable afterwards. Never raises: a look that fails is an error event and
+    silence, not a dead assistant.
+    """
+    post = post or _post_messages
+    try:
+        store.refresh()
+        observation = (observer or build_reviewer_observation)(store)
+        provider = _read_provider_config()
+        model = provider.get("model") or "deepseek-v4-flash"
+        base_url = provider.get("base_url") or "https://api.deepseek.com/anthropic"
+        api_key = _read_api_key()
+        response = post(
+            {
+                "model": model,
+                "max_tokens": MAX_TOKENS,
+                "thinking": {"type": "disabled"},
+                "system": f"{ASSISTANT_PERSONA}\n\n{ASSISTANT_INSTRUCTIONS}",
+                "messages": [{"role": "user", "content": observation}],
+            },
+            base_url,
+            api_key,
+        )
+        answer = _extract_text(response)
+    except Exception as exc:  # noqa: BLE001 — the loop must survive a bad look
+        _record_error(store, agent_name, exc)
+        return None
+    line = parse_assistant_answer(answer)
+    # The look is part of the record either way: what it saw, and what it said.
+    _record(store, agent_name, store.meeting.phase,
+            {"status": "looked", "answer": answer[:400], "summon": line},
+            content=line or "SILENT")
+    return line
+
+
+def watch(store: m2.MeetingStore, agent_name: str, *, actor_busy: Any,
+          wake_critic: Any, stop: Any, interval: float = WATCH_INTERVAL_SECONDS,
+          sleep: Any = time.sleep, post: Any = None, observer: Any = None) -> None:
+    """Look every ``interval`` seconds while the actor works.
+
+    The actor parking is itself worth a look — a piece of work just ended — so
+    the loop takes one more look after it parks, says what it decided, and
+    returns. A decision made while the actor is still working is held until it
+    parks: the critic may not run beside the actor, and the work will have moved
+    on by then anyway.
+    """
+    waiting = None
+    while not stop():
+        sleep(interval)
+        if stop():
+            return
+        busy = bool(actor_busy())
+        waiting = assistant_turn(store, agent_name, post=post, observer=observer) or waiting
+        if busy:
+            continue
+        if waiting:
+            wake_critic(waiting)
+        return
+
+
+def _record_error(store: m2.MeetingStore, agent_name: str, exc: BaseException) -> None:
+    try:
+        store.append_event("error", "harness", "assistant_error",
+                           content=f"{type(exc).__name__}: {exc}")
+    except Exception:  # noqa: BLE001
+        pass
