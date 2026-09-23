@@ -96,7 +96,9 @@ class _Live:
             "meeting_id": meeting_id,
             "message": self.task,
             "typing_profile": "fast",
-            "agent_name2role": {"agent": "actor", "critic": "critic"},
+            # No role map: the meeting's own default team, which names the
+            # members actor / critic / assistant. A driver that invents its own
+            # names makes the meeting show "agent" where the actor is.
         }
         # Only send the harness fields the caller asked for; otherwise the
         # meeting keeps the configured default (claude-code/deepseek).
@@ -115,6 +117,20 @@ class _Live:
 
     def send(self, message: str) -> None:
         self._req("POST", f"/api/meetings/{self.meeting_id}/messages", {"message": message})
+
+    def park(self) -> None:
+        """Park a meeting this process was driving, if it is mid-turn."""
+        try:
+            store = self.service.load_store(self.meeting_id)
+            if store.meeting.status in {"completed", "failed", "interrupted"}:
+                return
+            if store.meeting.phase == "waiting_for_user" and store.meeting.control_owner == "none":
+                return
+            store.update(phase="waiting_for_user", control_owner="none",
+                         pending_action_id=None, recovery_required=True,
+                         failure="the driver that owned this run exited mid-turn; nothing is running")
+        except Exception as exc:  # noqa: BLE001
+            print(f"park warning: {exc}", file=sys.stderr, flush=True)
 
     def stop(self) -> None:
         try:
@@ -161,8 +177,15 @@ def main() -> int:
                         help="what the actor is asked to do")
     parser.add_argument("--join", default=None,
                         help="skip phase 1 and review this existing meeting id")
+    parser.add_argument("--wait-verify", type=float, default=0.0,
+                        help="after the actor answers, wait this long for the "
+                             "critic to look at that answer again")
+    parser.add_argument("--wait-answer", type=float, default=0.0,
+                        help="after the critic speaks, wait this long for the actor "
+                             "to answer it (the assistant reminds it to)")
     parser.add_argument("--ask", default=REVIEWER_ASK,
-                        help="the @critic message that summons the reviewer")
+                        help="the @critic message that summons the reviewer; "
+                             "empty means nobody asks and the assistant decides")
     options = parser.parse_args()
 
     freeze = options.stop
@@ -197,12 +220,46 @@ def main() -> int:
             summary["actor_phase"] = idle.get("phase")
             print("actor idle; chats:", len(actor_chats), flush=True)
 
-        # Phase 2: @critic summons the second process.
-        live.send(options.ask)
+        # Phase 2: @critic summons the second process — unless the human says
+        # nothing, and the assistant is the one that decides to wake it.
+        if options.ask:
+            live.send(options.ask)
         critic_finals = _wait(lambda: _finals(live.events(), "critic") or None,
-                              240, "reviewer final chat")
+                              400, "reviewer final chat")
         summary["critic_final"] = critic_finals[-1]["content"][:160]
         print("critic final recorded", flush=True)
+
+        # Phase 3 (optional): the critic has spoken; does the actor answer it?
+        # Nobody asks by hand — the assistant watches for exactly this.
+        if options.wait_answer:
+            spoke_at = critic_finals[-1].get("captured_at") or ""
+
+            def actor_answered() -> list:
+                answers = [e for e in live.events()
+                           if e.get("kind") == "chat" and e.get("actor") == "agent"
+                           and (e.get("captured_at") or "") > spoke_at]
+                return answers or None
+
+            answers = _wait(actor_answered, options.wait_answer,
+                            "the actor to answer the critic")
+            summary["actor_answer"] = answers[-1]["content"][:160]
+            print("actor answered:", answers[-1]["content"][:80], flush=True)
+
+            # Phase 4 (optional): the answer has to be looked at again — the
+            # assistant is the one that makes sure the critic does.
+            if options.wait_verify:
+                answered_at = answers[-1].get("captured_at") or ""
+
+                def verified() -> list:
+                    again = [e for e in live.events()
+                             if e.get("kind") == "chat" and e.get("actor") == "critic"
+                             and (e.get("captured_at") or "") > answered_at]
+                    return again or None
+
+                checks = _wait(verified, options.wait_verify,
+                               "the critic to look at the actor's answer")
+                summary["verified"] = checks[-1]["content"][:160]
+                print("critic verified:", checks[-1]["content"][:80], flush=True)
 
         events = live.events()
         summary["meeting_id"] = live.meeting_id
@@ -225,6 +282,10 @@ def main() -> int:
         if not report.ok:
             failed.append(f"validator violations: {report.count}")
     finally:
+        # The worker and the assistant's watch live in this process: leaving
+        # without parking the meeting leaves it claiming a turn nobody is
+        # running (the page shows that member as 异常).
+        live.park()
         if freeze:
             live.stop()
             time.sleep(1.0)

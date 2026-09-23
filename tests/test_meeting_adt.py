@@ -215,7 +215,7 @@ class TestUserName:
     def test_is_human_false_for_empty_and_role_names(self) -> None:
         assert adt.is_human("") is False
         assert adt.is_human("$actor") is False
-        assert adt.is_human("$active_discriminator") is False
+        assert adt.is_human("$assistant") is False
         assert adt.is_human("$critic") is False
 
 
@@ -223,13 +223,13 @@ class TestAgentRole:
     def test_members_exactly_three(self) -> None:
         assert set(adt.AgentRole) == {
             adt.AgentRole.ACTOR,
-            adt.AgentRole.ACTIVE_DISCRIMINATOR,
+            adt.AgentRole.ASSISTANT,
             adt.AgentRole.CRITIC,
         }
 
     def test_json_values_match_adt_names(self) -> None:
         assert adt.AgentRole.ACTOR.value == "$actor"
-        assert adt.AgentRole.ACTIVE_DISCRIMINATOR.value == "$active_discriminator"
+        assert adt.AgentRole.ASSISTANT.value == "$assistant"
         assert adt.AgentRole.CRITIC.value == "$critic"
 
     def test_role_names_never_collide_with_human_sentinel(self) -> None:
@@ -244,7 +244,7 @@ class TestAgentRole:
 
     @pytest.mark.parametrize("bad", [
         "", "$root", "actor", "ACTOR", "$actor ", " $actor",
-        "$active", "$passive", "active_discriminator",
+        "$active", "$passive", "assistant",
     ])
     def test_from_name_rejects_unknown_strings(self, bad: str) -> None:
         with pytest.raises(ValueError):
@@ -1047,7 +1047,7 @@ class TestSummonChained:
     def _role_map(self) -> dict:
         return {
             "actor_bot": adt.AgentRole.ACTOR,
-            "active_bot": adt.AgentRole.ACTIVE_DISCRIMINATOR,
+            "active_bot": adt.AgentRole.ASSISTANT,
             "passive_bot": adt.AgentRole.CRITIC,
         }
 
@@ -1230,7 +1230,7 @@ class TestTerminalCapable:
     def _role_of(self):
         return lambda name: {
             "gen": adt.AgentRole.ACTOR,
-            "act": adt.AgentRole.ACTIVE_DISCRIMINATOR,
+            "act": adt.AgentRole.ASSISTANT,
             "pas": adt.AgentRole.CRITIC,
         }.get(name)
 
@@ -1240,7 +1240,7 @@ class TestTerminalCapable:
     def test_actor_capable(self) -> None:
         assert adt.terminal_capable("gen", self._role_of()) is True
 
-    def test_discriminators_not_capable(self) -> None:
+    def test_reviewers_not_capable(self) -> None:
         assert adt.terminal_capable("act", self._role_of()) is False
         assert adt.terminal_capable("pas", self._role_of()) is False
 

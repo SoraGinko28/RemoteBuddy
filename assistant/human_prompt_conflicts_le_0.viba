@@ -1,0 +1,65 @@
+# 助理的第三条规则：人类的 prompt 本身和已有规则冲突。
+#
+# 前两条规则都假定"规则是干净的前提、actor 该满足它"。这一条反过来问：
+# 人类交代的那句话，是不是本来就要求了某条规则禁止的东西？
+# 例：人类点名要 quick_sort(items, key=None, reverse=False, lo=0, hi=None)（5 个参数），
+# 而 parameter_count_le_4 要求最多 4 个——这时候再催 actor 就是错的，
+# 它无论怎么写都过不了，任务按人类的交代已经完成。
+#
+# 案子是人类那条消息本身（mc.ChatReference），测的是"这句话踩了几条规则"。
+# 一条都不踩才算合规；踩了，助理就该宣布"按人类的要求已完成"，而不是继续循环。
+
+import meeting_core as mc
+
+# 这次判定的案子：人类那条 prompt 的引用放在这条子环境下面
+subject_env = environ.sub_env << "human_prompt_under_judgment"
+
+cited_human_prompt =
+    mc.ChatReference
+    <- $env Environment
+    <- {
+        人类交代任务的那条消息：谁在什么时候说的
+    }
+
+prompt_rule_conflicts =
+    int
+    <- $env Environment
+    <- $subject mc.ChatReference
+    <- {
+        这句话本身要求了几条规则禁止的东西
+    }
+
+prompt_conflict_quote =
+    str
+    <- $env Environment
+    <- $subject mc.ChatReference
+    <- {
+        是哪几个字踩的：问句里要原样引出来
+    }
+
+within_conflict_limit =
+    bool
+    <- $env Environment
+    <- $conflicts int
+    <- $quote str
+    <- $limit int
+    <- {
+        人类的交代有没有和规则冲突
+    }
+
+# 这次判定的主体：人类那条 prompt
+the_subject = cited_human_prompt << $env subject_env
+
+# 测量：读会议、看这句话要求了什么
+conflicts = prompt_rule_conflicts << $env subject_env << $subject the_subject
+
+quote = prompt_conflict_quote << $env subject_env << $subject the_subject
+
+# 规则的判断：一条都不许踩
+limit = 0
+
+__ret__ = within_conflict_limit
+    << $env subject_env
+    << $conflicts conflicts
+    << $quote quote
+    << $limit limit
