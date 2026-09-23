@@ -3050,6 +3050,9 @@ function bind() {
   el.playback_slider.addEventListener("input", () => {
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
+    // Moving the view on purpose releases a clicked citation: otherwise the
+    // terminal stays pinned to the frame that quote pointed at.
+    state.highlightReference = null;
     markPlaybackFrozen();
     state.followLive = false;
     state.chatFollow = true;
@@ -3061,6 +3064,7 @@ function bind() {
   el.live_button.addEventListener("click", () => {
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
+    state.highlightReference = null;      // back to live: the citation is released
     state.playbackFreezeAt = 0;
     state.followLive = true;
     state.chatFollow = true;
@@ -3072,6 +3076,7 @@ function bind() {
     focusTerminalCursor();
   });
   el.play_button.addEventListener("click", () => {
+    state.highlightReference = null;      // playing moves the view: release the pin
     if (state.playing) { stopPlayback(); return; }
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
