@@ -136,8 +136,38 @@ def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
                          "offender": (result.get("offender") or {}).get("name"),
                          "value": (result.get("measured_value") or {}).get("value"),
                          "complaint": result.get("complaint")} for result in results]}
+    # Two facts the answer needs, both the meeting's own: which rules the
+    # human's words excuse, and which the critic says are broken. Without them
+    # the assistant cannot tell "the only thing left is what the human asked
+    # for" from "the human asked for one of several".
+    excused = _prompt_excused_rules(store)
+    broken = _critic_violations(store)
     report["critic_heard_since_actor"] = heard
-    return _section(judged, results, heard), report
+    report["prompt_excused_rules"] = excused
+    report["critic_violations"] = broken
+    return _section(judged, results, heard, excused, broken), report
+
+
+def _prompt_excused_rules(store) -> list:
+    """The rules the human's own prompt asks to break."""
+    prompt = _human_prompt(store)
+    if prompt is None:
+        return []
+    _count, _quote, names = ops.prompt_conflicts(str(prompt.get("content") or ""))
+    return names
+
+
+def _critic_violations(store) -> list:
+    """What the critic last reported as broken, from its own rule check."""
+    for event in reversed(store.events()):
+        if event.get("kind") != "state":
+            continue
+        check = (event.get("data") or {}).get("rule_check")
+        if not isinstance(check, dict) or not isinstance(check.get("rules"), list):
+            continue
+        return [rule.get("rule") for rule in check["rules"]
+                if rule.get("verdict") == "VIOLATED"]
+    return []
 
 
 def _critic_heard_since_actor(store) -> bool:
@@ -204,9 +234,12 @@ _NO_MESSAGE_SECTION = (
 )
 
 
-def _section(judged, results, heard: bool = False) -> str:
+def _section(judged, results, heard: bool = False, excused: list = None,
+             broken: list = None) -> str:
     lines = ["=== rule check (the assistant's rules) ===",
-             f"critic_heard_since_actor: {'yes' if heard else 'no'}"]
+             f"critic_heard_since_actor: {'yes' if heard else 'no'}",
+             f"prompt_excused_rules: {', '.join(excused or []) or '(none)'}",
+             f"critic_violations: {', '.join(broken or []) or '(none)'}"]
     for stem, message in judged.items():
         lines.append(f"rule {stem} judged message {message.get('event_id')} by "
                      f"{message.get('actor')} at {message.get('captured_at')}")

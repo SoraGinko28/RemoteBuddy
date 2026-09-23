@@ -516,7 +516,11 @@ ASSISTANT_INSTRUCTIONS = (
     "work first: the conflict is a reason not to chase the actor, not a reason to "
     "skip the review. The check below states `critic_heard_since_actor`; while it "
     "says no, your answer must be SUMMON — DONE and REMIND are not yours to give "
-    "before the work has been reviewed.\n"
+    "before the work has been reviewed. The check also states which rules the "
+    "prompt excuses (`prompt_excused_rules`) and what the critic reports as broken "
+    "(`critic_violations`): DONE only when every broken rule is one the human's own "
+    "request asks for — if the critic broke a rule the prompt did not ask for, the "
+    "actor still owes that fix and your answer is REMIND.\n"
     "- SILENT when nothing changed, when the change is cosmetic, or when "
     "everything owed has been said — silence is the normal answer."
 )

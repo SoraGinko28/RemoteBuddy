@@ -253,14 +253,14 @@ class MeetingOps:
         """How many of the meeting's rules the human's own words break (measured)."""
         def compute(prepared):
             self.measured += 1
-            return _prompt_conflicts(_prompt_text(self.ctx, prepared))[0]
+            return prompt_conflicts(_prompt_text(self.ctx, prepared))[0]
         return measure(env, CONFLICTS_NAME, subject, compute)
 
     def prompt_conflict_quote(self, env, subject):
         """The words that did it — measured as well, so the verdict can quote them."""
         def compute(prepared):
             self.measured += 1
-            return _prompt_conflicts(_prompt_text(self.ctx, prepared))[1]
+            return prompt_conflicts(_prompt_text(self.ctx, prepared))[1]
         return measure(env, CONFLICT_QUOTE_NAME, subject, compute)
 
     def within_conflict_limit(self, env, conflicts, quote, limit):
@@ -537,8 +537,8 @@ def _message_text(message) -> str:
     return "".join(words)
 
 
-def _prompt_conflicts(text: str) -> Tuple[int, str]:
-    """(how many rules the human's words break, the words that did it).
+def prompt_conflicts(text: str) -> Tuple[int, str, List[str]]:
+    """(how many rules the human's words break, the words, and which rules).
 
     The prompt is prose, so the rules are looked for as the human would write
     them: a signature with more than four parameters, a statement folded onto a
@@ -546,18 +546,19 @@ def _prompt_conflicts(text: str) -> Tuple[int, str]:
     those is asking for a violation, and the work that follows is the human's,
     not the actor's.
     """
-    conflicts = []
+    conflicts: List[Tuple[str, str]] = []
     for match in SIGNATURE_IN_PROMPT.finditer(text):
         parameters = [part for part in match.group(2).split(",") if part.strip()]
         if len(parameters) > MOST_PARAMETERS:
-            conflicts.append(match.group(0).strip())
+            conflicts.append(("parameter_count_le_4", match.group(0).strip()))
     for line in text.split("\n"):
         if ";" in line and len([part for part in line.split(";") if part.strip()]) > MOST_STATEMENTS_PER_LINE:
-            conflicts.append(line.strip())
+            conflicts.append(("statements_per_line_le_1", line.strip()))
     for match in LINES_IN_PROMPT.finditer(text):
         if int(match.group(1)) > MOST_LINES:
-            conflicts.append(match.group(0).strip())
-    return len(conflicts), (conflicts[0] if conflicts else "")
+            conflicts.append(("function_length_le_15", match.group(0).strip()))
+    names = sorted({name for name, _quote in conflicts})
+    return len(names), (conflicts[0][1] if conflicts else ""), names
 
 
 def _moment_us(value) -> int:

@@ -35,6 +35,10 @@ REVIEWER_OBSERVATION = "Continue. Reply when you have a comment."
 REVIEWER_RETRY = ("retry",)
 
 REVIEWER_INSTRUCTIONS = (
+    "Judge only what you were given: the rule check in your context holds the "
+    "rules you run, and its verdicts are yours to report. Do not rule on other "
+    "members' rules or on claims about them — you have not measured those. "
+
     "Answer only what the human asked, in 1-3 short sentences, same "
     "language. Bottom line first. Do not add background, recap, or anything "
     "unasked. Ask one question only if a missing detail is needed to answer."
