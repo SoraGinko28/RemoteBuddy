@@ -895,7 +895,9 @@ function renderChat() {
       const references = referencesForEvent(event);
       references.forEach((reference, referenceIndex) => {
         if (!reference?.excerpt) return;
-        const prefix = references.length > 1 ? `引用 ${referenceIndex + 1} · ` : "引用 · ";
+        // The quote stands on its own: no "引用" label in front of it, only a
+        // number when there is more than one and they need telling apart.
+        const prefix = references.length > 1 ? `${referenceIndex + 1} · ` : "";
         const quote = node("blockquote", "message-reference", `${prefix}${reference.excerpt}`);
         quote.title = "跳转到引用来源";
         quote.addEventListener("click", () => {
