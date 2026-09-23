@@ -59,6 +59,8 @@ CHAT_SNAPSHOT = "cited_critic_message"     # what the assistant leaves there
 UNANSWERED_NAME = "max_unanswered_seconds"
 SILENT_NAME = "unanswered_member"
 GRACE_NAME = "within_answer_grace"
+UNREVIEWED_NAME = "unreviewed_replies"
+REVIEW_LIMIT_NAME = "within_review_limit"
 
 
 class MeetingOps:
@@ -87,6 +89,8 @@ class MeetingOps:
             UNANSWERED_NAME: self.max_unanswered_seconds,
             SILENT_NAME: self.unanswered_member,
             GRACE_NAME: self.within_answer_grace,
+            UNREVIEWED_NAME: self.unreviewed_replies,
+            REVIEW_LIMIT_NAME: self.within_review_limit,
         }.get(func_name)
 
     # ---- the rule's functions ----
@@ -200,6 +204,22 @@ class MeetingOps:
         """Has the wait stayed inside the grace the rule allows? Pure."""
         self.judged += 1
         return seconds.value <= limit.value
+
+    def unreviewed_replies(self, env, subject):
+        """How many replies the actor has made since that message (measured).
+
+        An answer nobody has looked at is not an answer yet: the critic owes it
+        a re-check, and this is how many it owes.
+        """
+        def compute(prepared):
+            self.measured += 1
+            return _answer_state(prepared, self.ctx)[2]
+        return measure(env, UNREVIEWED_NAME, subject, compute)
+
+    def within_review_limit(self, env, replies, who, limit):
+        """Have the replies been reviewed yet? Pure."""
+        self.judged += 1
+        return replies.value <= limit.value
 
 
 # ----------------------------------------------------------------------
@@ -364,7 +384,13 @@ def _worst_folding(code: str) -> Tuple[str, int]:
 
 
 def _unanswered(subject, ctx) -> Tuple[int, str]:
-    """(seconds the answer is overdue, who owes it) for the cited message.
+    """(seconds overdue, who owes it) — see ``_answer_state``."""
+    seconds, who, _replies = _answer_state(subject, ctx)
+    return seconds, who
+
+
+def _answer_state(subject, ctx) -> Tuple[int, str, int]:
+    """(seconds overdue, who owes an answer, replies awaiting review).
 
     The cited message is found by its identity — the `$microsecond` the design
     gives a moment — and the wait is the distance between two moments the
@@ -377,13 +403,14 @@ def _unanswered(subject, ctx) -> Tuple[int, str]:
     window = _chat_window(ctx)
     cited_at = next((when for when, _ in window if _moment_us(when) == cited_us), None)
     if cited_at is None:
-        return 0, ""
-    if actor:
-        for when, author in window:
-            if author == actor and when > cited_at:
-                return 0, ""        # the actor answered: nothing is overdue
+        return 0, "", 0
+    replies = [when for when, author in window if actor and author == actor and when > cited_at]
+    if replies:
+        # The actor answered: nothing is overdue, and how much of it is
+        # unreviewed is the count of those answers.
+        return 0, actor, len(replies)
     now_at = _ok_root("Result[datetime]", sdk.now(ctx)).data
-    return max(0, int((now_at - cited_at).total_seconds())), actor
+    return max(0, int((now_at - cited_at).total_seconds())), actor, 0
 
 
 def _chat_window(ctx) -> List[Tuple[Any, str]]:
@@ -441,4 +468,5 @@ __all__ = ["MeetingOps", "REFERENCE_NAME", "REFERENCE_SNAPSHOT", "LINES_NAME",
            "NAME_NAME", "LIMIT_NAME", "PARAMETERS_NAME", "WIDEST_NAME",
            "PARAMETER_LIMIT_NAME", "FOLDED_NAME", "WORST_FOLDED_NAME",
            "FOLD_LIMIT_NAME", "CHAT_REFERENCE_NAME", "CHAT_SNAPSHOT",
-           "UNANSWERED_NAME", "SILENT_NAME", "GRACE_NAME", "SCREEN_STREAM"]
+           "UNANSWERED_NAME", "SILENT_NAME", "GRACE_NAME", "UNREVIEWED_NAME",
+           "REVIEW_LIMIT_NAME", "SCREEN_STREAM"]

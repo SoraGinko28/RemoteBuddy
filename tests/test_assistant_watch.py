@@ -214,7 +214,8 @@ class TestTheRulesItCarries:
         store = self._meeting_with_an_unanswered_critic(tmp_path, "unanswered", monkeypatch)
         section, report = assistant_rules.review(store, store_dir=tmp_path / "store")
 
-        assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED"]
+        # One rule objects (nobody answered), the other holds (nothing to review).
+        assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED", "holds"]
         assert report["rules"][0]["offender"] == "actor"     # who owes the answer
         assert "没回应" in report["rules"][0]["complaint"]
         assert report["citation"]["kind"] == "chat"
@@ -227,7 +228,8 @@ class TestTheRulesItCarries:
         store = self._meeting_with_an_unanswered_critic(tmp_path, "answered", monkeypatch)
         store.append_chat("actor", "收到，我改", "ack")
         _section, report = assistant_rules.review(store, store_dir=tmp_path / "store")
-        assert [rule["verdict"] for rule in report["rules"]] == ["holds"]
+        # Answered, but the reply has not been reviewed: that is the other rule.
+        assert [rule["verdict"] for rule in report["rules"]] == ["holds", "VIOLATED"]
 
     def test_the_rule_cannot_run_without_a_crafted_case(self, tmp_path) -> None:
         """A rule is a program: the case is material, and nothing is baked in."""

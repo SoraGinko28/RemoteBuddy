@@ -25,7 +25,8 @@ from critic_rules import RuleWording, measured_value, verdict_word
 from viba import viba_ast
 
 REPO = Path(__file__).resolve().parent
-RULES = (REPO / "assistant" / "unanswered_seconds_le_30.viba",)
+RULES = (REPO / "assistant" / "unanswered_seconds_le_30.viba",
+         REPO / "assistant" / "unreviewed_replies_le_0.viba")
 
 # The case's environment, as the rule declares it; its path is the case's address.
 CASE_ENV = "unanswered_message_under_judgment"
@@ -37,6 +38,9 @@ RULE_WORDINGS = {
     "unanswered_seconds_le_30": RuleWording(
         "an answer owed to a message may not be late", "成员",
         ops.UNANSWERED_NAME, ops.SILENT_NAME, "已经 {value} 秒没回应这句话"),
+    "unreviewed_replies_le_0": RuleWording(
+        "a reply the critic has not looked at is not an answer yet", "成员",
+        ops.UNREVIEWED_NAME, ops.SILENT_NAME, "有 {value} 句回应还没被复查"),
 }
 
 
