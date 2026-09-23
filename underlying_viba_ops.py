@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import tokenize
 from typing import Any, Dict, List, Tuple
 
@@ -247,7 +248,8 @@ def _code(ctx, subject) -> str:
     if isinstance(answer, VibaProgramErr):
         raise ValueError(answer.err_msg)
     text = _record_leaf(_screen_content(answer).get_text())
-    return text[start:end]
+    # What the pane shows is not always the file: a viewer prints line numbers.
+    return editor_text(text[start:end])
 
 
 def _moment(ctx, microsecond: int):
@@ -347,6 +349,31 @@ def _widest(found: List[Tuple[str, int, int]]) -> Tuple[str, int]:
     """The function with the most parameters, or nothing if there is none."""
     best = max(found, key=lambda item: item[2], default=("", 0, 0))
     return best[0], best[2]
+
+
+# `cat -n` and vim's `number` both write a line as `  10<TAB>items = ...`.
+GUTTER = re.compile(r"^[ \t]*(\d+)[ \t](.*)$")
+
+
+def editor_text(text: str) -> str:
+    """The code as the screen shows it, with a line-number gutter taken off.
+
+    The numbers a viewer prints are not part of the file, so a region read off
+    the pane goes through here before anything parses it. Only a block where
+    every non-empty line is numbered, with the numbers ascending by one, counts
+    as a gutter; anything else is left alone.
+    """
+    lines = text.split("\n")
+    matched = [GUTTER.match(line) for line in lines]
+    numbered = [found for found in matched if found]
+    if not numbered or any(found is None and line.strip()
+                           for found, line in zip(matched, lines)):
+        return text
+    numbers = [int(found.group(1)) for found in numbered]
+    if any(second - first != 1 for first, second in zip(numbers, numbers[1:])):
+        return text
+    return "\n".join(found.group(2) if found else line
+                     for found, line in zip(matched, lines))
 
 
 def _semicolon_lines(code: str) -> Dict[int, int]:

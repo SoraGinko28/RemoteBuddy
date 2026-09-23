@@ -96,13 +96,9 @@ class _Live:
             "meeting_id": meeting_id,
             "message": self.task,
             "typing_profile": "fast",
-            # The three members a meeting ships with: the actor drives the
-            # terminal, the critic answers when summoned, and the assistant
-            # looks while the actor works and decides whether to wake the critic
-            # — which is what this run leaves it to do, with nobody @-mentioning
-            # the critic by hand.
-            "agent_name2role": {"agent": "actor", "critic": "critic",
-                                "assistant": "assistant"},
+            # No role map: the meeting's own default team, which names the
+            # members actor / critic / assistant. A driver that invents its own
+            # names makes the meeting show "agent" where the actor is.
         }
         # Only send the harness fields the caller asked for; otherwise the
         # meeting keeps the configured default (claude-code/deepseek).

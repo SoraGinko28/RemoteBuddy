@@ -201,30 +201,46 @@ def captured_microsecond(screen) -> int:
 
 
 def code_region(text: str) -> Optional[Tuple[int, int]]:
-    """Where the Python is on this screen: the longest run of lines that parses.
+    """Where the code is on this screen, or None when the screen shows none.
 
     A pane holds more than code — the command that printed it, the prompt after
-    it, maybe an editor's line numbers. The rules judge the region the critic
-    cites, so the critic has to pick one: the longest contiguous block of lines
-    the Python parser accepts. Top-level Python starts in column 0, which is
-    where a candidate block may start.
+    it, a program's output. The rules are about functions and lines, so a block
+    only counts as code when it *defines* something: a screen full of test
+    output (`[1, 2, 3]` parses as well as `items = [1, 2, 3]` does) is not a
+    file, and judging it would answer about the wrong thing. Among the blocks
+    that define something, the longest wins; top-level code starts in column 0.
     """
     lines = text.split("\n")
     starts = _line_starts(text)
     best: Optional[Tuple[int, int]] = None
     for first in range(len(lines)):
-        if not lines[first] or lines[first][0].isspace():
+        # The pane is what the viewer printed; a candidate block is that with
+        # any line-number gutter taken off, which is what the rules must judge.
+        head = ops.editor_text(lines[first])
+        if not head or head[0].isspace():
             continue                       # top-level code does not start indented
         for last in range(len(lines), first, -1):
             if best is not None and last - first <= best[1] - best[0]:
                 break                      # this block cannot beat the best one
-            if _parses("\n".join(lines[first:last])):
+            block = ops.editor_text("\n".join(lines[first:last]))
+            if _parses(block) and _defines(block):
                 best = (first, last)
                 break
     if best is None:
         return None
     first, last = best
     return starts[first], starts[last - 1] + len(lines[last - 1])
+
+
+def _defines(block: str) -> bool:
+    """Whether this block is a piece of a file rather than a value or output."""
+    try:
+        tree = ast.parse(block)
+    except (SyntaxError, ValueError):
+        return False
+    return any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                                 ast.Import, ast.ImportFrom))
+               for node in tree.body)
 
 
 def _line_starts(text: str) -> List[int]:
@@ -271,7 +287,7 @@ def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
     for screen in reversed(screens[-FRAMES_TO_SEARCH:]):
         region = code_region(screen["content"])
         if region is None:
-            continue
+            continue                       # a dump of values is not a file to judge
         results = []
         for rule in rules:
             where = Path(store_dir) if store_dir else Path(store.run_dir) / EVIDENCE_DIR

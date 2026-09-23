@@ -208,6 +208,19 @@ class _Recorder:
         self.calls.append(("special", key))
 
 
+def test_a_numbered_view_is_read_and_a_dump_of_values_is_not() -> None:
+    """The pane shows what a viewer printed: `cat -n` numbers every line, and a
+    program's output parses as well as code does. The region is the code."""
+    numbered = "\n".join(f"{index:6d}\t{line}"
+                         for index, line in enumerate(critic_run.SHORT_CODE.split("\n"), start=1))
+    text = "$ cat -n batch.py\n" + numbered + "\n$ "
+    start, end = critic_rules.code_region(text)
+    assert critic_rules.ops.editor_text(text[start:end]) == critic_run.SHORT_CODE
+
+    dump = "$ python3 batch.py\n[1, 2, 3, 4, 5] [1, 2, 3, 4, 5]\n[5, 4, 3, 2, 1]\n$ "
+    assert critic_rules.code_region(dump) is None
+
+
 def test_the_critic_finds_the_code_on_the_screen() -> None:
     """A pane holds more than code — the command, the prompt after it. The region
     the critic cites is the longest block of lines the Python parser accepts."""
@@ -267,7 +280,7 @@ def test_the_ops_reach_data_through_meeting_sdk_only() -> None:
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    assert imported <= {"__future__", "ast", "io", "tokenize", "typing",
+    assert imported <= {"__future__", "ast", "io", "re", "tokenize", "typing",
                         "meeting_core_reflect", "meeting_local_sdk", "viba"}
 
     called = {node.func.attr for node in ast.walk(tree)

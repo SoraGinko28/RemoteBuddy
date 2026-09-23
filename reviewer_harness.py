@@ -541,6 +541,15 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
         _record_error(store, agent_name, exc)
         return Look("silent", "", case, owed, pending)
     look = parse_assistant_answer(answer, case=case, owed=owed, pending=pending)
+    if owed and look.action != "remind":
+        # A rule objects: the meeting owes an answer, and the answer is the
+        # actor's to give. Asking the critic again only produces another
+        # monologue, so the addressee is not left to the model.
+        complaint = next((rule.get("complaint") for rule in rule_report.get("rules", [])
+                          if rule.get("complaint")), "")
+        who = next((rule.get("offender") for rule in rule_report.get("rules", [])
+                    if rule.get("offender")), "") or "actor"
+        look = Look("remind", f"@{who} 请回应 critic：{complaint}", case, owed, pending)
     # The look is part of the record either way: what it saw, and what it said.
     _record(store, agent_name, store.meeting.phase,
             {"status": "looked", "answer": answer[:400],
