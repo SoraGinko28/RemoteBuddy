@@ -99,10 +99,10 @@ def render_markdown(rows: list[dict]) -> str:
         "assertion (plain_of == screen_data / line count == height / width <= width).",
         "2. **harness is not the terminal owner**: an acquired event with "
         "actor=harness only means the RemoteBuddy session layer took over; it is "
-        "not TerminalControl (the tmux owner is still the human or the generator "
+        "not TerminalControl (the tmux owner is still the human or the actor "
         "agent).",
         "3. **role-map inference**: journals currently carry no role metadata, so "
-        "every agent that appears is inferred as generator (valid for single-agent "
+        "every agent that appears is inferred as actor (valid for single-agent "
         "meetings).",
         "4. **a missing stream is an empty stream**: a meeting without score "
         "events gets no score chunk, and validation treats it as an empty "

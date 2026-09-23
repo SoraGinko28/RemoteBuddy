@@ -31,8 +31,8 @@
 ## 审计中确认的投影决策
 
 1. **screen 帧归一化**：journal 的屏幕文本逐行右去尾空格、剥末尾空行，不足 pane_height 时空行补齐 → 投影后的 ScreenCapture 满足 ADT 全部帧断言（plain_of==screen_data / 行数==height / 行宽≤width）。
-2. **harness 不算终端占有者**：actor=harness 的 acquired 只是 RemoteBuddy 会话层接管，不构成 TerminalControl（tmux 拥有者仍是 human 或 generator agent）。
-3. **role map 推断**：现 journal 无角色元数据，出现的 agent 一律推断为 generator（单 agent 会议成立）。
+2. **harness 不算终端占有者**：actor=harness 的 acquired 只是 RemoteBuddy 会话层接管，不构成 TerminalControl（tmux 拥有者仍是 human 或 actor agent）。
+3. **role map 推断**：现 journal 无角色元数据，出现的 agent 一律推断为 actor（单 agent 会议成立）。
 4. **缺流即空流**：无逐键/评分事件的会议不落 keystroke/score chunk，校验按空流处理（等价语义）。
 
 ## 给 ADT/存储的修订建议（不改代码，只做标注）

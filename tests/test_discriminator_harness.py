@@ -14,7 +14,7 @@ def _store(tmp_path) -> m2.MeetingStore:
     return m2.MeetingStore.create(
         tmp_path, "meeting-obs", "build hello world", SKILL, "s",
         model="deepseek-v4-flash",
-        agent_name2role={"actor": "generator", "critic": "passive_discriminator"},
+        agent_name2role={"actor": "actor", "critic": "critic"},
     )
 
 

@@ -82,7 +82,7 @@ const labels = {
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
   agentState: { thinking: "思考中", acting: "操作中", idle: "待命中", error: "异常" },
-  role: { generator: "生成者", active_discriminator: "主动判别", passive_discriminator: "被动判别" },
+  role: { actor: "行动者", active_discriminator: "主动判别", critic: "批判者" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
 
@@ -113,7 +113,7 @@ function agentStateForPhase(phase) {
   return AGENT_STATE_PHASES[phase] || "idle";
 }
 
-// Per-member state for the header chips. The generator follows terminal
+// Per-member state for the header chips. The actor follows terminal
 // ownership; every other member (discriminator/reviewer) is "active" while
 // the newest thinking/acting band in the timeline belongs to it.
 const IDLE_PHASE_BOUNDARY = new Set([
@@ -207,7 +207,7 @@ function renderMemberStates(meeting) {
 // single-agent shape as the fallback.
 function memberRoles(meeting) {
   const roles = meeting?.agent_name2role;
-  return (roles && Object.keys(roles).length) ? roles : { agent: "generator" };
+  return (roles && Object.keys(roles).length) ? roles : { agent: "actor" };
 }
 
 // The member panel behaves like a popover: it closes from anywhere that is not
@@ -249,8 +249,8 @@ function renderMemberDetails(meeting) {
   el.member_name_label.textContent = actor;
   el.member_role_label.textContent = labels.role[role] || role;
   el.member_state_label.textContent = labels.agentState[memberState(actor, meeting)] || "待命";
-  // Only the generator may drive the shared terminal; everyone else watches.
-  el.member_terminal_label.textContent = role === "generator" ? "可写" : "只读";
+  // Only the actor may drive the shared terminal; everyone else watches.
+  el.member_terminal_label.textContent = role === "actor" ? "可写" : "只读";
   el.member_chat_label.textContent = `${stats.count} 条`;
   el.member_last_label.textContent = stats.last ? fmtTime(stats.last) : "—";
   if (view) view.classList.add("details-open");

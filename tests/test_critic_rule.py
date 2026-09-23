@@ -163,7 +163,7 @@ def test_a_moment_this_meeting_never_had_is_no_verdict(tmp_path) -> None:
     assert not isinstance(result["verdict"], Ok)
 
 
-def test_the_generator_writes_the_file_in_vi_line_by_line() -> None:
+def test_the_actor_writes_the_file_in_vi_line_by_line() -> None:
     """The live meeting's file is written by editing in vi, not by a heredoc.
 
     The pane is told to open the editor, the code is typed one line at a time

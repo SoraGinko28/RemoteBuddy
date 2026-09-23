@@ -105,15 +105,15 @@ class InteractiveRunner:
 
     @property
     def agent_name(self) -> str:
-        """The identity this worker acts under (its generator role name).
+        """The identity this worker acts under (its actor role name).
 
-        One worker = the meeting's generator agent; everything this runner
+        One worker = the meeting's actor agent; everything this runner
         writes to the journal (chat actor, action actor, terminal ownership)
         uses this name instead of the hard-coded legacy name. With the default
         role map the value equals DEFAULT_AGENT_NAME, so legacy behavior is
         byte-for-byte unchanged.
         """
-        return self.store.meeting.generator_name()
+        return self.store.meeting.actor_name()
 
     @staticmethod
     def _dynamic_action_fingerprint(action: AgentAction) -> Optional[tuple]:

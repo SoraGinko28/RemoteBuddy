@@ -214,23 +214,23 @@ class TestUserName:
 
     def test_is_human_false_for_empty_and_role_names(self) -> None:
         assert adt.is_human("") is False
-        assert adt.is_human("$generator") is False
+        assert adt.is_human("$actor") is False
         assert adt.is_human("$active_discriminator") is False
-        assert adt.is_human("$passive_discriminator") is False
+        assert adt.is_human("$critic") is False
 
 
 class TestAgentRole:
     def test_members_exactly_three(self) -> None:
         assert set(adt.AgentRole) == {
-            adt.AgentRole.GENERATOR,
+            adt.AgentRole.ACTOR,
             adt.AgentRole.ACTIVE_DISCRIMINATOR,
-            adt.AgentRole.PASSIVE_DISCRIMINATOR,
+            adt.AgentRole.CRITIC,
         }
 
     def test_json_values_match_adt_names(self) -> None:
-        assert adt.AgentRole.GENERATOR.value == "$generator"
+        assert adt.AgentRole.ACTOR.value == "$actor"
         assert adt.AgentRole.ACTIVE_DISCRIMINATOR.value == "$active_discriminator"
-        assert adt.AgentRole.PASSIVE_DISCRIMINATOR.value == "$passive_discriminator"
+        assert adt.AgentRole.CRITIC.value == "$critic"
 
     def test_role_names_never_collide_with_human_sentinel(self) -> None:
         for role in adt.AgentRole:
@@ -243,14 +243,14 @@ class TestAgentRole:
             assert adt.agent_role_from_name(adt.agent_role_from_name(role.value).value) is role
 
     @pytest.mark.parametrize("bad", [
-        "", "$root", "generator", "GENERATOR", "$generator ", " $generator",
+        "", "$root", "actor", "ACTOR", "$actor ", " $actor",
         "$active", "$passive", "active_discriminator",
     ])
     def test_from_name_rejects_unknown_strings(self, bad: str) -> None:
         with pytest.raises(ValueError):
             adt.agent_role_from_name(bad)
 
-    @pytest.mark.parametrize("bad", [None, 3, 3.5, ["$generator"], {"$generator"}])
+    @pytest.mark.parametrize("bad", [None, 3, 3.5, ["$actor"], {"$actor"}])
     def test_from_name_rejects_non_strings(self, bad: object) -> None:
         with pytest.raises((TypeError, ValueError)):
             adt.agent_role_from_name(bad)  # type: ignore[arg-type]
@@ -1046,9 +1046,9 @@ class TestScoreStreamChunkCodec:
 class TestSummonChained:
     def _role_map(self) -> dict:
         return {
-            "generator_bot": adt.AgentRole.GENERATOR,
+            "actor_bot": adt.AgentRole.ACTOR,
             "active_bot": adt.AgentRole.ACTIVE_DISCRIMINATOR,
-            "passive_bot": adt.AgentRole.PASSIVE_DISCRIMINATOR,
+            "passive_bot": adt.AgentRole.CRITIC,
         }
 
     def _role_of(self, role_map: dict):
@@ -1061,8 +1061,8 @@ class TestSummonChained:
                      adt.AtUserMessage(user_name=judge)],
         )
 
-    def test_generator_never_needs_summon(self) -> None:
-        msg = _score(judge="generator_bot", reference=None)
+    def test_actor_never_needs_summon(self) -> None:
+        msg = _score(judge="actor_bot", reference=None)
         assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is True
 
     def test_active_never_needs_summon(self) -> None:
@@ -1090,12 +1090,12 @@ class TestSummonChained:
 
     def test_passive_reference_to_mention_of_other_judge_not_chained(self) -> None:
         msg = _score(judge="passive_bot")
-        mention_other = self._mention_msg("generator_bot")
+        mention_other = self._mention_msg("actor_bot")
         assert adt.score_summon_chained(msg, self._role_of(self._role_map()),
                                         mention_other) is False
 
-    def test_assert_passes_for_generator(self) -> None:
-        msg = _score(judge="generator_bot")
+    def test_assert_passes_for_actor(self) -> None:
+        msg = _score(judge="actor_bot")
         assert adt.assert_score_summon_chained(msg, self._role_of(self._role_map()), None) is None
 
     def test_assert_fails_for_unsummoned_passive(self) -> None:
@@ -1229,15 +1229,15 @@ class TestOwnerAt:
 class TestTerminalCapable:
     def _role_of(self):
         return lambda name: {
-            "gen": adt.AgentRole.GENERATOR,
+            "gen": adt.AgentRole.ACTOR,
             "act": adt.AgentRole.ACTIVE_DISCRIMINATOR,
-            "pas": adt.AgentRole.PASSIVE_DISCRIMINATOR,
+            "pas": adt.AgentRole.CRITIC,
         }.get(name)
 
     def test_human_capable(self) -> None:
         assert adt.terminal_capable(adt.HUMAN_USER_NAME, self._role_of()) is True
 
-    def test_generator_capable(self) -> None:
+    def test_actor_capable(self) -> None:
         assert adt.terminal_capable("gen", self._role_of()) is True
 
     def test_discriminators_not_capable(self) -> None:
@@ -1403,8 +1403,8 @@ class TestMeetingData:
             meeting_uid="m-1",
             meeting_name="demo",
             agent_name2role={
-                "alice": adt.AgentRole.GENERATOR,
-                "bob": adt.AgentRole.PASSIVE_DISCRIMINATOR,
+                "alice": adt.AgentRole.ACTOR,
+                "bob": adt.AgentRole.CRITIC,
             },
             sorted_stream_chunks=[
                 adt.ScreenStreamChunk(owner_user_name="alice",
@@ -1426,8 +1426,8 @@ class TestMeetingData:
         payload = adt.meeting_data_to_dict(self._sample())
         assert payload["meeting_uid"] == "m-1"
         assert payload["agent_name2role"] == {
-            "alice": "$generator",
-            "bob": "$passive_discriminator",
+            "alice": "$actor",
+            "bob": "$critic",
         }
         assert [c["stream_name"] for c in payload["sorted_stream_chunks"]] == \
             ["screen", "chat"]
@@ -1445,7 +1445,7 @@ class TestMeetingData:
 
     def test_role_map_assert_fails_for_unknown_agent(self) -> None:
         data = self._sample()
-        data.agent_name2role["ghost"] = adt.AgentRole.GENERATOR
+        data.agent_name2role["ghost"] = adt.AgentRole.ACTOR
         with pytest.raises(AssertionError, match="ghost"):
             adt.assert_role_map_keys_in_user_names(data)
 
