@@ -282,6 +282,24 @@ def _extract_text(response: dict) -> str:
     raise m2.MeetingError("reviewer harness: no text content in response")
 
 
+def _contradiction(look: Look, heard: bool, excused: list, broken: list) -> str:
+    """How the answer disagrees with the check, or "" when it does not.
+
+    The harness owns this much: which two facts disagree. The words of the
+    answer stay the assistant's, before and after.
+    """
+    if look.action == "done":
+        if not heard:
+            return "critic_heard_since_actor is no, and DONE may not skip the review"
+        unexcused = [rule for rule in (broken or []) if rule not in (excused or [])]
+        if unexcused:
+            return (f"critic_violations include {', '.join(unexcused)}, which "
+                    f"prompt_excused_rules does not excuse")
+    if look.action == "remind" and not heard:
+        return "critic_heard_since_actor is no, and the actor owes nothing before the review"
+    return ""
+
+
 def _said_done_before(store: m2.MeetingStore, agent_name: str) -> bool:
     """Whether this meeting has already been told it is finished."""
     for event in reversed(store.events()):
@@ -570,6 +588,9 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
         rule_section, rule_report = assistant_rules.review(store)
         case = str((rule_report.get("message") or {}).get("event_id") or "")
         owed = any(rule.get("verdict") == "VIOLATED" for rule in rule_report.get("rules", []))
+        heard = bool(rule_report.get("critic_heard_since_actor"))
+        excused = list(rule_report.get("prompt_excused_rules") or [])
+        broken = list(rule_report.get("critic_violations") or [])
         # Still inside the grace is not "nothing to watch": a message with no
         # answer yet is exactly what this loop stays awake for.
         pending = any((rule.get("value") or 0) > 0 for rule in rule_report.get("rules", []))
@@ -595,6 +616,34 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
         _record_error(store, agent_name, exc)
         return Look("silent", "", case, owed, pending)
     look = parse_assistant_answer(answer, case=case, owed=owed, pending=pending)
+    # An answer that contradicts the check is not taken: the assistant is asked
+    # again with the contradiction stated as a fact. Nothing here writes a word
+    # of the answer — the retry only says which two facts disagree.
+    problem = _contradiction(look, heard, excused, broken)
+    if problem:
+        _record(store, agent_name, store.meeting.phase,
+                {"status": "contradiction", "problem": problem})
+        try:
+            retry = post(
+                {
+                    "model": model,
+                    "max_tokens": MAX_TOKENS,
+                    "thinking": {"type": "disabled"},
+                    "system": f"{ASSISTANT_PERSONA}\n\n{ASSISTANT_INSTRUCTIONS}",
+                    "messages": [{"role": "user", "content":
+                                  f"{observation}\n\n{rule_section}\n\n"
+                                  f"Your answer contradicts the check: {problem}. "
+                                  f"Answer again with one line."}],
+                },
+                base_url,
+                api_key,
+            )
+            answer = _extract_text(retry)
+            look = parse_assistant_answer(answer, case=case, owed=owed, pending=pending)
+            if _contradiction(look, heard, excused, broken):
+                look = Look("silent", "", case, owed, pending)
+        except Exception:  # noqa: BLE001 — a failed retry is silence, not a guess
+            look = Look("silent", "", case, owed, pending)
     look = look._replace(subject=_newest_actor_message(store))
     if look.action == "done" and _said_done_before(store, agent_name):
         # The meeting has already been told it is finished. A watch restarts
