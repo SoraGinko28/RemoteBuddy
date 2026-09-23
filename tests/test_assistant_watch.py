@@ -269,6 +269,19 @@ class TestTheRulesItCarries:
         assert done.action == "done"
         assert done.line.startswith("你点名要的签名")
 
+    def test_the_meeting_is_told_it_is_finished_once(self, tmp_path) -> None:
+        """A watch restarts whenever the actor is woken; DONE is said once."""
+        store = _store(tmp_path, "done-once")
+        store.append_chat("actor", "我改完了", "final")
+        store.append_chat("critic", "规则都过了", "final")
+        store.append_event("state", "assistant", store.meeting.phase,
+                           data={"reviewer": {"status": "looked", "action": "done",
+                                              "line": "你的要求和规则冲突"}})
+        look = reviewer_harness.assistant_turn(
+            store, "assistant",
+            post=_answer("DONE: 你的要求和规则冲突，这一轮算完成"))
+        assert look.action == "silent"
+
     def test_the_look_carries_the_rules_and_the_assistant_writes_the_line(
             self, tmp_path, monkeypatch) -> None:
         store = self._meeting_with_an_unanswered_critic(tmp_path, "remind", monkeypatch)

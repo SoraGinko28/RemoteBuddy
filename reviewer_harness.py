@@ -282,6 +282,17 @@ def _extract_text(response: dict) -> str:
     raise m2.MeetingError("reviewer harness: no text content in response")
 
 
+def _said_done_before(store: m2.MeetingStore, agent_name: str) -> bool:
+    """Whether this meeting has already been told it is finished."""
+    for event in reversed(store.events()):
+        if event.get("kind") != "state" or event.get("actor") != agent_name:
+            continue
+        reviewer = (event.get("data") or {}).get("reviewer") or {}
+        if reviewer.get("action") == "done":
+            return True
+    return False
+
+
 def _critic_spoke_last(store: m2.MeetingStore) -> bool:
     """Whether the critic has been heard since the actor last said anything."""
     roles = store.meeting.effective_role_map
@@ -501,7 +512,11 @@ ASSISTANT_INSTRUCTIONS = (
     "the actor cannot satisfy both, there is nothing left to chase, and the "
     "human is the one who has to decide. Say that to the human, once, plainly, "
     "quoting the request and the rule — not as a complaint about being asked, and "
-    "not addressed to a member.\n"
+    "not addressed to a member. Wait for the critic to have been heard about the "
+    "work first: the conflict is a reason not to chase the actor, not a reason to "
+    "skip the review. The check below states `critic_heard_since_actor`; while it "
+    "says no, your answer must be SUMMON — DONE and REMIND are not yours to give "
+    "before the work has been reviewed.\n"
     "- SILENT when nothing changed, when the change is cosmetic, or when "
     "everything owed has been said — silence is the normal answer."
 )
@@ -577,6 +592,11 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
         return Look("silent", "", case, owed, pending)
     look = parse_assistant_answer(answer, case=case, owed=owed, pending=pending)
     look = look._replace(subject=_newest_actor_message(store))
+    if look.action == "done" and _said_done_before(store, agent_name):
+        # The meeting has already been told it is finished. A watch restarts
+        # whenever the actor is woken, and saying it again every time is the
+        # repetition this whole round is about.
+        look = Look("silent", "", look.case, look.owed, look.pending, look.subject)
     # What the meeting needs is the rules' answer, not the model's opinion of it;
     # who hears about it, and in what words, is the model's — guided by the
     # instructions above and by the rule check in its context, never by a

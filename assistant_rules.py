@@ -117,6 +117,11 @@ def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
             case=case, wordings=RULE_WORDINGS))
     if not results:
         return (_NO_MESSAGE_SECTION, {"message": None, "citation": None, "rules": []})
+    # A fact the assistant needs to apply its own instructions: whether the
+    # critic has been heard since the actor last said anything. It is the
+    # meeting's state, not advice — the wording of any answer stays the
+    # assistant's.
+    heard = _critic_heard_since_actor(store)
     # The report keeps the case each verdict came from: a reader can tell what
     # was judged, and the citation points at the message the rules read.
     message = judged.get("unanswered_seconds_le_30") or next(iter(judged.values()))
@@ -131,7 +136,29 @@ def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
                          "offender": (result.get("offender") or {}).get("name"),
                          "value": (result.get("measured_value") or {}).get("value"),
                          "complaint": result.get("complaint")} for result in results]}
-    return _section(judged, results), report
+    report["critic_heard_since_actor"] = heard
+    return _section(judged, results, heard), report
+
+
+def _critic_heard_since_actor(store) -> bool:
+    """Whether the critic has spoken since the actor's newest message.
+
+    An answer nobody looked at is not an answer yet, and a meeting may not be
+    declared finished on a review that never happened.
+    """
+    roles = store.meeting.effective_role_map
+    critics = {name for name, role in roles.items() if role == "critic"}
+    actors = {name for name, role in roles.items() if role == "actor"}
+    heard = False
+    for event in reversed(store.events()):
+        if event.get("kind") != "chat" or not (event.get("content") or "").strip():
+            continue
+        who = event.get("actor")
+        if who in critics:
+            heard = True
+        elif who in actors:
+            return heard
+    return heard
 
 
 def _human_prompt(store) -> Optional[Dict[str, Any]]:
@@ -177,8 +204,9 @@ _NO_MESSAGE_SECTION = (
 )
 
 
-def _section(judged, results) -> str:
-    lines = ["=== rule check (the assistant's rules) ==="]
+def _section(judged, results, heard: bool = False) -> str:
+    lines = ["=== rule check (the assistant's rules) ===",
+             f"critic_heard_since_actor: {'yes' if heard else 'no'}"]
     for stem, message in judged.items():
         lines.append(f"rule {stem} judged message {message.get('event_id')} by "
                      f"{message.get('actor')} at {message.get('captured_at')}")
