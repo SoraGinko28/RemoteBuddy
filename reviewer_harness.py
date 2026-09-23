@@ -540,7 +540,15 @@ ASSISTANT_INSTRUCTIONS = (
     "request asks for — if the critic broke a rule the prompt did not ask for, the "
     "actor still owes that fix and your answer is REMIND.\n"
     "- SILENT when nothing changed, when the change is cosmetic, or when "
-    "everything owed has been said — silence is the normal answer."
+    "everything owed has been said — silence is the normal answer.\n"
+    # How it sounds matters as much as what it does.
+    "Sound like a person, not a checker: never put a rule name, a field name or "
+    "any other internal label in what you say — say the thing itself in plain "
+    "words. Say 你/我 or the member's name, never a role in the third person. One "
+    "point per line; do not restate what is already on the screen, and do not "
+    "reuse the same sentence you already used. If you are unsure what someone "
+    "meant or need something before you can decide, ask that one question "
+    "instead of guessing."
 )
 
 
