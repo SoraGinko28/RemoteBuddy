@@ -70,18 +70,28 @@ class LoadSummary:
 
 
 def _role_map_from_events(events: list[dict], manifest: dict) -> dict:
-    """Infer agent_name2role.
+    """agent_name2role: what the manifest recorded, or what the journal implies.
 
-    The current journal carries no role metadata: every non-human agent that
-    appears is inferred to be an actor (the tmux owner in a single-agent
-    meeting). $human never enters the role map.
+    A manifest written since identity exists carries the map; journals from
+    before it carry none, and there every non-human agent that appears is
+    inferred to be an actor (the tmux owner in a single-agent meeting). $human
+    never enters the role map.
     """
+    recorded = manifest.get("agent_name2role")
+    if isinstance(recorded, dict) and recorded:
+        return {str(name): _role_of(role) for name, role in recorded.items()}
     agents: set[str] = set()
     for event in events:
         actor = event.get("actor")
         if isinstance(actor, str) and actor not in ("human", "workspace", "harness"):
             agents.add(actor)
     return {name: adt.AgentRole.ACTOR for name in sorted(agents)}
+
+
+def _role_of(role: object) -> "adt.AgentRole":
+    """One role as the manifest writes it: the name, with or without its `$`."""
+    text = str(role)
+    return adt.AgentRole(text if text.startswith("$") else f"${text}")
 
 
 def _time_of(event: dict) -> Optional[object]:

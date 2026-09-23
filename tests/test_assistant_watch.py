@@ -43,20 +43,21 @@ class TestOneLook:
     def test_a_summon_becomes_a_line_to_the_critic(self, tmp_path) -> None:
         store = _store(tmp_path)
         post = _answer("SUMMON: 刚写进 quicksort.py 的代码值得过一遍")
-        line = reviewer_harness.assistant_turn(store, "assistant", post=post)
+        look = reviewer_harness.assistant_turn(store, "assistant", post=post)
 
-        assert line == "@critic 刚写进 quicksort.py 的代码值得过一遍"
+        assert look.action == "summon"
+        assert look.line == "@critic 刚写进 quicksort.py 的代码值得过一遍"
         assert len(post.asked) == 1
         assert post.asked[0]["messages"][0]["content"]        # it looked at the meeting
         looks = [event for event in store.events() if event.get("kind") == "state"
                  and event.get("actor") == "assistant"]
-        assert looks and looks[-1]["content"] == line
+        assert looks and looks[-1]["content"] == look.line
 
     def test_silence_is_an_answer(self, tmp_path) -> None:
         store = _store(tmp_path)
-        line = reviewer_harness.assistant_turn(store, "assistant",
+        look = reviewer_harness.assistant_turn(store, "assistant",
                                                post=_answer("SILENT"))
-        assert line is None
+        assert look.action == "silent"
         looks = [event for event in store.events() if event.get("kind") == "state"
                  and event.get("actor") == "assistant"]
         assert looks[-1]["content"] == "SILENT"
@@ -67,7 +68,8 @@ class TestOneLook:
         def broken(payload, base_url, api_key):
             raise RuntimeError("no endpoint today")
 
-        assert reviewer_harness.assistant_turn(store, "assistant", post=broken) is None
+        assert reviewer_harness.assistant_turn(store, "assistant",
+                                               post=broken).action == "silent"
         assert [event for event in store.events()
                 if event.get("kind") == "error" and event.get("content", "").startswith("RuntimeError")]
 
@@ -82,7 +84,7 @@ class TestWatch:
         reviewer_harness.watch(
             store, "assistant",
             actor_busy=lambda: busy.pop(0) if busy else False,
-            wake_critic=lambda line: None,
+            act=lambda look: None,
             stop=lambda: False,
             sleep=slept.append,
             post=_answer("SILENT"),
@@ -92,7 +94,7 @@ class TestWatch:
 
     def test_a_decision_while_the_actor_works_is_held_until_it_parks(self, tmp_path) -> None:
         store = _store(tmp_path)
-        busy = [True, True, False]
+        busy = [True, True, False, False]
         woken = []
         answers = ["SUMMON: 看一下刚写好的 quicksort.py", "SILENT", "SILENT"]
 
@@ -102,13 +104,13 @@ class TestWatch:
         reviewer_harness.watch(
             store, "assistant",
             actor_busy=lambda: busy.pop(0) if busy else False,
-            wake_critic=woken.append,
+            act=woken.append,
             stop=lambda: False,
             sleep=lambda seconds: None,
             post=post,
         )
         # Decided while the actor was working, said once it parked, and only once.
-        assert woken == ["@critic 看一下刚写好的 quicksort.py"]
+        assert [look.line for look in woken] == ["@critic 看一下刚写好的 quicksort.py"]
 
     def test_silence_all_the_way_through_wakes_nobody(self, tmp_path) -> None:
         store = _store(tmp_path)
@@ -117,7 +119,7 @@ class TestWatch:
         reviewer_harness.watch(
             store, "assistant",
             actor_busy=lambda: busy.pop(0) if busy else False,
-            wake_critic=woken.append,
+            act=woken.append,
             stop=lambda: False,
             sleep=lambda seconds: None,
             post=_answer("SILENT"),
@@ -137,7 +139,7 @@ class TestWatch:
         reviewer_harness.watch(
             store, "assistant",
             actor_busy=lambda: True,
-            wake_critic=lambda line: looks.append(line),
+            act=lambda look: looks.append(look.line),
             stop=stop,
             sleep=lambda seconds: None,
             post=answers,
@@ -187,3 +189,65 @@ class TestServiceWiring:
 def test_the_default_team_carries_an_assistant() -> None:
     assert m2.DEFAULT_AGENT_ROLE_MAP == {"actor": "actor", "critic": "critic",
                                          "assistant": "assistant"}
+
+
+class TestTheRulesItCarries:
+    """The assistant carries viba rules too: the first one is an owed answer."""
+
+    def _meeting_with_an_unanswered_critic(self, root, name, monkeypatch):
+        """A meeting whose critic spoke an hour ago and heard nothing back."""
+        # The whole meeting is in the past, so the wait is real: the actor wrote
+        # at 00:00, the critic answered it at 00:01, and nobody replied after.
+        monkeypatch.setattr(m2, "utc_now", lambda: "2026-09-23T00:00:00.000Z")
+        store = _store(root, name)
+        store.update(agent_name2role={"actor": "actor", "critic": "critic",
+                                      "assistant": "assistant"})
+        store.append_chat("actor", "写好了", "final")
+        monkeypatch.setattr(m2, "utc_now", lambda: "2026-09-23T00:01:00.000Z")
+        store.append_chat("critic", "两条规则违规：参数上限、分号折行", "final")
+        monkeypatch.undo()
+        return store
+
+    def test_an_unanswered_critic_message_is_caught(self, tmp_path, monkeypatch) -> None:
+        import assistant_rules
+
+        store = self._meeting_with_an_unanswered_critic(tmp_path, "unanswered", monkeypatch)
+        section, report = assistant_rules.review(store, store_dir=tmp_path / "store")
+
+        assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED"]
+        assert report["rules"][0]["offender"] == "actor"     # who owes the answer
+        assert "没回应" in report["rules"][0]["complaint"]
+        assert report["citation"]["kind"] == "chat"
+        assert report["citation"]["event_id"] == report["message"]["event_id"]
+        assert "该催的是" in section
+
+    def test_an_answered_message_is_no_longer_owed(self, tmp_path, monkeypatch) -> None:
+        import assistant_rules
+
+        store = self._meeting_with_an_unanswered_critic(tmp_path, "answered", monkeypatch)
+        store.append_chat("actor", "收到，我改", "ack")
+        _section, report = assistant_rules.review(store, store_dir=tmp_path / "store")
+        assert [rule["verdict"] for rule in report["rules"]] == ["holds"]
+
+    def test_the_rule_cannot_run_without_a_crafted_case(self, tmp_path) -> None:
+        """A rule is a program: the case is material, and nothing is baked in."""
+        import assistant_rules
+
+        rule = assistant_rules.RULES[0]
+        assert "unanswered_message_under_judgment" in rule.read_text(encoding="utf-8")
+        assert "limit = 30" in rule.read_text(encoding="utf-8")
+
+    def test_the_look_carries_the_rules_and_asks_the_actor(self, tmp_path, monkeypatch) -> None:
+        store = self._meeting_with_an_unanswered_critic(tmp_path, "remind", monkeypatch)
+        seen = {}
+
+        def post(payload, base_url, api_key):
+            seen["asked"] = payload["messages"][0]["content"]
+            return {"content": [{"type": "text", "text": "REMIND: 请回应 critic 的两条违规"}]}
+
+        look = reviewer_harness.assistant_turn(store, "assistant", post=post)
+
+        assert look.action == "remind"
+        assert look.line.startswith("@actor ")
+        assert look.case                                    # the message it is about
+        assert "该催的是" in seen["asked"]                   # the rules reached it

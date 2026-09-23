@@ -1199,8 +1199,9 @@ class MeetingWebService:
                 self.load_store(meeting_id),
                 assistant,
                 actor_busy=lambda: self._actor_actively_running(meeting_id),
-                wake_critic=lambda line: self._assistant_summons(
-                    meeting_id, assistant, critic, line),
+                critic_busy=lambda: self._reviewer_busy(meeting_id),
+                act=lambda look: self._assistant_acts(
+                    meeting_id, assistant, critic, look),
                 stop=stop,
             )
         except Exception as exc:  # noqa: BLE001 — a watcher must not die loudly
@@ -1214,6 +1215,14 @@ class MeetingWebService:
                 if self.assistant_jobs.get(meeting_id) is threading.current_thread():
                     self.assistant_jobs.pop(meeting_id, None)
 
+    def _assistant_acts(self, meeting_id: str, assistant: str, critic: str,
+                        look) -> None:
+        """Do what a look decided: wake the critic, or ask the actor for an answer."""
+        if look.action == "remind":
+            self._assistant_reminds(meeting_id, assistant, look.line)
+        else:
+            self._assistant_summons(meeting_id, assistant, critic, look.line)
+
     def _assistant_summons(self, meeting_id: str, assistant: str, critic: str,
                            line: str) -> None:
         """The assistant says what to look at, and the critic is woken."""
@@ -1222,6 +1231,33 @@ class MeetingWebService:
         except Exception:  # noqa: BLE001
             pass
         self._start_reviewer(meeting_id, critic)
+
+    def _assistant_reminds(self, meeting_id: str, assistant: str, line: str) -> None:
+        """The assistant asks the actor, and the actor is woken to answer.
+
+        Nobody may be woken beside the actor, so this runs when the actor is
+        parked; it is the same wake a human's message causes.
+        """
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                return
+            if store.meeting.control_owner == "human":
+                return
+            try:
+                store.append_chat(assistant, line, "request")
+            except Exception:  # noqa: BLE001
+                pass
+            self._require_terminal(store, "run the actor")
+            store.bump_request_generation(
+                failure=None,
+                cycle_action_count=0,
+                cycle_started_at=utc_now(),
+            )
+            config = self._config_for_store(store)
+            store.update(status="running", phase="agent_thinking",
+                         control_owner=store.meeting.actor_name())
+            self._ensure_worker(store, config, resume=True, fresh_conversation=False)
 
     def _start_reviewer(self, meeting_id: str, agent_name: str) -> None:
         """Summon a non-actor member in its own Claude Code process.

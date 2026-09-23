@@ -25,11 +25,12 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import meeting_v2 as m2
 from meeting_reviewer import REVIEWER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS_RETRY
 
+import assistant_rules
 import critic_rules
 
 REPO = Path(__file__).resolve().parent
@@ -449,30 +450,49 @@ ASSISTANT_PERSONA = (
 )
 
 ASSISTANT_INSTRUCTIONS = (
-    "Answer with exactly one of these two lines:\n"
+    "Answer with exactly one of these three lines:\n"
     "SUMMON: <what the critic should look at>\n"
+    "REMIND: <what the actor should answer>\n"
     "SILENT\n"
     "Choose SUMMON when work that the meeting cares about has just happened and "
     "the critic has not looked at it yet; say in one short sentence what to look "
-    "at (name the file or the change), as a message addressed to @critic. Choose "
-    "SILENT when nothing changed, when the change is cosmetic, or when the critic "
-    "has already looked at it — silence is the normal answer. Do not review the "
-    "work: the critic holds the rules, and its answer is the one that counts."
+    "at (name the file or the change). Choose REMIND when the rules below say an "
+    "answer is owed and late: say in one short sentence what the actor should "
+    "answer, and address it to the member the rules name. Choose SILENT when "
+    "nothing changed, when the change is cosmetic, or when the critic has already "
+    "looked at it — silence is the normal answer. Do not review the work and do "
+    "not answer in the actor's place: the rules hold the verdict, and the members "
+    "answer for themselves."
 )
 
 
-def parse_assistant_answer(answer: str, critic_name: str = "critic"):
-    """The line to send to the critic, or None to stay silent.
+class Look(NamedTuple):
+    """What one look decided: say this line, to this member, about this case."""
 
-    Only `SUMMON: ...` is an answer to act on; anything else means silence.
+    action: str      # "summon" (the critic should look), "remind" (the actor owes), "silent"
+    line: str        # what to say, already addressed
+    case: str        # the event the rules judged, so a reminder is said once
+    owed: bool = False     # the rules object: the answer is late
+    pending: bool = False  # a message is unanswered, inside the grace or not
+
+
+def parse_assistant_answer(answer: str, critic_name: str = "critic",
+                           actor_name: str = "actor", case: str = "",
+                           owed: bool = False, pending: bool = False) -> Look:
+    """What to do with one answer: a look. Silence is a look too.
+
+    Only `SUMMON: ...` (the critic should look) and `REMIND: ...` (the actor owes
+    an answer) are lines to say; anything else is silence.
     """
     head, separator, rest = (answer or "").strip().partition(":")
-    if head.strip().upper() != "SUMMON" or not separator or not rest.strip():
-        return None
+    kind = head.strip().upper()
+    if kind not in {"SUMMON", "REMIND"} or not separator or not rest.strip():
+        return Look("silent", "", case, owed, pending)
     line = " ".join(rest.split())
-    if critic_name and f"@{critic_name}" not in line:
-        line = f"@{critic_name} {line}"
-    return line
+    target = critic_name if kind == "SUMMON" else actor_name
+    if target and f"@{target}" not in line:
+        line = f"@{target} {line}"
+    return Look(kind.lower(), line, case, owed, pending)
 
 
 def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
@@ -488,6 +508,16 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
     try:
         store.refresh()
         observation = (observer or build_reviewer_observation)(store)
+        # The assistant's own rules, run for it before it looks: what is owed,
+        # and who owes it, is the rules' answer, not the model's guess.
+        rule_section, rule_report = assistant_rules.review(store)
+        case = str((rule_report.get("message") or {}).get("event_id") or "")
+        owed = any(rule.get("verdict") == "VIOLATED" for rule in rule_report.get("rules", []))
+        # Still inside the grace is not "nothing to watch": a message with no
+        # answer yet is exactly what this loop stays awake for.
+        pending = any((rule.get("value") or 0) > 0 for rule in rule_report.get("rules", []))
+        _record(store, agent_name, store.meeting.phase,
+                {"status": "checked", "rule_check": rule_report}, content=rule_section)
         provider = _read_provider_config()
         model = provider.get("model") or "deepseek-v4-flash"
         base_url = provider.get("base_url") or "https://api.deepseek.com/anthropic"
@@ -498,7 +528,7 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
                 "max_tokens": MAX_TOKENS,
                 "thinking": {"type": "disabled"},
                 "system": f"{ASSISTANT_PERSONA}\n\n{ASSISTANT_INSTRUCTIONS}",
-                "messages": [{"role": "user", "content": observation}],
+                "messages": [{"role": "user", "content": observation + "\n\n" + rule_section}],
             },
             base_url,
             api_key,
@@ -506,38 +536,49 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
         answer = _extract_text(response)
     except Exception as exc:  # noqa: BLE001 — the loop must survive a bad look
         _record_error(store, agent_name, exc)
-        return None
-    line = parse_assistant_answer(answer)
+        return Look("silent", "", case, owed, pending)
+    look = parse_assistant_answer(answer, case=case, owed=owed, pending=pending)
     # The look is part of the record either way: what it saw, and what it said.
     _record(store, agent_name, store.meeting.phase,
-            {"status": "looked", "answer": answer[:400], "summon": line},
-            content=line or "SILENT")
-    return line
+            {"status": "looked", "answer": answer[:400],
+             "action": look.action, "line": look.line, "owed": look.owed},
+            content=look.line or "SILENT")
+    return look
 
 
 def watch(store: m2.MeetingStore, agent_name: str, *, actor_busy: Any,
-          wake_critic: Any, stop: Any, interval: float = WATCH_INTERVAL_SECONDS,
+          critic_busy: Any = None, act: Any, stop: Any,
+          interval: float = WATCH_INTERVAL_SECONDS,
           sleep: Any = time.sleep, post: Any = None, observer: Any = None) -> None:
     """Look every ``interval`` seconds while the actor works.
 
     The actor parking is itself worth a look — a piece of work just ended — so
-    the loop takes one more look after it parks, says what it decided, and
+    the loop takes one more look after it parks, does what it decided, and
     returns. A decision made while the actor is still working is held until it
-    parks: the critic may not run beside the actor, and the work will have moved
-    on by then anyway.
+    parks: nobody may be summoned beside the actor, and the work will have moved
+    on by then anyway. One message gets one reminder: saying the same thing every
+    ten seconds is not patience, it is noise.
     """
     waiting = None
+    reminded: set = set()
     while not stop():
         sleep(interval)
         if stop():
             return
-        busy = bool(actor_busy())
-        waiting = assistant_turn(store, agent_name, post=post, observer=observer) or waiting
-        if busy:
-            continue
-        if waiting:
-            wake_critic(waiting)
-        return
+        look = assistant_turn(store, agent_name, post=post, observer=observer)
+        if look.action == "remind" and look.case in reminded:
+            look = Look("silent", "", look.case, look.owed, look.pending)   # said once
+        if look.action != "silent":
+            waiting = look
+        if actor_busy():
+            continue                         # hold it until the actor parks
+        if waiting is not None:
+            if waiting.action == "remind" and waiting.case:
+                reminded.add(waiting.case)
+            act(waiting)
+            waiting = None
+        if not look.pending and not (critic_busy and critic_busy()):
+            return                           # nothing owed, nobody working: done
 
 
 def _record_error(store: m2.MeetingStore, agent_name: str, exc: BaseException) -> None:

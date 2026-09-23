@@ -20,7 +20,7 @@ import ast
 import datetime as dt
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import meeting_core_reflect as reflect
 import meeting_loader
@@ -49,6 +49,18 @@ FRAMES_TO_SEARCH = 64
 
 # Where a meeting keeps the evidence of its rule checks.
 EVIDENCE_DIR = "critic_rules"
+
+
+class Case(NamedTuple):
+    """How one family of rules makes its cases: the address, and the material.
+
+    A rule never carries a case; the reviewer writes one under the address the
+    rule reads, and the material is that case as viba data.
+    """
+
+    case_env: str                                        # where the case lands
+    snapshot: str                                        # the name the host reads it under
+    material: Callable[[Any, Tuple[int, int]], Any]      # event + region -> viba data
 
 
 class RuleWording(NamedTuple):
@@ -80,15 +92,26 @@ RULE_WORDINGS = {
 # ----------------------------------------------------------------------
 
 
-def judge_moment(store, screen, region, store_dir, rule: Path) -> Dict[str, Any]:
-    """Run one rule over one moment: the case is material the critic wrote.
+def screen_case(event, region: Tuple[int, int]):
+    """The critic's case: the moment, the stream, the region of the pane."""
+    return screen_reference_material(captured_microsecond(event), region)
+
+
+# The critic's rules judge a screen; their case is a screen reference.
+SCREEN_CASE = Case(CASE_ENV, ops.REFERENCE_SNAPSHOT, screen_case)
+
+
+def judge_moment(store, case_event, region, store_dir, rule: Path, *,
+                 case: Case = SCREEN_CASE,
+                 wordings: Dict[str, "RuleWording"] = None) -> Dict[str, Any]:
+    """Run one rule over one case: the case is material the reviewer wrote.
 
     Answers what the rule said (``Ok(True)`` holds, ``Ok(False)`` objects, a
     ``VibaProgramErr`` is a rule that did not run), how often the impure step
     really measured, and — when it objects — the sentence to repeat.
     """
-    wording = RULE_WORDINGS[Path(rule).stem]
-    microsecond = captured_microsecond(screen)
+    wordings = RULE_WORDINGS if wordings is None else wordings
+    wording = wordings[Path(rule).stem]
     store_dir = Path(store_dir)
     if store_dir.exists():
         shutil.rmtree(store_dir)
@@ -104,12 +127,12 @@ def judge_moment(store, screen, region, store_dir, rule: Path) -> Dict[str, Any]
     environ = Environment(storage, EnvironmentCompute(host.get_func),
                           viba_path=f"{design.parent}:{Path(rule).parent}")
 
-    # the evidence: this moment, this stream, this region — under the case's address
-    write_snapshot(environ.sub_env(CASE_ENV),
-                   screen_reference_material(microsecond, region),
-                   ops.REFERENCE_SNAPSHOT)
+    # the evidence: the cited thing, under the case's address
+    write_snapshot(environ.sub_env(case.case_env), case.material(case_event, region),
+                   case.snapshot)
 
-    result: Dict[str, Any] = {"rule": Path(rule).stem, "case": (microsecond, region),
+    result: Dict[str, Any] = {"rule": Path(rule).stem,
+                              "case": (str(case_event.get("event_id") or ""), region),
                               "complaint": None, "backup": backup,
                               "replayed_without_measuring": None}
     verdict = prepare_run(str(rule), environ)
@@ -125,16 +148,18 @@ def judge_moment(store, screen, region, store_dir, rule: Path) -> Dict[str, Any]
     result["judged"] = host.judged
     result["replayed_without_measuring"] = host.measured == measured_once
 
-    if isinstance(verdict, Ok) and verdict.ok_value is False:
-        case_env = environ.sub_env(CASE_ENV)
+    if isinstance(verdict, Ok):
+        case_env = environ.sub_env(case.case_env)
         name = measured_value(read_prepare(case_env, wording.name))
         value = measured_value(read_prepare(case_env, wording.value))
-        # Who and how much, kept as data: the meeting records the offender next
-        # to the rule, not only inside a sentence. For a line rule the offender
-        # is a line, not a function — the wording says which it is.
-        result["offender"] = {"name": name, "value": value}
-        result["complaint"] = (f"规则 {Path(rule).stem} 违规：{name} "
-                              f"{wording.wording.format(value=value)}。")
+        # What was measured, and who it is about, is data whether or not the
+        # rule objected: a reader of the meeting can tell a case that is inside
+        # the limit from one that is still being watched.
+        result["measured_value"] = {"name": name, "value": value}
+        if verdict.ok_value is False:
+            result["offender"] = {"name": name, "value": value}
+            result["complaint"] = (f"规则 {Path(rule).stem} 违规：{name} "
+                                  f"{wording.wording.format(value=value)}。")
     return result
 
 
@@ -250,7 +275,8 @@ def _review(store, store_dir, rules) -> Tuple[str, Dict[str, Any]]:
         results = []
         for rule in rules:
             where = Path(store_dir) if store_dir else Path(store.run_dir) / EVIDENCE_DIR
-            results.append(judge_moment(store, screen, region, where / rule.stem, rule))
+            results.append(judge_moment(store, screen, region, where / rule.stem, rule,
+                                        case=SCREEN_CASE))
         report = {"frame": {"event_id": screen.get("event_id"),
                             "captured_at": screen.get("captured_at"),
                             "region": list(region)},

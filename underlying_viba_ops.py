@@ -26,7 +26,7 @@ from __future__ import annotations
 import ast
 import io
 import tokenize
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import meeting_core_reflect as reflect
 import meeting_local_sdk as sdk
@@ -53,6 +53,12 @@ PARAMETER_LIMIT_NAME = "within_parameter_limit"
 FOLDED_NAME = "max_folded_statements"
 WORST_FOLDED_NAME = "worst_folded_line"
 FOLD_LIMIT_NAME = "within_fold_limit"
+# the assistant's rule: the member that owes an answer has gone quiet
+CHAT_REFERENCE_NAME = "cited_critic_message"
+CHAT_SNAPSHOT = "cited_critic_message"     # what the assistant leaves there
+UNANSWERED_NAME = "max_unanswered_seconds"
+SILENT_NAME = "unanswered_member"
+GRACE_NAME = "within_answer_grace"
 
 
 class MeetingOps:
@@ -77,6 +83,10 @@ class MeetingOps:
             FOLDED_NAME: self.max_folded_statements,
             WORST_FOLDED_NAME: self.worst_folded_line,
             FOLD_LIMIT_NAME: self.within_fold_limit,
+            CHAT_REFERENCE_NAME: self.cited_critic_message,
+            UNANSWERED_NAME: self.max_unanswered_seconds,
+            SILENT_NAME: self.unanswered_member,
+            GRACE_NAME: self.within_answer_grace,
         }.get(func_name)
 
     # ---- the rule's functions ----
@@ -159,6 +169,37 @@ class MeetingOps:
         """Does one line hold at most the allowed number of statements? Pure."""
         self.judged += 1
         return count.value <= limit.value
+
+    def cited_critic_message(self, env):
+        """The chat message the assistant cited: what the critic just said.
+
+        Material, like the critic's screen reference: the assistant writes it
+        under the case's own address.
+        """
+        cited = read_snapshot(env, CHAT_SNAPSHOT)
+        if cited is None:
+            raise ValueError(f"no cited message at {CHAT_SNAPSHOT!r} "
+                             f"under this case's address")
+        return cited
+
+    def max_unanswered_seconds(self, env, subject):
+        """How long the member that owes an answer has been quiet (measured)."""
+        def compute(prepared):
+            self.measured += 1
+            return _unanswered(prepared, self.ctx)[0]
+        return measure(env, UNANSWERED_NAME, subject, compute)
+
+    def unanswered_member(self, env, subject):
+        """Who owes it — measured as well, so the complaint can name them."""
+        def compute(prepared):
+            self.measured += 1
+            return _unanswered(prepared, self.ctx)[1]
+        return measure(env, SILENT_NAME, subject, compute)
+
+    def within_answer_grace(self, env, seconds, who, limit):
+        """Has the wait stayed inside the grace the rule allows? Pure."""
+        self.judged += 1
+        return seconds.value <= limit.value
 
 
 # ----------------------------------------------------------------------
@@ -317,6 +358,73 @@ def _worst_folding(code: str) -> Tuple[str, int]:
     return (f"{inside} {where}" if inside else where), counts[line] + 1
 
 
+# ----------------------------------------------------------------------
+# the chat side: who owes an answer, and how long they have been quiet
+# ----------------------------------------------------------------------
+
+
+def _unanswered(subject, ctx) -> Tuple[int, str]:
+    """(seconds the answer is overdue, who owes it) for the cited message.
+
+    The cited message is found by its identity — the `$microsecond` the design
+    gives a moment — and the wait is the distance between two moments the
+    meeting itself handed out; the members and their roles come from
+    `meeting_sdk` as well. Nothing here rebuilds a datetime, a name or a role
+    out of the record it was handed.
+    """
+    cited_us = _given(subject.get_msg_time(), "microsecond")
+    actor = _actor_name(ctx)
+    window = _chat_window(ctx)
+    cited_at = next((when for when, _ in window if _moment_us(when) == cited_us), None)
+    if cited_at is None:
+        return 0, ""
+    if actor:
+        for when, author in window:
+            if author == actor and when > cited_at:
+                return 0, ""        # the actor answered: nothing is overdue
+    now_at = _ok_root("Result[datetime]", sdk.now(ctx)).data
+    return max(0, int((now_at - cited_at).total_seconds())), actor
+
+
+def _chat_window(ctx) -> List[Tuple[Any, str]]:
+    """(moment, author) for every chat message the meeting has, oldest first."""
+    start = _ok_root("Result[datetime]", sdk.first_chunk_time(ctx)).data
+    end = _ok_root("Result[datetime]", sdk.now(ctx)).data
+    found = _ok_root("Result[list[ChatMessage]]", sdk.chat_messages(ctx, start, end))
+    return [(found[index].get_time().data, _message_author(found[index]))
+            for index in range(len(found))]
+
+
+def _moment_us(value) -> int:
+    """The design's `$microsecond` for a moment the meeting handed out."""
+    return _record_leaf(_root("datetime", value).get_microsecond())
+
+
+def _message_author(message) -> str:
+    """The agent that wrote a message, or "" when the human did.
+
+    The record layer carries a user name as one string: an agent's name, or the
+    human sentinel. `$human` is the sentinel — a member named "human" is not a
+    member at all.
+    """
+    name = str(_record_leaf(message.get_user_name().get_agent_name()))
+    return "" if name in {"$human", "human"} else name
+
+
+def _actor_name(ctx) -> str:
+    """The member that holds the terminal: the one who owes the answers."""
+    roles = _ok_root("Result[dict[str, AgentRole]]", sdk.roles(ctx))
+    for name in roles.keys():
+        if roles.at_key(name).has_actor():
+            return str(name)
+    return ""
+
+
+def _ok_root(type_expression: str, answer):
+    """`$ok` of a meeting_sdk answer, rooted at the type the api declares."""
+    return _root(type_expression, answer).get_ok()
+
+
 def _enclosing_function(code: str, line: int) -> str:
     """The innermost function that line is inside, or "" at module level."""
     tree = _parse(code)
@@ -332,4 +440,5 @@ def _enclosing_function(code: str, line: int) -> str:
 __all__ = ["MeetingOps", "REFERENCE_NAME", "REFERENCE_SNAPSHOT", "LINES_NAME",
            "NAME_NAME", "LIMIT_NAME", "PARAMETERS_NAME", "WIDEST_NAME",
            "PARAMETER_LIMIT_NAME", "FOLDED_NAME", "WORST_FOLDED_NAME",
-           "FOLD_LIMIT_NAME", "SCREEN_STREAM"]
+           "FOLD_LIMIT_NAME", "CHAT_REFERENCE_NAME", "CHAT_SNAPSHOT",
+           "UNANSWERED_NAME", "SILENT_NAME", "GRACE_NAME", "SCREEN_STREAM"]

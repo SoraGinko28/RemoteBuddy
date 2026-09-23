@@ -167,6 +167,9 @@ def main() -> int:
                         help="what the actor is asked to do")
     parser.add_argument("--join", default=None,
                         help="skip phase 1 and review this existing meeting id")
+    parser.add_argument("--wait-answer", type=float, default=0.0,
+                        help="after the critic speaks, wait this long for the actor "
+                             "to answer it (the assistant reminds it to)")
     parser.add_argument("--ask", default=REVIEWER_ASK,
                         help="the @critic message that summons the reviewer; "
                              "empty means nobody asks and the assistant decides")
@@ -212,6 +215,22 @@ def main() -> int:
                               400, "reviewer final chat")
         summary["critic_final"] = critic_finals[-1]["content"][:160]
         print("critic final recorded", flush=True)
+
+        # Phase 3 (optional): the critic has spoken; does the actor answer it?
+        # Nobody asks by hand — the assistant watches for exactly this.
+        if options.wait_answer:
+            spoke_at = critic_finals[-1].get("captured_at") or ""
+
+            def actor_answered() -> list:
+                answers = [e for e in live.events()
+                           if e.get("kind") == "chat" and e.get("actor") == "agent"
+                           and (e.get("captured_at") or "") > spoke_at]
+                return answers or None
+
+            answers = _wait(actor_answered, options.wait_answer,
+                            "the actor to answer the critic")
+            summary["actor_answer"] = answers[-1]["content"][:160]
+            print("actor answered:", answers[-1]["content"][:80], flush=True)
 
         events = live.events()
         summary["meeting_id"] = live.meeting_id
