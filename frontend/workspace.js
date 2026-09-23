@@ -1736,7 +1736,11 @@ function renderTerminal() {
     state.terminalFrameKey = null;
   }
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
-  const replayReference = scoreReferenceAtPlayback();
+  // A clicked citation is also a reason to show a particular frame: the quote
+  // points at the moment the rules judged, so the terminal has to go there.
+  // A score replay, when one is running, still wins.
+  const replayReference = scoreReferenceAtPlayback()
+    || (state.highlightReference?.kind === "screen" ? state.highlightReference : null);
   const replaySource = replayReference?.kind === "screen"
     ? state.timeline.find(
       (event) => event.kind === "screen" && event.event_id === replayReference.event_id,
