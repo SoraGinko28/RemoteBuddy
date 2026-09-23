@@ -1,4 +1,4 @@
-"""meeting_reviewer tests: one-turn discriminator behavior with a fake backend."""
+"""meeting_reviewer tests: one-turn reviewer behavior with a fake backend."""
 
 import threading
 from pathlib import Path

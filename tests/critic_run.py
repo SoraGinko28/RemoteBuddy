@@ -38,7 +38,7 @@ that chat message itself, under the critic's name, from the rule's Prepares
 not scripted is the rule, the measurement and the verdict — those are the
 product's own layers (``viba.compliance``, ``meeting_sdk``, ``viba.reflect``).
 The participant that would read the meeting and decide to speak for real is
-``meeting_reviewer``/``discriminator_harness``, and this demo does not use it.
+``meeting_reviewer``/``reviewer_harness``, and this demo does not use it.
 
 The rules are viba source; the host is ``underlying_viba_ops``, which reaches
 the meeting through ``meeting_sdk`` only and reads what it gets through
@@ -319,7 +319,7 @@ def cite(store, screen, complaint: str):
     reference = references.reference_from_event(
         screen, {"kind": "screen", "event_id": screen["event_id"],
                  "region": {"start": 0, "end": len(content)}})
-    store.append_chat(m2.DEFAULT_DISCRIMINATOR_NAME, complaint, "request",
+    store.append_chat(m2.DEFAULT_REVIEWER_NAME, complaint, "request",
                       references=[reference])
 
 

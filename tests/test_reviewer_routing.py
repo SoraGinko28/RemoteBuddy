@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import discriminator_harness
+import reviewer_harness
 import meeting_v2 as m2
 import web_v2
 
@@ -84,7 +84,7 @@ class TestReviewerRouting:
         return store
 
     def test_at_critic_summons_only_reviewer(self, service, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(discriminator_harness, "comment_once", _fake_comment)
+        monkeypatch.setattr(reviewer_harness, "comment_once", _fake_comment)
         store = self._idle_meeting(tmp_path)
         service.message(store.meeting.meeting_id,
                         {"message": "@critic what do you think?"})
@@ -113,7 +113,7 @@ class TestReviewerRouting:
         that keeps @mentions away from the actor cannot depend on the
         delivery mode.
         """
-        monkeypatch.setattr(discriminator_harness, "comment_once", _fake_comment)
+        monkeypatch.setattr(reviewer_harness, "comment_once", _fake_comment)
         store = self._idle_meeting(tmp_path)
         service.message(store.meeting.meeting_id,
                         {"message": "@critic what do you think?", "delivery": "interrupt"})
@@ -136,7 +136,7 @@ class TestReviewerRouting:
 
     def test_plain_message_does_not_summon_reviewer(self, service, tmp_path,
                                                    monkeypatch) -> None:
-        monkeypatch.setattr(discriminator_harness, "comment_once", _fake_comment)
+        monkeypatch.setattr(reviewer_harness, "comment_once", _fake_comment)
         store = self._idle_meeting(tmp_path)
         service.message(store.meeting.meeting_id, {"message": "go on"})
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)

@@ -208,6 +208,19 @@ class _Recorder:
         self.calls.append(("special", key))
 
 
+def test_a_numbered_view_is_read_and_a_dump_of_values_is_not() -> None:
+    """The pane shows what a viewer printed: `cat -n` numbers every line, and a
+    program's output parses as well as code does. The region is the code."""
+    numbered = "\n".join(f"{index:6d}\t{line}"
+                         for index, line in enumerate(critic_run.SHORT_CODE.split("\n"), start=1))
+    text = "$ cat -n batch.py\n" + numbered + "\n$ "
+    start, end = critic_rules.code_region(text)
+    assert critic_rules.ops.editor_text(text[start:end]) == critic_run.SHORT_CODE
+
+    dump = "$ python3 batch.py\n[1, 2, 3, 4, 5] [1, 2, 3, 4, 5]\n[5, 4, 3, 2, 1]\n$ "
+    assert critic_rules.code_region(dump) is None
+
+
 def test_the_critic_finds_the_code_on_the_screen() -> None:
     """A pane holds more than code — the command, the prompt after it. The region
     the critic cites is the longest block of lines the Python parser accepts."""
@@ -215,6 +228,33 @@ def test_the_critic_finds_the_code_on_the_screen() -> None:
     start, end = critic_rules.code_region(text)
     assert text[start:end] == critic_run.SHORT_CODE
     assert critic_rules.code_region("$ ls -la\ntotal 0\n$ ") is None
+
+
+def test_the_edit_is_judged_before_the_screen_that_printed_it(tmp_path) -> None:
+    """The rules are about the edit: when the code is still on an editor frame,
+    that frame is judged — a newer frame that printed the file next to a test
+    run's output is not where the problem is, even though the code is on it."""
+    store, _captures = _meeting(tmp_path, "first-scene")
+    code = critic_run.SHORT_CODE
+
+    def append(pane, command):
+        rows = [row.rstrip(" ") for row in pane.split("\n")]
+        return store.append_screen(pane, command, str(store.workspace_path),
+                                   metadata={"pane_width": max(adt.cell_width(r) for r in rows) + 1,
+                                             "pane_height": len(rows),
+                                             "cursor_x": 0, "cursor_y": len(rows) - 1})
+
+    editor = append(code + "\n" + "\n".join("~" for _ in range(6)) + "\n-- INSERT --",
+                    "vim quicksort.py")
+    printed = append("$ cat -n quicksort.py\n" + code + "\n$ python3 quicksort.py\n"
+                     "[1, 2, 3] [1, 2, 3]\n$ ", "cat -n quicksort.py")
+
+    _section, report = critic_rules.review(store, store_dir=tmp_path / "store")
+
+    assert report["frame"]["event_id"] == editor["event_id"]
+    assert report["frame"]["event_id"] != printed["event_id"]
+    assert report["citation"]["event_id"] == editor["event_id"]
+    assert report["citation"]["excerpt"].startswith("import json")
 
 
 def test_the_rule_check_reads_the_newest_screen_that_shows_python(tmp_path) -> None:
@@ -267,7 +307,7 @@ def test_the_ops_reach_data_through_meeting_sdk_only() -> None:
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    assert imported <= {"__future__", "ast", "io", "tokenize", "typing",
+    assert imported <= {"__future__", "ast", "io", "re", "tokenize", "typing",
                         "meeting_core_reflect", "meeting_local_sdk", "viba"}
 
     called = {node.func.attr for node in ast.walk(tree)

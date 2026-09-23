@@ -1,9 +1,9 @@
-"""meeting_reviewer — one-turn reviewer (discriminator) that runs in its own
+"""meeting_reviewer — one-turn reviewer that runs in its own
 Claude Code process and never touches the shared terminal.
 
 Why separate from InteractiveRunner: the runner's loop is written for the
 actor that OWNS the terminal (it gates on ``control_owner == its name``
-and drives tmux actions). A discriminator must not hold or act on the
+and drives tmux actions). A reviewer must not hold or act on the
 terminal; this module is a deliberately small, chat-only sibling that:
 
 - opens its own backend client (its own claude-code subprocess),
@@ -35,6 +35,10 @@ REVIEWER_OBSERVATION = "Continue. Reply when you have a comment."
 REVIEWER_RETRY = ("retry",)
 
 REVIEWER_INSTRUCTIONS = (
+    "Judge only what you were given: the rule check in your context holds the "
+    "rules you run, and its verdicts are yours to report. Do not rule on other "
+    "members' rules or on claims about them — you have not measured those. "
+
     "Answer only what the human asked, in 1-3 short sentences, same "
     "language. Bottom line first. Do not add background, recap, or anything "
     "unasked. Ask one question only if a missing detail is needed to answer."

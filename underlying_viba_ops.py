@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import tokenize
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import meeting_core_reflect as reflect
 import meeting_local_sdk as sdk
@@ -53,6 +54,29 @@ PARAMETER_LIMIT_NAME = "within_parameter_limit"
 FOLDED_NAME = "max_folded_statements"
 WORST_FOLDED_NAME = "worst_folded_line"
 FOLD_LIMIT_NAME = "within_fold_limit"
+# the assistant's rule: the member that owes an answer has gone quiet
+CHAT_REFERENCE_NAME = "cited_critic_message"
+CHAT_SNAPSHOT = "cited_critic_message"     # what the assistant leaves there
+UNANSWERED_NAME = "max_unanswered_seconds"
+SILENT_NAME = "unanswered_member"
+GRACE_NAME = "within_answer_grace"
+UNREVIEWED_NAME = "unreviewed_replies"
+REVIEW_LIMIT_NAME = "within_review_limit"
+# the assistant's third rule: the human's own words break a rule
+PROMPT_NAME = "cited_human_prompt"
+PROMPT_SNAPSHOT = "cited_human_prompt"     # what the assistant leaves there
+CONFLICTS_NAME = "prompt_rule_conflicts"
+CONFLICT_QUOTE_NAME = "prompt_conflict_quote"
+CONFLICT_LIMIT_NAME = "within_conflict_limit"
+
+# What each rule forbids, as the human's prompt would have to say it to be in
+# conflict with it. The limits are the rules' own (see critic/*.viba and the
+# first assistant rule): a prompt that asks for more is asking for a violation.
+MOST_PARAMETERS = 4
+MOST_STATEMENTS_PER_LINE = 1
+MOST_LINES = 15
+LINES_IN_PROMPT = re.compile(r"(\d+)\s*行")
+SIGNATURE_IN_PROMPT = re.compile(r"\b([A-Za-z_]\w*)\s*\(([^()]*)\)")
 
 
 class MeetingOps:
@@ -77,6 +101,16 @@ class MeetingOps:
             FOLDED_NAME: self.max_folded_statements,
             WORST_FOLDED_NAME: self.worst_folded_line,
             FOLD_LIMIT_NAME: self.within_fold_limit,
+            CHAT_REFERENCE_NAME: self.cited_critic_message,
+            UNANSWERED_NAME: self.max_unanswered_seconds,
+            SILENT_NAME: self.unanswered_member,
+            GRACE_NAME: self.within_answer_grace,
+            UNREVIEWED_NAME: self.unreviewed_replies,
+            REVIEW_LIMIT_NAME: self.within_review_limit,
+            PROMPT_NAME: self.cited_human_prompt,
+            CONFLICTS_NAME: self.prompt_rule_conflicts,
+            CONFLICT_QUOTE_NAME: self.prompt_conflict_quote,
+            CONFLICT_LIMIT_NAME: self.within_conflict_limit,
         }.get(func_name)
 
     # ---- the rule's functions ----
@@ -160,6 +194,80 @@ class MeetingOps:
         self.judged += 1
         return count.value <= limit.value
 
+    def cited_critic_message(self, env):
+        """The chat message the assistant cited: what the critic just said.
+
+        Material, like the critic's screen reference: the assistant writes it
+        under the case's own address.
+        """
+        cited = read_snapshot(env, CHAT_SNAPSHOT)
+        if cited is None:
+            raise ValueError(f"no cited message at {CHAT_SNAPSHOT!r} "
+                             f"under this case's address")
+        return cited
+
+    def max_unanswered_seconds(self, env, subject):
+        """How long the member that owes an answer has been quiet (measured)."""
+        def compute(prepared):
+            self.measured += 1
+            return _unanswered(prepared, self.ctx)[0]
+        return measure(env, UNANSWERED_NAME, subject, compute)
+
+    def unanswered_member(self, env, subject):
+        """Who owes it — measured as well, so the complaint can name them."""
+        def compute(prepared):
+            self.measured += 1
+            return _unanswered(prepared, self.ctx)[1]
+        return measure(env, SILENT_NAME, subject, compute)
+
+    def within_answer_grace(self, env, seconds, who, limit):
+        """Has the wait stayed inside the grace the rule allows? Pure."""
+        self.judged += 1
+        return seconds.value <= limit.value
+
+    def unreviewed_replies(self, env, subject):
+        """How many replies the actor has made since that message (measured).
+
+        An answer nobody has looked at is not an answer yet: the critic owes it
+        a re-check, and this is how many it owes.
+        """
+        def compute(prepared):
+            self.measured += 1
+            return _answer_state(prepared, self.ctx)[2]
+        return measure(env, UNREVIEWED_NAME, subject, compute)
+
+    def within_review_limit(self, env, replies, who, limit):
+        """Have the replies been reviewed yet? Pure."""
+        self.judged += 1
+        return replies.value <= limit.value
+
+    def cited_human_prompt(self, env):
+        """The human's own words, the ones the assistant cited."""
+        cited = read_snapshot(env, PROMPT_SNAPSHOT)
+        if cited is None:
+            raise ValueError(f"no human prompt at {PROMPT_SNAPSHOT!r} "
+                             f"under this case's address")
+        return cited
+
+    def prompt_rule_conflicts(self, env, subject):
+        """How many of the meeting's rules the human's own words break (measured)."""
+        def compute(prepared):
+            self.measured += 1
+            return prompt_conflicts(_prompt_text(self.ctx, prepared))[0]
+        return measure(env, CONFLICTS_NAME, subject, compute)
+
+    def prompt_conflict_quote(self, env, subject):
+        """The words that did it — measured as well, so the verdict can quote them."""
+        def compute(prepared):
+            self.measured += 1
+            return prompt_conflicts(_prompt_text(self.ctx, prepared))[1]
+        return measure(env, CONFLICT_QUOTE_NAME, subject, compute)
+
+    def within_conflict_limit(self, env, conflicts, quote, limit):
+        """Does the human's prompt stay inside what the rules allow? Pure."""
+        self.judged += 1
+        return conflicts.value <= limit.value
+
 
 # ----------------------------------------------------------------------
 # the subject: a meeting_core ScreenReference, read through reflect
@@ -186,7 +294,8 @@ def _code(ctx, subject) -> str:
     if isinstance(answer, VibaProgramErr):
         raise ValueError(answer.err_msg)
     text = _record_leaf(_screen_content(answer).get_text())
-    return text[start:end]
+    # What the pane shows is not always the file: a viewer prints line numbers.
+    return editor_text(text[start:end])
 
 
 def _moment(ctx, microsecond: int):
@@ -288,6 +397,31 @@ def _widest(found: List[Tuple[str, int, int]]) -> Tuple[str, int]:
     return best[0], best[2]
 
 
+# `cat -n` and vim's `number` both write a line as `  10<TAB>items = ...`.
+GUTTER = re.compile(r"^[ \t]*(\d+)[ \t](.*)$")
+
+
+def editor_text(text: str) -> str:
+    """The code as the screen shows it, with a line-number gutter taken off.
+
+    The numbers a viewer prints are not part of the file, so a region read off
+    the pane goes through here before anything parses it. Only a block where
+    every non-empty line is numbered, with the numbers ascending by one, counts
+    as a gutter; anything else is left alone.
+    """
+    lines = text.split("\n")
+    matched = [GUTTER.match(line) for line in lines]
+    numbered = [found for found in matched if found]
+    if not numbered or any(found is None and line.strip()
+                           for found, line in zip(matched, lines)):
+        return text
+    numbers = [int(found.group(1)) for found in numbered]
+    if any(second - first != 1 for first, second in zip(numbers, numbers[1:])):
+        return text
+    return "\n".join(found.group(2) if found else line
+                     for found, line in zip(matched, lines))
+
+
 def _semicolon_lines(code: str) -> Dict[int, int]:
     """Line -> how many `;` statement separators it holds.
 
@@ -317,6 +451,146 @@ def _worst_folding(code: str) -> Tuple[str, int]:
     return (f"{inside} {where}" if inside else where), counts[line] + 1
 
 
+# ----------------------------------------------------------------------
+# the chat side: who owes an answer, and how long they have been quiet
+# ----------------------------------------------------------------------
+
+
+def _unanswered(subject, ctx) -> Tuple[int, str]:
+    """(seconds overdue, who owes it) — see ``_answer_state``."""
+    seconds, who, _replies = _answer_state(subject, ctx)
+    return seconds, who
+
+
+def _answer_state(subject, ctx) -> Tuple[int, str, int]:
+    """(seconds overdue, who owes an answer, replies awaiting review).
+
+    The cited message is found by its identity — the `$microsecond` the design
+    gives a moment — and the wait is the distance between two moments the
+    meeting itself handed out; the members and their roles come from
+    `meeting_sdk` as well. Nothing here rebuilds a datetime, a name or a role
+    out of the record it was handed.
+    """
+    cited_us = _given(subject.get_msg_time(), "microsecond")
+    actor = _actor_name(ctx)
+    window = _chat_window(ctx)
+    cited_at = next((when for when, _ in window if _moment_us(when) == cited_us), None)
+    if cited_at is None:
+        return 0, "", 0
+    replies = [when for when, author in window if actor and author == actor and when > cited_at]
+    if replies:
+        # The actor answered: nothing is overdue, and how much of it is
+        # unreviewed is the count of those answers.
+        return 0, actor, len(replies)
+    now_at = _ok_root("Result[datetime]", sdk.now(ctx)).data
+    return max(0, int((now_at - cited_at).total_seconds())), actor, 0
+
+
+def _chat_window(ctx) -> List[Tuple[Any, str]]:
+    """(moment, author) for every chat message the meeting has, oldest first."""
+    start = _ok_root("Result[datetime]", sdk.first_chunk_time(ctx)).data
+    end = _ok_root("Result[datetime]", sdk.now(ctx)).data
+    found = _ok_root("Result[list[ChatMessage]]", sdk.chat_messages(ctx, start, end))
+    return [(found[index].get_time().data, _message_author(found[index]))
+            for index in range(len(found))]
+
+
+def _prompt_text(ctx, subject) -> str:
+    """The cited message's words: the human's prompt, as the meeting recorded it."""
+    cited_us = _given(subject.get_msg_time(), "microsecond")
+    region = subject.get_region()
+    start = _given(region, "start")
+    end = _given(region, "end")
+    for when, _author in _chat_window(ctx):
+        if _moment_us(when) != cited_us:
+            continue
+        # The newest message at that moment: the case is the human's latest
+        # words, and a moment is an identity only together with its author.
+        found = ""
+        for message in _chat_message_nodes(ctx):
+            if _moment_us(message.get_time().data) == cited_us:
+                found = _message_text(message)
+        return found[start:end]
+    raise ValueError(f"this meeting has no message with microsecond {cited_us}")
+
+
+def _chat_message_nodes(ctx) -> List[Any]:
+    start = _ok_root("Result[datetime]", sdk.first_chunk_time(ctx)).data
+    end = _ok_root("Result[datetime]", sdk.now(ctx)).data
+    found = _ok_root("Result[list[ChatMessage]]", sdk.chat_messages(ctx, start, end))
+    return [found[index] for index in range(len(found))]
+
+
+def _message_text(message) -> str:
+    """What a message says: its text pieces, in order.
+
+    The record layer keeps a text piece as a record of its own rather than as a
+    tagged union member, so the words are read off that piece's `text` field;
+    the parts that are not text (a mention, a reference) contribute nothing.
+    """
+    parts = message.get_message()
+    words = []
+    for index in range(len(parts)):
+        text = getattr(parts[index].data, "text", None)
+        if isinstance(text, str):
+            words.append(text)
+    return "".join(words)
+
+
+def prompt_conflicts(text: str) -> Tuple[int, str, List[str]]:
+    """(how many rules the human's words break, the words, and which rules).
+
+    The prompt is prose, so the rules are looked for as the human would write
+    them: a signature with more than four parameters, a statement folded onto a
+    line with `;`, or a line budget above fifteen. A prompt that asks for one of
+    those is asking for a violation, and the work that follows is the human's,
+    not the actor's.
+    """
+    conflicts: List[Tuple[str, str]] = []
+    for match in SIGNATURE_IN_PROMPT.finditer(text):
+        parameters = [part for part in match.group(2).split(",") if part.strip()]
+        if len(parameters) > MOST_PARAMETERS:
+            conflicts.append(("parameter_count_le_4", match.group(0).strip()))
+    for line in text.split("\n"):
+        if ";" in line and len([part for part in line.split(";") if part.strip()]) > MOST_STATEMENTS_PER_LINE:
+            conflicts.append(("statements_per_line_le_1", line.strip()))
+    for match in LINES_IN_PROMPT.finditer(text):
+        if int(match.group(1)) > MOST_LINES:
+            conflicts.append(("function_length_le_15", match.group(0).strip()))
+    names = sorted({name for name, _quote in conflicts})
+    return len(names), (conflicts[0][1] if conflicts else ""), names
+
+
+def _moment_us(value) -> int:
+    """The design's `$microsecond` for a moment the meeting handed out."""
+    return _record_leaf(_root("datetime", value).get_microsecond())
+
+
+def _message_author(message) -> str:
+    """The agent that wrote a message, or "" when the human did.
+
+    The record layer carries a user name as one string: an agent's name, or the
+    human sentinel. `$human` is the sentinel — a member named "human" is not a
+    member at all.
+    """
+    name = str(_record_leaf(message.get_user_name().get_agent_name()))
+    return "" if name in {"$human", "human"} else name
+
+
+def _actor_name(ctx) -> str:
+    """The member that holds the terminal: the one who owes the answers."""
+    roles = _ok_root("Result[dict[str, AgentRole]]", sdk.roles(ctx))
+    for name in roles.keys():
+        if roles.at_key(name).has_actor():
+            return str(name)
+    return ""
+
+
+def _ok_root(type_expression: str, answer):
+    """`$ok` of a meeting_sdk answer, rooted at the type the api declares."""
+    return _root(type_expression, answer).get_ok()
+
+
 def _enclosing_function(code: str, line: int) -> str:
     """The innermost function that line is inside, or "" at module level."""
     tree = _parse(code)
@@ -332,4 +606,6 @@ def _enclosing_function(code: str, line: int) -> str:
 __all__ = ["MeetingOps", "REFERENCE_NAME", "REFERENCE_SNAPSHOT", "LINES_NAME",
            "NAME_NAME", "LIMIT_NAME", "PARAMETERS_NAME", "WIDEST_NAME",
            "PARAMETER_LIMIT_NAME", "FOLDED_NAME", "WORST_FOLDED_NAME",
-           "FOLD_LIMIT_NAME", "SCREEN_STREAM"]
+           "FOLD_LIMIT_NAME", "CHAT_REFERENCE_NAME", "CHAT_SNAPSHOT",
+           "UNANSWERED_NAME", "SILENT_NAME", "GRACE_NAME", "UNREVIEWED_NAME",
+           "REVIEW_LIMIT_NAME", "SCREEN_STREAM"]

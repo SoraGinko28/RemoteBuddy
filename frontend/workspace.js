@@ -82,7 +82,7 @@ const labels = {
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
   agentState: { thinking: "思考中", acting: "操作中", idle: "待命中", error: "异常" },
-  role: { actor: "行动者", active_discriminator: "主动判别", critic: "批判者" },
+  role: { actor: "行动者", assistant: "助理", critic: "批判者" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
 
@@ -114,7 +114,7 @@ function agentStateForPhase(phase) {
 }
 
 // Per-member state for the header chips. The actor follows terminal
-// ownership; every other member (discriminator/reviewer) is "active" while
+// ownership; every other member (a reviewer) is "active" while
 // the newest thinking/acting band in the timeline belongs to it.
 const IDLE_PHASE_BOUNDARY = new Set([
   "created", "waiting_for_user", "human_control", "completion_proposed", "cycle_timeout", "api_error",
@@ -1736,7 +1736,11 @@ function renderTerminal() {
     state.terminalFrameKey = null;
   }
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
-  const replayReference = scoreReferenceAtPlayback();
+  // A clicked citation is also a reason to show a particular frame: the quote
+  // points at the moment the rules judged, so the terminal has to go there.
+  // A score replay, when one is running, still wins.
+  const replayReference = scoreReferenceAtPlayback()
+    || (state.highlightReference?.kind === "screen" ? state.highlightReference : null);
   const replaySource = replayReference?.kind === "screen"
     ? state.timeline.find(
       (event) => event.kind === "screen" && event.event_id === replayReference.event_id,
@@ -1797,8 +1801,20 @@ function renderTerminal() {
       // prompt and typed text while the shell was still near the top.
       let rowOffset = 0;
       if (viewRows < fullRows) {
-        const anchorRow = Number.isFinite(cursorY) ? cursorY : fullRows - 1;
-        rowOffset = Math.max(0, Math.min(fullRows - viewRows, anchorRow - viewRows + 1));
+        // A cited region is shown from its own first row: the quote is what the
+        // reader came to see, and the cursor that produced the frame may sit
+        // far below it (a `:wq` at the bottom of a file, for one).
+        const cited = state.highlightReference?.kind === "screen"
+          && state.highlightReference.event_id === source.event_id
+          ? Number(state.highlightReference.region?.start)
+          : NaN;
+        if (Number.isFinite(cited) && hasScreenContent) {
+          const citedRow = source.content.slice(0, Math.max(0, cited)).split("\n").length - 1;
+          rowOffset = Math.max(0, Math.min(fullRows - viewRows, citedRow));
+        } else {
+          const anchorRow = Number.isFinite(cursorY) ? cursorY : fullRows - 1;
+          rowOffset = Math.max(0, Math.min(fullRows - viewRows, anchorRow - viewRows + 1));
+        }
       }
       if (waiting) {
         termRowsState = null;
@@ -3034,6 +3050,9 @@ function bind() {
   el.playback_slider.addEventListener("input", () => {
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
+    // Moving the view on purpose releases a clicked citation: otherwise the
+    // terminal stays pinned to the frame that quote pointed at.
+    state.highlightReference = null;
     markPlaybackFrozen();
     state.followLive = false;
     state.chatFollow = true;
@@ -3045,6 +3064,7 @@ function bind() {
   el.live_button.addEventListener("click", () => {
     state.scoreOverlayIds.clear();
     hidePlaybackHover();
+    state.highlightReference = null;      // back to live: the citation is released
     state.playbackFreezeAt = 0;
     state.followLive = true;
     state.chatFollow = true;
@@ -3056,6 +3076,7 @@ function bind() {
     focusTerminalCursor();
   });
   el.play_button.addEventListener("click", () => {
+    state.highlightReference = null;      // playing moves the view: release the pin
     if (state.playing) { stopPlayback(); return; }
     state.scoreOverlayIds.clear();
     hidePlaybackHover();

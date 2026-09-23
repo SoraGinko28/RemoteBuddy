@@ -58,7 +58,7 @@ from meeting_v2 import (
     sha256_text,
     utc_now,
 )
-import discriminator_harness
+import reviewer_harness
 import meeting_loader
 import meeting_local_sdk
 import meeting_sdk_json
@@ -259,6 +259,7 @@ class MeetingWebService:
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
         self.reviewer_jobs: Dict[str, Dict[str, threading.Thread]] = {}
+        self.assistant_jobs: Dict[str, threading.Thread] = {}
         self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool]] = {}
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
@@ -1058,7 +1059,7 @@ class MeetingWebService:
                 typing_profile=typing_profile,
                 agent_provider=config.agent_provider,
                 # The actor agent drives the terminal. Additional role
-                # members (discriminators) are declared through
+                # members (reviewers) are declared through
                 # agent_name2role and are summoned by @mention at runtime;
                 # they never hold terminal control.
                 agent_ordinal=1,
@@ -1111,6 +1112,9 @@ class MeetingWebService:
             self.jobs[meeting_id] = worker
             self.active_backends[meeting_id] = client
             worker.start()
+        # Watching starts with the work: the assistant looks while the actor is
+        # busy and once more when it parks.
+        self._ensure_assistant_worker(store)
 
     def _summon_reviewer_after_idle(self, meeting_id: str, agent_name: str) -> None:
         """Parked actor got interrupted: summon the reviewer once its
@@ -1139,6 +1143,132 @@ class MeetingWebService:
                     return True
         return False
 
+    def _actor_actively_running(self, meeting_id: str) -> bool:
+        """Whether the actor is mid-turn, as opposed to parked between turns.
+
+        The actor's worker parks in ``waiting_for_user`` but keeps its job slot:
+        that is idle, not busy. Only a turn in flight blocks a reviewer.
+        """
+        if not self._job_alive(meeting_id):
+            return False
+        store = self.load_store(meeting_id)
+        return not (
+            store.meeting.status == "running"
+            and store.meeting.phase == "waiting_for_user"
+            and store.meeting.control_owner == "none"
+            and store.meeting.pending_action_id is None
+        )
+
+    def _ensure_assistant_worker(self, store: MeetingStore) -> None:
+        """Start the assistant's watch when the meeting has one.
+
+        The assistant looks while the actor works, at most every
+        ``reviewer_harness.WATCH_INTERVAL_SECONDS``, and decides whether the
+        critic should be woken. One watcher per meeting.
+        """
+        meeting_id = store.meeting.meeting_id
+        roles = store.meeting.effective_role_map
+        assistant = next((name for name, role in roles.items() if role == "assistant"), None)
+        critic = next((name for name, role in roles.items() if role == "critic"), None)
+        if not assistant or not critic:
+            return
+        with self.lock:
+            current = self.assistant_jobs.get(meeting_id)
+            if current and current.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._assistant_watch,
+                args=(meeting_id, assistant, critic),
+                name=f"assistant-{assistant}-{meeting_id}",
+                daemon=True,
+            )
+            self.assistant_jobs[meeting_id] = thread
+        thread.start()
+
+    def _assistant_watch(self, meeting_id: str, assistant: str, critic: str) -> None:
+        def stop() -> bool:
+            try:
+                store = self.load_store(meeting_id)
+            except Exception:  # noqa: BLE001
+                return True
+            return (store.meeting.status in TERMINAL_STATUSES
+                    or store.meeting.session_state == "stopped")
+
+        try:
+            reviewer_harness.watch(
+                self.load_store(meeting_id),
+                assistant,
+                actor_busy=lambda: self._actor_actively_running(meeting_id),
+                critic_busy=lambda: self._reviewer_busy(meeting_id),
+                act=lambda look: self._assistant_acts(
+                    meeting_id, assistant, critic, look),
+                stop=stop,
+            )
+        except Exception as exc:  # noqa: BLE001 — a watcher must not die loudly
+            try:
+                self.load_store(meeting_id).append_event(
+                    "error", "harness", "assistant_watch_error", content=f"{exc!r}")
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            with self.lock:
+                if self.assistant_jobs.get(meeting_id) is threading.current_thread():
+                    self.assistant_jobs.pop(meeting_id, None)
+
+    def _assistant_acts(self, meeting_id: str, assistant: str, critic: str,
+                        look) -> None:
+        """Do what a look decided: wake the critic, ask the actor — or stop.
+
+        `done` is the meeting's own verdict that there is nothing left to ask
+        for: the human's prompt itself asks for what a rule forbids. The
+        assistant says so, once, and nobody is woken.
+        """
+        if look.action == "remind":
+            self._assistant_reminds(meeting_id, assistant, look.line)
+        elif look.action == "done":
+            try:
+                self.load_store(meeting_id).append_chat(assistant, look.line, "final")
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            self._assistant_summons(meeting_id, assistant, critic, look.line)
+
+    def _assistant_summons(self, meeting_id: str, assistant: str, critic: str,
+                           line: str) -> None:
+        """The assistant says what to look at, and the critic is woken."""
+        try:
+            self.load_store(meeting_id).append_chat(assistant, line, "request")
+        except Exception:  # noqa: BLE001
+            pass
+        self._start_reviewer(meeting_id, critic)
+
+    def _assistant_reminds(self, meeting_id: str, assistant: str, line: str) -> None:
+        """The assistant asks the actor, and the actor is woken to answer.
+
+        Nobody may be woken beside the actor, so this runs when the actor is
+        parked; it is the same wake a human's message causes.
+        """
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                return
+            if store.meeting.control_owner == "human":
+                return
+            try:
+                store.append_chat(assistant, line, "request")
+            except Exception:  # noqa: BLE001
+                pass
+            self._require_terminal(store, "run the actor")
+            store.bump_request_generation(
+                failure=None,
+                cycle_action_count=0,
+                cycle_started_at=utc_now(),
+            )
+            config = self._config_for_store(store)
+            store.update(status="running", phase="agent_thinking",
+                         control_owner=store.meeting.actor_name())
+            self._ensure_worker(store, config, resume=True, fresh_conversation=False)
+
     def _start_reviewer(self, meeting_id: str, agent_name: str) -> None:
         """Summon a non-actor member in its own Claude Code process.
 
@@ -1166,24 +1296,14 @@ class MeetingWebService:
                 return
             role = store.meeting.role_of(agent_name)
             if not role or role == "actor":
-                trace("skip", "not_a_discriminator")
+                trace("skip", "not_a_reviewer")
                 return
             if self._reviewer_busy(meeting_id):
                 trace("skip", "reviewer_busy")
                 return
-            # The actor worker parks in waiting_for_user between turns but
-            # keeps its job slot; that is idle, not busy. Only an actor
-            # mid-turn (thinking/acting/queued) blocks a reviewer summon.
-            actor_actively_running = (
-                self._job_alive(meeting_id)
-                and not (
-                    store.meeting.status == "running"
-                    and store.meeting.phase == "waiting_for_user"
-                    and store.meeting.control_owner == "none"
-                    and store.meeting.pending_action_id is None
-                )
-            )
-            if actor_actively_running:
+            # Only a turn in flight blocks a reviewer summon; the actor parked
+            # between turns is idle.
+            if self._actor_actively_running(meeting_id):
                 trace("skip", "actor_job_busy")
                 return
             trace("start", "ok")
@@ -1203,7 +1323,7 @@ class MeetingWebService:
             attempts += 1
             try:
                 store = self.load_store(meeting_id)
-                outcome = discriminator_harness.comment_once(
+                outcome = reviewer_harness.comment_once(
                     store, agent_name, retry=attempts > 1
                 )
             except Exception as exc:  # noqa: BLE001  worker must never die silently
