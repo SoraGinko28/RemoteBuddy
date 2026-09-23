@@ -245,7 +245,7 @@ def _section(judged, results, heard: bool = False, excused: list = None,
                      f"{message.get('actor')} at {message.get('captured_at')}")
     for result in results:
         wording = RULE_WORDINGS[result["rule"]]
-        line = f"- {result['rule']} ({wording.title}): {verdict_word(result)}"
+        line = f"- {wording.title}: {verdict_word(result)}"
         if result.get("complaint"):
             line += f" — {result['complaint']}"
         lines.append(line)
@@ -253,9 +253,9 @@ def _section(judged, results, heard: bool = False, excused: list = None,
                  if (result.get("offender") or {}).get("name")]
     if offenders:
         named = "；".join(
-            f"规则 {result['rule']} 违规，{RULE_WORDINGS[result['rule']].offender} "
-            f"{result['offender']['name']}" for result in offenders)
-        lines.append(f"该催的是：{named}（照抄上面的名字，不要改写）。")
+            f"{RULE_WORDINGS[result['rule']].title}——{result['offender']['name']}"
+            for result in offenders)
+        lines.append(f"要处理的是：{named}（说事，不要念规则的文件名）。")
     else:
         lines.append("没有该催的人：这轮对话没有欠着谁的回应。")
     return "\n".join(lines)

@@ -158,7 +158,9 @@ def judge_moment(store, case_event, region, store_dir, rule: Path, *,
         result["measured_value"] = {"name": name, "value": value}
         if verdict.ok_value is False:
             result["offender"] = {"name": name, "value": value}
-            result["complaint"] = (f"规则 {Path(rule).stem} 违规：{name} "
+            # In words: a rule's name is a file name, and nobody says a file name
+            # out loud. The id stays in the journal, where it is read by code.
+            result["complaint"] = (f"{wording.title}：{name} "
                                   f"{wording.wording.format(value=value)}。")
     return result
 
@@ -370,7 +372,7 @@ def _section(screen, region, results) -> str:
              f"region {region[0]}..{region[1]} of the pane"]
     for result in results:
         wording = RULE_WORDINGS[result["rule"]]
-        line = f"- {result['rule']} ({wording.title}): {verdict_word(result)}"
+        line = f"- {wording.title}: {verdict_word(result)}"
         if result.get("complaint"):
             line += f" — {result['complaint']}"
         lines.append(line)
@@ -378,9 +380,9 @@ def _section(screen, region, results) -> str:
                  if (result.get("offender") or {}).get("name")]
     if offenders:
         named = "；".join(
-            f"规则 {result['rule']} 违规，{RULE_WORDINGS[result['rule']].offender} "
-            f"{result['offender']['name']}" for result in offenders)
-        lines.append(f"你必须在回复里点名：{named}（照抄上面的名字，不要改写）。")
+            f"{RULE_WORDINGS[result['rule']].title}——{result['offender']['name']}"
+            for result in offenders)
+        lines.append(f"要在回复里说清是这几件事：{named}（说事，不要念规则的文件名）。")
     else:
         lines.append("没有规则被违反：直说没有违规，不要自己另外找毛病。")
     lines.append("These verdicts are the rules' answers, computed for you: name the rule "

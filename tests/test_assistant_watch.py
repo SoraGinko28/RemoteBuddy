@@ -221,7 +221,7 @@ class TestTheRulesItCarries:
         assert "没回应" in report["rules"][0]["complaint"]
         assert report["citation"]["kind"] == "chat"
         assert report["citation"]["event_id"] == report["message"]["event_id"]
-        assert "该催的是" in section
+        assert "要处理的是" in section
 
     def test_an_answered_message_is_no_longer_owed(self, tmp_path, monkeypatch) -> None:
         import assistant_rules
@@ -298,4 +298,4 @@ class TestTheRulesItCarries:
         # or not (the instructions are what ask for the @name).
         assert look.line == "请回应 critic 的两条违规"
         assert look.case                                    # the message it is about
-        assert "该催的是" in seen["asked"]                   # the rules reached it
+        assert "要处理的是" in seen["asked"]                 # the rules reached it

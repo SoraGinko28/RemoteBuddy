@@ -270,13 +270,13 @@ def test_the_rule_check_reads_the_newest_screen_that_shows_python(tmp_path) -> N
     section, report = critic_rules.review(store, store_dir=tmp_path / "review-store")
 
     assert "rule check" in section
-    assert "function_length_le_15" in section and "VIOLATED" in section
+    assert "no function may run past 15 lines" in section and "VIOLATED" in section
     assert "process_batch" in section and "16 行" in section   # the rule's own measurement
-    assert "parameter_count_le_4" in section
+    assert "no function may take more than 4 parameters" in section
     assert [rule["verdict"] for rule in report["rules"]] == ["VIOLATED", "holds", "holds"]
     assert report["rules"][0]["offender"] == "process_batch"   # which function, as data
     assert report["rules"][1]["offender"] is None               # the rule that held names nobody
-    assert "你必须在回复里点名" in section and "process_batch" in section
+    assert "要在回复里说清是这几件事" in section and "process_batch" in section
     assert report["frame"]["event_id"]                          # the frame it judged
     assert report["frame"]["region"][1] > report["frame"]["region"][0]
     # and it is cited: the reference points at that frame and that region

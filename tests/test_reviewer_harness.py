@@ -114,10 +114,10 @@ class TestRuleCheck:
 
         asked = seen["payload"]["messages"][0]["content"]
         assert "rule check" in asked
-        assert "function_length_le_15" in asked and "VIOLATED" in asked
+        assert "no function may run past 15 lines" in asked and "VIOLATED" in asked
         assert "process_batch" in asked and "16 行" in asked
-        assert "parameter_count_le_4" in asked and "holds" in asked
-        assert "你必须在回复里点名" in asked and "process_batch" in asked
+        assert "no function may take more than 4 parameters" in asked and "holds" in asked
+        assert "要在回复里说清是这几件事" in asked and "process_batch" in asked
 
         filed = [event for event in store.events() if event.get("kind") == "state"
                  and (event.get("content") or "").startswith("=== rule check")]
