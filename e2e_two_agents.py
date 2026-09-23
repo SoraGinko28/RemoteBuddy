@@ -122,6 +122,20 @@ class _Live:
     def send(self, message: str) -> None:
         self._req("POST", f"/api/meetings/{self.meeting_id}/messages", {"message": message})
 
+    def park(self) -> None:
+        """Park a meeting this process was driving, if it is mid-turn."""
+        try:
+            store = self.service.load_store(self.meeting_id)
+            if store.meeting.status in {"completed", "failed", "interrupted"}:
+                return
+            if store.meeting.phase == "waiting_for_user" and store.meeting.control_owner == "none":
+                return
+            store.update(phase="waiting_for_user", control_owner="none",
+                         pending_action_id=None, recovery_required=True,
+                         failure="the driver that owned this run exited mid-turn; nothing is running")
+        except Exception as exc:  # noqa: BLE001
+            print(f"park warning: {exc}", file=sys.stderr, flush=True)
+
     def stop(self) -> None:
         try:
             self._req("POST", f"/api/meetings/{self.meeting_id}/stop", {}, timeout=30.0)
@@ -253,6 +267,10 @@ def main() -> int:
         if not report.ok:
             failed.append(f"validator violations: {report.count}")
     finally:
+        # The worker and the assistant's watch live in this process: leaving
+        # without parking the meeting leaves it claiming a turn nobody is
+        # running (the page shows that member as 异常).
+        live.park()
         if freeze:
             live.stop()
             time.sleep(1.0)
