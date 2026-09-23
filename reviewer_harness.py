@@ -282,6 +282,30 @@ def _extract_text(response: dict) -> str:
     raise m2.MeetingError("reviewer harness: no text content in response")
 
 
+# Which member a rule's objection is addressed to: the rule says what is wrong,
+# and the wrong thing says who can fix it.
+RULE_ADDRESSEE = {
+    "unanswered_seconds_le_30": "remind",     # the actor owes an answer
+    "unreviewed_replies_le_0": "summon",      # the critic owes a re-check
+}
+
+
+def _forced_by_rules(rule_report, critic_name: str, actor_name: str):
+    """(action, line) for the first rule that objects, or None."""
+    for rule in rule_report.get("rules", []):
+        if rule.get("verdict") != "VIOLATED":
+            continue
+        addressee = RULE_ADDRESSEE.get(str(rule.get("rule")))
+        if addressee is None:
+            continue
+        complaint = rule.get("complaint") or ""
+        who = rule.get("offender") or actor_name
+        if addressee == "remind":
+            return "remind", f"@{who} 请回应 critic：{complaint}"
+        return "summon", f"@{critic_name} 请复核 {who} 的回应：{complaint}"
+    return None
+
+
 def _newest_actor_message(store: m2.MeetingStore) -> str:
     """The actor's newest chat message: the claim a summon is about."""
     roles = store.meeting.effective_role_map
@@ -554,16 +578,16 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
         return Look("silent", "", case, owed, pending)
     look = parse_assistant_answer(answer, case=case, owed=owed, pending=pending)
     look = look._replace(subject=_newest_actor_message(store))
-    if owed and look.action != "remind":
-        # A rule objects: the meeting owes an answer, and the answer is the
-        # actor's to give. Asking the critic again only produces another
-        # monologue, so the addressee is not left to the model.
-        complaint = next((rule.get("complaint") for rule in rule_report.get("rules", [])
-                          if rule.get("complaint")), "")
-        who = next((rule.get("offender") for rule in rule_report.get("rules", [])
-                    if rule.get("offender")), "") or "actor"
-        look = Look("remind", f"@{who} 请回应 critic：{complaint}", case, owed, pending,
-                    look.subject)
+    roles = store.meeting.effective_role_map
+    critic_name = next((name for name, role in roles.items() if role == "critic"), "critic")
+    actor_name = next((name for name, role in roles.items() if role == "actor"), "actor")
+    forced = _forced_by_rules(rule_report, critic_name, actor_name)
+    if forced is not None:
+        # A rule objects, and which rule it is decides who is addressed: an
+        # answer that is late is the actor's to give, a reply nobody looked at
+        # is the critic's to look at. Leaving that to the model produced
+        # monologues addressed to the wrong member.
+        look = look._replace(action=forced[0], line=forced[1])
     # The look is part of the record either way: what it saw, and what it said.
     _record(store, agent_name, store.meeting.phase,
             {"status": "looked", "answer": answer[:400],
