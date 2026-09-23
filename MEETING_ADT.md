@@ -700,7 +700,7 @@ make_score_reference =
 make_terminal_control_reference =
     mc.TerminalControlReference
   <- $start_time mc.datetime
-  <- $user_name mc.UserName | nil          # absent = nobody took over after that hand-back
+  <- $user_name (mc.UserName | nil)        # absent = nobody took over after that hand-back
   <- $region mc.TextRegion
 
 make_versioned_file_reference =
