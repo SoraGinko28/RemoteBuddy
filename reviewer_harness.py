@@ -282,6 +282,17 @@ def _extract_text(response: dict) -> str:
     raise m2.MeetingError("reviewer harness: no text content in response")
 
 
+def _newest_actor_message(store: m2.MeetingStore) -> str:
+    """The actor's newest chat message: the claim a summon is about."""
+    roles = store.meeting.effective_role_map
+    actors = {name for name, role in roles.items() if role == "actor"}
+    for event in reversed(store.events()):
+        if (event.get("kind") == "chat" and event.get("actor") in actors
+                and (event.get("content") or "").strip()):
+            return str(event.get("event_id") or "")
+    return ""
+
+
 def _latest_summon(store: m2.MeetingStore, agent_name: str) -> str:
     """The newest chat that names this reviewer, from anyone but the reviewer.
 
@@ -477,6 +488,7 @@ class Look(NamedTuple):
     case: str        # the event the rules judged, so a reminder is said once
     owed: bool = False     # the rules object: the answer is late
     pending: bool = False  # a message is unanswered, inside the grace or not
+    subject: str = ""      # the actor's newest word, so a summon is asked once
 
 
 def parse_assistant_answer(answer: str, critic_name: str = "critic",
@@ -541,6 +553,7 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
         _record_error(store, agent_name, exc)
         return Look("silent", "", case, owed, pending)
     look = parse_assistant_answer(answer, case=case, owed=owed, pending=pending)
+    look = look._replace(subject=_newest_actor_message(store))
     if owed and look.action != "remind":
         # A rule objects: the meeting owes an answer, and the answer is the
         # actor's to give. Asking the critic again only produces another
@@ -549,7 +562,8 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
                           if rule.get("complaint")), "")
         who = next((rule.get("offender") for rule in rule_report.get("rules", [])
                     if rule.get("offender")), "") or "actor"
-        look = Look("remind", f"@{who} 请回应 critic：{complaint}", case, owed, pending)
+        look = Look("remind", f"@{who} 请回应 critic：{complaint}", case, owed, pending,
+                    look.subject)
     # The look is part of the record either way: what it saw, and what it said.
     _record(store, agent_name, store.meeting.phase,
             {"status": "looked", "answer": answer[:400],
@@ -573,6 +587,7 @@ def watch(store: m2.MeetingStore, agent_name: str, *, actor_busy: Any,
     """
     waiting = None
     reminded: set = set()
+    summoned: set = set()
     while not stop():
         sleep(interval)
         if stop():
@@ -580,6 +595,10 @@ def watch(store: m2.MeetingStore, agent_name: str, *, actor_busy: Any,
         look = assistant_turn(store, agent_name, post=post, observer=observer)
         if look.action == "remind" and look.case in reminded:
             look = Look("silent", "", look.case, look.owed, look.pending)   # said once
+        if look.action == "summon" and look.subject and look.subject in summoned:
+            # The critic has already been asked about this piece of work; asking
+            # again about the same claim produces another monologue, not progress.
+            look = Look("silent", "", look.case, look.owed, look.pending, look.subject)
         if look.action != "silent":
             waiting = look
         if actor_busy():
@@ -587,6 +606,8 @@ def watch(store: m2.MeetingStore, agent_name: str, *, actor_busy: Any,
         if waiting is not None:
             if waiting.action == "remind" and waiting.case:
                 reminded.add(waiting.case)
+            if waiting.action == "summon" and waiting.subject:
+                summoned.add(waiting.subject)
             act(waiting)
             waiting = None
         if not look.pending and not (critic_busy and critic_busy()):
