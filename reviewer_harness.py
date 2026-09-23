@@ -548,7 +548,9 @@ ASSISTANT_INSTRUCTIONS = (
     "point per line; do not restate what is already on the screen, and do not "
     "reuse the same sentence you already used. If you are unsure what someone "
     "meant or need something before you can decide, ask that one question "
-    "instead of guessing."
+    "instead of guessing. Write plain sentences — no markup, tags, citation "
+    "syntax or links; the meeting attaches the reference to whatever you point "
+    "at, and a tag you type is only noise in the transcript."
 )
 
 

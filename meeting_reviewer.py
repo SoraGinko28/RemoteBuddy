@@ -50,7 +50,9 @@ REVIEWER_INSTRUCTIONS = (
     "point per message; do not stack a verdict, its evidence and an instruction "
     "into one line, and do not repeat what is already on the screen. Do not "
     "explain your own scope or what you are not going to answer — answer, or stay "
-    "quiet."
+    "quiet. Write plain sentences: no markup, no tags, no citation syntax, no "
+    "links — when you point at a frame or a message, the meeting attaches that "
+    "reference itself; a tag you type only shows up as noise in the transcript."
 )
 
 REVIEWER_INSTRUCTIONS_RETRY = (
