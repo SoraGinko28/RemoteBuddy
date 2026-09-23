@@ -260,8 +260,17 @@ class TestTheRulesItCarries:
         verdicts = {rule["rule"]: rule["verdict"] for rule in report["rules"]}
         assert verdicts["human_prompt_conflicts_le_0"] == "VIOLATED"
         assert "quick_sort(items, key=None, reverse=False, lo=0, hi=None)" in section
-        action, line = _forced_by_rules(report, "critic", "actor")
-        assert action == "done" and "任务按人类的要求已完成" in line
+        # Before the critic has been heard the review still has to happen: the
+        # conflict is not a reason to skip it, only a reason not to chase the actor.
+        action, line = _forced_by_rules(report, "critic", "actor", reviewed=False)
+        assert action == "summon" and "请复核" in line
+
+        # Once the critic has spoken, the meeting can end on the human's terms —
+        # and it says so to the human, not to itself.
+        action, line = _forced_by_rules(report, "critic", "actor", reviewed=True)
+        assert action == "done"
+        assert line.startswith("你的要求「")
+        assert "这一轮按你的要求算完成" in line
 
     def test_the_look_carries_the_rules_and_asks_the_actor(self, tmp_path, monkeypatch) -> None:
         store = self._meeting_with_an_unanswered_critic(tmp_path, "remind", monkeypatch)

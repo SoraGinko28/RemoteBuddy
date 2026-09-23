@@ -292,8 +292,14 @@ RULE_ADDRESSEE = {
 }
 
 
-def _forced_by_rules(rule_report, critic_name: str, actor_name: str):
-    """(action, line) for the first rule that objects, or None."""
+def _forced_by_rules(rule_report, critic_name: str, actor_name: str,
+                     reviewed: bool = False):
+    """(action, line) for the first rule that objects, or None.
+
+    ``reviewed`` says whether the critic has spoken since the actor's last word:
+    a conflict in the human's prompt only ends the meeting *after* the review,
+    never instead of it.
+    """
     for rule in rule_report.get("rules", []):
         if rule.get("verdict") != "VIOLATED":
             continue
@@ -306,11 +312,35 @@ def _forced_by_rules(rule_report, critic_name: str, actor_name: str):
             return "remind", f"@{who} 请回应 critic：{complaint}"
         if addressee == "summon":
             return "summon", f"@{critic_name} 请复核 {who} 的回应：{complaint}"
-        # The human's own words ask for what a rule forbids: the actor cannot
-        # satisfy both, so the task is as done as it can be and the watch stops.
-        return "done", (f"任务按人类的要求已完成：{who} 与规则冲突"
-                        f"（{complaint}），继续催办没有意义。")
+        # The human's own words ask for what a rule forbids. The review still
+        # has to happen — that is the critic's word, and it is the only thing
+        # that can say whether anything *else* is wrong; the conflict only says
+        # that this one objection is the human's, not the actor's.
+        if not reviewed:
+            return "summon", (f"@{critic_name} 请复核 {who} 的工作：人类的要求与规则冲突"
+                              f"（{complaint}），确认除此之外没有别的问题。")
+        return "done", (f"你的要求「{who}」和会议的规则冲突（{complaint}），"
+                        f"actor 没法两全；这一轮按你的要求算完成。")
     return None
+
+
+def _critic_spoke_last(store: m2.MeetingStore) -> bool:
+    """Whether the critic has been heard since the actor last said anything."""
+    roles = store.meeting.effective_role_map
+    critic = {name for name, role in roles.items() if role == "critic"}
+    actor = {name for name, role in roles.items() if role == "actor"}
+    seen_actor = False
+    for event in reversed(store.events()):
+        if event.get("kind") != "chat" or not (event.get("content") or "").strip():
+            continue
+        who = event.get("actor")
+        if who in actor:
+            seen_actor = True
+        elif who in critic and seen_actor:
+            return True
+        elif who in critic:
+            return not seen_actor
+    return False
 
 
 def _newest_actor_message(store: m2.MeetingStore) -> str:
@@ -588,7 +618,8 @@ def assistant_turn(store: m2.MeetingStore, agent_name: str = "assistant",
     roles = store.meeting.effective_role_map
     critic_name = next((name for name, role in roles.items() if role == "critic"), "critic")
     actor_name = next((name for name, role in roles.items() if role == "actor"), "actor")
-    forced = _forced_by_rules(rule_report, critic_name, actor_name)
+    forced = _forced_by_rules(rule_report, critic_name, actor_name,
+                              reviewed=_critic_spoke_last(store))
     if forced is not None:
         # A rule objects, and which rule it is decides who is addressed: an
         # answer that is late is the actor's to give, a reply nobody looked at
