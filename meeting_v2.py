@@ -43,7 +43,7 @@ VALID_OWNERS = {"agent", "human", "none"}
 # and never appears as an agent name. A meeting always has exactly one
 # actor agent that owns the shared terminal (multi-agent slices keep
 # this invariant; additional agents join as discriminators).
-VALID_AGENT_ROLES = {"actor", "active_discriminator", "critic"}
+VALID_AGENT_ROLES = {"actor", "assistant", "critic"}
 HUMAN_USER = "human"
 
 
