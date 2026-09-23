@@ -56,13 +56,13 @@ ContentReference 单键信封：
 ```json
 {
   "meeting_uid": "...", "meeting_name": "...",
-  "agent_name2role": {"alice": "$generator", "bob": "$passive_discriminator"},
+  "agent_name2role": {"alice": "$actor", "bob": "$critic"},
   "sorted_stream_chunks": [ {chunk json}, ... ]
 }
 ```
 
 - `agent_name2role` **只增不减**：join 加入，冻结后固化。human（`"$human"`）永不入表。
-- 现 journal 无角色元数据 → loader 把出现的 agent 推断为 generator（审计注明；
+- 现 journal 无角色元数据 → loader 把出现的 agent 推断为 actor（审计注明；
   修订建议：将来把 role map 持久化进清单）。
 - `keys(agent_name2role) ⊆ user_names(记录)` 是 MeetingData 不变量（校验器管）。
 

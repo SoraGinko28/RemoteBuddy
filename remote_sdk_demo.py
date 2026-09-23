@@ -60,7 +60,7 @@ def write_journal(root: Path) -> dt.datetime:
     skill = root / "SKILL.md"
     skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
     store = MeetingStore.create(root, MEETING_ID, CHAT_ASKED, skill, "remote-demo",
-                                "test-model", agent_name2role={"agent": "generator"})
+                                "test-model", agent_name2role={"agent": "actor"})
     store.append_chat("agent", CHAT_DONE, "final")
     time.sleep(0.01)      # the journal stamps milliseconds: keep the two apart
     screen = store.append_screen(SCREEN_TEXT, "bash", str(store.workspace_path),
@@ -147,7 +147,7 @@ def run_checks(report: Report, capture_time: dt.datetime) -> None:
 
     _script, node = answer("roles")
     role = node.get_ok()["agent"]
-    report.that("roles", role.has_generator() is True, "agent -> generator")
+    report.that("roles", role.has_actor() is True, "agent -> actor")
 
     script, node = answer("file_id_by_path", "/ws/a.py")
     report.that("file_id_by_path (no file layer in a journal)", node.has_err() is True,

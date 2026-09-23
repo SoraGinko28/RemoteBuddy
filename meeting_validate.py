@@ -15,7 +15,7 @@ Asserts covered (aligned with MEETING_ADT.md / meeting_adt.py):
   screen            plain_of == screen_data / row width <= width /
                     row count == height / cursor within bounds / segments
                     non-empty and adjacent attributes distinct
-  terminal_control  owner in terminal_capable (human or generator)
+  terminal_control  owner in terminal_capable (human or actor)
   score             summon_chained (a passive must be summoned via an @)
   meeting           keys(agent_name2role) subset of user_names
   file_desktop      names unique per level (so a path resolves to one entry);

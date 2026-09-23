@@ -11,7 +11,7 @@ code — the real critic runs the same ones.
 One process, no fixtures:
 
 1. a real meeting is started in ``runs/`` by the harness's own writer. The
-   generator edits ``batch.py`` in a real ``vi`` in the pane — it opens the
+   actor edits ``batch.py`` in a real ``vi`` in the pane — it opens the
    editor and types the file one line at a time, so what the pane shows is the
    edit itself, and the frames of the edit are journaled as they happen. Three
    versions go by, each one captured as a terminal capture is: the pane's own
@@ -34,7 +34,7 @@ One process, no fixtures:
 
 Honest about its own limits: the *speaking* here is scripted. The demo writes
 that chat message itself, under the critic's name, from the rule's Prepares
-(``judge``/``cite``); the generator's three versions are constants too. What is
+(``judge``/``cite``); the actor's three versions are constants too. What is
 not scripted is the rule, the measurement and the verdict — those are the
 product's own layers (``viba.compliance``, ``meeting_sdk``, ``viba.reflect``).
 The participant that would read the meeting and decide to speak for real is
@@ -64,6 +64,7 @@ HERE = Path(__file__).resolve().parent            # tests/
 REPO = HERE.parent                                # the checkout
 RULE = critic_rules.RULES[0]
 PARAMETER_RULE = critic_rules.RULES[1]
+FOLDED_RULE = critic_rules.RULES[2]
 RULES = critic_rules.RULES
 STORE = HERE / "critic" / "store"                 # the demo's own prepared evidence
 
@@ -123,6 +124,30 @@ def process_batch(path):
     return {"count": len(kept), "total": total(kept)}
 '''
 
+FOLDED_CODE = '''import json
+
+
+def load_rows(path):
+    with open(path) as handle:
+        return json.load(handle)
+
+
+def total(rows):
+    return sum(row["amount"] for row in rows)
+
+
+def process_batch(path):
+    rows = load_rows(path)
+    kept = []
+    for row in rows:
+        amount = row.get("amount")
+        if amount is None:
+            continue
+        if 0 <= amount <= 100:
+            kept.append(row)
+    kept.sort(key=lambda row: row["id"]); return {"count": len(kept), "total": total(kept)}
+'''
+
 SHORT_CODE = '''import json
 
 
@@ -159,7 +184,7 @@ def start_meeting(root: Path, meeting_id: str, live: bool = True):
     (`workspace_capture.capture_workspace`) — plain text, ANSI segments, and the
     cursor and size the terminal reports, not numbers written down here.
 
-    The generator's turn is scripted (edit the file in vi, print it), but the
+    The actor's turn is scripted (edit the file in vi, print it), but the
     session is real: the workspace page can take the terminal over, and the
     frames are what the terminal actually showed.
     """
@@ -185,9 +210,9 @@ def start_meeting(root: Path, meeting_id: str, live: bool = True):
         capture_workspace(store, transport)        # the opening frame
 
     captures = []
-    for code in (LONG_CODE, WIDE_CODE, SHORT_CODE):
+    for code in (LONG_CODE, WIDE_CODE, FOLDED_CODE, SHORT_CODE):
         if live:
-            # the generator edits in the terminal, and the pane shows it: the
+            # the actor edits in the terminal, and the pane shows it: the
             # frames of the edit are journaled as they happen, then the file is
             # printed for a clean look at what it now says
             _edit_with_vi(pane_id, transport, "batch.py", code,
@@ -206,7 +231,7 @@ def start_meeting(root: Path, meeting_id: str, live: bool = True):
 
 
 def _edit_with_vi(pane_id: str, transport, name: str, code: str, look=None) -> None:
-    """Produce the file the way a generator would: in vi, one line at a time.
+    """Produce the file the way an actor would: in vi, one line at a time.
 
     No heredoc and no `cat >`: the pane runs a real editor, and the file is what
     the typing left behind. Whatever the file said before is taken out first

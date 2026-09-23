@@ -41,9 +41,9 @@ VALID_PHASES = {
 VALID_OWNERS = {"agent", "human", "none"}
 # Agent roles follow the Meeting ADT (agent_name2role). "human" is reserved
 # and never appears as an agent name. A meeting always has exactly one
-# generator agent that owns the shared terminal (multi-agent slices keep
+# actor agent that owns the shared terminal (multi-agent slices keep
 # this invariant; additional agents join as discriminators).
-VALID_AGENT_ROLES = {"generator", "active_discriminator", "passive_discriminator"}
+VALID_AGENT_ROLES = {"actor", "active_discriminator", "critic"}
 HUMAN_USER = "human"
 
 
@@ -82,15 +82,15 @@ def fill_terminal_control_lines(events: List[Dict[str, Any]]) -> None:
         owner = owner if isinstance(owner, str) and owner else None
         event["content"] = terminal_control_line(previous, owner)
         previous = owner
-# New meetings default their single generator to this readable name.
+# New meetings default their single actor to this readable name.
 DEFAULT_AGENT_NAME = "actor"
 # A new meeting already has its reviewer on the member list. The reviewer is
 # lazy (it only runs when the human @-mentions it) and can never own the shared
 # terminal, so the second participant costs nothing until it is asked for.
 DEFAULT_DISCRIMINATOR_NAME = "critic"
 DEFAULT_AGENT_ROLE_MAP = {
-    DEFAULT_AGENT_NAME: "generator",
-    DEFAULT_DISCRIMINATOR_NAME: "passive_discriminator",
+    DEFAULT_AGENT_NAME: "actor",
+    DEFAULT_DISCRIMINATOR_NAME: "critic",
 }
 # Pre-identity manifests recorded the lone agent as "agent"; loading them
 # keeps that exact name so historical records stay coherent.
@@ -122,7 +122,7 @@ def utc_now() -> str:
 def normalize_agent_role_map(
     role_map: Optional[Mapping[str, str]],
     *,
-    require_generator: bool = True,
+    require_actor: bool = True,
 ) -> Dict[str, str]:
     """Validate and normalize the ADT agent_name2role map.
 
@@ -130,8 +130,8 @@ def normalize_agent_role_map(
     - keys are non-empty agent names; ``"human"`` is reserved and may not be
       an agent name;
     - values must be a member of VALID_AGENT_ROLES;
-    - a meeting keeps at least one ``generator`` (the shared-terminal owner).
-    An empty/None map falls back to the default team: the ``actor`` generator
+    - a meeting keeps at least one ``actor`` (the shared-terminal owner).
+    An empty/None map falls back to the default team: the ``actor`` actor
     plus the lazy ``critic`` reviewer. Pre-identity manifests never reach this
     path — the loader pins them to the legacy single agent ``agent``.
     """
@@ -148,8 +148,8 @@ def normalize_agent_role_map(
         if not isinstance(role, str) or role not in VALID_AGENT_ROLES:
             raise MeetingError(f"invalid agent role {role!r} for {name!r}")
         normalized[name.strip()] = role
-    if require_generator and "generator" not in set(normalized.values()):
-        raise MeetingError("meeting requires exactly one generator agent")
+    if require_actor and "actor" not in set(normalized.values()):
+        raise MeetingError("meeting requires exactly one actor agent")
     return normalized
 
 
@@ -293,14 +293,14 @@ class Meeting:
     def is_agent_name(self, agent_name: str) -> bool:
         return agent_name in self.agent_names()
 
-    def generator_name(self) -> str:
-        """Name of the generator agent (the shared-terminal owner/worker).
+    def actor_name(self) -> str:
+        """Name of the actor agent (the shared-terminal owner/worker).
 
-        Today every meeting has exactly one generator; the default role map
+        Today every meeting has exactly one actor; the default role map
         names it DEFAULT_AGENT_NAME ("agent"), keeping legacy behavior.
         """
         for name, role in self.effective_role_map.items():
-            if role == "generator":
+            if role == "actor":
                 return name
         return DEFAULT_AGENT_NAME  # unreachable under validation; safe fallback
 
@@ -470,7 +470,7 @@ class MeetingStore:
         # Legacy manifests have no role map: fall back to the single-agent
         # legacy name so pre-identity meetings keep their exact behavior.
         if not meeting.agent_name2role:
-            meeting.agent_name2role = {LEGACY_AGENT_NAME: "generator"}
+            meeting.agent_name2role = {LEGACY_AGENT_NAME: "actor"}
         else:
             meeting.agent_name2role = normalize_agent_role_map(meeting.agent_name2role)
         store = cls(run_dir, meeting)
@@ -861,12 +861,12 @@ class MeetingStore:
         the pane back and no agent picked it up. Stored as a ``control`` event
         so the Agent-visible journal shape does not grow new kinds.
         """
-        # ADT terminal_capable: only the human or the generator agent may own
+        # ADT terminal_capable: only the human or the actor agent may own
         # the shared pane; discriminators never hold the terminal.
         if user_name is not None and not (
-            user_name == HUMAN_USER or self.meeting.role_of(user_name) == "generator"
+            user_name == HUMAN_USER or self.meeting.role_of(user_name) == "actor"
         ):
-            raise MeetingError("terminal control user_name must be human or the generator agent")
+            raise MeetingError("terminal control user_name must be human or the actor agent")
         pane = self.meeting.pane_id or ""
         digits = pane.lstrip("%")
         tmux_pane: Optional[int] = int(digits) if digits.isdigit() else None

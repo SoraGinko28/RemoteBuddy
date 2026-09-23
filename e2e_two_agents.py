@@ -1,13 +1,13 @@
-"""e2e_two_agents — live two-process meeting: generator + @-summoned reviewer.
+"""e2e_two_agents — live two-process meeting: actor + @-summoned reviewer.
 
 Creates a meeting under the REPO runs/ directory (so the uid is browsable),
-drives a real generator claude-code process to finish a task, then sends an
+drives a real actor claude-code process to finish a task, then sends an
 @critic message that summons a SECOND real claude-code process. Asserts:
 
 - the reviewer's final comment is recorded under its own name ("critic"),
-- the generator's final is recorded under its own name ("agent"),
+- the actor's final is recorded under its own name ("agent"),
 - the two are distinguishable actors in the same journal,
-- only human/generator ever appear in terminal-control records,
+- only human/actor ever appear in terminal-control records,
 - the recorded journal validates with 0 violations.
 """
 
@@ -23,9 +23,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 CSRF_HEADER = "X-RemoteBuddy-CSRF"
-GENERATOR_TASK = ("List the files in the current directory with ls -la, "
+ACTOR_TASK = ("List the files in the current directory with ls -la, "
                   "then print DONE_GEN_7E3. Do not write files.")
-REVIEWER_ASK = "@critic please review what the generator just did. One short paragraph."
+REVIEWER_ASK = "@critic please review what the actor just did. One short paragraph."
 
 
 def _free_port() -> int:
@@ -41,7 +41,7 @@ class _Live:
         backend: str | None = None,
         provider: str | None = None,
         model: str | None = None,
-        task: str = GENERATOR_TASK,
+        task: str = ACTOR_TASK,
     ) -> None:
         self.backend = backend
         self.provider = provider
@@ -84,7 +84,7 @@ class _Live:
         self.csrf = self._req("GET", "/api/session")["csrf_token"]
 
     def join(self, meeting_id: str) -> None:
-        """Attach to a meeting already on disk (its generator has parked)."""
+        """Attach to a meeting already on disk (its actor has parked)."""
         self.connect()
         self.meeting_id = meeting_id
         print(f"joined meeting {meeting_id} on :{self.port}", flush=True)
@@ -96,7 +96,7 @@ class _Live:
             "meeting_id": meeting_id,
             "message": self.task,
             "typing_profile": "fast",
-            "agent_name2role": {"agent": "generator", "critic": "passive_discriminator"},
+            "agent_name2role": {"agent": "actor", "critic": "critic"},
         }
         # Only send the harness fields the caller asked for; otherwise the
         # meeting keeps the configured default (claude-code/deepseek).
@@ -152,13 +152,13 @@ def main() -> int:
     parser.add_argument("--stop", action="store_true",
                         help="freeze (archive) the meeting instead of keeping it live")
     parser.add_argument("--backend", default=None,
-                        help="agent_backend for the generator (default: config)")
+                        help="agent_backend for the actor (default: config)")
     parser.add_argument("--provider", default=None,
-                        help="agent_provider for the generator (default: config)")
+                        help="agent_provider for the actor (default: config)")
     parser.add_argument("--model", default=None,
-                        help="model for the generator; pass '' for the CLI default")
-    parser.add_argument("--task", default=GENERATOR_TASK,
-                        help="what the generator is asked to do")
+                        help="model for the actor; pass '' for the CLI default")
+    parser.add_argument("--task", default=ACTOR_TASK,
+                        help="what the actor is asked to do")
     parser.add_argument("--join", default=None,
                         help="skip phase 1 and review this existing meeting id")
     parser.add_argument("--ask", default=REVIEWER_ASK,
@@ -178,10 +178,10 @@ def main() -> int:
             live.start()
         live._req("GET", f"/api/meetings/{live.meeting_id}/snapshot")
 
-        # Phase 1: real generator works until the meeting is idle again. A
-        # generator that has finished its work parks in completion_proposed
+        # Phase 1: real actor works until the meeting is idle again. A
+        # actor that has finished its work parks in completion_proposed
         # (waiting for the human to accept), which is idle too.
-        def generator_idle() -> dict:
+        def actor_idle() -> dict:
             snap = live._req("GET", f"/api/meetings/{live.meeting_id}/snapshot")
             meeting = snap.get("meeting", {})
             if meeting.get("phase") in ("waiting_for_user", "completion_proposed") \
@@ -190,12 +190,12 @@ def main() -> int:
             return {}
 
         if not options.join:
-            idle = _wait(generator_idle, 420, "generator to reach idle")
-            generator_chats = [e for e in live.events()
+            idle = _wait(actor_idle, 420, "actor to reach idle")
+            actor_chats = [e for e in live.events()
                                if e.get("kind") == "chat" and e.get("actor") == "agent"]
-            summary["generator_chat_count"] = len(generator_chats)
-            summary["generator_phase"] = idle.get("phase")
-            print("generator idle; chats:", len(generator_chats), flush=True)
+            summary["actor_chat_count"] = len(actor_chats)
+            summary["actor_phase"] = idle.get("phase")
+            print("actor idle; chats:", len(actor_chats), flush=True)
 
         # Phase 2: @critic summons the second process.
         live.send(options.ask)
@@ -212,7 +212,7 @@ def main() -> int:
         summary["control_user_names"] = control_owners
 
         if "agent" not in summary["chat_actors"] or "critic" not in summary["chat_actors"]:
-            failed.append("both generator and critic must have chat records")
+            failed.append("both actor and critic must have chat records")
         if not (set(control_owners) <= {"human", "agent"}):
             failed.append(f"reviewer must never own terminal: {control_owners}")
         if not critic_finals:

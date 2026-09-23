@@ -58,8 +58,8 @@ How the data matches the design (this layer's binding rules):
   definition the branch points to (``$screen_ref`` matches ``ScreenReference``);
   the branch name matches the class name (``$ok`` / ``$err`` match ``Ok`` /
   ``VibaProgramErr``); or the branch is the unit and the enum matches this tag
-  (``$deleted ()`` matches ``DataStatus.DELETED``, ``$generator ()`` matches
-  ``AgentRole.GENERATOR`` — the value, the value with $, and the member name all
+  (``$deleted ()`` matches ``DataStatus.DELETED``, ``$actor ()`` matches
+  ``AgentRole.ACTOR`` — the value, the value with $, and the member name all
   count). Names are compared case-insensitively.
 * built-in leaves are recognised as Python scalars: bool / int / float / str /
   None.

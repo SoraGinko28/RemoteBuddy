@@ -1,8 +1,8 @@
-"""discriminator_harness — an independent harness for reviewer (non-generator)
+"""discriminator_harness — an independent harness for reviewer (non-actor)
 participants.
 
 Design (per MEETING_ADT object layer): agents may come from different
-harnesses/service providers; they only converge in MeetingData. The generator
+harnesses/service providers; they only converge in MeetingData. The actor
 uses the terminal-bound Claude-Code action harness. The discriminator must
 NOT touch the shared terminal, so this module runs it against a plain
 chat endpoint (no tools, no local terminal bridge) — a separate harness that
@@ -193,7 +193,7 @@ def build_reviewer_observation(store: m2.MeetingStore) -> str:
 
 
 def build_actor_instruction_block(store: m2.MeetingStore) -> str:
-    """The generator operates under a skill/instruction file; the reviewer
+    """The actor operates under a skill/instruction file; the reviewer
     needs the same instructions to judge whether the actor followed them."""
     try:
         path = store.runtime_skill_path
@@ -337,7 +337,7 @@ def comment_once(
         actor_rules = build_actor_instruction_block(store)
         system = f"{persona}\n\n{instructions}"
         if actor_rules:
-            system += "\n\n===== the generator actor operates under these instructions (know them so you can judge it fairly) =====\n" + actor_rules
+            system += "\n\n===== the actor actor operates under these instructions (know them so you can judge it fairly) =====\n" + actor_rules
         latest_human = ""
         for event in reversed(store.events()):
             if event.get("kind") == "chat" and event.get("actor") == "human" and (event.get("content") or "").strip():

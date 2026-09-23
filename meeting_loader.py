@@ -29,7 +29,7 @@ Known limitations (surfaced in validation reports; the journal is never
 modified):
   - The current journal has no score events and no role metadata;
     agent_name2role can only be inferred on the assumption that every agent
-    that appears is a generator (valid for single-agent meetings).
+    that appears is an actor (valid for single-agent meetings).
   - control events carry only acquired/released, with no tmux pane info:
     TerminalControl records tmux_window_name/pane as missing; they are to be
     filled in by the runner that owns the pane.
@@ -73,7 +73,7 @@ def _role_map_from_events(events: list[dict], manifest: dict) -> dict:
     """Infer agent_name2role.
 
     The current journal carries no role metadata: every non-human agent that
-    appears is inferred to be a generator (the tmux owner in a single-agent
+    appears is inferred to be an actor (the tmux owner in a single-agent
     meeting). $human never enters the role map.
     """
     agents: set[str] = set()
@@ -81,7 +81,7 @@ def _role_map_from_events(events: list[dict], manifest: dict) -> dict:
         actor = event.get("actor")
         if isinstance(actor, str) and actor not in ("human", "workspace", "harness"):
             agents.add(actor)
-    return {name: adt.AgentRole.GENERATOR for name in sorted(agents)}
+    return {name: adt.AgentRole.ACTOR for name in sorted(agents)}
 
 
 def _time_of(event: dict) -> Optional[object]:
@@ -185,7 +185,7 @@ def _screen_owner_runs(screens: "list[adt.ScreenCapture]",
     same owner.
 
     owner(t): falls inside a human takeover interval => $human; otherwise the
-    default generator agent.
+    default actor agent.
     """
     spans: list[tuple] = []
     for control in controls:

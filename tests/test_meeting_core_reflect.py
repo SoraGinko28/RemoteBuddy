@@ -196,9 +196,9 @@ class TestSumBranches:
         assert status.has_deleted() is False
 
     def test_enum_with_a_dollar_value_matches_its_tag(self) -> None:
-        node = _open(adt.AgentRole.GENERATOR, "AgentRole")
-        assert node.has_generator() is True
-        assert node.has_passive_discriminator() is False
+        node = _open(adt.AgentRole.ACTOR, "AgentRole")
+        assert node.has_actor() is True
+        assert node.has_critic() is False
 
     def test_nil_valued_optional_field_is_present_with_nil(self) -> None:
         """The field is present and the value is nil: has is true, and reading

@@ -1,7 +1,7 @@
 """Agent identity (slice 1): agent_name2role persistence and membership rules.
 
 Goal: named agents + a single-source role map on the Meeting manifest,
-keeping the legacy single agent ("actor"/generator) byte-for-byte compatible.
+keeping the legacy single agent ("actor"/actor) byte-for-byte compatible.
 """
 
 import json
@@ -34,18 +34,18 @@ class TestDefaults:
         # The reviewer ships with every new meeting: it only runs when the
         # human @-mentions it, so a second member costs nothing up front.
         assert store.meeting.agent_name2role == {
-            m2.DEFAULT_AGENT_NAME: "generator",
-            m2.DEFAULT_DISCRIMINATOR_NAME: "passive_discriminator",
+            m2.DEFAULT_AGENT_NAME: "actor",
+            m2.DEFAULT_DISCRIMINATOR_NAME: "critic",
         }
 
     def test_helpers_see_default_team(self, store) -> None:
         assert store.meeting.agent_names() == {m2.DEFAULT_AGENT_NAME,
                                                m2.DEFAULT_DISCRIMINATOR_NAME}
-        assert store.meeting.role_of("actor") == "generator"
-        assert store.meeting.role_of("critic") == "passive_discriminator"
+        assert store.meeting.role_of("actor") == "actor"
+        assert store.meeting.role_of("critic") == "critic"
         assert store.meeting.is_agent_name("actor")
         assert not store.meeting.is_agent_name("human")
-        assert store.meeting.generator_name() == "actor"
+        assert store.meeting.actor_name() == "actor"
 
     def test_manifest_persists_role_map(self, store) -> None:
         payload = json.loads((store.run_dir / "meeting.json").read_text(encoding="utf-8"))
@@ -55,29 +55,29 @@ class TestDefaults:
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
         assert reloaded.meeting.agent_name2role == dict(m2.DEFAULT_AGENT_ROLE_MAP)
 
-    def test_generator_name_default(self, store) -> None:
-        assert store.meeting.generator_name() == "actor"
+    def test_actor_name_default(self, store) -> None:
+        assert store.meeting.actor_name() == "actor"
 
-    def test_generator_name_explicit(self) -> None:
+    def test_actor_name_explicit(self) -> None:
         meeting = m2.Meeting(
             meeting_id="m", status="created", phase="created",
             created_at="t", updated_at="t", session_name="s",
             session_state="x", pane_id=None, workspace="w",
             streams={}, model="m",
-            agent_name2role={"coder": "generator", "critic": "passive_discriminator"},
+            agent_name2role={"coder": "actor", "critic": "critic"},
         )
-        assert meeting.generator_name() == "coder"
+        assert meeting.actor_name() == "coder"
 
 
 class TestNamedControlOwner:
-    def test_control_owner_accepts_generator_name(self, store) -> None:
+    def test_control_owner_accepts_actor_name(self, store) -> None:
         store.update(control_owner="actor")
         assert store.meeting.control_owner == "actor"
 
     def test_control_owner_accepts_any_member_name(self, store, tmp_path) -> None:
         store2 = m2.MeetingStore.create(
             tmp_path, "m-owner", "hi", SKILL, "s", model="m",
-            agent_name2role={"coder": "generator", "critic": "passive_discriminator"},
+            agent_name2role={"coder": "actor", "critic": "critic"},
         )
         store2.update(control_owner="coder")
         assert store2.meeting.control_owner == "coder"
@@ -89,33 +89,33 @@ class TestNamedControlOwner:
 
 class TestMentions:
     def test_mentions_only_role_members_in_order(self) -> None:
-        roles = {"actor": "generator", "critic": "active_discriminator"}
+        roles = {"actor": "actor", "critic": "active_discriminator"}
         assert m2.mentioned_agent_names("@critic please look", roles) == ["critic"]
 
     def test_unknown_and_human_ignored(self) -> None:
-        roles = {"actor": "generator", "critic": "passive_discriminator"}
+        roles = {"actor": "actor", "critic": "critic"}
         assert m2.mentioned_agent_names("@stranger @human hi", roles) == []
 
     def test_multiple_mentions_deduplicated(self) -> None:
-        roles = {"actor": "generator", "critic": "passive_discriminator"}
+        roles = {"actor": "actor", "critic": "critic"}
         assert m2.mentioned_agent_names("@critic a @critic b", roles) == ["critic"]
         assert m2.mentioned_agent_names("@critic and @actor", roles) == ["critic", "actor"]
 
     def test_mention_boundaries(self) -> None:
-        roles = {"critic": "passive_discriminator"}
+        roles = {"critic": "critic"}
         # @critic-extra is not a mention of @critic; text before @ still counts
         assert m2.mentioned_agent_names("@critic-extra", roles) == []
         assert m2.mentioned_agent_names("please @critic look", roles) == ["critic"]
 
     def test_non_string_content_ignored(self) -> None:
-        assert m2.mentioned_agent_names(None, {"critic": "passive_discriminator"}) == []
-        assert m2.mentioned_agent_names(123, {"critic": "passive_discriminator"}) == []
+        assert m2.mentioned_agent_names(None, {"critic": "critic"}) == []
+        assert m2.mentioned_agent_names(123, {"critic": "critic"}) == []
 
 
 class TestExplicitRoles:
     def test_multi_agent_roles_roundtrip(self, tmp_path) -> None:
-        roles = {"coder": "generator", "critic": "active_discriminator",
-                 "sparring": "passive_discriminator"}
+        roles = {"coder": "actor", "critic": "active_discriminator",
+                 "sparring": "critic"}
         store = m2.MeetingStore.create(tmp_path, "meeting-multi", "hi", SKILL,
                                        "s", model="m", agent_backend="responses",
                                        agent_provider="openai",
@@ -125,9 +125,9 @@ class TestExplicitRoles:
         assert reloaded.meeting.agent_name2role == roles
 
     def test_names_unique_and_order_irrelevant(self) -> None:
-        normalized = m2.normalize_agent_role_map({"a": "generator", "b": "passive_discriminator"})
-        assert normalized["a"] == "generator"
-        assert normalized["b"] == "passive_discriminator"
+        normalized = m2.normalize_agent_role_map({"a": "actor", "b": "critic"})
+        assert normalized["a"] == "actor"
+        assert normalized["b"] == "critic"
 
 
 class TestValidation:
@@ -135,18 +135,18 @@ class TestValidation:
     def test_none_or_empty_falls_back_to_the_default_team(self, roles) -> None:
         assert m2.normalize_agent_role_map(roles) == dict(m2.DEFAULT_AGENT_ROLE_MAP)
 
-    def test_explicit_solo_generator_is_kept(self) -> None:
+    def test_explicit_solo_actor_is_kept(self) -> None:
         # A caller that asks for one agent gets one agent; the reviewer is a
         # default, not a requirement.
-        assert m2.normalize_agent_role_map({"actor": "generator"}) == {"actor": "generator"}
+        assert m2.normalize_agent_role_map({"actor": "actor"}) == {"actor": "actor"}
 
     @pytest.mark.parametrize("bad", [
-        {"human": "generator"},
-        {"": "generator"},
+        {"human": "actor"},
+        {"": "actor"},
         {"a": "root"},
-        {"a": "generator", "b": 3},
-        {"only_critic": "active_discriminator"},  # no generator
-        {"only_passive": "passive_discriminator"},
+        {"a": "actor", "b": 3},
+        {"only_critic": "active_discriminator"},  # no actor
+        {"only_passive": "critic"},
     ])
     def test_invalid_role_maps_rejected(self, bad) -> None:
         with pytest.raises(m2.MeetingError):
@@ -155,13 +155,13 @@ class TestValidation:
     def test_create_rejects_bad_roles(self, tmp_path) -> None:
         with pytest.raises(m2.MeetingError):
             m2.MeetingStore.create(tmp_path, "m", "hi", SKILL, "s", model="m",
-                                   agent_name2role={"human": "generator"})
+                                   agent_name2role={"human": "actor"})
 
 
 class TestAppendMembership:
     def test_chat_allows_any_role_member(self, store) -> None:
-        store.add_agent_role("critic", "passive_discriminator")
-        store.add_agent_role("coder", "generator")  # second generator not needed but legal
+        store.add_agent_role("critic", "critic")
+        store.add_agent_role("coder", "actor")  # second actor not needed but legal
         store.append_chat("actor", "working", "ack")
         store.append_chat("critic", "reviewing", "ack")
         store.append_chat("human", "please", "request")
@@ -172,7 +172,7 @@ class TestAppendMembership:
         with pytest.raises(m2.MeetingError, match="human or a meeting agent"):
             store.append_chat("stranger", "hi", "ack")
 
-    def test_terminal_control_allows_generator_and_human(self, store) -> None:
+    def test_terminal_control_allows_actor_and_human(self, store) -> None:
         store.note_terminal_control("actor")
         store.note_terminal_control("human")
         ok = [e for e in store.events() if e["kind"] == "control"]
@@ -193,36 +193,36 @@ class TestAppendMembership:
 
     def test_terminal_control_rejects_discriminator_or_stranger(self, store) -> None:
         store.add_agent_role("auditor", "active_discriminator")
-        with pytest.raises(m2.MeetingError, match="human or the generator"):
+        with pytest.raises(m2.MeetingError, match="human or the actor"):
             store.note_terminal_control("auditor")
-        with pytest.raises(m2.MeetingError, match="human or the generator"):
+        with pytest.raises(m2.MeetingError, match="human or the actor"):
             store.note_terminal_control("critic")  # the default reviewer, still not the writer
-        with pytest.raises(m2.MeetingError, match="human or the generator"):
+        with pytest.raises(m2.MeetingError, match="human or the actor"):
             store.note_terminal_control("stranger")
 
 
 class TestJoinAgent:
     def test_add_new_agent_and_reload(self, store, tmp_path) -> None:
-        store.add_agent_role("critic", "passive_discriminator")
-        assert store.meeting.agent_name2role["critic"] == "passive_discriminator"
+        store.add_agent_role("critic", "critic")
+        assert store.meeting.agent_name2role["critic"] == "critic"
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
-        assert reloaded.meeting.agent_name2role == {"actor": "generator",
-                                                    "critic": "passive_discriminator"}
+        assert reloaded.meeting.agent_name2role == {"actor": "actor",
+                                                    "critic": "critic"}
         store.append_chat("critic", "noted", "ack")  # now a member
 
     def test_resume_same_role_is_noop(self, store) -> None:
-        store.add_agent_role("critic", "passive_discriminator")
-        store.add_agent_role("critic", "passive_discriminator")
+        store.add_agent_role("critic", "critic")
+        store.add_agent_role("critic", "critic")
         assert list(store.meeting.agent_name2role).count("critic") == 1
 
     def test_role_change_rejected(self, store) -> None:
-        store.add_agent_role("critic", "passive_discriminator")
+        store.add_agent_role("critic", "critic")
         with pytest.raises(m2.MeetingError, match="immutable"):
             store.add_agent_role("critic", "active_discriminator")
 
     def test_join_human_or_bad_role_rejected(self, store) -> None:
         with pytest.raises(m2.MeetingError, match="reserved"):
-            store.add_agent_role("human", "generator")
+            store.add_agent_role("human", "actor")
         with pytest.raises(m2.MeetingError, match="invalid agent role"):
             store.add_agent_role("critic", "root")
 
@@ -235,12 +235,12 @@ class TestLegacyManifestLoad:
         manifest.write_text(json.dumps(payload), encoding="utf-8")
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
         # pre-identity manifests stay on the legacy name
-        assert reloaded.meeting.agent_name2role == {"agent": "generator"}
+        assert reloaded.meeting.agent_name2role == {"agent": "actor"}
 
 
 class TestConversationCredits:
     def test_exported_transcript_names_every_speaker(self, store) -> None:
-        store.add_agent_role("critic", "passive_discriminator")
+        store.add_agent_role("critic", "critic")
         store.append_chat("actor", "listing files", "ack")
         store.append_chat("critic", "the echo never ran", "final")
         store.append_chat("human", "carry on", "request")

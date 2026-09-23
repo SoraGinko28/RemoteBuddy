@@ -161,7 +161,7 @@ def _calls(apis):
                                             - set(KNOWN_BINDING_GAP)),
                          ids=lambda item: None)
 def test_every_answer_is_the_script_for_the_local_answer(api, args, wired) -> None:
-    """What the server sends is the script the same generator makes here."""
+    """What the server sends is the script the same actor makes here."""
     data, rest = args[0], args[1:]
     ours = getattr(local, api)(data, *rest)
     given = getattr(remote, api)(data.meeting_uid, *rest)

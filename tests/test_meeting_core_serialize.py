@@ -44,7 +44,7 @@ def _samples():
         ("datetime", v),
         ("TextRegion", adt.TextRegion(0, 2)),
         ("UserName", "alice"),
-        ("AgentRole", adt.AgentRole.GENERATOR),
+        ("AgentRole", adt.AgentRole.ACTOR),
         ("DataStatus", adt.DataStatus.READ_ONLY),
         ("Style", "bold"),
         ("Color", adt.Rgb(1, 2, 3)),

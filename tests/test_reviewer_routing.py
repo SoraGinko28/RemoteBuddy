@@ -1,5 +1,5 @@
-"""2b routing tests: an @mention of a non-generator member summons only that
-member's reviewer worker; the generator worker is not started."""
+"""2b routing tests: an @mention of a non-actor member summons only that
+member's reviewer worker; the actor worker is not started."""
 
 import time
 from pathlib import Path
@@ -78,7 +78,7 @@ class TestReviewerRouting:
         store = m2.MeetingStore.create(
             tmp_path, "meeting-routing", "do the thing", SKILL, "s",
             model="deepseek-v4-flash",
-            agent_name2role={"agent": "generator", "critic": "passive_discriminator"},
+            agent_name2role={"agent": "actor", "critic": "critic"},
         )
         store.update(status="running", phase="waiting_for_user", control_owner="none")
         return store
@@ -107,10 +107,10 @@ class TestReviewerRouting:
 
     def test_immediate_mention_still_summons_only_reviewer(self, service, tmp_path,
                                                          monkeypatch) -> None:
-        """delivery=interrupt must not answer an @critic with the generator.
+        """delivery=interrupt must not answer an @critic with the actor.
 
         The composer sends every message immediately now, so the routing rule
-        that keeps @mentions away from the generator cannot depend on the
+        that keeps @mentions away from the actor cannot depend on the
         delivery mode.
         """
         monkeypatch.setattr(discriminator_harness, "comment_once", _fake_comment)
@@ -141,4 +141,4 @@ class TestReviewerRouting:
         service.message(store.meeting.meeting_id, {"message": "go on"})
         reloaded = m2.MeetingStore.load(tmp_path, store.meeting.meeting_id)
         assert service.reviewer_jobs.get(store.meeting.meeting_id) in ({}, None)
-        assert reloaded.meeting.control_owner == "agent"  # generator wake path
+        assert reloaded.meeting.control_owner == "agent"  # actor wake path
