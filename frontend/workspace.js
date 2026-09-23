@@ -1801,8 +1801,20 @@ function renderTerminal() {
       // prompt and typed text while the shell was still near the top.
       let rowOffset = 0;
       if (viewRows < fullRows) {
-        const anchorRow = Number.isFinite(cursorY) ? cursorY : fullRows - 1;
-        rowOffset = Math.max(0, Math.min(fullRows - viewRows, anchorRow - viewRows + 1));
+        // A cited region is shown from its own first row: the quote is what the
+        // reader came to see, and the cursor that produced the frame may sit
+        // far below it (a `:wq` at the bottom of a file, for one).
+        const cited = state.highlightReference?.kind === "screen"
+          && state.highlightReference.event_id === source.event_id
+          ? Number(state.highlightReference.region?.start)
+          : NaN;
+        if (Number.isFinite(cited) && hasScreenContent) {
+          const citedRow = source.content.slice(0, Math.max(0, cited)).split("\n").length - 1;
+          rowOffset = Math.max(0, Math.min(fullRows - viewRows, citedRow));
+        } else {
+          const anchorRow = Number.isFinite(cursorY) ? cursorY : fullRows - 1;
+          rowOffset = Math.max(0, Math.min(fullRows - viewRows, anchorRow - viewRows + 1));
+        }
       }
       if (waiting) {
         termRowsState = null;
