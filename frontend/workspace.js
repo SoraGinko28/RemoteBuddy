@@ -22,7 +22,7 @@ const el = Object.fromEntries([
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
-  "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
+  "close-dialog", "cancel-new", "initial-message", "workspace-select", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
   "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
@@ -34,6 +34,7 @@ const state = {
   csrfHeader: "X-RemoteBuddy-CSRF",
   healthy: false,
   meetings: [],
+  workspaces: [],
   selectedId: null,
   snapshot: null,
   tickets: null,
@@ -461,6 +462,70 @@ function enqueueLiveScreens(events) {
   if (!state.liveScreenTimer) advanceLiveScreenQueue();
 }
 
+// A workspace is where a meeting lives and works: its data sits in
+// `<workspace>/.meeting/<id>/`, and several meetings may share one workspace.
+// Meetings opened before workspaces existed live directly in `runs/`; they are
+// shown under 未分组 so nothing disappears from the list.
+function meetingGroups() {
+  const groups = [];
+  const byPath = new Map();
+  const group = (path) => {
+    if (!byPath.has(path)) {
+      const one = { path, meetings: [] };
+      byPath.set(path, one);
+      groups.push(one);
+    }
+    return byPath.get(path);
+  };
+  for (const workspace of state.workspaces) group(workspace);
+  for (const meeting of state.meetings) group(meeting.workspace_root || "").meetings.push(meeting);
+  return groups.filter((one) => one.meetings.length);
+}
+
+function basename(path) {
+  const parts = String(path).split("/").filter(Boolean);
+  return parts.length ? parts.at(-1) : path;
+}
+
+// "3 分钟前" reads faster than a wall clock when the question is "which one was
+// I just in"; the exact time stays in the title.
+function fmtAgo(value) {
+  const then = new Date(value).getTime();
+  if (!Number.isFinite(then)) return "—";
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return "刚刚";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.round(hours / 24)} 天前`;
+}
+
+function meetingItem(meeting) {
+  const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
+  button.type = "button";
+  const top = node("span", "meeting-item-top");
+  top.append(
+    node("strong", "", meeting.title || meeting.meeting_id),
+    node("span", `mini-status ${meeting.status}`, labels.status[meeting.status] || meeting.status),
+  );
+  const provider = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
+  button.append(top, node("span", "meeting-item-id", meeting.meeting_id));
+  const meta = node("span", "meeting-item-meta",
+    `${withAgent(labels.phase[meeting.phase] || meeting.phase, meeting)} · ${provider} · ${fmtAgo(meeting.updated_at)}`);
+  meta.title = fmtTime(meeting.updated_at);
+  button.append(meta);
+  // A drag across the id is the human selecting it to copy, not a command to
+  // open the meeting: a click that ends with a selection inside this item
+  // must not navigate, which would also rebuild the list and drop it.
+  button.addEventListener("click", () => {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
+    selectMeeting(meeting.meeting_id);
+  });
+  return button;
+}
+
 function renderMeetingList() {
   // Rebuilding the items drops any selection inside them, so stand down while
   // the human is selecting something in the list (the next render, after the
@@ -470,23 +535,37 @@ function renderMeetingList() {
   el.meeting_list.replaceChildren();
   el.meeting_count.textContent = String(state.meetings.length);
   el.list_empty.hidden = state.meetings.length > 0;
-  for (const meeting of state.meetings) {
-    const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
-    button.type = "button";
-    const top = node("span", "meeting-item-top");
-    top.append(node("strong", "", meeting.meeting_id), node("span", `mini-status ${meeting.status}`, labels.status[meeting.status] || meeting.status));
-    const provider = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
-    button.append(top, node("span", "meeting-item-meta", `${withAgent(labels.phase[meeting.phase] || meeting.phase, meeting)} · ${provider} · ${fmtTime(meeting.updated_at)}`));
-    // A drag across the id is the human selecting it to copy, not a command to
-    // open the meeting: a click that ends with a selection inside this item
-    // must not navigate, which would also rebuild the list and drop it.
-    button.addEventListener("click", () => {
-      const selection = window.getSelection();
-      if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
-      selectMeeting(meeting.meeting_id);
-    });
-    el.meeting_list.append(button);
+  for (const group of meetingGroups()) {
+    const section = node("section", "meeting-group");
+    const head = node("div", "meeting-group-head");
+    head.title = group.path || "runs/";
+    head.append(
+      node("span", "meeting-group-name", group.path ? basename(group.path) : "未分组"),
+      node("span", "meeting-group-count", String(group.meetings.length)),
+    );
+    section.append(head);
+    for (const meeting of group.meetings) section.append(meetingItem(meeting));
+    el.meeting_list.append(section);
   }
+}
+
+// The dialog's workspace picker: one entry per served workspace, plus "no
+// workspace" which keeps the older `runs/<id>/workspace/` layout.
+function renderWorkspaceOptions() {
+  if (!el.workspace_select) return;
+  const chosen = el.workspace_select.value;
+  el.workspace_select.replaceChildren();
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "不使用工作区（在 runs/ 下新建）";
+  el.workspace_select.append(none);
+  for (const workspace of state.workspaces) {
+    const option = document.createElement("option");
+    option.value = workspace;
+    option.textContent = `${basename(workspace)}（${workspace}）`;
+    el.workspace_select.append(option);
+  }
+  if (chosen && state.workspaces.includes(chosen)) el.workspace_select.value = chosen;
 }
 
 // A live DOM selection must never be clobbered by a periodic redraw: the
@@ -2728,7 +2807,9 @@ function updateCredentialFields() {
 async function loadMeetings() {
   const payload = await api("/api/meetings");
   state.meetings = payload.meetings || [];
+  state.workspaces = payload.workspaces || [];
   state.meetingsRefreshedAt = Date.now();
+  renderWorkspaceOptions();
   renderMeetingList();
 }
 
@@ -2923,6 +3004,7 @@ function bind() {
           agent_provider: el.provider_select.value,
           model: cliDefault ? "" : (el.model_input.value.trim() || null),
           typing_profile: typingProfile,
+          ...(el.workspace_select?.value ? { workspace: el.workspace_select.value } : {}),
           ...(el.effort_select.value ? { reasoning_effort: el.effort_select.value } : {}),
         }),
       });

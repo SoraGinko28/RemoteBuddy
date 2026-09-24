@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 runs/
+# A workspace keeps the meetings opened in it under `.meeting/`.
+.meeting/
 
 # Local credentials and machine-specific configuration
 model_api/auth.json

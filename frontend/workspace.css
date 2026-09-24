@@ -60,6 +60,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .health-message { margin: -14px 3px 16px; padding: 8px; border: 1px solid #5c3733; border-radius: 5px; background: var(--red-soft); color: var(--red); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .sidebar-section-title { display: flex; justify-content: space-between; padding: 0 4px 9px; color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
 .meeting-list { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; }
+/* Meetings are grouped by the workspace they live in (`<workspace>/.meeting/`);
+   one workspace can hold several. */
+.meeting-group { display: flex; flex-direction: column; gap: 4px; }
+.meeting-group + .meeting-group { margin-top: 6px; }
+.meeting-group-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 4px 4px 0; color: var(--muted); font-size: 10px; font-weight: 750; text-transform: uppercase; }
+.meeting-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meeting-group-count { padding: 1px 5px; border-radius: 6px; background: var(--surface-2); font-weight: 600; }
 /* Buttons are not text-selectable in Chrome by default, so the meeting ids and
    their meta lines could not be drag-selected or copied. */
 .meeting-item { width: 100%; border: 1px solid transparent; background: transparent; padding: 10px; text-align: left; border-radius: 6px; color: var(--ink); user-select: text; -webkit-user-select: text; }
@@ -67,6 +74,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .meeting-item.selected { background: var(--surface-2); border-color: var(--line-strong); }
 .meeting-item-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .meeting-item-top strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.meeting-item-id { display: block; color: var(--muted); margin-top: 4px; font: 10px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
 .meeting-item-meta { display: block; color: var(--muted); margin-top: 7px; font-size: 11px; }
 .mini-status { font-size: 9px; padding: 2px 5px; border-radius: 3px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
 .mini-status.running { color: var(--green); background: var(--green-soft); }
@@ -342,6 +350,9 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
   .brand-row { margin-bottom: 10px; }
   .sidebar > .primary-command { position: static; align-self: flex-start; width: auto; margin: 0 0 10px; }
   .meeting-list { flex-direction: row; overflow-x: auto; }
+  .meeting-group { flex-direction: row; }
+  .meeting-group + .meeting-group { margin-top: 0; }
+  .meeting-group-head { display: none; }
   .meeting-item { min-width: 190px; }
   .sidebar-footer, .sidebar-section-title { display: none; }
   .workspace-main { height: auto; min-height: calc(100vh - 160px); overflow: visible; }

@@ -288,6 +288,22 @@ class TmuxTransport:
         self._checked_cmd(pane, "select-pane", "-T", "shared workspace")
         return pane_id
 
+    # tmux builds one command string out of `send-keys`' argv, and rejects it
+    # with "command too long" past its own limit. Hex mode costs two characters
+    # per input byte, plus an argv slot each, so a long line (an agent pasting a
+    # whole expression, say) must be handed over in several calls.
+    SEND_HEX_CHUNK_BYTES = 1024
+
+    def _send_hex_bytes(self, pane: Any, encoded: bytes) -> None:
+        for start in range(0, len(encoded), self.SEND_HEX_CHUNK_BYTES):
+            chunk = encoded[start : start + self.SEND_HEX_CHUNK_BYTES]
+            self._checked_cmd(
+                pane,
+                "send-keys",
+                "-H",
+                *[f"{byte:02x}" for byte in chunk],
+            )
+
     def send_literal(self, pane_id: str, text: str) -> None:
         if not text or "\n" in text or "\r" in text:
             raise TmuxError("send_literal requires one non-empty line of text")
@@ -295,13 +311,7 @@ class TmuxTransport:
         # tmux parses ``;`` as a command separator even when it arrives as a
         # separate argv. Hex mode bypasses that parser and preserves every
         # UTF-8 byte, including quotes, backslashes, tabs, and Unicode.
-        encoded = text.encode("utf-8")
-        self._checked_cmd(
-            pane,
-            "send-keys",
-            "-H",
-            *[f"{byte:02x}" for byte in encoded],
-        )
+        self._send_hex_bytes(pane, text.encode("utf-8"))
 
     def send_hex(self, pane_id: str, hex_text: str) -> None:
         """Inject raw bytes (hex) into the pane, exactly as if typed locally.
@@ -316,12 +326,7 @@ class TmuxTransport:
         if len(hex_text) // 2 > 128 * 1024:
             raise TmuxError("send_hex payload is too large")
         pane = self._pane(pane_id)
-        self._checked_cmd(
-            pane,
-            "send-keys",
-            "-H",
-            *[hex_text[index : index + 2] for index in range(0, len(hex_text), 2)],
-        )
+        self._send_hex_bytes(pane, bytes.fromhex(hex_text))
 
     def start_output_pipe(self, pane_id: str, target_path: str) -> None:
         """Pipe the pane's output bytes to a file (tmux ``pipe-pane -O``).

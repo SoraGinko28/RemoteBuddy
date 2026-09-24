@@ -4,12 +4,23 @@
 > （每个类型都带 `*_to_dict / *_from_dict`，本文只做面向人类的摘要）。
 > 与 ADT（`MEETING_ADT.md`）分层：ADT 讲能力层不变量，本文讲这些记录如何落盘。
 
-## 1. 目录布局（沿用现有 runs/ 结构）
+## 1. 目录布局
+
+会议开在工作区里时（数据路径就是工作区下的 `.meeting/`）：
+
+```
+<workspace>/.meeting/<meeting_uid>/
+  meeting.json            # 会议清单：uid/name/role map/workspace_root（见 §4）
+  streams/events.jsonl    # 原始事件 journal（append-only，写入源）
+```
+
+一个工作区可以有多个 `<meeting_uid>`；这时的 `workspace/` 就是工作区根目录本身，不在会议目录下。
+没有工作区时沿用 `runs/<meeting_uid>/`，并在会议目录里新建一个 `workspace/`：
 
 ```
 runs/<meeting_uid>/
-  meeting.json            # 会议清单：uid/name/role map 等元数据（见 §4）
-  streams/events.jsonl    # 原始事件 journal（append-only，写入源）
+  meeting.json            # workspace_root 为 null
+  streams/events.jsonl
   workspace/              # 工作目录快照（数据层，不在本文）
 ```
 

@@ -178,7 +178,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="remote-sdk-demo-") as temporary:
         root = Path(temporary)
         capture_time = write_journal(root)
-        service = MeetingWebService(project_root=root)
+        service = MeetingWebService(project_root=root, workspaces=[])
         server = RemoteBuddyHTTPServer(("127.0.0.1", PORT), service)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

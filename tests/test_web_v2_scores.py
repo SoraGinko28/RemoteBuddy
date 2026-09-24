@@ -28,6 +28,7 @@ class WebV2ScoreTest(unittest.TestCase):
             project_root=self.root,
             skill_path=self.skill,
             runner_factory=lambda *args, **kwargs: None,
+            workspaces=[],
         )
 
     def tearDown(self):

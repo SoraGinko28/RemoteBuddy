@@ -15,8 +15,9 @@
 跑完**这场会留着**（`--finish leave`，默认）：页面上还能接管、还能聊天、还能按工单那块"发这一张"；
 要收掉就 `--finish complete`（照页面的"结束并保留"）或 `--finish stop`。
 
-会花钱：真 agent 真跑，几分钟、真模型额度——这是故意的。会议目录留在 `runs/<meeting_id>/`：
-journal 是真会议的，`ticket_centered/` 是这张流程留下的。
+会花钱：真 agent 真跑，几分钟、真模型额度——这是故意的。会议目录留着（`--workspace DIR` 给的话是
+`<DIR>/.meeting/<meeting_id>/`，否则 `runs/<meeting_id>/`）：journal 是真会议的，`ticket_centered/`
+是这张流程留下的。
 """
 
 from __future__ import annotations
@@ -57,12 +58,17 @@ class MeetingService:
     """人那一侧：开一场真会、说话、看它的 journal、收场（和页面同一条 HTTP 面）。"""
 
     def __init__(self, project_root: Path, message: str, *, meeting_id: Optional[str] = None,
-                 backend: Optional[str] = None, provider: Optional[str] = None):
+                 backend: Optional[str] = None, provider: Optional[str] = None,
+                 workspace: Optional[Path] = None):
         import web_v2
 
         self.project_root = Path(project_root).resolve()
         self.message = message
-        self.service = web_v2.MeetingWebService(project_root=self.project_root)
+        self.workspace_root = Path(workspace).expanduser().resolve() if workspace else None
+        self.service = web_v2.MeetingWebService(
+            project_root=self.project_root,
+            workspaces=[self.workspace_root] if self.workspace_root else [],
+        )
         self.server = web_v2.build_server("127.0.0.1", free_port(), service=self.service)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.port = self.server.server_address[1]
@@ -98,6 +104,8 @@ class MeetingService:
         self.csrf = self._request("GET", "/api/session")["csrf_token"]
         payload: Dict[str, Any] = {"meeting_id": self.meeting_id, "message": self.message,
                                    "typing_profile": "fast"}
+        if self.workspace_root:
+            payload["workspace"] = str(self.workspace_root)
         if self.backend:
             payload["agent_backend"] = self.backend
         if self.provider:
@@ -129,11 +137,15 @@ class MeetingService:
 
     @property
     def run_dir(self) -> Path:
+        if self.workspace_root:
+            return self.workspace_root / ".meeting" / self.meeting_id
         return self.project_root / "runs" / self.meeting_id
 
     @property
     def workspace(self) -> Path:
-        return self.run_dir / "workspace"
+        # Inside a workspace the agent works in the workspace root itself; the
+        # meeting's own data lives in the hidden `.meeting/` beside it.
+        return self.workspace_root or (self.run_dir / "workspace")
 
     def chats(self) -> List[dict]:
         return [{"seq": event.get("seq"), "actor": event.get("actor"),
@@ -189,6 +201,9 @@ def main(argv=None) -> int:
     parser.add_argument("--backend", default=None, help="harness（默认 model_api/config.toml 里的）")
     parser.add_argument("--provider", default=None, help="模型 provider（同上）")
     parser.add_argument("--target", default="quicksort.py", help="agent 要交的文件名")
+    parser.add_argument("--workspace", default=None, metavar="DIR",
+                        help="把这场会开在这个工作区里：数据进 <DIR>/.meeting/，agent 就在 <DIR> 根下干活"
+                             "（不给就还是 runs/<会议号>/ 那套）")
     parser.add_argument("--task", default=DEFAULT_TASK, help="人类说的那句题面")
     parser.add_argument("--expect", default="quick_sort(items, key=None, reverse=False)",
                         help="交出来的文件里必须有的那行接口")
@@ -201,8 +216,11 @@ def main(argv=None) -> int:
 
     workflow = load_workflow(project_root=REPO_ROOT)
     service = MeetingService(REPO_ROOT, human, meeting_id=args.meeting_id,
-                             backend=args.backend, provider=args.provider)
+                             backend=args.backend, provider=args.provider,
+                             workspace=args.workspace)
     print(f"会议：{service.meeting_id}（服务在 {service.url}）", flush=True)
+    print(f"数据：{service.run_dir}", flush=True)
+    print(f"工作区：{service.workspace}", flush=True)
     print(f"流程：{workflow_root(project_root=REPO_ROOT)}（摘要 {workflow.digest()[:8]}）", flush=True)
     print(f"人类说：{human}", flush=True)
     service.speak()

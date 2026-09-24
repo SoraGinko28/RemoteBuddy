@@ -73,6 +73,7 @@ class LiveUserPath:
             project_root=project_root,
             model_api_path=REPO_ROOT / "model_api",
             skill_path=REPO_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md",
+            workspaces=[],
         )
         self.service = service
         server = web_v2.build_server("127.0.0.1", _free_port(), service=service)

@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 from unittest import mock
 
 from meeting_v2 import MeetingError, MeetingStore, UnsupportedMeetingError
@@ -327,6 +328,103 @@ class MeetingStoreV2Test(unittest.TestCase):
         (self.root / "runs" / "linked-run").symlink_to(target)
         with self.assertRaisesRegex(MeetingError, "symlink"):
             MeetingStore.load(self.root, "linked-run")
+
+
+class WorkspaceMeetingTest(unittest.TestCase):
+    """A meeting opened in a workspace keeps all of its data in `<workspace>/.meeting/`.
+
+    One workspace holds as many meetings as you open in it; each gets its own
+    numbered directory, and they all work in the workspace's own root.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.skill = self.root / "SKILL.md"
+        self.skill.write_text(
+            "---\nname: workspace-collaborator\ndescription: Test.\n---\n",
+            encoding="utf-8",
+        )
+        self.workspace = self.root / "project"
+        self.workspace.mkdir()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def create(self, meeting_id: str, workspace: Optional[Path] = None) -> MeetingStore:
+        return MeetingStore.create(
+            self.root,
+            meeting_id,
+            "Write a note.",
+            self.skill,
+            f"remotebuddy-{meeting_id}",
+            "test-model",
+            workspace=workspace or self.workspace,
+        )
+
+    def test_data_lives_in_the_workspace_and_the_agent_works_in_its_root(self):
+        store = self.create("meeting-in-ws")
+        self.assertEqual((self.workspace / ".meeting" / "meeting-in-ws").resolve(), store.run_dir)
+        self.assertEqual(self.workspace.resolve(), store.workspace_path)
+        self.assertTrue((store.run_dir / "meeting.json").is_file())
+        self.assertTrue((store.run_dir / "streams").is_dir())
+        self.assertTrue((store.run_dir / "conversation.md").is_file())
+        # No second workspace directory inside the run dir, and nothing under
+        # the project's `runs/`: the workspace root is where the work happens.
+        self.assertFalse((store.run_dir / "workspace").exists())
+        self.assertFalse((self.root / "runs").exists())
+        manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(str(self.workspace.resolve()), manifest["workspace_root"])
+
+    def test_several_meetings_share_one_workspace(self):
+        first = self.create("meeting-one")
+        second = self.create("meeting-two")
+        self.assertNotEqual(first.run_dir, second.run_dir)
+        self.assertEqual(self.workspace.resolve(), first.workspace_path)
+        self.assertEqual(self.workspace.resolve(), second.workspace_path)
+        self.assertEqual(
+            {"meeting-one", "meeting-two"},
+            {child.name for child in (self.workspace / ".meeting").iterdir()},
+        )
+        loaded = MeetingStore.load_in_workspace(self.workspace, "meeting-two")
+        self.assertEqual(second.run_dir, loaded.run_dir)
+        # The same id may not be opened twice in one workspace.
+        with self.assertRaisesRegex(MeetingError, "already exists"):
+            self.create("meeting-one")
+
+    def test_legacy_layout_is_unchanged(self):
+        store = MeetingStore.create(
+            self.root,
+            "legacy-demo",
+            "Write a note.",
+            self.skill,
+            "remotebuddy-legacy-demo",
+            "test-model",
+        )
+        self.assertEqual((self.root / "runs" / "legacy-demo").resolve(), store.run_dir)
+        self.assertEqual(store.run_dir / "workspace", store.workspace_path)
+        self.assertIsNone(store.meeting.workspace_root)
+        self.assertIsNone(json.loads(store.manifest_path.read_text(encoding="utf-8"))["workspace_root"])
+        self.assertEqual("legacy-demo", MeetingStore.load(self.root, "legacy-demo").meeting.meeting_id)
+
+    def test_guards(self):
+        with self.assertRaisesRegex(MeetingError, "invalid meeting id"):
+            self.create("../escape")
+        with self.assertRaisesRegex(MeetingError, "workspace not found"):
+            self.create("meeting-gone", workspace=self.root / "nope")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.workspace / ".meeting").symlink_to(outside)
+        with self.assertRaisesRegex(MeetingError, "symlink"):
+            self.create("meeting-linked")
+
+    def test_a_moved_workspace_is_reported(self):
+        store = self.create("meeting-moved")
+        loaded = MeetingStore.load_in_workspace(self.workspace, "meeting-moved")
+        self.assertEqual(store.meeting.meeting_id, loaded.meeting.meeting_id)
+        loaded.meeting.workspace_root = str(self.root / "vanished")
+        with self.assertRaisesRegex(MeetingError, "workspace not found"):
+            _ = loaded.workspace_path
 
 
 if __name__ == "__main__":

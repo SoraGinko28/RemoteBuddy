@@ -159,6 +159,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
+            workspaces=[],
         )
 
     def tearDown(self):
@@ -674,6 +675,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
+            workspaces=[],
         )
         self.service = restarted
         restarted.resume("restart-demo")

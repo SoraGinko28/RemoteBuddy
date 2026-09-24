@@ -107,7 +107,13 @@ python3 demo_v2.py cleanup <meeting-id>
 
 ## Session Model
 
-Each v2 session is stored under `runs/<meeting-id>/`:
+A session can be opened inside a **workspace** — a project directory. Then all of its data goes
+under `<workspace>/.meeting/<meeting-id>/`, the Agent's terminal opens in the workspace root (the
+project itself), and one workspace holds as many meetings as you open in it. Workspaces are the
+obvious fit for "work in this repository"; the page lists them, groups meetings under them, and
+offers them in the new-session dialog.
+
+Without a workspace, a session is stored under `runs/<meeting-id>/` with its own fresh `workspace/`:
 
 ```text
 meeting.json
@@ -116,6 +122,10 @@ workspace/
 streams/events.jsonl
 .agents/skills/workspace-collaborator/SKILL.md
 ```
+
+Both layouts keep the same files; the manifest records `workspace_root` for a workspace meeting and
+leaves it `null` otherwise. Serving is picked with `--workspace DIR` (repeatable); with no flag the
+service scans one level under `$REMOTEBUDDY_WORKSPACE_ROOT` (default `~/workspace`).
 
 `events.jsonl` is the replay source of truth. It contains globally ordered `chat`, `screen`, `action`, `control`, `state`, and `error` events. `conversation.md` is rebuilt only from chat events.
 

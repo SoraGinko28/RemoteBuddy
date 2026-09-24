@@ -81,6 +81,8 @@ from ticket_centered import Meeting, Member, Store as TicketStore, load_workflow
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+WORKSPACE_ROOT_ENV = "REMOTEBUDDY_WORKSPACE_ROOT"
+DEFAULT_WORKSPACE_ROOT = Path.home() / "workspace"
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
 MODEL_API_PATH = PROJECT_ROOT / "model_api"
 DEFAULT_HOST = "127.0.0.1"
@@ -224,11 +226,52 @@ def _events_by_id(store: MeetingStore) -> Dict[str, Dict[str, Any]]:
     }
 
 
+def meeting_title(store: MeetingStore) -> str:
+    """A meeting's one-line title: the human's first message.
+
+    `conversation.md` starts with it, so the list does not parse a journal for
+    every meeting just to name it.
+    """
+    try:
+        head = (store.run_dir / "conversation.md").read_text(encoding="utf-8")[:4096]
+    except OSError:
+        return ""
+    for block in head.split("\n## ")[1:]:
+        if not block.startswith("You ·"):
+            continue
+        lines = [line.strip() for line in block.splitlines()[1:] if line.strip()]
+        if lines:
+            return lines[0][:80]
+    return ""
+
+
 def _public_manifest(store: MeetingStore) -> Dict[str, Any]:
     payload = store.meeting.to_dict()
-    payload["run_path"] = f"runs/{store.meeting.meeting_id}"
+    payload["run_path"] = str(store.run_dir)
     payload["event_count"] = store.event_count()
+    payload["workspace_root"] = store.meeting.workspace_root or ""
+    payload["title"] = meeting_title(store)
     return payload
+
+
+def _resolve_workspaces(given: Optional[Sequence[Path]]) -> List[Path]:
+    """Which directories this service serves meetings from.
+
+    Given explicitly (`--workspace`), or scanned one level under
+    `$REMOTEBUDDY_WORKSPACE_ROOT` (default `~/workspace`) — a workspace is a
+    project directory, and a meeting opened in it keeps all of its data in
+    `<workspace>/.meeting/`.
+    """
+    if given is not None:
+        found = [Path(path).expanduser().resolve() for path in given]
+    else:
+        root = Path(os.environ.get(WORKSPACE_ROOT_ENV) or DEFAULT_WORKSPACE_ROOT).expanduser()
+        found = []
+        if root.is_dir():
+            found = [child.resolve() for child in sorted(root.iterdir())
+                     if child.is_dir() and not child.is_symlink()
+                     and not child.name.startswith(".")]
+    return [path for path in found if path.is_dir()]
 
 
 def _ticket_root(store: MeetingStore) -> Path:
@@ -366,8 +409,10 @@ class MeetingWebService:
         transport_factory: Callable[[str], TmuxTransport] = TmuxTransport,
         default_backend: Optional[str] = None,
         default_provider: Optional[str] = None,
+        workspaces: Optional[Sequence[Path]] = None,
     ) -> None:
         self.project_root = project_root.expanduser().resolve()
+        self.workspaces = _resolve_workspaces(workspaces)
         self.model_api_path = (model_api_path or self.project_root / "model_api").expanduser().resolve()
         self.skill_path = (
             skill_path
@@ -698,7 +743,7 @@ class MeetingWebService:
                 with self.lock:
                     self._store_cache.pop(meeting_id, None)
         try:
-            store = MeetingStore.load(self.project_root, meeting_id)
+            store = self._open_store(meeting_id)
         except UnsupportedMeetingError as exc:
             raise WebError(404, "meeting not found") from exc
         except MeetingError as exc:
@@ -711,6 +756,13 @@ class MeetingWebService:
             while len(self._store_cache) > 2:
                 self._store_cache.pop(next(iter(self._store_cache)))
         return store
+
+    def _open_store(self, meeting_id: str) -> MeetingStore:
+        """Find a meeting wherever it lives (a workspace's `.meeting/`, or `runs/`)."""
+        for directory in self._meeting_dirs():
+            if directory.name == meeting_id:
+                return MeetingStore.load_at(directory, meeting_id)
+        return MeetingStore.load(self.project_root, meeting_id)
 
     def revision(self, meeting_id: str) -> str:
         """Stat-only change marker used to answer conditional GETs early."""
@@ -976,26 +1028,43 @@ class MeetingWebService:
         self._probe_selected_config(resolved)
         return resolved
 
+    def _meeting_dirs(self) -> List[Path]:
+        """Every directory a meeting may live in: each workspace's `.meeting/`, then `runs/`."""
+        found: List[Path] = []
+        seen: set = set()
+        for workspace in self.workspaces:
+            folder = workspace / MeetingStore.WORKSPACE_DIR
+            if folder.is_dir() and not folder.is_symlink():
+                for child in sorted(folder.iterdir()):
+                    if child.is_dir() and not child.is_symlink() and child not in seen:
+                        seen.add(child)
+                        found.append(child)
+        try:
+            for child in sorted(self._runs_root().iterdir()):
+                if child.is_dir() and not child.is_symlink() and child not in seen:
+                    seen.add(child)
+                    found.append(child)
+        except OSError as exc:
+            raise WebError(500, f"cannot read runs directory: {exc}") from exc
+        return found
+
     def list_meetings(self) -> Dict[str, Any]:
         summaries: List[Dict[str, Any]] = []
         warnings: List[str] = []
-        try:
-            children = list(self._runs_root().iterdir())
-        except OSError as exc:
-            raise WebError(500, f"cannot read runs directory: {exc}") from exc
-        for directory in children:
-            if not directory.is_dir() or not MEETING_ID_RE.fullmatch(directory.name):
+        for directory in self._meeting_dirs():
+            if not MEETING_ID_RE.fullmatch(directory.name):
                 continue
             manifest = directory / "meeting.json"
             if MeetingStore.peek_schema(manifest) != SCHEMA_VERSION:
                 continue
             try:
-                store = MeetingStore.load(self.project_root, directory.name)
+                store = MeetingStore.load_at(directory, directory.name)
                 summaries.append(_public_manifest(store))
             except (MeetingError, OSError, ValueError) as exc:
                 warnings.append(f"{directory.name}: {exc}")
         summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
-        return {"meetings": summaries, "warnings": warnings}
+        return {"meetings": summaries, "warnings": warnings,
+                "workspaces": [str(workspace) for workspace in self.workspaces]}
 
     def snapshot(self, meeting_id: str) -> Dict[str, Any]:
         store = self.load_store(meeting_id)
@@ -1089,6 +1158,18 @@ class MeetingWebService:
             with self.lock:
                 self.ticket_jobs.pop(meeting_id, None)
 
+    def _workspace_for(self, asked: Any) -> Optional[Path]:
+        """Which workspace a new meeting goes into: one this service serves, or none."""
+        if asked in (None, "", False):
+            return None
+        if not isinstance(asked, str):
+            raise WebError(400, "workspace must be a path")
+        wanted = Path(asked).expanduser().resolve()
+        for workspace in self.workspaces:
+            if workspace == wanted:
+                return workspace
+        raise WebError(400, f"unknown workspace: {asked}")
+
     def _validated_reference(
         self,
         store: MeetingStore,
@@ -1181,11 +1262,15 @@ class MeetingWebService:
             "revision": _event_revision(store),
         }
 
-    def _new_id(self) -> str:
+    def _new_id(self, workspace: Optional[Path] = None) -> str:
+        """A fresh meeting id that is free both under `runs/` and in the chosen workspace."""
         for _ in range(20):
             value = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
-            if not (self.project_root / "runs" / value).exists():
-                return value
+            if (self.project_root / "runs" / value).exists():
+                continue
+            if workspace is not None and (workspace / MeetingStore.WORKSPACE_DIR / value).exists():
+                continue
+            return value
         raise WebError(500, "could not allocate a meeting id")
 
     def start(self, payload: Dict[str, Any]) -> MeetingStore:
@@ -1194,6 +1279,7 @@ class MeetingWebService:
         unexpected = set(payload) - {
             "message",
             "meeting_id",
+            "workspace",
             "model",
             "typing_profile",
             "agent_backend",
@@ -1212,7 +1298,8 @@ class MeetingWebService:
             raise WebError(400, "message must be a string")
         if len(message.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise WebError(413, "message is too large")
-        meeting_id = payload.get("meeting_id") or self._new_id()
+        workspace = self._workspace_for(payload.get("workspace"))
+        meeting_id = payload.get("meeting_id") or self._new_id(workspace)
         if not isinstance(meeting_id, str) or not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
         config = self._load_config()
@@ -1265,6 +1352,7 @@ class MeetingWebService:
                 agent_ordinal=1,
                 reasoning_effort=reasoning_effort,
                 agent_name2role=payload.get("agent_name2role"),
+                workspace=workspace,
             )
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
@@ -2414,6 +2502,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run the RemoteBuddy v2 workspace service")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--workspace", action="append", default=None, metavar="DIR",
+                        help="服务这些工作区（可给多次）；不给就扫 "
+                             "$REMOTEBUDDY_WORKSPACE_ROOT（默认 ~/workspace）下的一层子目录")
     parser.add_argument(
         "--harness",
         default=None,
@@ -2438,12 +2529,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             parser.error("--harness must be one of: claude, responses, codex, trae")
         default_backend, default_provider = pair
 
+    if args.workspace:
+        missing = [path for path in args.workspace
+                   if not Path(path).expanduser().is_dir()]
+        if missing:
+            parser.error(f"--workspace 必须是存在的目录：{', '.join(missing)}")
+
     service = MeetingWebService(
+        workspaces=[Path(path) for path in args.workspace] if args.workspace else None,
         default_backend=default_backend,
         default_provider=default_provider,
     )
     server = build_server(args.host, args.port, service=service)
     print(f"RemoteBuddy workspace: http://{args.host}:{args.port}/", flush=True)
+    print("工作区：" + ("、".join(str(one) for one in service.workspaces) or "（无）"), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

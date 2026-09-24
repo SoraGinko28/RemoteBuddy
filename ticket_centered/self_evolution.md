@@ -117,12 +117,15 @@ Claude Code"的意思：**能改的是配置，改不了的是能力**。
 
 ## 9. 现场在哪
 
+`<会议目录>` 是会议数据那条路径：开在工作区里就是 `<工作区>/.meeting/<会议号>/`，没有工作区就是
+`runs/<会议号>/`。下面都写 `<会议目录>`：
+
 ```
-runs/<会议号>/ticket_centered/meeting_record.md     流程摘要 + 能力面摘要、每张工单、每个人自己的账
-runs/<会议号>/ticket_centered/store/                材料：每条数据路径下一条 Prepare（$call / $measured）
-runs/<会议号>/ticket_centered/tickets/<工单>/<成员>/ 每个成员那份原件（program/ + store/）——对账靠它们
-runs/<会议号>/streams/events.jsonl                  journal：state/ticket_issued、state/ticket_ran
-GET /api/meetings/<会议号>/tickets                  页面那块板子（该发哪一张、谁答的、判语、记录）
+<会议目录>/ticket_centered/meeting_record.md     流程摘要 + 能力面摘要、每张工单、每个人自己的账
+<会议目录>/ticket_centered/store/                材料：每条数据路径下一条 Prepare（$call / $measured）
+<会议目录>/ticket_centered/tickets/<工单>/<成员>/ 每个成员那份原件（program/ + store/）——对账靠它们
+<会议目录>/streams/events.jsonl                  journal：state/ticket_issued、state/ticket_ran
+GET /api/meetings/<会议号>/tickets               页面那块板子（该发哪一张、谁答的、判语、记录）
 ```
 
 ## 10. 试一份候选

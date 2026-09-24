@@ -278,6 +278,10 @@ class Meeting:
     # at creation, and pre-identity manifests stay on the legacy single agent.
     agent_name2role: Dict[str, str] = field(default_factory=dict)
     reasoning_effort: Optional[str] = None
+    # The directory this meeting works in: a workspace's root, when the meeting
+    # was opened inside one (then all of its data lives in `<workspace>/.meeting/`).
+    # None keeps the older shape: a fresh `workspace/` directory inside the run dir.
+    workspace_root: Optional[str] = None
     schema_version: int = SCHEMA_VERSION
     mode: str = MEETING_MODE
 
@@ -351,6 +355,29 @@ class MeetingStore:
         self._events_cache_signature: Optional[tuple] = None
         self._events_cache_offset = 0
 
+    # Where a workspace keeps the meetings opened inside it.
+    WORKSPACE_DIR = ".meeting"
+
+    @staticmethod
+    def _safe_workspace_run_dir(workspace: Path, meeting_id: str) -> Path:
+        """`<workspace>/.meeting/<meeting_id>` — a workspace's meetings live with it."""
+        if not MEETING_ID_RE.fullmatch(meeting_id):
+            raise MeetingError("invalid meeting id")
+        root = workspace.expanduser().resolve()
+        if not root.is_dir():
+            raise MeetingError(f"workspace not found: {workspace}")
+        meetings = root / MeetingStore.WORKSPACE_DIR
+        if meetings.exists() and meetings.is_symlink():
+            raise MeetingError(f"{MeetingStore.WORKSPACE_DIR} must not be a symlink")
+        meetings.mkdir(parents=True, exist_ok=True)
+        candidate = meetings / meeting_id
+        if candidate.is_symlink():
+            raise MeetingError("meeting directory must not be a symlink")
+        run_dir = candidate.resolve()
+        if root not in run_dir.parents:
+            raise MeetingError("meeting directory escapes the workspace")
+        return run_dir
+
     @staticmethod
     def _safe_run_dir(project_root: Path, meeting_id: str, create_runs: bool = True) -> Path:
         if not MEETING_ID_RE.fullmatch(meeting_id):
@@ -384,6 +411,7 @@ class MeetingStore:
         agent_ordinal: int = 0,
         reasoning_effort: Optional[str] = None,
         agent_name2role: Optional[Mapping[str, str]] = None,
+        workspace: Optional[Path] = None,
     ) -> "MeetingStore":
         if initial_message is not None and not isinstance(initial_message, str):
             raise MeetingError("initial message must be a string")
@@ -412,11 +440,16 @@ class MeetingStore:
         if not skill_source.is_file() or skill_source.is_symlink():
             raise MeetingError(f"workspace skill not found: {skill_source}")
         skill_text = skill_source.read_text(encoding="utf-8")
-        run_dir = cls._safe_run_dir(project_root, meeting_id)
-        if run_dir.exists():
+        if workspace is None:
+            run_dir = cls._safe_run_dir(project_root, meeting_id)
+        else:
+            run_dir = cls._safe_workspace_run_dir(Path(workspace), meeting_id)
+        if run_dir.exists() and any(run_dir.iterdir()):
             raise MeetingError(f"meeting already exists: {meeting_id}")
 
-        (run_dir / "workspace").mkdir(parents=True)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if workspace is None:
+            (run_dir / "workspace").mkdir(parents=True)
         (run_dir / "streams").mkdir()
         runtime_skill = run_dir / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
         runtime_skill.parent.mkdir(parents=True)
@@ -435,6 +468,7 @@ class MeetingStore:
             session_state="not-started",
             pane_id=None,
             workspace="workspace",
+            workspace_root=str(Path(workspace).expanduser().resolve()) if workspace is not None else None,
             streams={"events": "streams/events.jsonl"},
             model=model,
             agent_backend=agent_backend,
@@ -459,7 +493,15 @@ class MeetingStore:
 
     @classmethod
     def load(cls, project_root: Path, meeting_id: str) -> "MeetingStore":
-        run_dir = cls._safe_run_dir(project_root, meeting_id)
+        return cls.load_at(cls._safe_run_dir(project_root, meeting_id), meeting_id)
+
+    @classmethod
+    def load_in_workspace(cls, workspace: Path, meeting_id: str) -> "MeetingStore":
+        return cls.load_at(cls._safe_workspace_run_dir(Path(workspace), meeting_id), meeting_id)
+
+    @classmethod
+    def load_at(cls, run_dir: Path, meeting_id: str) -> "MeetingStore":
+        run_dir = Path(run_dir)
         manifest_path = run_dir / "meeting.json"
         if not manifest_path.is_file() or manifest_path.is_symlink():
             raise MeetingError(f"meeting not found: {meeting_id}")
@@ -479,7 +521,12 @@ class MeetingStore:
         else:
             meeting.agent_name2role = normalize_agent_role_map(meeting.agent_name2role)
         store = cls(run_dir, meeting)
-        store._contained_path(meeting.workspace)
+        if meeting.workspace_root:
+            # A workspace meeting works in that workspace; if it is gone the
+            # meeting cannot be served, and saying so beats an empty terminal.
+            store.workspace_path
+        else:
+            store._contained_path(meeting.workspace)
         for relative in meeting.streams.values():
             store._contained_path(relative)
         return store
@@ -530,6 +577,16 @@ class MeetingStore:
 
     @property
     def workspace_path(self) -> Path:
+        """The directory the meeting works in.
+
+        Inside a workspace that is the workspace's own root (the project); the
+        older shape has a fresh `workspace/` directory inside the run dir.
+        """
+        if self.meeting.workspace_root:
+            root = Path(self.meeting.workspace_root).expanduser().resolve()
+            if not root.is_dir():
+                raise MeetingError(f"workspace not found: {root}")
+            return root
         return self._contained_path(self.meeting.workspace)
 
     @property

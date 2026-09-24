@@ -10,7 +10,8 @@
 `../ticket_centered_workflow/ticket_centered.md`。
 
 跑在一场**真实的会**上（真 agent、真 tmux、真 HTTP、真规则）：
-`.venv/bin/python e2e_ticket_meeting.py`
+`.venv/bin/python e2e_ticket_meeting.py`（`--workspace DIR` 就把这场会开在那个工作区里：数据进
+`<DIR>/.meeting/<会议号>/`，agent 在 `<DIR>` 根下干活）
 
 自进化（改 `workflow/` 那一侧）：看 [`self_evolution.md`](self_evolution.md) —— 位置、怎么验、你会踩的坑。
 
