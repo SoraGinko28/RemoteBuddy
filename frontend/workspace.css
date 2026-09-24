@@ -189,6 +189,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .message-form { min-width: 0; max-height: 300px; overflow-y: auto; padding: 10px 10px 8px; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 10px; }
 .message-form:focus-within { border-color: var(--green); }
 .new-dialog textarea { width: 100%; max-height: 112px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 5px; padding: 9px; color: var(--ink); background: var(--surface-2); }
+/* 主动作只有一个：打开工作区。后端/模型/密钥那些是次要入口。 */
+.link-button { margin-top: 6px; border: 0; background: transparent; color: var(--muted); font-size: 11px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 4px; }
+.link-button:hover { color: var(--ink); }
 /* 工作区目录是"选"出来的（系统选目录框），所以输入框旁边就是那个按钮。 */
 .workspace-row { display: flex; align-items: stretch; gap: 8px; }
 .workspace-row input { flex: 1 1 auto; min-width: 0; }

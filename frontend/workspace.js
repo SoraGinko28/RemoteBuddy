@@ -13,6 +13,7 @@ const HUMAN_TAKEOVER_FRAME_MS = 200;
 const el = Object.fromEntries([
   "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
   "welcome", "session-view", "agent-states", "status-badge", "owner-badge", "sidebar-title", "sidebar-subtitle",
+  "welcome-advanced-button",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "member-name-label", "member-role-label", "member-state-label", "member-terminal-label",
   "member-chat-label", "member-last-label",
@@ -2971,6 +2972,38 @@ async function chooseDirectory() {
   finally { el.choose_directory.disabled = false; }
 }
 
+// 开始会话 = 打开一个工作区：选一个目录（系统选目录框），这场会就开在它里面，
+// 第一句话在聊天框里说。取消就什么都不做。
+async function openWorkspace() {
+  const buttons = [el.new_button, el.welcome_new_button].filter(Boolean);
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    let directory = "";
+    try {
+      const answer = await api("/api/choose-directory", {
+        method: "POST",
+        body: JSON.stringify({ directory: state.workspace || "" }),
+      });
+      directory = answer.directory || "";
+    } catch (error) {
+      // 没有系统选目录框（不是 macOS）：退一步，让人打一条路径。
+      toast(error.message);
+      directory = (window.prompt("工作区目录", state.workspace || "") || "").trim();
+    }
+    if (!directory) return;                     // 取消了
+    const created = await api("/api/meetings", {
+      method: "POST",
+      body: JSON.stringify({ workspace: directory }),
+    });
+    await loadMeetings();
+    await selectMeeting(created.meeting_id);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
 function openNewDialog() {
   el.new_error.hidden = true;
   el.api_key_input.value = "";
@@ -2990,8 +3023,9 @@ async function loadSettings() {
 }
 
 function bind() {
-  el.new_button.addEventListener("click", openNewDialog);
-  el.welcome_new_button.addEventListener("click", openNewDialog);
+  el.new_button.addEventListener("click", openWorkspace);
+  el.welcome_new_button.addEventListener("click", openWorkspace);
+  el.welcome_advanced_button?.addEventListener("click", openNewDialog);
   const railMore = document.getElementById("rail-more-button");
   const appShell = document.querySelector(".app-shell");
   if (railMore && appShell) {

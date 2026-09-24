@@ -23,7 +23,7 @@
         </div>
       </header>
 
-      <button id="new-button" class="primary-command" type="button"><span aria-hidden="true">＋</span> 新会话</button>
+      <button id="new-button" class="primary-command" type="button"><span aria-hidden="true">＋</span> 打开工作区</button>
       <p id="health-message" class="health-message" hidden></p>
       <div class="sidebar-section-title">
         <span>会话</span>
@@ -41,7 +41,8 @@
         <div class="welcome-mark" aria-hidden="true">RB</div>
         <h1>打开一个共享工作区</h1>
         <p>你的消息和终端画面会共同成为 Agent 的工作上下文。</p>
-        <button id="welcome-new-button" class="primary-command compact" type="button">开始会话</button>
+        <button id="welcome-new-button" class="primary-command compact" type="button">打开工作区</button>
+        <button id="welcome-advanced-button" class="link-button" type="button">高级设置（后端、模型、密钥）…</button>
       </section>
 
       <section id="session-view" class="session-view" hidden>
@@ -207,13 +208,13 @@
     <form id="new-form" method="dialog">
       <header>
         <div>
-          <p class="pane-kicker">NEW SESSION</p>
-          <h2>开始协作</h2>
+          <p class="pane-kicker">ADVANCED</p>
+          <h2>高级设置</h2>
         </div>
         <button id="close-dialog" class="icon-button" type="button" aria-label="关闭">×</button>
       </header>
       <label for="initial-message">第一条消息</label>
-      <textarea id="initial-message" rows="9" maxlength="1048576" required placeholder="例如：请在共享工作区里用 Vim 创建一份项目说明。"></textarea>
+      <textarea id="initial-message" rows="9" maxlength="1048576" placeholder="可以先不写；开了会话在聊天框里说。"></textarea>
       <label for="workspace-input">工作区目录</label>
       <div class="workspace-row">
         <input id="workspace-input" type="text" maxlength="500" autocomplete="off" spellcheck="false" placeholder="留空就用默认目录">
