@@ -28,7 +28,6 @@ class WebV2GuardTest(unittest.TestCase):
         self.service = MeetingWebService(
             project_root=root,
             runner_factory=lambda *args, **kwargs: None,
-            workspaces=[],
         )
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))

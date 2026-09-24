@@ -22,7 +22,7 @@ const el = Object.fromEntries([
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
-  "close-dialog", "cancel-new", "initial-message", "workspace-select", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
+  "close-dialog", "cancel-new", "initial-message", "workspace-input", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
   "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
@@ -34,8 +34,8 @@ const state = {
   csrfHeader: "X-RemoteBuddy-CSRF",
   healthy: false,
   meetings: [],
-  workspaces: [],
-  workspaceDefaulted: false,
+  workspace: "",
+  workspaceFilled: false,
   selectedId: null,
   snapshot: null,
   tickets: null,
@@ -471,24 +471,22 @@ function enqueueLiveScreens(events) {
   if (!state.liveScreenTimer) advanceLiveScreenQueue();
 }
 
-// A workspace is where a meeting lives and works: its data sits in
-// `<workspace>/.meeting/<id>/`, and several meetings may share one workspace.
-// Meetings opened before workspaces existed live directly in `runs/`; they are
-// shown under 未分组 so nothing disappears from the list.
+// A meeting lives in a workspace: its data sits in `<workspace>/.meeting/<id>/`,
+// and several meetings may share one workspace. The group's name is the
+// directory's basename — the project you typed when you opened the session.
 function meetingGroups() {
   const groups = [];
   const byPath = new Map();
-  const group = (path) => {
+  for (const meeting of state.meetings) {
+    const path = meeting.workspace_root || state.workspace || "";
     if (!byPath.has(path)) {
       const one = { path, meetings: [] };
       byPath.set(path, one);
       groups.push(one);
     }
-    return byPath.get(path);
-  };
-  for (const workspace of state.workspaces) group(workspace);
-  for (const meeting of state.meetings) group(meeting.workspace_root || "").meetings.push(meeting);
-  return groups.filter((one) => one.meetings.length);
+    byPath.get(path).meetings.push(meeting);
+  }
+  return groups;
 }
 
 function basename(path) {
@@ -547,9 +545,9 @@ function renderMeetingList() {
   for (const group of meetingGroups()) {
     const section = node("section", "meeting-group");
     const head = node("div", "meeting-group-head");
-    head.title = group.path || "runs/";
+    head.title = group.path;
     head.append(
-      node("span", "meeting-group-name", group.path ? basename(group.path) : "未分组"),
+      node("span", "meeting-group-name", group.path ? basename(group.path) : "未知目录"),
       node("span", "meeting-group-count", String(group.meetings.length)),
     );
     section.append(head);
@@ -558,32 +556,19 @@ function renderMeetingList() {
   }
 }
 
-// The dialog's workspace picker: one entry per served workspace, plus "no
-// workspace" which keeps the older `runs/<id>/workspace/` layout.
-function renderWorkspaceOptions() {
-  if (!el.workspace_select) return;
-  const chosen = el.workspace_select.value;
-  el.workspace_select.replaceChildren();
-  const none = document.createElement("option");
-  none.value = "";
-  none.textContent = "不使用工作区（在 runs/ 下新建）";
-  el.workspace_select.append(none);
-  for (const workspace of state.workspaces) {
-    const option = document.createElement("option");
-    option.value = workspace;
-    option.textContent = `${basename(workspace)}（${workspace}）`;
-    el.workspace_select.append(option);
-  }
-  if (chosen && state.workspaces.includes(chosen)) {
-    el.workspace_select.value = chosen;
-  } else if (!state.workspaceDefaulted) {
-    // Default to wherever the human was last working, never to an arbitrary
-    // project: with no meetings yet the choice stays "no workspace" until they
-    // make it in the dialog.
+// The dialog's workspace field is a directory you fill in yourself: leave it
+// empty for the default one, or point it at the project this session should
+// work in. It remembers the last one so the usual case is a single click.
+function renderWorkspaceHint() {
+  if (!el.workspace_input) return;
+  el.workspace_input.placeholder = state.workspace
+    ? `留空就用 ${state.workspace}`
+    : "留空就用默认目录";
+  if (!state.workspaceFilled) {
     const recent = state.meetings[0] && state.meetings[0].workspace_root;
-    if (recent && state.workspaces.includes(recent)) el.workspace_select.value = recent;
+    if (recent && recent !== state.workspace) el.workspace_input.value = recent;
+    state.workspaceFilled = true;
   }
-  state.workspaceDefaulted = true;
 }
 
 // A live DOM selection must never be clobbered by a periodic redraw: the
@@ -2825,9 +2810,9 @@ function updateCredentialFields() {
 async function loadMeetings() {
   const payload = await api("/api/meetings");
   state.meetings = payload.meetings || [];
-  state.workspaces = payload.workspaces || [];
+  state.workspace = payload.workspace || "";
   state.meetingsRefreshedAt = Date.now();
-  renderWorkspaceOptions();
+  renderWorkspaceHint();
   renderMeetingList();
 }
 
@@ -3033,7 +3018,7 @@ function bind() {
           agent_provider: el.provider_select.value,
           model: cliDefault ? "" : (el.model_input.value.trim() || null),
           typing_profile: typingProfile,
-          ...(el.workspace_select?.value ? { workspace: el.workspace_select.value } : {}),
+          ...(el.workspace_input?.value.trim() ? { workspace: el.workspace_input.value.trim() } : {}),
           ...(el.effort_select.value ? { reasoning_effort: el.effort_select.value } : {}),
         }),
       });

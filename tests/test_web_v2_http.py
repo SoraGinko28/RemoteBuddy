@@ -159,7 +159,6 @@ class MeetingWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
-            workspaces=[],
         )
 
     def tearDown(self):
@@ -188,7 +187,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             {"message": "Please create a note.", "meeting_id": meeting_id}
         )
         self.wait_for_workers()
-        return MeetingStore.load(self.root, store.meeting.meeting_id)
+        return MeetingStore.load_in_workspace(self.root, store.meeting.meeting_id)
 
     def test_start_list_snapshot_and_incremental_events(self):
         store = self.start_meeting()
@@ -196,12 +195,13 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual("waiting_for_user", store.meeting.phase)
         self.assertEqual(1, len(RecordingRunner.instances))
 
-        old = self.root / "runs" / "old-v1"
-        old.mkdir()
+        # 1 版的清单直接跳过，2 版但读不出来的记一条警告；两个都在工作区的 .meeting/ 下。
+        old = self.root / ".meeting" / "old-v1"
+        old.mkdir(parents=True)
         (old / "meeting.json").write_text(
             '{"schema_version":1,"meeting_id":"old-v1"}', encoding="utf-8"
         )
-        corrupt = self.root / "runs" / "corrupt-v2"
+        corrupt = self.root / ".meeting" / "corrupt-v2"
         corrupt.mkdir()
         (corrupt / "meeting.json").write_text(
             '{"schema_version":2,"meeting_id":"corrupt-v2"}', encoding="utf-8"
@@ -327,7 +327,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         # Resume paths re-resolve the empty model without raising.
         self.service.message("cli-default", {"message": "Continue."})
         self.wait_for_workers()
-        self.assertEqual("", MeetingStore.load(self.root, "cli-default").meeting.model)
+        self.assertEqual("", MeetingStore.load_in_workspace(self.root, "cli-default").meeting.model)
         with self.assertRaisesRegex(WebError, "codex-app-server"):
             self.service.start({"message": "Bad.", "model": ""})
 
@@ -381,7 +381,7 @@ class MeetingWebServiceTest(unittest.TestCase):
 
     def test_takeover_is_refused_when_the_terminal_is_gone(self):
         self.start_meeting("gone-demo")
-        before = MeetingStore.load(self.root, "gone-demo").meeting
+        before = MeetingStore.load_in_workspace(self.root, "gone-demo").meeting
         # The tmux session was killed outside RemoteBuddy (or the machine
         # restarted); takeover must not pretend to succeed and then fail the
         # meeting through the capture worker.
@@ -389,7 +389,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         with self.assertRaises(WebError) as refused:
             self.service.acquire("gone-demo")
         self.assertEqual(410, refused.exception.status)
-        after = MeetingStore.load(self.root, "gone-demo").meeting
+        after = MeetingStore.load_in_workspace(self.root, "gone-demo").meeting
         self.assertEqual(before.phase, after.phase)
         self.assertEqual(before.status, after.status)
         self.assertEqual(before.control_owner, after.control_owner)
@@ -474,7 +474,7 @@ class MeetingWebServiceTest(unittest.TestCase):
     def test_terminal_control_is_recorded_and_input_is_not(self):
         self.start_meeting("adt-records")
         self.service.acquire("adt-records")
-        events = MeetingStore.load(self.root, "adt-records").events()
+        events = MeetingStore.load_in_workspace(self.root, "adt-records").events()
         controls = [
             e for e in events
             if e["kind"] == "control" and e.get("data", {}).get("status") == "terminal_control"
@@ -509,11 +509,11 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.service.acquire("control-message")
         self.assertEqual(
             "human",
-            MeetingStore.load(self.root, "control-message").meeting.control_owner,
+            MeetingStore.load_in_workspace(self.root, "control-message").meeting.control_owner,
         )
         store = self.service.message("control-message", {"message": "接管结束，继续改 README"})
         self.assertEqual("actor", store.meeting.control_owner)
-        loaded = MeetingStore.load(self.root, "control-message")
+        loaded = MeetingStore.load_in_workspace(self.root, "control-message")
         controls = [
             e for e in loaded.events()
             if e["kind"] == "control" and e.get("data", {}).get("status") == "terminal_control"
@@ -521,7 +521,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual("actor", controls[-1]["data"]["user_name"])
         self.wait_for_workers()
         self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
-        chats = MeetingStore.load(self.root, "control-message").chat_messages()
+        chats = MeetingStore.load_in_workspace(self.root, "control-message").chat_messages()
         self.assertEqual("接管结束，继续改 README", chats[-1]["content"])
 
     def test_immediate_message_wakes_a_mid_cycle_agent(self):
@@ -533,7 +533,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         meeting counts as orphaned and the deferred mode would wake it too.
         """
         self.start_meeting("immediate-message")
-        store = MeetingStore.load(self.root, "immediate-message")
+        store = MeetingStore.load_in_workspace(self.root, "immediate-message")
         with mock.patch.object(self.service, "_job_alive", return_value=True):
             store.update(status="running", phase="agent_thinking", control_owner="actor")
             before = len(RecordingRunner.instances)
@@ -545,7 +545,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             self.assertEqual(before, len(RecordingRunner.instances))
             self.assertEqual(
                 "agent_thinking",
-                MeetingStore.load(self.root, "immediate-message").meeting.phase,
+                MeetingStore.load_in_workspace(self.root, "immediate-message").meeting.phase,
             )
 
             store.update(status="running", phase="agent_thinking", control_owner="actor")
@@ -555,14 +555,14 @@ class MeetingWebServiceTest(unittest.TestCase):
             )
             self.wait_for_workers()
             self.assertEqual(before + 1, len(RecordingRunner.instances))
-        reloaded = MeetingStore.load(self.root, "immediate-message")
+        reloaded = MeetingStore.load_in_workspace(self.root, "immediate-message")
         self.assertEqual("waiting_for_user", reloaded.meeting.phase)
         human = [e for e in reloaded.chat_messages() if e["actor"] == "human"]
         self.assertEqual("no really, look now", human[-1]["content"])
 
     def test_message_reference_is_derived_from_source_event(self):
         self.start_meeting("reference-demo")
-        store = MeetingStore.load(self.root, "reference-demo")
+        store = MeetingStore.load_in_workspace(self.root, "reference-demo")
         source = next(event for event in store.events() if event["kind"] == "screen")
         payload = {
             "message": "请看终端这一段",
@@ -575,7 +575,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             },
         }
         self.service.message("reference-demo", payload)
-        loaded = MeetingStore.load(self.root, "reference-demo")
+        loaded = MeetingStore.load_in_workspace(self.root, "reference-demo")
         message = loaded.chat_messages()[-1]
         reference = message["data"]["reference"]
         self.assertEqual(source["event_id"], reference["event_id"])
@@ -597,7 +597,7 @@ class MeetingWebServiceTest(unittest.TestCase):
     def test_message_can_quote_a_terminal_control_line(self):
         """A control line is quoted like a message: same region/excerpt rules."""
         self.start_meeting("control-quote")
-        store = MeetingStore.load(self.root, "control-quote")
+        store = MeetingStore.load_in_workspace(self.root, "control-quote")
         store.note_terminal_control("human")
         store.note_terminal_control(None)
         records = [
@@ -622,7 +622,7 @@ class MeetingWebServiceTest(unittest.TestCase):
                 ],
             },
         )
-        reference = MeetingStore.load(self.root, "control-quote").chat_messages()[-1]["data"]["references"][-1]
+        reference = MeetingStore.load_in_workspace(self.root, "control-quote").chat_messages()[-1]["data"]["references"][-1]
         self.assertEqual(hand_back["content"], reference["excerpt"])
         self.assertEqual(hand_back["event_id"], reference["event_id"])
         self.assertEqual("", reference["user_name"])
@@ -644,7 +644,7 @@ class MeetingWebServiceTest(unittest.TestCase):
 
     def test_api_error_resume_uses_fresh_conversation(self):
         self.start_meeting("recover-demo")
-        store = MeetingStore.load(self.root, "recover-demo")
+        store = MeetingStore.load_in_workspace(self.root, "recover-demo")
         store.update(
             phase="api_error",
             control_owner="none",
@@ -656,12 +656,12 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(RecordingRunner.instances[-1].resume_modes[-1])
         self.assertEqual(
             "waiting_for_user",
-            MeetingStore.load(self.root, "recover-demo").meeting.phase,
+            MeetingStore.load_in_workspace(self.root, "recover-demo").meeting.phase,
         )
 
     def test_service_restart_recovers_orphaned_agent_with_fresh_conversation(self):
         self.start_meeting("restart-demo")
-        store = MeetingStore.load(self.root, "restart-demo")
+        store = MeetingStore.load_in_workspace(self.root, "restart-demo")
         store.update(
             phase="agent_acting",
             control_owner="actor",
@@ -675,14 +675,13 @@ class MeetingWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
-            workspaces=[],
         )
         self.service = restarted
         restarted.resume("restart-demo")
         self.wait_for_workers()
         self.assertTrue(RecordingRunner.instances[-1].resume_modes[-1])
 
-        loaded = MeetingStore.load(self.root, "restart-demo")
+        loaded = MeetingStore.load_in_workspace(self.root, "restart-demo")
         loaded.update(phase="agent_thinking", control_owner="actor")
         # A mid-turn meeting with no live worker is an orphaned Agent, so
         # acquire hands the terminal over immediately instead of waiting.
@@ -729,13 +728,16 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual("created", store.meeting.phase)
         self.assertEqual([], store.chat_messages())
         self.assertEqual({}, self.service.jobs)
-        self.assertTrue((self.root / "runs" / store.meeting.meeting_id / "workspace").is_dir())
+        # The workspace IS the project root now: the meeting's data sits in
+        # `<root>/.meeting/<id>/`, and the agent works in `<root>` itself.
+        self.assertTrue((self.root / ".meeting" / store.meeting.meeting_id / "meeting.json").is_file())
+        self.assertEqual(self.root.resolve(), store.workspace_path)
 
         before = len(RecordingRunner.instances)
         self.service.message(store.meeting.meeting_id, {"message": "start here"})
         self.wait_for_workers()
         self.assertEqual(before + 1, len(RecordingRunner.instances))
-        reloaded = MeetingStore.load(self.root, store.meeting.meeting_id)
+        reloaded = MeetingStore.load_in_workspace(self.root, store.meeting.meeting_id)
         chats = [e for e in reloaded.chat_messages() if e["actor"] == "human"]
         self.assertEqual(["start here"], [e["content"] for e in chats])
 

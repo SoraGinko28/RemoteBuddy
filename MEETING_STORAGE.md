@@ -6,7 +6,7 @@
 
 ## 1. 目录布局
 
-会议开在工作区里时（数据路径就是工作区下的 `.meeting/`）：
+工作区是一个目录；会议的每一份数据都在它的 `.meeting/` 下：
 
 ```
 <workspace>/.meeting/<meeting_uid>/
@@ -15,14 +15,10 @@
 ```
 
 一个工作区可以有多个 `<meeting_uid>`；这时的 `workspace/` 就是工作区根目录本身，不在会议目录下。
-没有工作区时沿用 `runs/<meeting_uid>/`，并在会议目录里新建一个 `workspace/`：
+另外 `.meeting/workspaces` 是一行一个目录的索引（用过的工作区），不是会议。
 
-```
-runs/<meeting_uid>/
-  meeting.json            # workspace_root 为 null
-  streams/events.jsonl
-  workspace/              # 工作目录快照（数据层，不在本文）
-```
+老布局（`runs/<meeting_uid>/` + 会议目录里的一个 `workspace/`）还能读：`workspace_root` 为 null
+就是这个布局。Web 服务不再写它。
 
 - 冻结后 `meeting.json` 固化只读；新事件只 **append** 到 `events.jsonl`，绝不原地改。
 - loader（`meeting_loader.py`）把 events.jsonl 投影成 MeetingData，**只读不改 journal**。

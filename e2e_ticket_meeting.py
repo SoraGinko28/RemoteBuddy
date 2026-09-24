@@ -15,9 +15,9 @@
 跑完**这场会留着**（`--finish leave`，默认）：页面上还能接管、还能聊天、还能按工单那块"发这一张"；
 要收掉就 `--finish complete`（照页面的"结束并保留"）或 `--finish stop`。
 
-会花钱：真 agent 真跑，几分钟、真模型额度——这是故意的。会议目录留着（`--workspace DIR` 给的话是
-`<DIR>/.meeting/<meeting_id>/`，否则 `runs/<meeting_id>/`）：journal 是真会议的，`ticket_centered/`
-是这张流程留下的。
+会花钱：真 agent 真跑，几分钟、真模型额度——这是故意的。会议目录留着：
+`<工作区>/.meeting/<meeting_id>/`（工作区就是 `--workspace DIR`，不给是仓库根）：journal 是真会议的，
+`ticket_centered/` 是这张流程留下的。
 """
 
 from __future__ import annotations
@@ -64,10 +64,11 @@ class MeetingService:
 
         self.project_root = Path(project_root).resolve()
         self.message = message
-        self.workspace_root = Path(workspace).expanduser().resolve() if workspace else None
+        self.workspace_root = (Path(workspace).expanduser().resolve() if workspace
+                               else self.project_root)
         self.service = web_v2.MeetingWebService(
             project_root=self.project_root,
-            workspaces=[self.workspace_root] if self.workspace_root else [],
+            workspace=self.workspace_root,
         )
         self.server = web_v2.build_server("127.0.0.1", free_port(), service=self.service)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -104,7 +105,7 @@ class MeetingService:
         self.csrf = self._request("GET", "/api/session")["csrf_token"]
         payload: Dict[str, Any] = {"meeting_id": self.meeting_id, "message": self.message,
                                    "typing_profile": "fast"}
-        if self.workspace_root:
+        if self.workspace_root != self.project_root:
             payload["workspace"] = str(self.workspace_root)
         if self.backend:
             payload["agent_backend"] = self.backend
@@ -137,15 +138,13 @@ class MeetingService:
 
     @property
     def run_dir(self) -> Path:
-        if self.workspace_root:
-            return self.workspace_root / ".meeting" / self.meeting_id
-        return self.project_root / "runs" / self.meeting_id
+        return self.workspace_root / ".meeting" / self.meeting_id
 
     @property
     def workspace(self) -> Path:
-        # Inside a workspace the agent works in the workspace root itself; the
-        # meeting's own data lives in the hidden `.meeting/` beside it.
-        return self.workspace_root or (self.run_dir / "workspace")
+        # The agent works in the workspace root itself; the meeting's own data
+        # lives in the hidden `.meeting/` beside it.
+        return self.workspace_root
 
     def chats(self) -> List[dict]:
         return [{"seq": event.get("seq"), "actor": event.get("actor"),
@@ -202,8 +201,8 @@ def main(argv=None) -> int:
     parser.add_argument("--provider", default=None, help="模型 provider（同上）")
     parser.add_argument("--target", default="quicksort.py", help="agent 要交的文件名")
     parser.add_argument("--workspace", default=None, metavar="DIR",
-                        help="把这场会开在这个工作区里：数据进 <DIR>/.meeting/，agent 就在 <DIR> 根下干活"
-                             "（不给就还是 runs/<会议号>/ 那套）")
+                        help="工作区（一个目录）：数据进 <DIR>/.meeting/，agent 就在 <DIR> 根下干活"
+                             "（不给就用仓库根）")
     parser.add_argument("--task", default=DEFAULT_TASK, help="人类说的那句题面")
     parser.add_argument("--expect", default="quick_sort(items, key=None, reverse=False)",
                         help="交出来的文件里必须有的那行接口")

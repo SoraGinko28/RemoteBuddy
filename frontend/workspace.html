@@ -214,10 +214,8 @@
       </header>
       <label for="initial-message">第一条消息</label>
       <textarea id="initial-message" rows="9" maxlength="1048576" required placeholder="例如：请在共享工作区里用 Vim 创建一份项目说明。"></textarea>
-      <label for="workspace-select">工作区</label>
-      <select id="workspace-select">
-        <option value="">不使用工作区（在 runs/ 下新建）</option>
-      </select>
+      <label for="workspace-input">工作区目录</label>
+      <input id="workspace-input" type="text" maxlength="500" autocomplete="off" spellcheck="false" placeholder="留空就用默认目录">
       <details>
         <summary>高级设置</summary>
         <div class="backend-fields">

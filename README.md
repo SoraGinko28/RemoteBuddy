@@ -107,25 +107,26 @@ python3 demo_v2.py cleanup <meeting-id>
 
 ## Session Model
 
-A session can be opened inside a **workspace** — a project directory. Then all of its data goes
-under `<workspace>/.meeting/<meeting-id>/`, the Agent's terminal opens in the workspace root (the
-project itself), and one workspace holds as many meetings as you open in it. Workspaces are the
-obvious fit for "work in this repository"; the page lists them, groups meetings under them, and
-offers them in the new-session dialog.
-
-Without a workspace, a session is stored under `runs/<meeting-id>/` with its own fresh `workspace/`:
+A session lives in a **workspace** — one directory, the project being worked on. Every byte of
+meeting data goes under `<workspace>/.meeting/<meeting-id>/` and the Agent's terminal opens in the
+workspace root itself, so several sessions can share one project:
 
 ```text
-meeting.json
-conversation.md
-workspace/
-streams/events.jsonl
-.agents/skills/workspace-collaborator/SKILL.md
+<workspace>/.meeting/<meeting-id>/
+  meeting.json
+  conversation.md
+  streams/events.jsonl
+  .agents/skills/workspace-collaborator/SKILL.md
 ```
 
-Both layouts keep the same files; the manifest records `workspace_root` for a workspace meeting and
-leaves it `null` otherwise. Serving is picked with `--workspace DIR` (repeatable); with no flag the
-service scans one level under `$REMOTEBUDDY_WORKSPACE_ROOT` (default `~/workspace`).
+The workspace is the project root by default, or whatever `--workspace DIR` names. The new-session
+dialog takes a directory (leave it empty for the default one); the directories used so far are
+recorded in `<workspace>/.meeting/workspaces`, so a session opened in another project stays on the
+list across restarts. The page groups the list by workspace and names each group by that
+directory's basename.
+
+`MeetingStore` still reads the older `runs/<meeting-id>/` layout (with a fresh `workspace/` inside
+the meeting directory); the Web service no longer writes it.
 
 `events.jsonl` is the replay source of truth. It contains globally ordered `chat`, `screen`, `action`, `control`, `state`, and `error` events. `conversation.md` is rebuilt only from chat events.
 

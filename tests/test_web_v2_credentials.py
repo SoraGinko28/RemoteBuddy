@@ -27,7 +27,6 @@ class WebV2CredentialsTest(unittest.TestCase):
         self.service = MeetingWebService(
             project_root=self.root,
             runner_factory=lambda *args, **kwargs: None,
-            workspaces=[],
         )
 
     def tearDown(self):

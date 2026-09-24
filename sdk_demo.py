@@ -60,7 +60,8 @@ def write_journal(root: Path) -> dt.datetime:
     skill = root / "SKILL.md"
     skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
     store = MeetingStore.create(root, MEETING_ID, CHAT_ASKED, skill, "remote-demo",
-                                "test-model", agent_name2role={"agent": "actor"})
+                                "test-model", agent_name2role={"agent": "actor"},
+                                workspace=root)
     store.append_chat("agent", CHAT_DONE, "final")
     time.sleep(0.01)      # the journal stamps milliseconds: keep the two apart
     screen = store.append_screen(SCREEN_TEXT, "bash", str(store.workspace_path),
@@ -178,7 +179,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="remote-sdk-demo-") as temporary:
         root = Path(temporary)
         capture_time = write_journal(root)
-        service = MeetingWebService(project_root=root, workspaces=[])
+        service = MeetingWebService(project_root=root, workspace=root)
         server = RemoteBuddyHTTPServer(("127.0.0.1", PORT), service)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

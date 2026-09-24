@@ -81,8 +81,9 @@ from ticket_centered import Meeting, Member, Store as TicketStore, load_workflow
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-WORKSPACE_ROOT_ENV = "REMOTEBUDDY_WORKSPACE_ROOT"
-DEFAULT_WORKSPACE_ROOT = Path.home() / "workspace"
+# 一块工作区 = 一个目录。会议的每一份数据都放在它的 `.meeting/<会议号>/` 下面；
+# 服务默认就用项目根，`--workspace DIR` 换一个。
+WORKSPACE_INDEX = "workspaces"
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
 MODEL_API_PATH = PROJECT_ROOT / "model_api"
 DEFAULT_HOST = "127.0.0.1"
@@ -254,24 +255,22 @@ def _public_manifest(store: MeetingStore) -> Dict[str, Any]:
     return payload
 
 
-def _resolve_workspaces(given: Optional[Sequence[Path]]) -> List[Path]:
-    """Which directories this service serves meetings from.
+def _as_workspace(asked: Any, base: Path) -> Path:
+    """把对话框里填的那个目录变成一个工作区。
 
-    Given explicitly (`--workspace`), or scanned one level under
-    `$REMOTEBUDDY_WORKSPACE_ROOT` (default `~/workspace`) — a workspace is a
-    project directory, and a meeting opened in it keeps all of its data in
-    `<workspace>/.meeting/`.
+    留空就是默认的那一个；填了就用它（相对路径按默认那个算）。填的目录必须已经
+    存在——工作区是**已有的项目**，不是随手新造一个空目录。
     """
-    if given is not None:
-        found = [Path(path).expanduser().resolve() for path in given]
-    else:
-        root = Path(os.environ.get(WORKSPACE_ROOT_ENV) or DEFAULT_WORKSPACE_ROOT).expanduser()
-        found = []
-        if root.is_dir():
-            found = [child.resolve() for child in sorted(root.iterdir())
-                     if child.is_dir() and not child.is_symlink()
-                     and not child.name.startswith(".")]
-    return [path for path in found if path.is_dir()]
+    text = "" if asked is None else str(asked).strip()
+    if not text:
+        return base
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    path = path.resolve()
+    if not path.is_dir():
+        raise WebError(400, f"目录不存在：{text}")
+    return path
 
 
 def _ticket_root(store: MeetingStore) -> Path:
@@ -409,10 +408,15 @@ class MeetingWebService:
         transport_factory: Callable[[str], TmuxTransport] = TmuxTransport,
         default_backend: Optional[str] = None,
         default_provider: Optional[str] = None,
-        workspaces: Optional[Sequence[Path]] = None,
+        workspace: Optional[Path] = None,
     ) -> None:
         self.project_root = project_root.expanduser().resolve()
-        self.workspaces = _resolve_workspaces(workspaces)
+        # 这块程序只有**一个**工作区：一个目录。会议数据在 `<它>/.meeting/` 下，
+        # 没有第二套存放方式、也没有一张工作区清单要挑。
+        self.workspace = (Path(workspace).expanduser().resolve() if workspace is not None
+                          else self.project_root)
+        if not self.workspace.is_dir():
+            raise WebError(500, f"workspace not found: {self.workspace}")
         self.model_api_path = (model_api_path or self.project_root / "model_api").expanduser().resolve()
         self.skill_path = (
             skill_path
@@ -720,13 +724,6 @@ class MeetingWebService:
             "pane_height": pane_height,
         }
 
-    def _runs_root(self) -> Path:
-        runs = self.project_root / "runs"
-        if runs.exists() and runs.is_symlink():
-            raise WebError(500, "runs directory must not be a symlink")
-        runs.mkdir(parents=True, exist_ok=True)
-        return runs
-
     def load_store(self, meeting_id: str) -> MeetingStore:
         if not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
@@ -758,11 +755,11 @@ class MeetingWebService:
         return store
 
     def _open_store(self, meeting_id: str) -> MeetingStore:
-        """Find a meeting wherever it lives (a workspace's `.meeting/`, or `runs/`)."""
+        """这场会在哪个工作区的 `.meeting/` 下，就按那条数据路径读回来。"""
         for directory in self._meeting_dirs():
             if directory.name == meeting_id:
                 return MeetingStore.load_at(directory, meeting_id)
-        return MeetingStore.load(self.project_root, meeting_id)
+        raise MeetingError(f"meeting not found: {meeting_id}")
 
     def revision(self, meeting_id: str) -> str:
         """Stat-only change marker used to answer conditional GETs early."""
@@ -1028,24 +1025,44 @@ class MeetingWebService:
         self._probe_selected_config(resolved)
         return resolved
 
+    def _workspace_index(self) -> Path:
+        """默认工作区里记着"还用过哪些目录"的那一行行文本。"""
+        return self.workspace / MeetingStore.WORKSPACE_DIR / WORKSPACE_INDEX
+
+    def _known_workspaces(self) -> List[Path]:
+        """默认那一个，加上以前用过、现在还在的那些目录。"""
+        found = [self.workspace]
+        try:
+            lines = self._workspace_index().read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return found
+        for line in lines:
+            path = Path(line.strip()).expanduser()
+            if line.strip() and path.is_dir() and path not in found:
+                found.append(path.resolve())
+        return found
+
+    def _remember_workspace(self, workspace: Path) -> None:
+        """用过一次的目录记下来：不然重启之后它的会议就从列表里消失了。"""
+        if workspace == self.workspace or workspace in self._known_workspaces():
+            return
+        index = self._workspace_index()
+        index.parent.mkdir(parents=True, exist_ok=True)
+        with index.open("a", encoding="utf-8") as handle:
+            handle.write(f"{workspace}\n")
+
     def _meeting_dirs(self) -> List[Path]:
-        """Every directory a meeting may live in: each workspace's `.meeting/`, then `runs/`."""
+        """每一场会的数据目录：各个工作区 `.meeting/` 下的一个会议号目录。"""
         found: List[Path] = []
         seen: set = set()
-        for workspace in self.workspaces:
+        for workspace in self._known_workspaces():
             folder = workspace / MeetingStore.WORKSPACE_DIR
-            if folder.is_dir() and not folder.is_symlink():
-                for child in sorted(folder.iterdir()):
-                    if child.is_dir() and not child.is_symlink() and child not in seen:
-                        seen.add(child)
-                        found.append(child)
-        try:
-            for child in sorted(self._runs_root().iterdir()):
+            if not folder.is_dir() or folder.is_symlink():
+                continue
+            for child in sorted(folder.iterdir()):
                 if child.is_dir() and not child.is_symlink() and child not in seen:
                     seen.add(child)
                     found.append(child)
-        except OSError as exc:
-            raise WebError(500, f"cannot read runs directory: {exc}") from exc
         return found
 
     def list_meetings(self) -> Dict[str, Any]:
@@ -1064,7 +1081,8 @@ class MeetingWebService:
                 warnings.append(f"{directory.name}: {exc}")
         summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
         return {"meetings": summaries, "warnings": warnings,
-                "workspaces": [str(workspace) for workspace in self.workspaces]}
+                "workspace": str(self.workspace),
+                "workspaces": [str(workspace) for workspace in self._known_workspaces()]}
 
     def snapshot(self, meeting_id: str) -> Dict[str, Any]:
         store = self.load_store(meeting_id)
@@ -1158,17 +1176,13 @@ class MeetingWebService:
             with self.lock:
                 self.ticket_jobs.pop(meeting_id, None)
 
-    def _workspace_for(self, asked: Any) -> Optional[Path]:
-        """Which workspace a new meeting goes into: one this service serves, or none."""
-        if asked in (None, "", False):
-            return None
-        if not isinstance(asked, str):
+    def _workspace_for(self, asked: Any) -> Path:
+        """新会议开在哪个目录：对话框里填的那个，留空就是默认那个。"""
+        if asked is not None and not isinstance(asked, str):
             raise WebError(400, "workspace must be a path")
-        wanted = Path(asked).expanduser().resolve()
-        for workspace in self.workspaces:
-            if workspace == wanted:
-                return workspace
-        raise WebError(400, f"unknown workspace: {asked}")
+        workspace = _as_workspace(asked, self.workspace)
+        self._remember_workspace(workspace)
+        return workspace
 
     def _validated_reference(
         self,
@@ -1262,15 +1276,12 @@ class MeetingWebService:
             "revision": _event_revision(store),
         }
 
-    def _new_id(self, workspace: Optional[Path] = None) -> str:
-        """A fresh meeting id that is free both under `runs/` and in the chosen workspace."""
+    def _new_id(self, workspace: Path) -> str:
+        """A fresh meeting id, free in the workspace the meeting is going into."""
         for _ in range(20):
             value = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
-            if (self.project_root / "runs" / value).exists():
-                continue
-            if workspace is not None and (workspace / MeetingStore.WORKSPACE_DIR / value).exists():
-                continue
-            return value
+            if not (workspace / MeetingStore.WORKSPACE_DIR / value).exists():
+                return value
         raise WebError(500, "could not allocate a meeting id")
 
     def start(self, payload: Dict[str, Any]) -> MeetingStore:
@@ -2502,9 +2513,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run the RemoteBuddy v2 workspace service")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--workspace", action="append", default=None, metavar="DIR",
-                        help="服务这些工作区（可给多次）；不给就扫 "
-                             "$REMOTEBUDDY_WORKSPACE_ROOT（默认 ~/workspace）下的一层子目录")
+    parser.add_argument("--workspace", default=None, metavar="DIR",
+                        help="工作区（一个目录）：会议的每一份数据放在 <DIR>/.meeting/ 下；"
+                             "不给就用项目根")
     parser.add_argument(
         "--harness",
         default=None,
@@ -2529,20 +2540,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             parser.error("--harness must be one of: claude, responses, codex, trae")
         default_backend, default_provider = pair
 
-    if args.workspace:
-        missing = [path for path in args.workspace
-                   if not Path(path).expanduser().is_dir()]
-        if missing:
-            parser.error(f"--workspace 必须是存在的目录：{', '.join(missing)}")
+    if args.workspace and not Path(args.workspace).expanduser().is_dir():
+        parser.error(f"--workspace 必须是存在的目录：{args.workspace}")
 
     service = MeetingWebService(
-        workspaces=[Path(path) for path in args.workspace] if args.workspace else None,
+        workspace=Path(args.workspace) if args.workspace else None,
         default_backend=default_backend,
         default_provider=default_provider,
     )
     server = build_server(args.host, args.port, service=service)
     print(f"RemoteBuddy workspace: http://{args.host}:{args.port}/", flush=True)
-    print("工作区：" + ("、".join(str(one) for one in service.workspaces) or "（无）"), flush=True)
+    print(f"工作区：{service.workspace}（会议数据在 {service.workspace / MeetingStore.WORKSPACE_DIR}/）",
+          flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

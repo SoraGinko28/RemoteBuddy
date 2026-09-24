@@ -80,7 +80,7 @@ __ret__ = actor.report_done          # 回一句"做好了"
 
 `.venv/bin/python e2e_ticket_meeting.py`：开一场**真会**（真 agent、真 tmux、真 HTTP），只走页面那几条
 HTTP 面——assistant 把人类那句话放进 store、读工单板、发该发的那一张；服务那一侧把包发给每个成员、
-给每个成员起一个进程。真实的一次（`runs/ticket-9ea7a401`）：
+给每个成员起一个进程。真实的一次（当时的会议目录 `runs/ticket-9ea7a401`）：
 
 ```
 —— assistant 看情况发起第 1 张 ——
@@ -98,9 +98,10 @@ HTTP 面——assistant 把人类那句话放进 store、读工单板、发该�
      `close_the_meeting`，每张一个包、发给每个成员 ——
 ```
 
-（"该发/不发"是读 store 算出来的，不是写死的顺序。一场跑完，工单那一侧留在
-`runs/<会议号>/ticket_centered/`：材料在 `store/`，每个成员那份原件在 `tickets/<工单>/<成员>/`，
-会议记录在 `meeting_record.md`；页面上会话头部那个「工单」按钮点开的就是同一份东西。）
+（"该发/不发"是读 store 算出来的，不是写死的顺序。一场跑完，工单那一侧留在会议目录的
+`ticket_centered/` 下（会议目录 = `<工作区>/.meeting/<会议号>/`）：材料在 `store/`，每个成员那份
+原件在 `tickets/<工单>/<成员>/`，会议记录在 `meeting_record.md`；页面上会话头部那个「工单」按钮
+点开的就是同一份东西。）
 
 ## 为什么这么设计
 
