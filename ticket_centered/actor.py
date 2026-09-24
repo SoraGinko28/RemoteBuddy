@@ -31,6 +31,9 @@ from .member import bundle_main
 
 WORKING_PHASES = ("agent_thinking", "agent_acting")
 DONE_PHASES = ("waiting_for_user", "completion_proposed")
+# 这两个阶段是"这一轮断了"：会议自己能从这里被一句话叫醒（RESUMABLE_PHASES），
+# 所以 wait_for_turn 不再往下等，交给上面重说一遍题面。
+FAILED_PHASES = ("api_error", "cycle_timeout")
 TERMINAL_STATUSES = ("completed", "failed", "interrupted")
 
 
@@ -149,6 +152,8 @@ class AgentChannel:
             meeting = self.snapshot()
             if meeting.get("status") in TERMINAL_STATUSES:
                 return meeting
+            if meeting.get("phase") in FAILED_PHASES:
+                return meeting
             settled = (meeting.get("phase") in DONE_PHASES
                        and meeting.get("control_owner") in (None, "none"))
             if settled and len(self.chats()) > before:
@@ -192,7 +197,11 @@ class AgentChannel:
             chats = len(self.chats())
             if force or not self.turn_in_flight():
                 self.say(instruction)
-            self.wait_for_turn(chats, timeout)
+            meeting = self.wait_for_turn(chats, timeout)
+            if meeting.get("phase") in FAILED_PHASES:
+                # 这一轮模型那边断了：再说一遍题面，让它重来一轮（会议能从这个阶段被叫醒）。
+                self.say(instruction)
+                self.wait_for_turn(len(self.chats()), timeout)
         self.wait_for_file(target)
         if changed:
             self.wait_for_change(path, before, timeout)
