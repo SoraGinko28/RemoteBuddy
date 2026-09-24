@@ -64,24 +64,23 @@ button:disabled { cursor: not-allowed; opacity: .45; }
    one workspace can hold several. */
 .meeting-group { display: flex; flex-direction: column; gap: 4px; }
 .meeting-group + .meeting-group { margin-top: 6px; }
-/* The group's name is the workspace directory's basename, shown as written. */
-.meeting-group-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 4px 4px 0; color: var(--muted); font-size: 11px; font-weight: 750; }
+/* The group's name is the workspace directory's basename, with a folder icon —
+   the shape the DeepSeek sidebar uses for a project. */
+.meeting-group-head { display: flex; gap: 6px; align-items: center; padding: 6px 4px 2px; color: var(--muted); font-size: 11px; font-weight: 750; }
+.meeting-group-head svg { width: 13px; height: 13px; flex: 0 0 13px; opacity: .85; }
 .meeting-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.meeting-group-count { padding: 1px 5px; border-radius: 6px; background: var(--surface-2); font-weight: 600; }
-/* Buttons are not text-selectable in Chrome by default, so the meeting ids and
-   their meta lines could not be drag-selected or copied. */
-.meeting-item { width: 100%; border: 1px solid transparent; background: transparent; padding: 10px; text-align: left; border-radius: 6px; color: var(--ink); user-select: text; -webkit-user-select: text; }
+/* Buttons are not text-selectable in Chrome by default, so the titles could not
+   be drag-selected or copied. */
+.meeting-item { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; background: transparent; padding: 8px 10px; text-align: left; border-radius: 6px; color: var(--ink); user-select: text; -webkit-user-select: text; }
 .meeting-item:hover { background: var(--surface-2); }
 .meeting-item.selected { background: var(--surface-2); border-color: var(--line-strong); }
-.meeting-item-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
-/* A meeting's title is the human's own first line, which can be a whole
-   sentence: two lines at most, never a paragraph that buries the group. */
-.meeting-item-top strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.meeting-item-id { display: block; color: var(--muted); margin-top: 4px; font: 10px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
-.meeting-item-meta { display: block; color: var(--muted); margin-top: 7px; font-size: 11px; }
-.mini-status { font-size: 9px; padding: 2px 5px; border-radius: 3px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
-.mini-status.running { color: var(--green); background: var(--green-soft); }
-.mini-status.failed, .mini-status.interrupted { color: var(--red); background: var(--red-soft); }
+/* One line per session: the title, then how long ago it moved. The meeting id
+   lives in the item's tooltip. */
+.meeting-item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.meeting-item-time { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+.meeting-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.meeting-dot.running { background: var(--green); }
+.meeting-dot.failed, .meeting-dot.interrupted { background: var(--red); }
 .list-empty { color: var(--muted); font-size: 12px; padding: 20px 8px; text-align: center; }
 .sidebar-footer { margin-top: auto; border-top: 1px solid var(--line); padding: 13px 4px 0; color: var(--muted); font-size: 10px; }
 

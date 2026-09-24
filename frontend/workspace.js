@@ -509,22 +509,27 @@ function fmtAgo(value) {
   return `${Math.round(hours / 24)} 天前`;
 }
 
+// 兜底标题：会话还没说过话，列表里也不该出现会议号。
+const NEW_MEETING_TITLE = "新会话";
+function meetingLabel(meeting) {
+  return meeting.title || NEW_MEETING_TITLE;
+}
+
+// 一条会话就一行：标题 + 相对时间。会议号、provider、阶段都不占地方（会议号在悬停
+// 的提示里，header 也一样）。
 function meetingItem(meeting) {
   const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
   button.type = "button";
-  const top = node("span", "meeting-item-top");
-  top.append(
-    node("strong", "", meeting.title || meeting.meeting_id),
-    node("span", `mini-status ${meeting.status}`, labels.status[meeting.status] || meeting.status),
+  button.title = meeting.meeting_id;
+  if (["running", "failed", "interrupted"].includes(meeting.status)) {
+    button.append(node("span", `meeting-dot ${meeting.status}`));
+  }
+  button.append(
+    node("span", "meeting-item-title", meetingLabel(meeting)),
+    node("span", "meeting-item-time", fmtAgo(meeting.updated_at)),
   );
-  const provider = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
-  button.append(top, node("span", "meeting-item-id", meeting.meeting_id));
-  const meta = node("span", "meeting-item-meta",
-    `${withAgent(labels.phase[meeting.phase] || meeting.phase, meeting)} · ${provider} · ${fmtAgo(meeting.updated_at)}`);
-  meta.title = fmtTime(meeting.updated_at);
-  button.append(meta);
-  // A drag across the id is the human selecting it to copy, not a command to
-  // open the meeting: a click that ends with a selection inside this item
+  // A drag across the title is the human selecting it to copy, not a command
+  // to open the meeting: a click that ends with a selection inside this item
   // must not navigate, which would also rebuild the list and drop it.
   button.addEventListener("click", () => {
     const selection = window.getSelection();
@@ -532,6 +537,20 @@ function meetingItem(meeting) {
     selectMeeting(meeting.meeting_id);
   });
   return button;
+}
+
+// 工作区那一行前面那个文件夹图标（内联 SVG，跟着文字颜色走）。
+function folderIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linejoin", "round");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z");
+  svg.append(path);
+  return svg;
 }
 
 function renderMeetingList() {
@@ -548,8 +567,8 @@ function renderMeetingList() {
     const head = node("div", "meeting-group-head");
     head.title = group.path;
     head.append(
+      folderIcon(),
       node("span", "meeting-group-name", group.path ? basename(group.path) : "未知目录"),
-      node("span", "meeting-group-count", String(group.meetings.length)),
     );
     section.append(head);
     for (const meeting of group.meetings) section.append(meetingItem(meeting));
@@ -589,7 +608,8 @@ function renderHeader() {
   const meeting = state.snapshot.meeting;
   // The open meeting is named in the sidebar, not in the header: the terminal
   // already says what is going on, and the sidebar lists everything anyway.
-  el.sidebar_title.textContent = meeting.meeting_id;
+  el.sidebar_title.textContent = meetingLabel(meeting);
+  el.sidebar_title.title = meeting.meeting_id;
   el.sidebar_subtitle.textContent = `${labels.status[meeting.status] || meeting.status} · ${
     Object.keys(memberRoles(meeting)).length} 个成员`;
   if (el.agent_states) {
