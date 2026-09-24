@@ -249,3 +249,38 @@ def test_the_assistant_process_is_where_the_humans_words_enter(tmp_path):
     assert finished.returncode == 0, finished.stderr
     words, answered = read(meeting, case, "", "stated_task")
     assert answered and "快速排序" in str(words)
+
+
+def test_the_record_names_the_flow_and_the_capability_surface(tmp_path):
+    """内容寻址：这一场会跑的是哪份流程、哪一版这一侧的代码，记录第一行就有。"""
+    from ticket_centered.host import capability_digest
+
+    workflow, _writer, meeting = build(tmp_path)
+    case = meeting.case("quicksort")
+    meeting.store.write(meeting.absolute(case, ""), "stated_task", TASK)
+    meeting.publish("write_a_draft", case)
+
+    opening = meeting.store.records()[1]
+    assert workflow.digest() in opening
+    assert capability_digest() in opening
+
+
+def test_audit_catches_an_answer_outside_its_own_paths(tmp_path):
+    """写权：某人答了别人名下的算子，账上看得出来。"""
+    workflow = load_workflow(WORKFLOW_DIR)
+    meeting = Meeting(tmp_path / "meeting", workflow)
+    # actor 拿着 judge（critic 的算子）：它跑去答 judge_the_draft，就是越权
+    meeting.join(Member("actor", "actor", critic_caps(workflow)))
+    meeting.join(Member("critic", "critic", critic_caps(workflow)))
+    case = meeting.case("quicksort")
+    meeting.store.write(meeting.absolute(case, "drafted"), "write_code", DRAFT)
+    bundles = meeting.publish("judge_the_draft", case)
+    from ticket_centered.member import run_bundle
+
+    for name in ("actor", "critic"):
+        run_bundle(bundles[name], meeting=meeting.root, case=case,
+                   caps=meeting.members[name].caps, out=lambda _: None)
+
+    problems = meeting.audit()
+    assert any("actor" in line and "judge" in line for line in problems), problems
+    assert meeting.reconcile() == []

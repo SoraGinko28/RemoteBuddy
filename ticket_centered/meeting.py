@@ -14,6 +14,7 @@ harness 只有三件事，这里都摆着：
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,7 +24,7 @@ from . import _viba  # noqa: F401
 from viba import viba_ast
 from viba.compliance import call_of
 
-from .host import Member
+from .host import Member, capability_digest
 from .store import Store
 from .workflow import Workflow, addresses_of_call
 
@@ -44,6 +45,7 @@ class Meeting:
         self.tickets_dir = self.root / "tickets"
         self.tickets_dir.mkdir(parents=True, exist_ok=True)
         self.members: Dict[str, Member] = {}
+        self._opened = False
 
     # ------------------------------------------------------------------
     # Who is at the meeting
@@ -102,6 +104,11 @@ class Meeting:
 
         返回"发给谁 → 它那一包在哪"——成员进程就是拿这个路径跑的。
         """
+        if not self._opened:
+            # 内容寻址：这一场会跑的是哪份流程、哪一版这一侧的代码，都记在记录的第一行。
+            self.store.record(f"- 这份流程：{self.workflow.digest()}"
+                              f"（这一侧的代码：{capability_digest()}）")
+            self._opened = True
         template = self.tickets_dir / ticket / TEMPLATE
         self._bundle(template, ticket, case)
         bundles: Dict[str, Path] = {}
@@ -170,6 +177,28 @@ class Meeting:
             if answered:
                 out.append((member_dir.parent.name, member_dir.name, value))
         return out
+
+    def audit(self) -> List[str]:
+        """这场会哪里不对劲：副本对不上，或者有人写了不属于自己那条数据路径。
+
+        写权不是靠约定：每个成员自己答了哪几步，它在会议记录里留了账（`member.run_bundle`），
+        这里按"算子归哪个角色"核对——不是自己名下的，就报出来。查不出来的是伪造（那要靠副本
+        对账和最后那个人签字）。
+        """
+        problems = [f"{path} + {name} 的副本对不上：{copies}"
+                    for path, name, copies in self.reconcile()]
+        for line in self.store.records():
+            match = re.match(r"- (\S+)（(\w+)）答了 (\S+) \+ (\w+)$", line)
+            if match is None:
+                continue
+            who, role, path, op = match.groups()
+            owner = self.workflow.role_of_op(op)
+            member = self.members.get(who)
+            if owner is None:
+                problems.append(f"{who} 答了谁也不认的算子 {op}（{path}）")
+            elif owner != role or (member is not None and member.role != role):
+                problems.append(f"{who}（{role}）答了 {op}，可那是 {owner} 名下的（{path}）")
+        return problems
 
     def reconcile(self) -> List[Tuple[str, str, Dict[str, Any]]]:
         """Where the copies disagree with the store — an empty list is a clean meeting."""

@@ -48,7 +48,12 @@ def run_bundle(bundle, *, meeting, case: str, caps: Dict[str, Callable],
     runner = Member(name, name, caps).at(store, case, str(bundle / PROGRAM_DIR))
     answer = interpret(str(bundle / PROGRAM_DIR / f"{ticket}{VIBA_SUFFIX}"), runner.env(""))
     answered = [(path, op) for path, op, value in runner.did if value != "replayed"]
+    role = runner.member.role
     _hand_back(bundle, Path(meeting) / STORE_DIR)
+    # 自己的账写进会议记录：谁答了哪条数据路径下的哪个算子。写权是"每个角色只写自己名下那条
+    # 数据路径"，这一行就是事后查它用的凭据（meeting.audit 读的就是这些行）。
+    for path, op in answered:
+        store.record(f"- {name}（{role}）答了 {path} + {op}")
     out(_line(name, ticket, answered, runner.deferred, _failure(answer)))
     return answered
 

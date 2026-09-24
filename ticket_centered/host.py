@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
 from . import _viba  # noqa: F401
@@ -21,6 +23,21 @@ from viba.interpret import Environment, material
 from viba.type import NotMyDutyException
 
 from .store import Store
+
+
+def capability_digest() -> str:
+    """这一侧代码（`ticket_centered/` 里这几个文件）的内容摘要。
+
+    能力面就是这几个文件：谁能做哪些事、做出来是什么效果，全在里面。这个数变了，就说明
+    "会做的事"变了——会议记录里记着每次开会用的是哪个数，事后再看对不上就是有人动过。
+    """
+    seed = hashlib.sha256()
+    for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        seed.update(path.name.encode("utf-8"))
+        seed.update(b"\0")
+        seed.update(path.read_bytes())
+        seed.update(b"\0")
+    return seed.hexdigest()
 
 
 class Member:

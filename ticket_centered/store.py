@@ -142,6 +142,12 @@ class Store:
     # The meeting record
     # ------------------------------------------------------------------
 
+    def records(self) -> List[str]:
+        """这场会的记录，一行一行。"""
+        if self.record_path is None or not self.record_path.exists():
+            return []
+        return self.record_path.read_text(encoding="utf-8").splitlines()
+
     def record(self, line: str) -> None:
         """Append one line to this meeting's record."""
         if self.record_path is None:
