@@ -84,6 +84,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # 一块工作区 = 一个目录。会议的每一份数据都放在它的 `.meeting/<会议号>/` 下面；
 # 服务默认就用项目根，`--workspace DIR` 换一个。
 WORKSPACE_INDEX = "workspaces"
+WORKSPACE_NAMES = "workspace_names"
 # 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
 CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
@@ -1059,6 +1060,52 @@ class MeetingWebService:
         with index.open("a", encoding="utf-8") as handle:
             handle.write(f"{workspace}\n")
 
+    def _forget_workspace(self, workspace: Path) -> None:
+        """索引里那一行去掉，别的行原样留着；名字也一起擦掉。"""
+        index = self._workspace_index()
+        try:
+            lines = index.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        keep = [line.strip() for line in lines
+                if line.strip() and Path(line.strip()).expanduser().resolve() != workspace]
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(f"{line}\n" for line in keep), encoding="utf-8")
+        self._set_workspace_name(workspace, "")
+
+    def _workspace_name_index(self) -> Path:
+        """显示名单独记一份：一行一个"路径 + 制表符 + 名字"。
+
+        不塞进 `workspaces` 那份索引里，是因为索引的每一行就是一个目录，改名字不该动它；
+        老的那份文件也不用跟着迁移。
+        """
+        return self.workspace / MeetingStore.WORKSPACE_DIR / WORKSPACE_NAMES
+
+    def _workspace_names(self) -> Dict[str, str]:
+        """目录 -> 显示名；没起过名字的目录不在这张表里。"""
+        found: Dict[str, str] = {}
+        try:
+            lines = self._workspace_name_index().read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return found
+        for line in lines:
+            path, _tab, title = line.partition("\t")
+            if path.strip() and title.strip():
+                found[str(Path(path.strip()).expanduser().resolve())] = title.strip()
+        return found
+
+    def _set_workspace_name(self, workspace: Path, title: str) -> None:
+        """起名或擦名：写进那一份名字表。"""
+        names = self._workspace_names()
+        if title:
+            names[str(workspace)] = title
+        else:
+            names.pop(str(workspace), None)
+        index = self._workspace_name_index()
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(f"{path}\t{name}\n" for path, name in sorted(names.items())),
+                         encoding="utf-8")
+
     def _meeting_dirs(self) -> List[Path]:
         """每一场会的数据目录：各个工作区 `.meeting/` 下的一个会议号目录。"""
         found: List[Path] = []
@@ -1090,7 +1137,62 @@ class MeetingWebService:
         summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
         return {"meetings": summaries, "warnings": warnings,
                 "workspace": str(self.workspace),
-                "workspaces": [str(workspace) for workspace in self._known_workspaces()]}
+                "workspaces": [str(workspace) for workspace in self._known_workspaces()],
+                "workspace_titles": self._workspace_names()}
+
+    def add_workspace(self, payload: Any = None) -> Dict[str, Any]:
+        """把一个目录记成工作区，不开会。
+
+        侧边栏「工作区」旁边那个「＋」就是这个：工作区可以先有，会议以后再开。目录必须已经
+        存在（工作区是已有的项目，不是随手新造一个空目录）；记在默认工作区的
+        `.meeting/workspaces` 里，所以重启之后它还在列表上。留空就是默认那一个，等于没改。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace = _as_workspace(payload.get("directory"), self.workspace)
+        self._remember_workspace(workspace)
+        return self._workspaces_payload(workspace)
+
+    def rename_workspace(self, payload: Any = None) -> Dict[str, Any]:
+        """给一个工作区换个显示名。
+
+        名字只是列表里怎么叫它：磁盘上的目录不动，会议一条也不挪。名字留空就擦掉，
+        回到目录自己的 basename。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace = self._asked_workspace(payload)
+        self._set_workspace_name(workspace, str(payload.get("title") or "").strip())
+        return self._workspaces_payload(workspace)
+
+    def delete_workspace(self, payload: Any = None) -> Dict[str, Any]:
+        """把一个工作区从列表里去掉。
+
+        去掉的只是"记着它"这一行：目录本身、它下面的会议，一条都不删——想找回来，把目录
+        再加一次就回来了。默认那一个（项目根）不在名单上，去不掉；还有没结束的会的工作区
+        也不去，免得那一场从列表上消失、却还在后台跑着。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace = self._asked_workspace(payload)
+        if workspace == self.workspace:
+            raise WebError(400, "默认工作区去不掉：它就是项目根")
+        for summary in self.list_meetings()["meetings"]:
+            if summary.get("workspace_root") == str(workspace) and \
+                    summary.get("status") not in TERMINAL_STATUSES:
+                raise WebError(409, f"这个工作区里 {summary['meeting_id']} 还没结束：先结束它")
+        self._forget_workspace(workspace)
+        return self._workspaces_payload(self.workspace)
+
+    def _asked_workspace(self, payload: Dict[str, Any]) -> Path:
+        """payload 里那个目录：必须是已经记着的工作区。"""
+        workspace = _as_workspace(payload.get("directory"), self.workspace)
+        if workspace not in self._known_workspaces():
+            raise WebError(400, f"不是已记着的工作区：{workspace}")
+        return workspace
+
+    def _workspaces_payload(self, workspace: Path) -> Dict[str, Any]:
+        """改名、添加、删除都回同一份名单，页面只认这一份。"""
+        return {"workspace": str(workspace),
+                "workspaces": [str(one) for one in self._known_workspaces()],
+                "workspace_titles": self._workspace_names()}
 
     def _open_terminal_if_needed(self, store: MeetingStore) -> None:
         """只开了工作区、终端还没开出来的会：被看上一眼就把终端补上。
@@ -2506,6 +2608,15 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/meetings":
                 store = self.service.start(self._read_json())
                 self._json({"meeting_id": store.meeting.meeting_id, "meeting": _public_manifest(store)}, status=201)
+                return
+            if path == "/api/workspaces":
+                self._json(self.service.add_workspace(self._read_json()))
+                return
+            if path == "/api/workspaces/rename":
+                self._json(self.service.rename_workspace(self._read_json()))
+                return
+            if path == "/api/workspaces/delete":
+                self._json(self.service.delete_workspace(self._read_json()))
                 return
             if path == "/api/settings":
                 self._json(self.service.update_settings(self._read_json()))

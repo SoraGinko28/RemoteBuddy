@@ -13,18 +13,12 @@
       <button id="rail-more-button" class="rail-button" type="button" title="会话列表" aria-label="会话列表"><span class="rail-icon-menu" aria-hidden="true"></span></button>
     </aside>
     <aside class="sidebar">
-      <header class="brand-row">
-        <div>
-          <p class="brand" id="sidebar-title">RemoteBuddy</p>
-          <p class="brand-subtitle" id="sidebar-subtitle">还没有打开会话</p>
-        </div>
-        <div class="brand-actions">
-          <span id="health-dot" class="health-dot" title="环境状态"></span>
-        </div>
-      </header>
-
-      <button id="new-button" class="primary-command" type="button"><span aria-hidden="true">＋</span> 打开工作区</button>
       <p id="health-message" class="health-message" hidden></p>
+      <div class="workspace-head">
+        <span class="workspace-head-title">工作区</span>
+        <button id="add-workspace-button" class="workspace-head-add" type="button"
+                title="添加工作区" aria-label="添加工作区">＋</button>
+      </div>
       <nav id="meeting-list" class="meeting-list" aria-label="会议列表"></nav>
       <div id="list-empty" class="list-empty">还没有 v2 会话</div>
       <footer class="sidebar-footer">本机回环服务 · 单人单 Agent</footer>
@@ -269,6 +263,11 @@
       </footer>
     </form>
   </dialog>
+
+  <div id="workspace-menu" class="workspace-menu" hidden role="menu" aria-label="工作区操作">
+    <button type="button" data-workspace-action="rename" role="menuitem">重命名</button>
+    <button type="button" data-workspace-action="delete" role="menuitem">删除工作区</button>
+  </div>
 
   <div id="selection-menu" class="selection-menu" hidden role="toolbar" aria-label="选区操作">
     <button type="button" data-selection-action="evaluate" class="score-action evaluate">评价</button>

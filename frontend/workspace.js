@@ -11,8 +11,10 @@ const MAX_LIVE_SCREEN_QUEUE = 120;
 const HUMAN_TAKEOVER_FRAME_MS = 200;
 
 const el = Object.fromEntries([
-  "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-list", "list-empty",
-  "welcome", "session-view", "agent-states", "status-badge", "owner-badge", "sidebar-title", "sidebar-subtitle",
+  "health-message", "welcome-new-button", "meeting-list", "list-empty",
+  "add-workspace-button",
+  "welcome", "session-view", "agent-states", "status-badge", "owner-badge",
+  "workspace-menu",
   "welcome-advanced-button",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "member-name-label", "member-role-label", "member-state-label", "member-terminal-label",
@@ -35,6 +37,9 @@ const state = {
   csrfHeader: "X-RemoteBuddy-CSRF",
   healthy: false,
   meetings: [],
+  workspaces: [],
+  workspaceTitles: {},
+  workspaceMenuPath: "",
   workspace: "",
   workspaceFilled: false,
   selectedId: null,
@@ -475,19 +480,26 @@ function enqueueLiveScreens(events) {
 // A meeting lives in a workspace: its data sits in `<workspace>/.meeting/<id>/`,
 // and several meetings may share one workspace. The group's name is the
 // directory's basename — the project you typed when you opened the session.
+// The workspaces come first: one can be added before it has any meeting, so an
+// empty group is a group too.
 function meetingGroups() {
   const groups = [];
   const byPath = new Map();
-  for (const meeting of state.meetings) {
-    const path = meeting.workspace_root || state.workspace || "";
+  const groupFor = (path) => {
     if (!byPath.has(path)) {
-      const one = { path, meetings: [] };
+      const one = { path, title: state.workspaceTitles[path] || "", meetings: [] };
       byPath.set(path, one);
       groups.push(one);
     }
-    byPath.get(path).meetings.push(meeting);
+    return byPath.get(path);
+  };
+  for (const workspace of state.workspaces) groupFor(workspace);
+  for (const meeting of state.meetings) {
+    groupFor(meeting.workspace_root || state.workspace || "").meetings.push(meeting);
   }
-  return groups;
+  // The default workspace is the directory the service itself runs in: nobody
+  // added it, so it stays out of the list until it actually holds a session.
+  return groups.filter((group) => group.meetings.length > 0 || group.path !== state.workspace);
 }
 
 function basename(path) {
@@ -521,9 +533,6 @@ function meetingItem(meeting) {
   const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
   button.type = "button";
   button.title = meeting.meeting_id;
-  if (["running", "failed", "interrupted"].includes(meeting.status)) {
-    button.append(node("span", `meeting-dot ${meeting.status}`));
-  }
   button.append(
     node("span", "meeting-item-title", meetingLabel(meeting)),
     node("span", "meeting-item-time", fmtAgo(meeting.updated_at)),
@@ -560,17 +569,23 @@ function renderMeetingList() {
   const live = window.getSelection();
   if (live && !live.isCollapsed && el.meeting_list.contains(live.anchorNode)) return;
   el.meeting_list.replaceChildren();
-  el.list_empty.hidden = state.meetings.length > 0;
-  for (const group of meetingGroups()) {
+  const groups = meetingGroups();
+  // "No v2 session yet" is for having no workspace at all: a workspace that has
+  // no meetings says so under itself.
+  el.list_empty.hidden = groups.length > 0;
+  for (const group of groups) {
     const section = node("section", "meeting-group");
     const head = node("div", "meeting-group-head");
     head.title = group.path;
     head.append(
       folderIcon(),
-      node("span", "meeting-group-name", group.path ? basename(group.path) : "未知目录"),
+      node("span", "meeting-group-name",
+        group.title || (group.path ? basename(group.path) : "未知目录")),
+      groupActions(group),
     );
     section.append(head);
     for (const meeting of group.meetings) section.append(meetingItem(meeting));
+    if (!group.meetings.length) section.append(node("p", "meeting-group-empty", "还没有会话"));
     el.meeting_list.append(section);
   }
 }
@@ -605,12 +620,6 @@ function renderHeader() {
   if (!state.snapshot) return;
   if (state.pointerSelecting || hasLiveSelection()) return;
   const meeting = state.snapshot.meeting;
-  // The open meeting is named in the sidebar, not in the header: the terminal
-  // already says what is going on, and the sidebar lists everything anyway.
-  el.sidebar_title.textContent = meetingLabel(meeting);
-  el.sidebar_title.title = meeting.meeting_id;
-  el.sidebar_subtitle.textContent = `${labels.status[meeting.status] || meeting.status} · ${
-    Object.keys(memberRoles(meeting)).length} 个成员`;
   if (el.agent_states) {
     renderMemberStates(meeting);
   }
@@ -2718,9 +2727,7 @@ async function loadHealth() {
   state.health = health;
   const backendEntries = Object.values(health.backends || {});
   state.healthy = Boolean(health.core_ok && backendEntries.some(usableBackendEntry));
-  el.health_dot.classList.toggle("ok", Boolean(health.ok));
   const failedChecks = (health.checks || []).filter((item) => !item.ok);
-  const failed = failedChecks.map((item) => item.detail);
   const visibleFailures = failedChecks.map((item) => {
     if (item.name === "model-api") return "请配置 model_api/config.toml 与 auth.json";
     if (item.name === "tmux") return "未找到 tmux";
@@ -2730,10 +2737,9 @@ async function loadHealth() {
     if (item.name === "claude-code") return `Claude Code 后端不可用：${item.detail}`;
     return "当前 Python 版本不受支持";
   });
-  el.health_dot.title = health.ok ? "默认运行环境就绪" : failed.join("\n");
+  // 环境出问题时文字就写在下面那行里；一盏灯说不出是哪儿不对，所以不要了。
   el.health_message.textContent = visibleFailures.join("；");
   el.health_message.hidden = state.healthy;
-  el.new_button.disabled = !state.healthy;
   el.welcome_new_button.disabled = !state.healthy;
   syncBackendSelectors();
 }
@@ -2831,6 +2837,8 @@ async function loadMeetings() {
   const payload = await api("/api/meetings");
   state.meetings = payload.meetings || [];
   state.workspace = payload.workspace || "";
+  state.workspaces = payload.workspaces || [];
+  state.workspaceTitles = payload.workspace_titles || {};
   state.meetingsRefreshedAt = Date.now();
   renderWorkspaceHint();
   renderMeetingList();
@@ -2994,7 +3002,7 @@ async function chooseDirectory() {
 // 开始会话 = 打开一个工作区：选一个目录（系统选目录框），这场会就开在它里面，
 // 第一句话在聊天框里说。取消就什么都不做。
 async function openWorkspace() {
-  const buttons = [el.new_button, el.welcome_new_button].filter(Boolean);
+  const buttons = [el.welcome_new_button].filter(Boolean);
   buttons.forEach((button) => { button.disabled = true; });
   try {
     let directory = "";
@@ -3023,6 +3031,135 @@ async function openWorkspace() {
   }
 }
 
+// One workspace row's own two actions: a session in it, and the menu that
+// renames or forgets it. The name shown is the one it was given, else the
+// directory's basename.
+function groupActions(group) {
+  const actions = node("div", "meeting-group-actions");
+  const add = node("button", "meeting-group-action", "＋");
+  add.type = "button";
+  add.title = "在这个工作区里开一个新会话";
+  add.setAttribute("aria-label", "新建会话");
+  add.addEventListener("click", () => {
+    newSessionInWorkspace(group.path).catch((error) => toast(error.message));
+  });
+  const more = node("button", "meeting-group-action", "···");
+  more.type = "button";
+  more.title = "重命名、删除工作区";
+  more.setAttribute("aria-label", "工作区操作");
+  more.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleWorkspaceMenu(group.path, more);
+  });
+  // 跟 DeepSeek 侧边栏一个次序：菜单在前，新建在后。
+  actions.append(more, add);
+  return actions;
+}
+
+// The "＋" on a workspace row: open a session in that directory, skipping the
+// picker — the workspace is already chosen.
+async function newSessionInWorkspace(path) {
+  if (!path) return;
+  const created = await api("/api/meetings", {
+    method: "POST",
+    body: JSON.stringify({ workspace: path }),
+  });
+  await loadMeetings();
+  await selectMeeting(created.meeting_id);
+}
+
+function hideWorkspaceMenu() {
+  if (!el.workspace_menu) return;
+  el.workspace_menu.hidden = true;
+  state.workspaceMenuPath = "";
+}
+
+function toggleWorkspaceMenu(path, anchor) {
+  if (!el.workspace_menu || !path) return;
+  if (!el.workspace_menu.hidden && state.workspaceMenuPath === path) {
+    hideWorkspaceMenu();
+    return;
+  }
+  state.workspaceMenuPath = path;
+  const remove = el.workspace_menu.querySelector('[data-workspace-action="delete"]');
+  if (remove) {
+    // The default workspace is the project root: it is not on the list, so
+    // taking it off is nothing, and it would be back on the next load. The
+    // item is not shown rather than shown greyed out.
+    remove.hidden = path === state.workspace;
+  }
+  el.workspace_menu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const box = el.workspace_menu.getBoundingClientRect();
+  const gutter = 8;
+  const left = Math.max(gutter,
+    Math.min(window.innerWidth - box.width - gutter, rect.right - box.width));
+  const top = Math.max(gutter,
+    Math.min(window.innerHeight - box.height - gutter, rect.bottom + 6));
+  el.workspace_menu.style.left = `${left}px`;
+  el.workspace_menu.style.top = `${top}px`;
+}
+
+// 重命名改的是列表里怎么叫它：目录名不动，会议一条也不挪。留空就用目录名。
+async function renameWorkspace(path) {
+  hideWorkspaceMenu();
+  if (!path) return;
+  const current = state.workspaceTitles[path] || basename(path);
+  const answer = window.prompt("这个工作区叫什么（留空就用目录名）", current);
+  if (answer === null) return;
+  await api("/api/workspaces/rename", {
+    method: "POST",
+    body: JSON.stringify({ directory: path, title: answer.trim() }),
+  });
+  await loadMeetings();
+}
+
+// 删除只把它从名单上拿掉：目录和里面的会议都不动，再加一次就回来了。
+async function deleteWorkspace(path) {
+  hideWorkspaceMenu();
+  if (!path) return;
+  const name = state.workspaceTitles[path] || basename(path);
+  if (!window.confirm(`把「${name}」从工作区列表里去掉？目录和里面的会议都不动。`)) return;
+  await api("/api/workspaces/delete", {
+    method: "POST",
+    body: JSON.stringify({ directory: path }),
+  });
+  await loadMeetings();
+}
+
+// The "＋" beside 工作区 in the sidebar: remember a directory as a workspace
+// without opening a meeting — a workspace can be there before its first
+// session. The directory comes from the same system picker; cancel changes
+// nothing, and no meeting means no backend or key setup.
+async function addWorkspace() {
+  if (!el.add_workspace_button) return;
+  el.add_workspace_button.disabled = true;
+  try {
+    let directory = "";
+    try {
+      const answer = await api("/api/choose-directory", {
+        method: "POST",
+        body: JSON.stringify({ directory: state.workspace || "" }),
+      });
+      directory = answer.directory || "";
+    } catch (error) {
+      // No system picker (not macOS): fall back to typing a path.
+      toast(error.message);
+      directory = (window.prompt("工作区目录", state.workspace || "") || "").trim();
+    }
+    if (!directory) return;                     // the picker was cancelled
+    await api("/api/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ directory }),
+    });
+    await loadMeetings();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    el.add_workspace_button.disabled = false;
+  }
+}
+
 function openNewDialog() {
   el.new_error.hidden = true;
   el.api_key_input.value = "";
@@ -3042,7 +3179,13 @@ async function loadSettings() {
 }
 
 function bind() {
-  el.new_button.addEventListener("click", openWorkspace);
+  el.add_workspace_button?.addEventListener("click", addWorkspace);
+  el.workspace_menu?.querySelector('[data-workspace-action="rename"]')?.addEventListener("click", () => {
+    renameWorkspace(state.workspaceMenuPath).catch((error) => toast(error.message));
+  });
+  el.workspace_menu?.querySelector('[data-workspace-action="delete"]')?.addEventListener("click", () => {
+    deleteWorkspace(state.workspaceMenuPath).catch((error) => toast(error.message));
+  });
   el.welcome_new_button.addEventListener("click", openWorkspace);
   el.welcome_advanced_button?.addEventListener("click", openNewDialog);
   const railMore = document.getElementById("rail-more-button");
@@ -3208,6 +3351,10 @@ function bind() {
     ) {
       closeMemberDetails();
     }
+    if (el.workspace_menu && !el.workspace_menu.hidden
+        && !el.workspace_menu.contains(event.target)) {
+      hideWorkspaceMenu();
+    }
     if (el.selection_menu.contains(event.target)) return;
     hideSelectionMenu();
     // A terminal selection lives inside xterm rather than the DOM, so it
@@ -3245,6 +3392,7 @@ function bind() {
       }
       closeMemberDetails();
       hideSelectionMenu();
+      hideWorkspaceMenu();
       clearBrowserSelection();
       state.keyboardSelection = null;
     }

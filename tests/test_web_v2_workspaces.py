@@ -154,6 +154,77 @@ class WorkspaceWebServiceTest(unittest.TestCase):
         self.assertTrue((store.run_dir / "meeting.json").is_file())
         self.assertTrue(os.path.isdir(store.workspace_path))
 
+    def test_adding_a_workspace_does_not_open_a_meeting(self):
+        answer = self.service.add_workspace({"directory": str(self.other)})
+        self.assertEqual(str(self.other.resolve()), answer["workspace"])
+        self.assertIn(str(self.other.resolve()), answer["workspaces"])
+        # 只是把它记下来：没有会议，也没动那个目录
+        self.assertEqual([], self.service.list_meetings()["meetings"])
+        self.assertFalse((self.other / ".meeting").exists())
+
+    def test_an_added_workspace_is_remembered_for_the_next_start(self):
+        self.service.add_workspace({"directory": str(self.other)})
+        index = self.root / ".meeting" / WORKSPACE_INDEX
+        self.assertIn(str(self.other.resolve()), index.read_text(encoding="utf-8").splitlines())
+        restarted = MeetingWebService(
+            project_root=self.root,
+            model_api_path=self.model_api,
+            skill_path=self.skill,
+            runner_factory=RecordingRunner,
+            client_factory=lambda _config: FakeClient(),
+            transport_factory=lambda _binary: self.transport,
+        )
+        self.assertIn(str(self.other.resolve()), restarted.list_meetings()["workspaces"])
+
+    def test_the_default_workspace_needs_no_remembering(self):
+        answer = self.service.add_workspace({})
+        self.assertEqual(str(self.root.resolve()), answer["workspace"])
+        self.assertEqual([str(self.root.resolve())], answer["workspaces"])
+        self.assertFalse((self.root / ".meeting" / WORKSPACE_INDEX).exists())
+
+    def test_adding_a_directory_that_is_not_there_is_refused(self):
+        with self.assertRaisesRegex(WebError, "目录不存在"):
+            self.service.add_workspace({"directory": str(self.root / "elsewhere")})
+
+    def test_renaming_a_workspace_only_changes_what_it_is_called(self):
+        self.start("meeting-elsewhere", workspace=self.other)
+        answer = self.service.rename_workspace({"directory": str(self.other), "title": "另一个项目"})
+        self.assertEqual("另一个项目", answer["workspace_titles"][str(self.other.resolve())])
+        # 目录还是那个目录，会议一条没挪
+        self.assertTrue(self.other.is_dir())
+        listing = self.service.list_meetings()
+        self.assertEqual(["meeting-elsewhere"], [one["meeting_id"] for one in listing["meetings"]])
+        self.assertEqual("另一个项目", listing["workspace_titles"][str(self.other.resolve())])
+
+    def test_a_name_can_be_taken_back(self):
+        self.service.add_workspace({"directory": str(self.other)})
+        self.service.rename_workspace({"directory": str(self.other), "title": "临时"})
+        answer = self.service.rename_workspace({"directory": str(self.other), "title": "  "})
+        self.assertNotIn(str(self.other.resolve()), answer["workspace_titles"])
+
+    def test_renaming_something_that_is_no_workspace_is_refused(self):
+        with self.assertRaisesRegex(WebError, "不是已记着的工作区"):
+            self.service.rename_workspace({"directory": str(self.other), "title": "随便"})
+
+    def test_deleting_a_workspace_takes_it_off_the_list_only(self):
+        self.service.add_workspace({"directory": str(self.other)})
+        answer = self.service.delete_workspace({"directory": str(self.other)})
+        self.assertNotIn(str(self.other.resolve()), answer["workspaces"])
+        self.assertTrue(self.other.is_dir())
+        self.assertNotIn(str(self.other.resolve()),
+                         (self.root / ".meeting" / WORKSPACE_INDEX).read_text(encoding="utf-8").splitlines())
+
+    def test_the_default_workspace_cannot_be_deleted(self):
+        with self.assertRaisesRegex(WebError, "默认工作区去不掉"):
+            self.service.delete_workspace({"directory": str(self.root)})
+
+    def test_a_workspace_with_a_live_meeting_is_not_deleted(self):
+        # 开完一场会它还在跑（等人类说话）：这时候把一个工作区从名单上拿掉，那一场就从
+        # 列表上消失了，却还在后台——所以不拿。
+        self.start("meeting-elsewhere", workspace=self.other)
+        with self.assertRaisesRegex(WebError, "还没结束"):
+            self.service.delete_workspace({"directory": str(self.other)})
+
 
 if __name__ == "__main__":
     unittest.main()

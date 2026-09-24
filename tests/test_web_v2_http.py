@@ -877,6 +877,42 @@ class HTTPBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(413, status)
 
+    def test_add_workspace_route(self):
+        # 页面侧边栏那个「＋」：记下一个目录，不开会
+        response = self.request(
+            "/api/workspaces",
+            method="POST",
+            body=json.dumps({"directory": str(self.root)}),
+            csrf=True,
+        )
+        self.assertEqual(200, response.status)
+        payload = json.load(response)
+        self.assertEqual(str(self.root.resolve()), payload["workspace"])
+        self.assertIn(str(self.root.resolve()), payload["workspaces"])
+        self.assertEqual([], json.load(self.request("/api/meetings"))["meetings"])
+        status, _payload = self.error_status(
+            "/api/workspaces",
+            method="POST",
+            body=json.dumps({"directory": str(self.root / "elsewhere")}),
+            csrf=True,
+        )
+        self.assertEqual(400, status)
+
+    def test_workspace_rename_and_delete_routes(self):
+        other = self.root / "elsewhere"
+        other.mkdir()
+        self.request("/api/workspaces", method="POST",
+                     body=json.dumps({"directory": str(other)}), csrf=True)
+        renamed = self.request("/api/workspaces/rename", method="POST",
+                               body=json.dumps({"directory": str(other), "title": "别名"}), csrf=True)
+        self.assertEqual(200, renamed.status)
+        self.assertEqual("别名", json.load(renamed)["workspace_titles"][str(other.resolve())])
+        deleted = self.request("/api/workspaces/delete", method="POST",
+                               body=json.dumps({"directory": str(other)}), csrf=True)
+        self.assertEqual(200, deleted.status)
+        self.assertNotIn(str(other.resolve()), json.load(deleted)["workspaces"])
+        self.assertTrue(other.is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()
