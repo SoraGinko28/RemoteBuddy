@@ -84,6 +84,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # 一块工作区 = 一个目录。会议的每一份数据都放在它的 `.meeting/<会议号>/` 下面；
 # 服务默认就用项目根，`--workspace DIR` 换一个。
 WORKSPACE_INDEX = "workspaces"
+# 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
+CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
 MODEL_API_PATH = PROJECT_ROOT / "model_api"
 DEFAULT_HOST = "127.0.0.1"
@@ -225,6 +227,11 @@ def _events_by_id(store: MeetingStore) -> Dict[str, Dict[str, Any]]:
         for event in store.events()
         if event.get("event_id")
     }
+
+
+def _applescript_string(value: str) -> str:
+    """把一段文本变成 AppleScript 的字符串字面量。"""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def meeting_title(store: MeetingStore) -> str:
@@ -1183,6 +1190,38 @@ class MeetingWebService:
         workspace = _as_workspace(asked, self.workspace)
         self._remember_workspace(workspace)
         return workspace
+
+    def choose_directory(self, payload: Any = None) -> Dict[str, Any]:
+        """弹系统（Finder）的选目录框，把选中的目录回给页面。
+
+        浏览器自己的 `showDirectoryPicker` 只给得到目录名、拿不到绝对路径（那是它的
+        安全设计），所以这一步必须由服务端问系统。取消不是错：回一个空目录，页面
+        什么都不改。
+        """
+        if sys.platform != "darwin":
+            raise WebError(400, "只有 macOS 能弹系统选目录框，请直接填路径")
+        payload = payload if isinstance(payload, dict) else {}
+        asked = payload.get("directory")
+        script = 'tell application "Finder" to activate\n'
+        script += 'POSIX path of (choose folder with prompt "选这场会的工作目录"'
+        if isinstance(asked, str) and asked.strip():
+            candidate = Path(asked.strip()).expanduser()
+            if candidate.is_dir():
+                script += f" default location (POSIX file {_applescript_string(str(candidate.resolve()))})"
+        script += ")"
+        try:
+            done = subprocess.run(
+                ["/usr/bin/osascript", "-e", script],
+                capture_output=True, text=True, timeout=CHOOSE_DIRECTORY_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            raise WebError(504, "选目录框等太久了")
+        except FileNotFoundError:
+            raise WebError(400, "这台机器上没有 /usr/bin/osascript")
+        if done.returncode != 0:
+            return {"directory": ""}
+        # `POSIX path of` a folder alias keeps a trailing slash.
+        return {"directory": done.stdout.strip().rstrip("/") or "/"}
 
     def _validated_reference(
         self,
@@ -2433,6 +2472,9 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/settings":
                 self._json(self.service.update_settings(self._read_json()))
+                return
+            if path == "/api/choose-directory":
+                self._json(self.service.choose_directory(self._read_json()))
                 return
             if path == "/api/credentials":
                 self._json(self.service.update_credentials(self._read_json()))

@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -156,3 +157,49 @@ class WorkspaceWebServiceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChooseDirectoryTest(unittest.TestCase):
+    """「选择目录…」走服务端的系统选目录框（macOS 的 Finder），浏览器拿不到绝对路径。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.service = MeetingWebService(project_root=self.root, workspace=self.root)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def run_osascript(self, stdout="", returncode=0):
+        done = mock.Mock(returncode=returncode, stdout=stdout, stderr="")
+        return mock.patch("web_v2.subprocess.run", return_value=done)
+
+    def test_the_chosen_directory_is_returned_without_the_trailing_slash(self):
+        with self.run_osascript("/tmp/some project/\n") as run:
+            self.assertEqual({"directory": "/tmp/some project"}, self.service.choose_directory({}))
+        script = run.call_args.args[0][-1]
+        self.assertIn("Finder", script)
+        self.assertIn("choose folder", script)
+
+    def test_a_cancelled_dialog_changes_nothing(self):
+        with self.run_osascript("", returncode=1):
+            self.assertEqual({"directory": ""}, self.service.choose_directory({}))
+
+    def test_the_current_directory_is_the_default_location(self):
+        mine = self.root / 'with "quotes"'
+        mine.mkdir()
+        with self.run_osascript(str(mine) + "/") as run:
+            self.service.choose_directory({"directory": str(mine)})
+        script = run.call_args.args[0][-1]
+        self.assertIn("default location", script)
+        self.assertIn('\\"quotes\\"', script)
+
+    def test_a_directory_that_is_not_there_is_not_a_default(self):
+        with self.run_osascript("/tmp/x/") as run:
+            self.service.choose_directory({"directory": str(self.root / "nope")})
+        self.assertNotIn("default location", run.call_args.args[0][-1])
+
+    def test_osascript_missing_is_reported(self):
+        with mock.patch("web_v2.subprocess.run", side_effect=FileNotFoundError()):
+            with self.assertRaisesRegex(WebError, "osascript"):
+                self.service.choose_directory({})

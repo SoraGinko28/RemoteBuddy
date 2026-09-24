@@ -22,7 +22,7 @@ const el = Object.fromEntries([
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
-  "close-dialog", "cancel-new", "initial-message", "workspace-input", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
+  "close-dialog", "cancel-new", "initial-message", "workspace-input", "choose-directory", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
   "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
@@ -2953,6 +2953,24 @@ async function postMeetingAction(suffix, body = {}) {
   await loadMeetings();
 }
 
+// 系统（Finder）的选目录框：浏览器自己的 showDirectoryPicker 拿不到绝对路径，
+// 所以让服务端去问系统。取消就什么都不改。
+async function chooseDirectory() {
+  if (!el.choose_directory) return;
+  el.choose_directory.disabled = true;
+  try {
+    const answer = await api("/api/choose-directory", {
+      method: "POST",
+      body: JSON.stringify({ directory: el.workspace_input.value.trim() }),
+    });
+    if (answer.directory) {
+      el.workspace_input.value = answer.directory;
+      state.workspaceFilled = true;
+    }
+  } catch (error) { toast(error.message); }
+  finally { el.choose_directory.disabled = false; }
+}
+
 function openNewDialog() {
   el.new_error.hidden = true;
   el.api_key_input.value = "";
@@ -2984,6 +3002,7 @@ function bind() {
   });
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
+  el.choose_directory?.addEventListener("click", () => chooseDirectory());
   el.backend_select.addEventListener("change", () => syncBackendSelectors(true));
   el.provider_select.addEventListener("change", () => syncBackendSelectors(true));
   el.cli_default_model?.addEventListener("change", () => syncCliDefaultModel());

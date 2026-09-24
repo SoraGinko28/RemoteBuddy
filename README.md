@@ -120,10 +120,17 @@ workspace root itself, so several sessions can share one project:
 ```
 
 The workspace is the project root by default, or whatever `--workspace DIR` names. The new-session
-dialog takes a directory (leave it empty for the default one); the directories used so far are
-recorded in `<workspace>/.meeting/workspaces`, so a session opened in another project stays on the
-list across restarts. The page groups the list by workspace and names each group by that
-directory's basename.
+dialog takes a directory — type it, or press 选择目录… for the macOS folder dialog (Finder), because
+a browser cannot hand back an absolute path from its own directory picker:
+
+```text
+POST /api/choose-directory {"directory": "<current value>"}   the system picker; an empty
+                                                              `directory` back means cancelled
+```
+
+The directories used so far are recorded in `<workspace>/.meeting/workspaces`, so a session opened
+in another project stays on the list across restarts. The page groups the list by workspace and
+names each group by that directory's basename.
 
 `MeetingStore` still reads the older `runs/<meeting-id>/` layout (with a fresh `workspace/` inside
 the meeting directory); the Web service no longer writes it.
