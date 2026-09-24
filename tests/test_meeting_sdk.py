@@ -1,4 +1,4 @@
-"""Tests for meeting_remote_sdk: the same contract, over the wire, in viba.
+"""Tests for meeting_sdk: the contract over the wire, answered in viba.
 
 Every api answers with a viba script (``entry = ...``) that is a resident of the
 api's return type in the data-interface chapter; the script is read with
@@ -16,7 +16,7 @@ import pytest
 
 import meeting_core_reflect as reflect
 import meeting_sdk_server as server
-import meeting_remote_sdk as remote
+import meeting_sdk as remote
 import meeting_sdk_viba as viba_sdk
 from tests.test_meeting_sdk_server import prepare_meeting_data_as_ctx
 from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,

@@ -1,7 +1,8 @@
-"""meeting_remote_sdk -- the remote binding of the meeting_sdk.viba contract.
+"""meeting_sdk -- the binding of the meeting_sdk.viba contract.
 
 Ctx is a meeting uid. Every api is backed by its own url on a RemoteBuddy web
-server:
+server — the service answers it with meeting_sdk_server over the record it
+holds:
 
     POST {base_url}/api/meetings/{meeting_uid}/sdk/{api}
     body  {"args": {...}}   ->  {"script": "entry = ..."}
@@ -19,7 +20,7 @@ The binding is a ``Client``: one kept connection, one token, one timeout, and
 no module-level mutable state. ``configure(url)`` only swaps the default client
 the module-level functions use, so the chapter's hint still reads
 
-    import meeting_remote_sdk as sdk
+    import meeting_sdk as sdk
     sdk.chat_messages(meeting_uid, start, end)
 
 Nothing writes: the data interface is read-only. The make_* group builds values

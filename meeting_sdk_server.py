@@ -6,7 +6,7 @@ these when a client asks for one api over the wire:
     POST /api/meetings/<meeting-uid>/sdk/<api>   ->   meeting_sdk_viba -> viba script
 
 so nothing binds a record in-process any more; this is simply where the reading
-happens. The caller side is meeting_remote_sdk.
+happens. The caller side is meeting_sdk.
 
 The public interface is exactly the apis of the data-interface chapter in
 MEETING_ADT.md: names in snake_case, parameters and returns as written there,

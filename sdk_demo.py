@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Run the remote sdk end to end, and read its answers with viba.reflect.
+"""Run the sdk end to end, and read its answers with viba.reflect.
 
-    python3 remote_sdk_demo.py
+    python3 sdk_demo.py
 
 All in this one process, no fixtures from the test suite:
 
 1. write a small meeting journal under a temporary runs/ directory
    (meeting.json + streams/events.jsonl, the shape meeting_loader reads);
 2. start the harness web server on a free local port over that journal;
-3. point meeting_remote_sdk at it and drive the apis of the data-interface
+3. point meeting_sdk at it and drive the apis of the data-interface
    chapter -- every answer is a viba script (``entry = ...``);
 4. read those scripts with viba.reflect -- the landing's sugar:
    ``get_ok()`` / ``get_microsecond()`` / ``node["agent"]`` / ``has_err()`` /
@@ -29,7 +29,7 @@ import threading
 import time
 from pathlib import Path
 
-import meeting_remote_sdk as remote
+import meeting_sdk as remote
 import meeting_sdk_viba as viba_sdk
 from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,
                          at_key as viba_at_key, by_field_index as viba_by_field_index,
