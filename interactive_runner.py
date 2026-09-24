@@ -159,6 +159,45 @@ class InteractiveRunner:
         """Return the durable journal cursor, including annotation events."""
         return max((int(event.get("seq", 0)) for event in events), default=default)
 
+    def _ensure_pane(self) -> str:
+        """这个工作区的终端：已经开出来了就复用它，没有才新建。
+
+        工作区可以先把终端开出来（`open()`），agent 等到人类说第一句再上；那时
+        pane 已经在那儿了，不能再建一个同名的 tmux 会话。
+        """
+        existing = self.store.meeting.pane_id
+        if existing and self.transport.session_exists(self.store.meeting.session_name):
+            return str(existing)
+        return self.transport.create_workspace_session(
+            self.store.meeting.session_name,
+            self.store.workspace_path,
+        )
+
+    def open(self) -> None:
+        """只打开工作区：终端开出来，停在等人类说话——不叫 agent。
+
+        页面上"打开工作区"就是这个：人先看见自己的项目，第一句话在聊天框里说。
+        """
+        try:
+            self._reset_cycle_state()
+            with self.lock:
+                self.store.refresh()
+                self._check_stop()
+                self.store.update(status="starting", phase="starting", control_owner="none", failure=None)
+                self.store.set_session(self._ensure_pane())
+                capture_workspace(self.store, self.transport)
+                self.store.update(status="running", phase="waiting_for_user", control_owner="none", failure=None)
+                self.store.append_event(
+                    "state",
+                    "harness",
+                    "waiting_for_user",
+                    data={"status": "running", "reason": "no first message yet"},
+                )
+        except RunnerStopped:
+            return
+        except Exception as exc:
+            self._fail(exc)
+
     def start(self) -> None:
         try:
             self._reset_cycle_state()
@@ -166,11 +205,7 @@ class InteractiveRunner:
                 self.store.refresh()
                 self._check_stop()
                 self.store.update(status="starting", phase="starting", control_owner="none", failure=None)
-                pane_id = self.transport.create_workspace_session(
-                    self.store.meeting.session_name,
-                    self.store.workspace_path,
-                )
-                self.store.set_session(pane_id)
+                self.store.set_session(self._ensure_pane())
                 capture_workspace(self.store, self.transport)
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
                 initial_context = self._observation(self.store.events_after(0), False, force_history=True)

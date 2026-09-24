@@ -442,7 +442,8 @@ class MeetingWebService:
         self.ticket_jobs: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
-        self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool]] = {}
+        # (store, config, resume, fresh_conversation, terminal_only)
+        self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = {}
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
@@ -1406,10 +1407,16 @@ class MeetingWebService:
             )
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
-        # Without a first message there is nothing for the agent to answer yet;
-        # wait for the human to speak (the message endpoint wakes it).
-        if message.strip():
-            self._ensure_worker(store, config, resume=False, fresh_conversation=False)
+        # Without a first message the agent has nothing to answer yet, but the
+        # workspace itself is opened right away: its terminal is the thing the
+        # human is looking at while they type the first line.
+        self._ensure_worker(
+            store,
+            config,
+            resume=False,
+            fresh_conversation=False,
+            terminal_only=not message.strip(),
+        )
         return store
 
     def _ensure_worker(
@@ -1419,6 +1426,7 @@ class MeetingWebService:
         *,
         resume: bool,
         fresh_conversation: bool,
+        terminal_only: bool = False,
     ) -> None:
         meeting_id = store.meeting.meeting_id
         try:
@@ -1436,14 +1444,15 @@ class MeetingWebService:
                 previous = self.queued_jobs.get(meeting_id)
                 if previous:
                     fresh_conversation = fresh_conversation or previous[3]
-                self.queued_jobs[meeting_id] = (store, config, resume, fresh_conversation)
+                    terminal_only = terminal_only and previous[4]
+                self.queued_jobs[meeting_id] = (store, config, resume, fresh_conversation, terminal_only)
                 return
             client = self._make_backend(config)
             transport = self._transport()
             meeting_lock = self._meeting_lock(meeting_id)
             worker = threading.Thread(
                 target=self._worker,
-                args=(store, client, transport, meeting_lock, resume, fresh_conversation),
+                args=(store, client, transport, meeting_lock, resume, fresh_conversation, terminal_only),
                 name=f"remotebuddy-{meeting_id}",
                 daemon=True,
             )
@@ -1459,11 +1468,15 @@ class MeetingWebService:
         meeting_lock: threading.RLock,
         resume: bool,
         fresh_conversation: bool,
+        terminal_only: bool = False,
     ) -> None:
-        pending: Optional[Tuple[MeetingStore, ModelApiConfig, bool, bool]] = None
+        pending: Optional[Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = None
         try:
             runner = self.runner_factory(store, transport, client, lock=meeting_lock)
-            if resume:
+            if terminal_only:
+                # 只看工作区：把终端开出来，不叫 agent（第一句话在聊天框里说）。
+                runner.open()
+            elif resume:
                 runner.resume(fresh_conversation=fresh_conversation)
             else:
                 runner.start()
@@ -1482,12 +1495,13 @@ class MeetingWebService:
                     self.jobs.pop(meeting_id, None)
                 pending = self.queued_jobs.pop(meeting_id, None)
             if pending:
-                next_store, next_config, next_resume, next_fresh = pending
+                next_store, next_config, next_resume, next_fresh, next_terminal = pending
                 self._ensure_worker(
                     next_store,
                     next_config,
                     resume=next_resume,
                     fresh_conversation=next_fresh,
+                    terminal_only=next_terminal,
                 )
 
     def _ensure_capture_worker(self, store: MeetingStore) -> None:

@@ -109,6 +109,10 @@ class RecordingRunner:
         )
         self.store.update(status="running", phase="waiting_for_user", control_owner="none")
 
+    def open(self):
+        """打开工作区：终端开出来，不叫 agent（第一句话在聊天框里说）。"""
+        self.start()
+
     def resume(self, fresh_conversation=False):
         self.resume_modes.append(fresh_conversation)
         self.store.update(
@@ -719,26 +723,33 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertFalse(self.transport.exists)
 
     def test_meeting_can_be_opened_without_a_first_message(self):
-        """An empty meeting is the fallback when the client has nothing to open.
+        """打开的是一块工作区：终端当场开出来，agent 等到第一句话才动。
 
-        It owns a fresh workspace directory straight away, starts no agent, and
-        the first human message wakes the agent in that same directory.
+        页面上"打开工作区"走的就是这条路：人先看见自己的项目（一帧真画面已经在
+        journal 里），第一句话在聊天框里说，那时才把 agent 叫起来、复用这个 pane。
         """
         store = self.service.start({})
-        self.assertEqual("created", store.meeting.phase)
-        self.assertEqual([], store.chat_messages())
-        self.assertEqual({}, self.service.jobs)
+        self.wait_for_workers()
         # The workspace IS the project root now: the meeting's data sits in
         # `<root>/.meeting/<id>/`, and the agent works in `<root>` itself.
         self.assertTrue((self.root / ".meeting" / store.meeting.meeting_id / "meeting.json").is_file())
-        self.assertEqual(self.root.resolve(), store.workspace_path)
+        reloaded = MeetingStore.load_in_workspace(self.root, store.meeting.meeting_id)
+        self.assertEqual(self.root.resolve(), reloaded.workspace_path)
+        self.assertEqual("waiting_for_user", reloaded.meeting.phase)
+        self.assertEqual([], reloaded.chat_messages())
+        self.assertEqual("running", reloaded.meeting.session_state)
+        self.assertTrue(reloaded.meeting.pane_id)
+        self.assertEqual(str(self.root.resolve()), self.transport.path)
+        self.assertTrue([e for e in reloaded.events() if e["kind"] == "screen"])
 
         before = len(RecordingRunner.instances)
         self.service.message(store.meeting.meeting_id, {"message": "start here"})
         self.wait_for_workers()
         self.assertEqual(before + 1, len(RecordingRunner.instances))
-        reloaded = MeetingStore.load_in_workspace(self.root, store.meeting.meeting_id)
-        chats = [e for e in reloaded.chat_messages() if e["actor"] == "human"]
+        # 这个 pane 是现成的：是接着它跑（resume），不是再建一个。
+        self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
+        loaded = MeetingStore.load_in_workspace(self.root, store.meeting.meeting_id)
+        chats = [e for e in loaded.chat_messages() if e["actor"] == "human"]
         self.assertEqual(["start here"], [e["content"] for e in chats])
 
     def test_validation_and_missing_model_configuration(self):

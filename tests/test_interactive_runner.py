@@ -1281,3 +1281,44 @@ class InteractiveRunnerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenWorkspaceTest(unittest.TestCase):
+    """`runner.open()`：开一块工作区——终端开出来、停在等人说话，agent 不动。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        skill = self.root / "SKILL.md"
+        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
+        self.store = MeetingStore.create(
+            self.root, "open-demo", "", skill, "remotebuddy-open-demo", "test-model"
+        )
+        self.transport = FakeTransport()
+        self.client = FakeClient([])
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def runner(self):
+        return InteractiveRunner(self.store, self.transport, self.client, lock=threading.RLock())
+
+    def test_it_opens_the_pane_and_stops_there(self):
+        self.runner().open()
+        meeting = MeetingStore.load(self.root, "open-demo").meeting
+        self.assertEqual("running", meeting.status)
+        self.assertEqual("waiting_for_user", meeting.phase)
+        self.assertEqual("none", meeting.control_owner)
+        self.assertTrue(meeting.pane_id)
+        self.assertEqual("running", meeting.session_state)
+        # 一帧真画面已经在 journal 里（页面不再空等），而且一个 agent 回合都没起。
+        self.assertTrue([e for e in self.store.events() if e["kind"] == "screen"])
+        self.assertEqual([], self.client.calls)
+
+    def test_starting_again_reuses_the_open_pane(self):
+        runner = self.runner()
+        runner.open()
+        pane_id = self.store.meeting.pane_id
+        # 同一个工作区不会开出第二个 tmux 会话。
+        self.assertEqual(pane_id, runner._ensure_pane())
+        self.assertEqual(pane_id, MeetingStore.load(self.root, "open-demo").meeting.pane_id)
