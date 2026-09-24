@@ -60,26 +60,3 @@ def test_the_board_says_what_is_due_and_who_answers_it(tmp_path):
     board = web_v2._ticket_board(FakeStore(run_dir, "ticket-test"))
     write_a_draft = next(one for one in board["tickets"] if one["ticket"] == "write_a_draft")
     assert next(step for step in write_a_draft["answers"] if step["op"] == "write_code")["answered"]
-
-
-def test_a_ticket_meeting_refuses_the_old_harness(tmp_path):
-    """工单在开的会：assistant 的 watch 不起、@mention 也唤不醒 critic——同一件事只有一个驱动者。"""
-    import meeting_v2 as m2
-
-    skill = REPO_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
-    store = m2.MeetingStore.create(tmp_path, "ticket-driven", "做点事", skill,
-                                   "session-ticket", model="test-model")
-    service = web_v2.MeetingWebService(project_root=tmp_path)
-
-    assert service._ticket_driven(store) is False
-    (store.run_dir / web_v2.TICKET_ROOT).mkdir(parents=True, exist_ok=True)
-    assert service._ticket_driven(store) is True
-    service._ensure_assistant_worker(store)              # 工单在开：这只 watch 不起
-    assert service.assistant_jobs.get(store.meeting.meeting_id) is None
-
-    # @mention 那条路也关掉：工单那边有自己的 critic
-    service._start_reviewer(store.meeting.meeting_id, "critic")
-    assert service.reviewer_jobs.get(store.meeting.meeting_id) in (None, {})
-    routed = [event for event in store.events()
-              if (event.get("data") or {}).get("reviewer_routing", {}).get("reason") == "ticket_driven"]
-    assert routed, "该留一条 skip 的记录"

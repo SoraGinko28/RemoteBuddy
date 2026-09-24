@@ -59,12 +59,6 @@ from meeting_v2 import (
     sha256_text,
     utc_now,
 )
-import reviewer_harness
-import meeting_loader
-import meeting_local_sdk
-import meeting_sdk_json
-import meeting_sdk_viba
-from viba.type import VibaProgramErr as _SdkErr
 from references import reference_from_event
 from model_api_client import (
     MODEL_RE,
@@ -386,8 +380,6 @@ class MeetingWebService:
         self.ticket_jobs: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
-        self.reviewer_jobs: Dict[str, Dict[str, threading.Thread]] = {}
-        self.assistant_jobs: Dict[str, threading.Thread] = {}
         self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool]] = {}
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
@@ -402,38 +394,6 @@ class MeetingWebService:
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._trae_check_cache: Optional[Tuple[float, str, bool, str]] = None
-
-    def sdk_meeting_data(self, meeting_id: str) -> Any:
-        """The record this server holds for that meeting.
-
-        One place to change when a test wants to hand out a record that never
-        went through a journal.
-        """
-        store = self.load_store(meeting_id)
-        data, _summary = meeting_loader.load_meeting_data_from_run(store.run_dir)
-        return data
-
-    def sdk_call(self, meeting_id: str, api: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """One meeting-sdk api, run here over the record this server holds.
-
-        The answer is a viba script (``entry = ...``) whatever happened: an api
-        that failed answers its own $err branch, so the script is always a
-        resident of that api's return type.
-        """
-        if api not in meeting_local_sdk.__all__:
-            raise WebError(404, f"no such meeting sdk api: {api}")
-        if api not in meeting_sdk_viba.return_types():
-            raise WebError(400, f"{api} builds a value; it is not served over the wire")
-        script = meeting_sdk_viba.script_for(api, self._sdk_result(meeting_id, api, args))
-        if isinstance(script, _SdkErr):
-            raise WebError(500, script.err_msg)
-        return {"script": script.ok_value}
-
-    def _sdk_result(self, meeting_id: str, api: str, args: Dict[str, Any]):
-        """The api's own Result, evaluated over the record this server holds."""
-        function = getattr(meeting_local_sdk, api)
-        return function(self.sdk_meeting_data(meeting_id),
-                        **meeting_sdk_json.decode(args or {}))
 
     def _meeting_lock(self, meeting_id: str) -> threading.RLock:
         with self.lock:
@@ -1314,248 +1274,6 @@ class MeetingWebService:
             self.jobs[meeting_id] = worker
             self.active_backends[meeting_id] = client
             worker.start()
-        # Watching starts with the work: the assistant looks while the actor is
-        # busy and once more when it parks.
-        self._ensure_assistant_worker(store)
-
-    def _summon_reviewer_after_idle(self, meeting_id: str, agent_name: str) -> None:
-        """Parked actor got interrupted: summon the reviewer once its
-        worker has actually exited, so the single-writer rule still holds."""
-
-        def wait_then_summon() -> None:
-            deadline = time.monotonic() + 120.0
-            while time.monotonic() < deadline:
-                if not self._job_alive(meeting_id) and not self._reviewer_busy(meeting_id):
-                    try:
-                        self._start_reviewer(meeting_id, agent_name)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    return
-                time.sleep(0.2)
-
-        thread = threading.Thread(target=wait_then_summon, daemon=True,
-                                  name=f"summon-{agent_name}-{meeting_id}")
-        thread.start()
-
-    def _reviewer_busy(self, meeting_id: str) -> bool:
-        with self.lock:
-            for name in list(self.reviewer_jobs.get(meeting_id, {})):
-                thread = self.reviewer_jobs[meeting_id][name]
-                if thread and thread.is_alive():
-                    return True
-        return False
-
-    def _actor_actively_running(self, meeting_id: str) -> bool:
-        """Whether the actor is mid-turn, as opposed to parked between turns.
-
-        The actor's worker parks in ``waiting_for_user`` but keeps its job slot:
-        that is idle, not busy. Only a turn in flight blocks a reviewer.
-        """
-        if not self._job_alive(meeting_id):
-            return False
-        store = self.load_store(meeting_id)
-        return not (
-            store.meeting.status == "running"
-            and store.meeting.phase == "waiting_for_user"
-            and store.meeting.control_owner == "none"
-            and store.meeting.pending_action_id is None
-        )
-
-    def _ticket_driven(self, store: MeetingStore) -> bool:
-        """这场会是不是工单那一侧在开：会议目录下面有工单的东西就是。
-
-        工单在开的时候，旧的 harness 不许插手——assistant 的 watch 不起、@mention 唤不醒 critic：
-        三个角色各听工单的，同一件事只有一个驱动者。
-        """
-        return (Path(store.run_dir) / TICKET_ROOT).is_dir()
-
-    def _ensure_assistant_worker(self, store: MeetingStore) -> None:
-        """Start the assistant's watch when the meeting has one.
-
-        The assistant looks while the actor works, at most every
-        ``reviewer_harness.WATCH_INTERVAL_SECONDS``, and decides whether the
-        critic should be woken. One watcher per meeting.
-        """
-        if self._ticket_driven(store):
-            return
-        meeting_id = store.meeting.meeting_id
-        roles = store.meeting.effective_role_map
-        assistant = next((name for name, role in roles.items() if role == "assistant"), None)
-        critic = next((name for name, role in roles.items() if role == "critic"), None)
-        if not assistant or not critic:
-            return
-        with self.lock:
-            current = self.assistant_jobs.get(meeting_id)
-            if current and current.is_alive():
-                return
-            thread = threading.Thread(
-                target=self._assistant_watch,
-                args=(meeting_id, assistant, critic),
-                name=f"assistant-{assistant}-{meeting_id}",
-                daemon=True,
-            )
-            self.assistant_jobs[meeting_id] = thread
-        thread.start()
-
-    def _assistant_watch(self, meeting_id: str, assistant: str, critic: str) -> None:
-        def stop() -> bool:
-            try:
-                store = self.load_store(meeting_id)
-            except Exception:  # noqa: BLE001
-                return True
-            return (store.meeting.status in TERMINAL_STATUSES
-                    or store.meeting.session_state == "stopped"
-                    or self._ticket_driven(store))
-
-        try:
-            reviewer_harness.watch(
-                self.load_store(meeting_id),
-                assistant,
-                actor_busy=lambda: self._actor_actively_running(meeting_id),
-                critic_busy=lambda: self._reviewer_busy(meeting_id),
-                act=lambda look: self._assistant_acts(
-                    meeting_id, assistant, critic, look),
-                stop=stop,
-            )
-        except Exception as exc:  # noqa: BLE001 — a watcher must not die loudly
-            try:
-                self.load_store(meeting_id).append_event(
-                    "error", "harness", "assistant_watch_error", content=f"{exc!r}")
-            except Exception:  # noqa: BLE001
-                pass
-        finally:
-            with self.lock:
-                if self.assistant_jobs.get(meeting_id) is threading.current_thread():
-                    self.assistant_jobs.pop(meeting_id, None)
-
-    def _assistant_acts(self, meeting_id: str, assistant: str, critic: str,
-                        look) -> None:
-        """Do what a look decided: wake the critic, ask the actor — or stop.
-
-        `done` is the meeting's own verdict that there is nothing left to ask
-        for: the human's prompt itself asks for what a rule forbids. The
-        assistant says so, once, and nobody is woken.
-        """
-        if look.action == "remind":
-            self._assistant_reminds(meeting_id, assistant, look.line)
-        elif look.action == "done":
-            try:
-                self.load_store(meeting_id).append_chat(assistant, look.line, "final")
-            except Exception:  # noqa: BLE001
-                pass
-        else:
-            self._assistant_summons(meeting_id, assistant, critic, look.line)
-
-    def _assistant_summons(self, meeting_id: str, assistant: str, critic: str,
-                           line: str) -> None:
-        """The assistant says what to look at, and the critic is woken."""
-        try:
-            self.load_store(meeting_id).append_chat(assistant, line, "request")
-        except Exception:  # noqa: BLE001
-            pass
-        self._start_reviewer(meeting_id, critic)
-
-    def _assistant_reminds(self, meeting_id: str, assistant: str, line: str) -> None:
-        """The assistant asks the actor, and the actor is woken to answer.
-
-        Nobody may be woken beside the actor, so this runs when the actor is
-        parked; it is the same wake a human's message causes.
-        """
-        with self._meeting_lock(meeting_id):
-            store = self.load_store(meeting_id)
-            if store.meeting.status in TERMINAL_STATUSES:
-                return
-            if store.meeting.control_owner == "human":
-                return
-            try:
-                store.append_chat(assistant, line, "request")
-            except Exception:  # noqa: BLE001
-                pass
-            self._require_terminal(store, "run the actor")
-            store.bump_request_generation(
-                failure=None,
-                cycle_action_count=0,
-                cycle_started_at=utc_now(),
-            )
-            config = self._config_for_store(store)
-            store.update(status="running", phase="agent_thinking",
-                         control_owner=store.meeting.actor_name())
-            self._ensure_worker(store, config, resume=True, fresh_conversation=False)
-
-    def _start_reviewer(self, meeting_id: str, agent_name: str) -> None:
-        """Summon a non-actor member in its own Claude Code process.
-
-        Refuses when the actor worker is busy or the human owns the
-        terminal, preserving the single-writer rule.
-        """
-        with self._meeting_lock(meeting_id):
-            store = self.load_store(meeting_id)
-
-            def trace(action: str, reason: str = "") -> None:
-                try:
-                    store.append_event(
-                        "state", "harness", store.meeting.phase,
-                        data={"reviewer_routing": {"agent_name": agent_name,
-                                                   "action": action, "reason": reason}},
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-
-            if self._ticket_driven(store):
-                trace("skip", "ticket_driven")
-                return
-            if store.meeting.status in TERMINAL_STATUSES:
-                trace("skip", "terminal_status")
-                return
-            if store.meeting.control_owner == "human":
-                trace("skip", "human_control")
-                return
-            role = store.meeting.role_of(agent_name)
-            if not role or role == "actor":
-                trace("skip", "not_a_reviewer")
-                return
-            if self._reviewer_busy(meeting_id):
-                trace("skip", "reviewer_busy")
-                return
-            # Only a turn in flight blocks a reviewer summon; the actor parked
-            # between turns is idle.
-            if self._actor_actively_running(meeting_id):
-                trace("skip", "actor_job_busy")
-                return
-            trace("start", "ok")
-            thread = threading.Thread(
-                target=self._reviewer_worker,
-                args=(meeting_id, agent_name),
-                name=f"reviewer-{agent_name}-{meeting_id}",
-                daemon=True,
-            )
-            with self.lock:
-                self.reviewer_jobs.setdefault(meeting_id, {})[agent_name] = thread
-            thread.start()
-
-    def _reviewer_worker(self, meeting_id: str, agent_name: str) -> None:
-        attempts = 0
-        while True:
-            attempts += 1
-            try:
-                store = self.load_store(meeting_id)
-                outcome = reviewer_harness.comment_once(
-                    store, agent_name, retry=attempts > 1
-                )
-            except Exception as exc:  # noqa: BLE001  worker must never die silently
-                outcome = False
-                try:
-                    self.load_store(meeting_id).append_event(
-                        "error", "harness", "reviewer_worker_error", content=f"{exc!r}"
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            if outcome or attempts >= 2:
-                break
-        with self.lock:
-            jobs = self.reviewer_jobs.get(meeting_id)
-            if jobs and jobs.get(agent_name) is threading.current_thread():
-                jobs.pop(agent_name, None)
 
     def _worker(
         self,
@@ -1727,28 +1445,7 @@ class MeetingWebService:
             # Who is addressed does not depend on the delivery mode: an
             # immediate ("interrupt") @mention must still reach the reviewer
             # rather than the actor.
-            mentioned = mentioned_agent_names(message, store.meeting.effective_role_map)
-            reviewer_targets = [n for n in mentioned if store.meeting.role_of(n) != "actor"]
-            mentions_actor = any(store.meeting.role_of(n) == "actor" for n in mentioned)
-            if reviewer_targets and not mentions_actor:
-                if store.meeting.status not in TERMINAL_STATUSES and store.meeting.control_owner != "human":
-                    if self._job_alive(meeting_id) and not (
-                        store.meeting.phase == "waiting_for_user"
-                        and store.meeting.control_owner == "none"
-                        and store.meeting.pending_action_id is None
-                    ):
-                        self._interrupt_backend(meeting_id)
-                        store.bump_request_generation(
-                            failure=None,
-                            cycle_action_count=0,
-                            cycle_started_at=utc_now(),
-                        )
-                        store.update(phase="waiting_for_user", control_owner="none",
-                                     pending_action_id=None)
-                        self._summon_reviewer_after_idle(meeting_id, reviewer_targets[0])
-                    else:
-                        self._start_reviewer(meeting_id, reviewer_targets[0])
-                    return store
+            mentioned_agent_names(message, store.meeting.effective_role_map)
             if delivery == "interrupt" or wake_agent:
                 self._require_terminal(store, "run the agent")
                 store.bump_request_generation(
@@ -2602,12 +2299,6 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/credentials":
                 self._json(self.service.update_credentials(self._read_json()))
-                return
-            match = re.fullmatch(r"/api/meetings/([^/]+)/sdk/([A-Za-z_][A-Za-z0-9_]*)", path)
-            if match:
-                payload = self._read_json() or {}
-                self._json(self.service.sdk_call(unquote(match.group(1)), match.group(2),
-                                                 payload.get("args") or {}))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/scores", path)
             if match:

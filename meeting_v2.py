@@ -90,7 +90,7 @@ DEFAULT_AGENT_NAME = "actor"
 DEFAULT_REVIEWER_NAME = "critic"
 # The assistant is the human's delegate: it never acts on the terminal and never
 # judges the work, it looks while the actor works and decides whether the critic
-# should be woken (reviewer_harness.watch). One assistant per meeting.
+# should be woken. One assistant per meeting.
 DEFAULT_ASSISTANT_NAME = "assistant"
 DEFAULT_AGENT_ROLE_MAP = {
     DEFAULT_AGENT_NAME: "actor",
