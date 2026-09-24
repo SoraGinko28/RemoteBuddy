@@ -58,7 +58,6 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .command-button:hover:not(:disabled), .icon-button:hover:not(:disabled), .key-row button:hover:not(:disabled) { border-color: var(--ink); }
 .sidebar > .primary-command { width: 100%; justify-content: center; margin-bottom: 24px; }
 .health-message { margin: -14px 3px 16px; padding: 8px; border: 1px solid #5c3733; border-radius: 5px; background: var(--red-soft); color: var(--red); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
-.sidebar-section-title { display: flex; justify-content: space-between; padding: 0 4px 9px; color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
 .meeting-list { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; }
 /* Meetings are grouped by the workspace they live in (`<workspace>/.meeting/`);
    one workspace can hold several. */
@@ -363,7 +362,7 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
   .meeting-group + .meeting-group { margin-top: 0; }
   .meeting-group-head { display: none; }
   .meeting-item { min-width: 190px; }
-  .sidebar-footer, .sidebar-section-title { display: none; }
+  .sidebar-footer { display: none; }
   .workspace-main { height: auto; min-height: calc(100vh - 160px); overflow: visible; }
   .session-view { height: auto; min-height: calc(100vh - 160px); display: block; }
   .session-header { display: block; padding: 13px; }

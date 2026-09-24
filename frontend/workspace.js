@@ -11,7 +11,7 @@ const MAX_LIVE_SCREEN_QUEUE = 120;
 const HUMAN_TAKEOVER_FRAME_MS = 200;
 
 const el = Object.fromEntries([
-  "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
+  "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-list", "list-empty",
   "welcome", "session-view", "agent-states", "status-badge", "owner-badge", "sidebar-title", "sidebar-subtitle",
   "welcome-advanced-button",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
@@ -560,7 +560,6 @@ function renderMeetingList() {
   const live = window.getSelection();
   if (live && !live.isCollapsed && el.meeting_list.contains(live.anchorNode)) return;
   el.meeting_list.replaceChildren();
-  el.meeting_count.textContent = String(state.meetings.length);
   el.list_empty.hidden = state.meetings.length > 0;
   for (const group of meetingGroups()) {
     const section = node("section", "meeting-group");
