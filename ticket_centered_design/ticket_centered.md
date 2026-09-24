@@ -74,33 +74,29 @@ __ret__ = actor.report_done          # 回一句"做好了"
 
 ## 跑起来是什么样
 
-`.venv/bin/python ticket_centered_design/run_demo.py`：临时目录里 mock 三个后端的**能力表**，
-用真解释器跑。真实的开头（后面几张一样，只是 store 里多了点东西）：
+`.venv/bin/python e2e_ticket_meeting.py`：开一场**真会**（真 agent、真 tmux、真 HTTP），只走页面那几条
+HTTP 面——assistant 把人类那句话放进 store、读工单板、发该发的那一张；服务那一侧把包发给每个成员、
+给每个成员起一个进程。真实的一次（`runs/ticket-9ea7a401`）：
 
 ```
 —— assistant 看情况发起第 1 张 ——
     write_a_draft：该发（要读的都在，自己还没做过）
-  工单：write_a_draft
-    要读的数据路径：case/quicksort + stated_task
-    它调的是：actor 的算子
-  → 发给 assistant：在包里跑一遍
-    （没有它的事：整个过程它都递延）
-  → 发给 actor：在包里跑一遍
-  ← actor 答了 case/quicksort/draft + acknowledge
-  ← actor 答了 case/quicksort/draft + write_code
-  ← actor 答了 case/quicksort/draft + report_done
-  → 发给 critic：在包里跑一遍
-    （没有它的事：整个过程它都递延）
+  工单：write_a_draft（页面那条 POST 就是它）
+  ← case/quicksort/greeted + acknowledge ✓（actor）
+  ← case/quicksort/drafted + write_code ✓（actor）
+  ← case/quicksort/report_done + report_done ✓（actor）
 —— assistant 看情况发起第 2 张 ——
-    write_a_draft：不发（case/quicksort/draft + acknowledge 已经答过了）
+    write_a_draft：不发（case/quicksort/greeted + acknowledge 已经答过了）
     judge_the_draft：该发（要读的都在，自己还没做过）
-  工单：judge_the_draft
+  工单：judge_the_draft（页面那条 POST 就是它）
+  ← case/quicksort/judged + judge ✓（critic）
+—— ……五张：`write_a_draft`、`judge_the_draft`、`revise_the_draft`、`judge_the_revision`、
+     `close_the_meeting`，每张一个包、发给每个成员 ——
 ```
 
-（"该发/不发"是读 store 算出来的，不是写死的顺序——所以发出去的五张是
-`write_a_draft`、`judge_the_draft`、`revise_the_draft`、`judge_the_revision`、`close_the_meeting`，
-每张一个包。critic 真判 2 次、actor 真写 2 版代码；每一步是谁的、说了什么、答案落在哪，
-`classic_task.md` 里逐条记着。）
+（"该发/不发"是读 store 算出来的，不是写死的顺序。一场跑完，工单那一侧留在
+`runs/<会议号>/ticket_centered/`：材料在 `store/`，每个成员那份原件在 `tickets/<工单>/<成员>/`，
+会议记录在 `meeting_record.md`；页面上会话头部那个「工单」按钮点开的就是同一份东西。）
 
 ## 为什么这么设计
 

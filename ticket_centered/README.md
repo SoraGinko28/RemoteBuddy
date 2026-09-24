@@ -35,6 +35,7 @@
 | assistant 的派单那一侧（唯一的派单者） | `Meeting.due(ticket, case)` / `next_ticket(case)` 决定该发哪一张；`Meeting.publish(ticket, case)` 把一张发给会上的每个成员 |
 | 自进化的负责人 | `Workflow.load(dir)` / `workflow.digest()` / `workflow.tickets()` / `workflow.rules()` / `workflow.ops_of(api)` / `workflow.role_of_op(op)`；一场会记着它跑的是哪份流程的摘要 |
 | 工单系统（界面、对账、审计） | `Meeting.store.materials()` / `Meeting.backups` / `Meeting.reconcile`；成员包里那份 `store/` 是备份 |
+| 页面（`web_v2.py` + `frontend/workspace.js`） | `GET /api/meetings/<id>/tickets` 是工单板（该发哪一张、每张要读什么/谁答的、判语与收尾、会议记录）；`POST /api/meetings/<id>/tickets/<工单>` 发这一张：服务侧 `Meeting.publish` + 给每个成员起一个进程。会话头部那个「工单 n/5」按钮就是它 |
 | 真实的会（`web_v2` 服务 + tmux 里的 agent） | `ticket_centered.actor.AgentChannel`：`say` 说一句、等那个 agent 干完、从它的工作区读回文件 |
 
 ## 三个角色各自的进程
@@ -80,4 +81,4 @@ python -m ticket_centered.assistant --meeting <会议目录> --case case/quickso
 * **写权**：每个角色只能写自己名下那条数据路径——靠能力表构造上成立，但没人校验（成员包里写脏了别人
   的路径，对账不会发现）。
 * **`is_complete`**：viba 自己那个"设计完不完整"的检查还没接进来（设计里那几条规则现在在测试里）。
-* 页面（`web_v2.py`）会列出这场真会议，但还没有这张流程的工单视图。
+* 页面那块工单板是只读加一个"发这一张"按钮：能发、能看，但还不能在页面上改流程、看每个成员包里的原件。
