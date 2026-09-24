@@ -19,7 +19,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from ticket_centered import (WORKFLOW_DIR, Meeting, Member, actor_caps,  # noqa: E402
+from ticket_centered import (Meeting, Member, SHIPPED_WORKFLOW, actor_caps,  # noqa: E402
                              assistant_caps, critic_caps, load_workflow)
 from ticket_centered import workflow as reading  # noqa: E402
 
@@ -63,7 +63,7 @@ def read(meeting: Meeting, case: str, path: str, name: str):
 
 
 def build(root: Path):
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(SHIPPED_WORKFLOW)
     writer = ScriptedWriter()
     meeting = Meeting(root, workflow)
     meeting.join(Member("actor", "actor", actor_caps(writer.write)))
@@ -78,7 +78,7 @@ def build(root: Path):
 
 
 def test_the_five_classes_of_files_are_the_workflow():
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(SHIPPED_WORKFLOW)
     assert sorted(workflow.tickets()) == sorted(FLOW)
     assert list(workflow.rules()) == ["parameter_count_le_4"]
     assert set(workflow.files) == {"actor_api", "assistant_api", "critic_api",
@@ -86,7 +86,7 @@ def test_the_five_classes_of_files_are_the_workflow():
 
 
 def test_a_ticket_imports_the_apis_it_calls_and_only_writes_calls():
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(SHIPPED_WORKFLOW)
     for name, source in workflow.tickets().items():
         called = {step.api for step in workflow.steps_of(name)}
         imported = set(workflow.apis_used_in(name))
@@ -99,7 +99,7 @@ def test_a_ticket_imports_the_apis_it_calls_and_only_writes_calls():
 
 
 def test_every_operator_a_ticket_calls_is_declared_by_a_role():
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(SHIPPED_WORKFLOW)
     for name in workflow.tickets():
         for step in workflow.steps_of(name):
             assert step.op in workflow.ops_of(step.api), \
@@ -108,7 +108,7 @@ def test_every_operator_a_ticket_calls_is_declared_by_a_role():
 
 
 def test_no_design_file_names_a_case():
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(SHIPPED_WORKFLOW)
     for name, source in workflow.files.items():
         assert "case/" not in source, f"{name} 点了案子的名字"
         for step in reading.steps_of(source):
@@ -204,11 +204,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, {repo!r})
-from ticket_centered import WORKFLOW_DIR, actor_caps, load_workflow
+from ticket_centered import SHIPPED_WORKFLOW, actor_caps, load_workflow
 from ticket_centered.member import run_bundle
 
 bundle, case, meeting = sys.argv[1], sys.argv[2], sys.argv[3]
-workflow = load_workflow(WORKFLOW_DIR)
+workflow = load_workflow(SHIPPED_WORKFLOW)
 run_bundle(bundle, meeting=meeting, case=case, caps=actor_caps(
     lambda prompt: "def quick_sort(items, key=None, reverse=False, bounds=(0, None)):\\n"
                    "    return items\\n" if "\\u4e0d\\u5408\\u683c" in prompt else
@@ -260,14 +260,16 @@ def test_the_record_names_the_flow_and_the_capability_surface(tmp_path):
     meeting.store.write(meeting.absolute(case, ""), "stated_task", TASK)
     meeting.publish("write_a_draft", case)
 
-    opening = meeting.store.records()[1]
-    assert workflow.digest() in opening
-    assert capability_digest() in opening
+    meeting.publish("judge_the_draft", case)          # 再发一张，还是只记一次
+    openings = [line for line in meeting.store.records() if "这份流程：" in line]
+    assert len(openings) == 1, openings
+    assert workflow.digest() in openings[0]
+    assert capability_digest() in openings[0]
 
 
 def test_audit_catches_an_answer_outside_its_own_paths(tmp_path):
     """写权：某人答了别人名下的算子，账上看得出来。"""
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(SHIPPED_WORKFLOW)
     meeting = Meeting(tmp_path / "meeting", workflow)
     # actor 拿着 judge（critic 的算子）：它跑去答 judge_the_draft，就是越权
     meeting.join(Member("actor", "actor", critic_caps(workflow)))
@@ -284,3 +286,42 @@ def test_audit_catches_an_answer_outside_its_own_paths(tmp_path):
     problems = meeting.audit()
     assert any("actor" in line and "judge" in line for line in problems), problems
     assert meeting.reconcile() == []
+
+
+def test_the_workflow_is_found_like_skills(tmp_path, monkeypatch):
+    """找流程的次序：明说的 > 环境变量 > 项目自己的 > 你的配置目录 > 程序带的默认。"""
+    from ticket_centered import workflow as wf
+
+    shipped = wf.SHIPPED_WORKFLOW
+    home = tmp_path / "home"
+    project = tmp_path / "proj"
+    monkeypatch.setenv(wf.HOME_ENV, str(home))
+    monkeypatch.delenv(wf.WORKFLOW_ENV, raising=False)
+
+    assert wf.workflow_root(project_root=project) == shipped          # 什么都没有：用程序带的
+
+    mine = home / "workflow"
+    wf.install(mine)                                                   # 抄一份到配置目录
+    assert (mine / "actor_api.viba").is_file()
+    assert wf.workflow_root(project_root=project) == mine              # 配置目录优先于程序带的
+
+    ours = project / wf.PROJECT_WORKFLOW
+    wf.install(ours)                                                   # 项目自己再放一份
+    assert wf.workflow_root(project_root=project) == ours              # 项目优先于配置目录
+
+    monkeypatch.setenv(wf.WORKFLOW_ENV, str(mine))
+    assert wf.workflow_root(project_root=project) == mine              # 环境变量优先于找
+
+    assert wf.workflow_root(explicit=str(shipped), project_root=project) == shipped   # 明说的最高
+
+    # 抄过的不覆盖
+    assert wf.install(mine) == mine
+    # 给一个不是流程的目录：报出来，不猜
+    empty = tmp_path / "not-a-workflow"
+    empty.mkdir()
+    try:
+        wf.workflow_root(explicit=str(empty))
+    except FileNotFoundError as error:
+        assert "不是一份流程" in str(error)
+    else:
+        raise AssertionError("该报错")

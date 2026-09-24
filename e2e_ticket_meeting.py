@@ -37,7 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from ticket_centered import WORKFLOW_DIR, Meeting, Member, load_workflow  # noqa: E402
+from ticket_centered import (Meeting, Member, load_workflow,  # noqa: E402
+                             workflow_root)
 
 CSRF_HEADER = "X-RemoteBuddy-CSRF"
 DEFAULT_TASK = ("写一个快速排序，放到 quicksort.py。接口必须是 "
@@ -198,10 +199,11 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     human = args.task + "\n结果写进 quicksort.py（就地写文件），写完回复 DONE，不要问我问题。"
 
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(project_root=REPO_ROOT)
     service = MeetingService(REPO_ROOT, human, meeting_id=args.meeting_id,
                              backend=args.backend, provider=args.provider)
     print(f"会议：{service.meeting_id}（服务在 {service.url}）", flush=True)
+    print(f"流程：{workflow_root(project_root=REPO_ROOT)}（摘要 {workflow.digest()[:8]}）", flush=True)
     print(f"人类说：{human}", flush=True)
     service.speak()
 

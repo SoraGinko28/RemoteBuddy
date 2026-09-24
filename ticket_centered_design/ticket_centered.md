@@ -49,6 +49,10 @@ __ret__ = actor.report_done          # 回一句"做好了"
 
 ## 本设计由这五类文件组成
 
+这五类放在**一份流程目录**里：程序按 `--workflow` → `$REMOTEBUDDY_WORKFLOW` → 项目自己的
+`.agents/workflow/` → 配置目录 `~/.remotebuddy/workflow/` → 程序里带的默认 的次序找一份，找到谁用谁。
+改流程的人只拿到那份目录（像 skills 之于 Claude Code），程序本身不给他。
+
 1. `workflow/actor_api.viba` —— actor 会做的事
 2. `workflow/assistant_api.viba` —— assistant 会做的事
 3. `workflow/critic_api.viba` —— critic 会做的事

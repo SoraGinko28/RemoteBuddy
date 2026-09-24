@@ -77,7 +77,7 @@ import meeting_sdk_server
 import meeting_sdk_json
 import meeting_sdk_viba
 from viba.type import VibaProgramErr as _SdkErr
-from ticket_centered import Meeting, Member, Store as TicketStore, WORKFLOW_DIR, load_workflow
+from ticket_centered import Meeting, Member, Store as TicketStore, load_workflow, workflow_root
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -294,13 +294,13 @@ def _ticket_target(store: MeetingStore) -> str:
     return ""
 
 
-def _ticket_board(store: MeetingStore) -> Dict[str, Any]:
+def _ticket_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
     """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。
 
     页面那一块"工单"就是它：`GET /api/meetings/<id>/tickets`。
     """
     root = _ticket_root(store)
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(project_root=project_root)
     meeting = Meeting(root, workflow)
     case = _ticket_case(meeting)
     issued = _ticket_issued(meeting)
@@ -325,6 +325,7 @@ def _ticket_board(store: MeetingStore) -> Dict[str, Any]:
     return {
         "root": f"runs/{store.meeting.meeting_id}/{TICKET_ROOT}",
         "ran": (root / "store").is_dir() or (root / "meeting_record.md").is_file(),
+        "workflow_dir": str(workflow_root(project_root=project_root)),
         "digest": workflow.digest(),
         "rules": sorted(workflow.rules()),
         "case": case,
@@ -1021,7 +1022,7 @@ class MeetingWebService:
     def tickets(self, meeting_id: str) -> Dict[str, Any]:
         """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。"""
         store = self.load_store(meeting_id)
-        board = _ticket_board(store)
+        board = _ticket_board(store, self.project_root)
         with self.lock:
             job = self.ticket_jobs.get(meeting_id)
         board["running"] = job["ticket"] if job and job["thread"].is_alive() else None
@@ -1033,7 +1034,7 @@ class MeetingWebService:
         页面按一下按钮就是这一下。跑在后台，页面照旧轮询工单板：答下的材料成员自己抄回会议。
         """
         store = self.load_store(meeting_id)
-        board = _ticket_board(store)
+        board = _ticket_board(store, self.project_root)
         if ticket not in [one["ticket"] for one in board["tickets"]]:
             raise WebError(404, f"这份流程里没有工单 {ticket}")
         if not board["case"]:
@@ -1056,7 +1057,7 @@ class MeetingWebService:
         try:
             store = self.load_store(meeting_id)
             root = _ticket_root(store)
-            meeting = Meeting(root, load_workflow(WORKFLOW_DIR))
+            meeting = Meeting(root, load_workflow(project_root=self.project_root))
             for name in TICKET_MEMBERS:
                 meeting.join(Member(name, name, {}))
             bundles = meeting.publish(ticket, case)

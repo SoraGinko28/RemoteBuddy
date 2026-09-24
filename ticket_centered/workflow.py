@@ -7,7 +7,18 @@
     5. `rules/*.viba`          规则：critic 跑的程序
 
 五类合起来就是这场会的流程：工单是它的步骤，规则是它的判据，三个 api 的声明是每一步能调到的算子。
-读的是仓库根上那个 `workflow/` 目录（跟 `critic/`、`assistant/` 并列；设计文档 `ticket_centered.md` 里也是这个叫法）。
+
+**流程不在程序里，在你自己的配置目录里**（就像 Claude Code 的 skills 之于它的二进制）：这份程序
+只负责按下面的次序找一个目录，找到谁就用谁——
+
+    1. 明说的 `--workflow <dir>`（或者调用时给的 root）
+    2. 环境变量 `REMOTEBUDDY_WORKFLOW`
+    3. 这个项目自己的 `<project_root>/.agents/workflow/`
+    4. 你的配置目录 `$REMOTEBUDDY_HOME/workflow/`（默认 `~/.remotebuddy/workflow/`）
+    5. 程序里带的那份默认（`ticket_centered/../workflow/`），没有别的就用它
+
+自进化的人改的是第 4（或第 3）个，用的只有那个目录：`python -m ticket_centered.workflow --init` 会把
+第 5 份抄一份到你的配置目录，从那儿开始改；程序本身不用给他，也不用动。
 
 **工单就是 viba 代码**，没有另一种东西叫"工单"：这里读一份文件读出来的，就是它写了哪几步（调哪个
 角色的哪个算子、在哪条数据路径上）、要读哪几条数据路径、答哪几步、import 了哪些 api；读一份角色 api
@@ -19,7 +30,11 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, NamedTuple, Optional, Tuple
 
@@ -29,7 +44,12 @@ from viba import viba_ast
 
 ROLES = ("actor_api", "assistant_api", "critic_api")
 ROLE_OF_API = {"actor_api": "actor", "assistant_api": "assistant", "critic_api": "critic"}
-WORKFLOW_DIR = Path(__file__).resolve().parent.parent / "workflow"
+# 程序里带的那份默认（没有配置目录时用它），以及找流程的那几个地方
+SHIPPED_WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
+WORKFLOW_ENV = "REMOTEBUDDY_WORKFLOW"
+HOME_ENV = "REMOTEBUDDY_HOME"
+PROJECT_WORKFLOW = Path(".agents") / "workflow"
+DEFAULT_HOME_NAME = ".remotebuddy"
 TICKETS_DIR = "tickets"
 RULES_DIR = "rules"
 VIBA_SUFFIX = ".viba"
@@ -135,9 +155,92 @@ class Workflow:
         return None
 
 
-def load_workflow(root) -> Workflow:
-    """Read one meeting's workflow from a directory."""
-    return Workflow.load(root)
+# ----------------------------------------------------------------------
+# 找流程：程序带一份默认，改的是你自己的配置目录
+# ----------------------------------------------------------------------
+
+
+def config_home() -> Path:
+    """你的配置目录：`$REMOTEBUDDY_HOME`，没有就是 `~/.remotebuddy`。"""
+    given = os.environ.get(HOME_ENV)
+    return Path(given).expanduser() if given else Path.home() / DEFAULT_HOME_NAME
+
+
+def workflow_candidates(project_root=None) -> List[Path]:
+    """按次序找一遍：项目自己的、配置目录里的、程序带的默认。"""
+    candidates: List[Path] = []
+    if project_root is not None:
+        candidates.append(Path(project_root) / PROJECT_WORKFLOW)
+    candidates.append(config_home() / "workflow")
+    candidates.append(SHIPPED_WORKFLOW)
+    return candidates
+
+
+def workflow_root(explicit=None, project_root=None) -> Path:
+    """这一趟该读哪份流程。
+
+    `explicit`（`--workflow` / `REMOTEBUDDY_WORKFLOW`）指到哪儿就是哪儿；没指就按
+    项目 → 配置目录 → 程序默认 的次序，取第一个像一份流程的目录；一个都没有就报出来。
+    """
+    asked = explicit or os.environ.get(WORKFLOW_ENV)
+    if asked:
+        root = Path(asked).expanduser()
+        if not _looks_like_workflow(root):
+            raise FileNotFoundError(f"{asked} 不是一份流程（缺 actor_api.viba 或 tickets/）")
+        return root
+    for root in workflow_candidates(project_root):
+        if _looks_like_workflow(root):
+            return root
+    raise FileNotFoundError("找不到流程：给 --workflow，或者 python -m ticket_centered.workflow --init "
+                            f"在 {config_home() / 'workflow'} 放一份")
+
+
+def _looks_like_workflow(root) -> bool:
+    root = Path(root)
+    return (root / f"{ROLES[0]}{VIBA_SUFFIX}").is_file() and (root / TICKETS_DIR).is_dir()
+
+
+def load_workflow(root=None, project_root=None) -> Workflow:
+    """Read this run's workflow: `root` when given, otherwise the first one found."""
+    return Workflow.load(root if root is not None else workflow_root(project_root=project_root))
+
+
+def install(destination=None) -> Path:
+    """把程序里带的那份默认抄到你的配置目录，从那儿开始改；已经有了就不动它。"""
+    target = Path(destination).expanduser() if destination else config_home() / "workflow"
+    if _looks_like_workflow(target):
+        return target
+    if target.exists() and any(target.iterdir()):
+        raise FileExistsError(f"{target} 里有别的东西，不覆盖")
+    shutil.copytree(SHIPPED_WORKFLOW, target, dirs_exist_ok=True)
+    return target
+
+
+def main(argv=None) -> int:
+    """`python -m ticket_centered.workflow`：看现在读的是哪份，或者抄一份出来改。"""
+    parser = argparse.ArgumentParser(description="流程：找、看、抄一份出来改")
+    parser.add_argument("--init", action="store_true", help="把默认那份抄到配置目录")
+    parser.add_argument("--where", default=None, metavar="DIR",
+                        help="指到哪个目录（抄到这儿 / 看这个）；不给就看现在读的是哪份")
+    parser.add_argument("--project", default=None, help="按这个项目根找（含 .agents/workflow）")
+    args = parser.parse_args(argv)
+
+    if args.init:
+        target = install(args.where)
+        print(f"这份流程在：{target}")
+        print(f"改它就行：三份 api、{TICKETS_DIR}/、{RULES_DIR}/")
+        return 0
+    root = workflow_root(explicit=args.where, project_root=args.project)
+    workflow = Workflow.load(root)
+    print(f"这一趟读的流程：{root}")
+    print(f"  工单：{'、'.join(sorted(workflow.tickets()))}")
+    print(f"  规则：{'、'.join(sorted(workflow.rules()))}")
+    print(f"  摘要：{workflow.digest()}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 
 
 # ----------------------------------------------------------------------

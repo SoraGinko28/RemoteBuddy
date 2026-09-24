@@ -12,10 +12,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from ticket_centered import WORKFLOW_DIR, Meeting, Member, load_workflow  # noqa: E402
+from ticket_centered import Meeting, Member, SHIPPED_WORKFLOW, load_workflow  # noqa: E402
+import pytest  # noqa: E402
+
 import web_v2  # noqa: E402
 
 TASK = "写一个快速排序，放到 quicksort.py"
+
+
+@pytest.fixture(autouse=True)
+def _no_user_workflow(tmp_path, monkeypatch):
+    """找流程别落到开发机自己的 ~/.remotebuddy 上：指到一个空的配置目录。"""
+    import ticket_centered.workflow as wf
+    monkeypatch.setenv(wf.HOME_ENV, str(tmp_path / "home"))
+    monkeypatch.delenv(wf.WORKFLOW_ENV, raising=False)
 
 
 class FakeStore:
@@ -33,7 +43,7 @@ class FakeStore:
 def test_the_board_says_what_is_due_and_who_answers_it(tmp_path):
     run_dir = tmp_path / "runs" / "ticket-test"
     root = run_dir / web_v2.TICKET_ROOT
-    workflow = load_workflow(WORKFLOW_DIR)
+    workflow = load_workflow(SHIPPED_WORKFLOW)
     meeting = Meeting(root, workflow)
     for name in web_v2.TICKET_MEMBERS:
         meeting.join(Member(name, name, {}))

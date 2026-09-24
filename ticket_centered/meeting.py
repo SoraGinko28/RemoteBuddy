@@ -45,7 +45,6 @@ class Meeting:
         self.tickets_dir = self.root / "tickets"
         self.tickets_dir.mkdir(parents=True, exist_ok=True)
         self.members: Dict[str, Member] = {}
-        self._opened = False
 
     # ------------------------------------------------------------------
     # Who is at the meeting
@@ -104,11 +103,11 @@ class Meeting:
 
         返回"发给谁 → 它那一包在哪"——成员进程就是拿这个路径跑的。
         """
-        if not self._opened:
-            # 内容寻址：这一场会跑的是哪份流程、哪一版这一侧的代码，都记在记录的第一行。
+        if not any("这份流程：" in line for line in self.store.records()):
+            # 内容寻址：这一场会跑的是哪份流程、哪一版这一侧的代码，都记在记录的第一行
+            # （一场会只记一次：发单的那一侧每张工单都会新建一个 Meeting）。
             self.store.record(f"- 这份流程：{self.workflow.digest()}"
                               f"（这一侧的代码：{capability_digest()}）")
-            self._opened = True
         template = self.tickets_dir / ticket / TEMPLATE
         self._bundle(template, ticket, case)
         bundles: Dict[str, Path] = {}

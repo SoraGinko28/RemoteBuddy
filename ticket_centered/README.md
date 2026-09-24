@@ -14,6 +14,26 @@
 
 自进化（改 `workflow/` 那一侧）：看 [`self_evolution.md`](self_evolution.md) —— 位置、怎么验、你会踩的坑。
 
+## 流程在你的配置目录里（不是程序里）
+
+像 Claude Code 的 skills 之于它的二进制：这份程序只负责**按次序找一个目录**，找到谁读谁——
+
+```
+1. --workflow <dir>（或调用时给的 root）
+2. $REMOTEBUDDY_WORKFLOW
+3. <项目>/.agents/workflow/          ← 这个项目自己的
+4. $REMOTEBUDDY_HOME/workflow/       ← 你的配置目录（默认 ~/.remotebuddy/workflow/）
+5. 程序里带的那份默认（仓库根上的 workflow/）
+```
+
+```bash
+python -m ticket_centered.workflow --init     # 把默认那份抄到你的配置目录，从那儿改
+python -m ticket_centered.workflow --where    # 看这一趟读的是哪份、摘要是什么
+```
+
+自进化改的是第 4（或第 3）个；**程序不用给他，也不用动**。工单板和会议记录里都写着这一场读的是
+哪份流程、摘要是什么。
+
 ## 五类文件（`workflow/`）
 
 | 文件 | 是什么 |

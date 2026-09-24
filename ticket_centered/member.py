@@ -27,7 +27,7 @@ from viba.type import UnderlyingVibaOpFailed, VibaProgramErr
 
 from .host import Member
 from .store import Store
-from .workflow import WORKFLOW_DIR, Workflow, load_workflow
+from .workflow import Workflow, load_workflow, workflow_root
 
 PROGRAM_DIR = "program"
 STORE_DIR = "store"
@@ -99,7 +99,8 @@ def bundle_main(role: str,
     parser.add_argument("--meeting", required=True, help="会议目录（store/ 和 tickets/ 在那儿）")
     parser.add_argument("--bundle", default=None, help="发给我的那一包（不给就是不走工单的那一步）")
     parser.add_argument("--case", required=True, help="这一包跑在哪个案子下")
-    parser.add_argument("--workflow", default=str(WORKFLOW_DIR), help="这份流程在哪")
+    parser.add_argument("--workflow", default=None,
+                        help="这份流程在哪（不给就按 项目 → $REMOTEBUDDY_HOME/workflow → 程序默认 找）")
     if extra is not None:
         extra(parser)
     args = parser.parse_args(argv)
