@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -77,6 +78,7 @@ from model_api_client import (
     _validate_base_url,
 )
 from tmux_transport import TmuxError, TmuxTransport, libtmux_version
+from ticket_centered import Meeting, Member, Store as TicketStore, WORKFLOW_DIR, load_workflow
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -87,6 +89,10 @@ DEFAULT_PORT = 8765
 CSRF_HEADER = "X-RemoteBuddy-CSRF"
 MAX_REQUEST_BYTES = MAX_MESSAGE_BYTES + 32 * 1024
 TERMINAL_STATUSES = {"completed", "failed", "interrupted"}
+# 工单那一侧（ticket_centered）：数据放在这场会的目录下面，每个成员各是一个进程。
+TICKET_ROOT = "ticket_centered"
+TICKET_MEMBERS = ("actor", "assistant", "critic")
+TICKET_TIMEOUT_S = 900.0
 # Phases from which the human can resume or wake the Agent. The frontend
 # mirrors this set for its resume-button predicate.
 RESUMABLE_PHASES = {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"}
@@ -226,6 +232,120 @@ def _public_manifest(store: MeetingStore) -> Dict[str, Any]:
     return payload
 
 
+def _ticket_root(store: MeetingStore) -> Path:
+    """这场会的工单那一侧放在哪儿：会议目录下面。"""
+    return Path(store.run_dir) / TICKET_ROOT
+
+
+def _ticket_record(root: Path) -> List[str]:
+    """工单那张会议记录（没有就是空的）。"""
+    try:
+        return (Path(root) / "meeting_record.md").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
+def _ticket_case(meeting: Meeting) -> str:
+    """工单跑在哪个案子下：材料都在案子自己的数据路径下，看 store 里的头两段。"""
+    cases: List[str] = []
+    for data_path, _name in meeting.store.materials():
+        parts = data_path.split("/")
+        if len(parts) >= 2 and parts[0] == "case":
+            case = "/".join(parts[:2])
+            if case not in cases:
+                cases.append(case)
+    return cases[0] if cases else ""
+
+
+def _ticket_issued(meeting: Meeting) -> List[str]:
+    """发过的工单，按发的先后（就是会议记录里那几行的先后）。"""
+    out: List[str] = []
+    for line in _ticket_record(meeting.root):
+        match = re.match(r"- 工单 (\S+)（", line)
+        if match and match.group(1) not in out:
+            out.append(match.group(1))
+    return out
+
+
+def _ticket_step(meeting: Meeting, case: str, path: str, op: str) -> Dict[str, Any]:
+    """一步：哪条数据路径、哪个算子、答了没有、归哪个角色答、答的是什么（叶子是标量时）。"""
+    absolute = meeting.absolute(case, path)
+    # `read` 交回的是材料本身：叶子就是那个标量。扳手那种长材料（一版代码）不往页面上搬，
+    # 只有判语、收尾这类短的话才带上——这一块是给页面看的。
+    value, answered = meeting.store.read(absolute, op)
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        leaf = value
+    elif isinstance(value, str) and 0 < len(value) <= 200:
+        leaf = value
+    else:
+        leaf = None
+    return {"path": absolute, "op": op, "answered": answered,
+            "role": meeting.workflow.role_of_op(op),
+            "value": leaf}
+
+
+def _ticket_target(store: MeetingStore) -> str:
+    """agent 要交的那个文件：人类第一句话里点名的文件名（页面上没有别的来源）。"""
+    for event in store.events():
+        if event.get("kind") == "chat" and event.get("actor") == "human":
+            for token in re.findall(r"[\w./-]+\.[A-Za-z0-9]+", str(event.get("content", ""))):
+                if not token.startswith("http"):
+                    return token
+            break
+    return ""
+
+
+def _ticket_board(store: MeetingStore) -> Dict[str, Any]:
+    """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。
+
+    页面那一块"工单"就是它：`GET /api/meetings/<id>/tickets`。
+    """
+    root = _ticket_root(store)
+    workflow = load_workflow(WORKFLOW_DIR)
+    meeting = Meeting(root, workflow)
+    case = _ticket_case(meeting)
+    issued = _ticket_issued(meeting)
+    order = issued + [name for name in sorted(workflow.tickets()) if name not in issued]
+    tickets: List[Dict[str, Any]] = []
+    for ticket in order:
+        due, why = meeting.due(ticket, case) if case else (False, "还没有案子：人类得先说话")
+        directory = root / "tickets" / ticket
+        bundles = sorted(path.name for path in directory.iterdir() if path.is_dir()) \
+            if directory.is_dir() else []
+        tickets.append({
+            "ticket": ticket,
+            "issued": bool(bundles),
+            "due": bool(due),
+            "why": why,
+            "reads": [_ticket_step(meeting, case, path, op)
+                      for path, op in workflow.addresses_in(ticket)],
+            "answers": [_ticket_step(meeting, case, path, op)
+                        for path, op in workflow.answers_of(ticket)],
+            "bundles": bundles,
+        })
+    return {
+        "root": f"runs/{store.meeting.meeting_id}/{TICKET_ROOT}",
+        "ran": (root / "store").is_dir() or (root / "meeting_record.md").is_file(),
+        "digest": workflow.digest(),
+        "rules": sorted(workflow.rules()),
+        "case": case,
+        "target": _ticket_target(store),
+        "tickets": tickets,
+        "record": _ticket_record(root),
+    }
+
+
+def _ticket_command(role: str, root: Path, case: str, bundle: Path, url: str, meeting_id: str,
+                    workspace: Path, target: str) -> List[str]:
+    """一个成员进程的命令行：发给它的那一包在哪儿，跑在哪个案子下。"""
+    command = [sys.executable, "-m", f"ticket_centered.{role}",
+               "--meeting", str(root), "--case", case, "--bundle", str(bundle)]
+    if role == "actor":
+        command += ["--meeting-url", url, "--meeting-id", meeting_id,
+                    "--workspace", str(workspace), "--target", target]
+    return command
+
+
 def _apply_meeting_effort(config: ModelApiConfig, store: MeetingStore) -> ModelApiConfig:
     if store.meeting.reasoning_effort:
         return replace(config, reasoning_effort=store.meeting.reasoning_effort)
@@ -256,6 +376,11 @@ class MeetingWebService:
         self.default_backend = default_backend
         self.default_provider = default_provider
         self.csrf_token = secrets.token_urlsafe(32)
+        # The page issues tickets through the service; the member processes need
+        # the service's own address to talk to the meeting, so it is kept here
+        # (build_server fills in the real port).
+        self.public_url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+        self.ticket_jobs: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
         self.reviewer_jobs: Dict[str, Dict[str, threading.Thread]] = {}
@@ -888,6 +1013,80 @@ class MeetingWebService:
             "revision": _event_revision(store),
             "cursor": int(events[-1]["seq"]) if events else 0,
         }
+
+    # ------------------------------------------------------------------
+    # 工单那一侧（ticket_centered）
+    # ------------------------------------------------------------------
+
+    def tickets(self, meeting_id: str) -> Dict[str, Any]:
+        """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。"""
+        store = self.load_store(meeting_id)
+        board = _ticket_board(store)
+        with self.lock:
+            job = self.ticket_jobs.get(meeting_id)
+        board["running"] = job["ticket"] if job and job["thread"].is_alive() else None
+        return {"meeting": _public_manifest(store), "tickets": board}
+
+    def issue_ticket(self, meeting_id: str, ticket: str) -> Dict[str, Any]:
+        """发一张工单：`Meeting.publish` 发给会上的每个成员，然后每个成员起一个进程跑。
+
+        页面按一下按钮就是这一下。跑在后台，页面照旧轮询工单板：答下的材料成员自己抄回会议。
+        """
+        store = self.load_store(meeting_id)
+        board = _ticket_board(store)
+        if ticket not in [one["ticket"] for one in board["tickets"]]:
+            raise WebError(404, f"这份流程里没有工单 {ticket}")
+        if not board["case"]:
+            raise WebError(409, "这场会还没有案子：人类得先说话")
+        if not board["target"]:
+            raise WebError(409, "人类那句话里没点名要交哪个文件，actor 不知道该读回哪个")
+        with self.lock:
+            job = self.ticket_jobs.get(meeting_id)
+            if job and job["thread"].is_alive():
+                raise WebError(409, f"{job['ticket']} 还在跑，等它跑完")
+            thread = threading.Thread(target=self._run_ticket,
+                                      args=(meeting_id, board["case"], ticket, board["target"]),
+                                      daemon=True)
+            self.ticket_jobs[meeting_id] = {"ticket": ticket, "thread": thread}
+        thread.start()
+        return {"meeting": _public_manifest(store), "tickets": board, "issued": ticket}
+
+    def _run_ticket(self, meeting_id: str, case: str, ticket: str, target: str) -> None:
+        """把包发给每个成员，再给每个成员起一个进程；谁答了什么，看工单板。"""
+        try:
+            store = self.load_store(meeting_id)
+            root = _ticket_root(store)
+            meeting = Meeting(root, load_workflow(WORKFLOW_DIR))
+            for name in TICKET_MEMBERS:
+                meeting.join(Member(name, name, {}))
+            bundles = meeting.publish(ticket, case)
+            store.append_event("state", "assistant", "ticket_issued",
+                               data={"ticket": ticket, "case": case,
+                                     "bundles": sorted(bundles)})
+            environment = dict(os.environ, PYTHONPATH=str(PROJECT_ROOT))
+            for name, bundle in sorted(bundles.items()):
+                command = _ticket_command(name, root, case, bundle, self.public_url,
+                                          meeting_id, store.workspace_path, target)
+                process = subprocess.Popen(command, cwd=str(PROJECT_ROOT), env=environment,
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           text=True)
+                try:
+                    output, _ = process.communicate(timeout=TICKET_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    output = "（超时，已停）"
+                store.append_event("state", name, "ticket_ran",
+                                   data={"ticket": ticket, "output": output.strip()[-400:]})
+        except Exception as exc:                    # noqa: BLE001 - 后台线程：写进 journal 才算有人知道
+            try:
+                self.load_store(meeting_id).append_event(
+                    "state", "assistant", "ticket_failed",
+                    data={"ticket": ticket, "error": f"{type(exc).__name__}: {exc}"})
+            except Exception:                       # noqa: BLE001 - 连写都写不进去就只剩退出
+                pass
+        finally:
+            with self.lock:
+                self.ticket_jobs.pop(meeting_id, None)
 
     def _validated_reference(
         self,
@@ -2337,6 +2536,10 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 etag = '"' + sha256_text(payload["revision"] + str(after))[:24] + '"'
                 self._json(payload, etag=etag)
                 return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/tickets", path)
+            if match:
+                self._json(self.service.tickets(unquote(match.group(1))))
+                return
             match = re.fullmatch(r"/api/meetings/([^/]+)/terminal/stream", path)
             if match:
                 query = parse_qs(parsed.query, keep_blank_values=False)
@@ -2410,6 +2613,12 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 store = self.service.terminal_input(unquote(match.group(1)), self._read_json())
                 self._json({"meeting": _public_manifest(store)})
                 return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/tickets/([^/]+)", path)
+            if match:
+                self._read_json()
+                self._json(self.service.issue_ticket(unquote(match.group(1)),
+                                                     unquote(match.group(2))))
+                return
             match = re.fullmatch(r"/api/meetings/([^/]+)/(control/acquire|control/release|agent/resume|complete|stop|cleanup)", path)
             if match:
                 self._read_empty_json()
@@ -2441,7 +2650,10 @@ def build_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, service: Op
         raise ValueError("RemoteBuddy web server only listens on loopback")
     if not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
-    return RemoteBuddyHTTPServer((host, port), service or MeetingWebService())
+    server = RemoteBuddyHTTPServer((host, port), service or MeetingWebService())
+    # The member processes talk to the meeting over this service's own HTTP face.
+    server.service.public_url = f"http://{host}:{server.server_address[1]}"
+    return server
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

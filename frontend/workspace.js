@@ -25,6 +25,8 @@ const el = Object.fromEntries([
   "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
+  "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
+  "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
 const state = {
@@ -34,6 +36,8 @@ const state = {
   meetings: [],
   selectedId: null,
   snapshot: null,
+  tickets: null,
+  ticketsEtag: "",
   timeline: [],
   cursor: 0,
   playbackIndex: -1,
@@ -1990,9 +1994,108 @@ function renderAll() {
   el.session_view.hidden = false;
   renderHeader();
   renderViewportMode();
+  renderTickets();
   renderChat();
   renderTerminal();
   renderPlayback();
+}
+
+function renderTickets() {
+  const board = state.tickets;
+  // 只有跑过流程的会才有这一块：别的会议（产品原来那些）不显示。
+  const show = Boolean(board && board.ran);
+  el.ticket_toggle.hidden = !show;
+  el.ticket_panel.hidden = !show;
+  if (!show) {
+    el.session_view.classList.remove("tickets-open");
+    return;
+  }
+  const tickets = board.tickets || [];
+  const due = tickets.find((one) => one.due);
+  const running = board.running;
+  const verdicts = tickets.flatMap((one) => one.answers || [])
+    .filter((step) => step.op === "judge" && typeof step.value === "boolean");
+  const last = verdicts.length ? verdicts[verdicts.length - 1].value : null;
+  el.ticket_toggle.textContent = [
+    `工单 ${tickets.filter((one) => one.issued).length}/${tickets.length}`,
+    last === null ? "" : (last ? "合格" : "不合格"),
+    running ? "跑着" : due ? "该发" : "",
+  ].filter(Boolean).join(" · ");
+  el.ticket_digest.textContent = String(board.digest || "").slice(0, 8);
+  el.ticket_issue_button.hidden = !due || Boolean(running);
+  if (due) {
+    el.ticket_issue_button.textContent = `发 ${due.ticket}`;
+    el.ticket_issue_button.dataset.ticket = due.ticket;
+  }
+  const done = tickets.filter((one) => one.issued).length;
+  el.ticket_hint.textContent = [
+    `${done}/${tickets.length} 张发过了`,
+    board.case ? `案子 ${lastSegment(board.case)}` : "还没有案子",
+    board.target ? `要交 ${board.target}` : "",
+    running ? `${running} 正在跑` : "",
+  ].filter(Boolean).join("｜");
+  el.ticket_outcome.textContent = outcomeText(tickets);
+  el.ticket_list.replaceChildren(...tickets.map(ticketRow));
+  el.ticket_record.textContent = (board.record || []).join("\n");
+}
+
+function outcomeText(tickets) {
+  const answers = tickets.flatMap((one) => one.answers || []);
+  const verdicts = answers.filter((step) => step.op === "judge" && typeof step.value === "boolean");
+  const objection = answers.find((step) => step.op === "objection" && step.value);
+  const closing = answers.find((step) => step.op === "closing_note" && step.value);
+  const parts = [];
+  if (verdicts.length) {
+    parts.push(verdicts.map((step, index) => `第 ${index + 1} 判 ${step.value ? "合格" : "不合格"}`).join("、"));
+  }
+  if (objection) parts.push(`判语：${objection.value}`);
+  if (closing) parts.push(`收尾：${closing.value}`);
+  return parts.join("｜");
+}
+
+function ticketRow(one) {
+  const row = node("div", `ticket-row${one.due ? " due" : ""}`);
+  row.append(node("span", "ticket-name", one.ticket));
+  row.append(node("span", `ticket-chip ${one.due ? "state-due" : one.issued ? "state-issued" : ""}`,
+    one.due ? "该发" : one.issued ? "发过了" : "还没轮到"));
+  const answers = one.answers || [];
+  const answered = answers.filter((step) => step.answered);
+  const roles = [...new Set(answered.map((step) => step.role).filter(Boolean))];
+  row.append(node("span", "ticket-meta",
+    `${roles.join("、") || "—"} 答了 ${answered.length}/${answers.length} 步`));
+  const verdict = answers.find((step) => step.op === "judge" && typeof step.value === "boolean");
+  const note = answers.find((step) => step.op === "closing_note" && step.value);
+  if (verdict) row.append(node("span", `ticket-chip ${verdict.value ? "state-issued" : "state-bad"}`,
+    verdict.value ? "合格" : "不合格"));
+  if (note) row.append(node("span", "ticket-meta", note.value));
+  // 水表（每条数据路径、谁答的）藏在悬停里：页面上看的是流程和结果，不是路径。
+  row.title = [
+    one.why,
+    ...answers.map((step) => `${step.answered ? "答" : "缺"} ${step.path} + ${step.op}`
+      + (step.role ? `（${step.role}）` : "")),
+  ].join("\n");
+  return row;
+}
+
+function lastSegment(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  return parts[parts.length - 1] || String(path || "");
+}
+
+function lastSegments(path, count) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  return parts.slice(-count).join("/") || String(path || "");
+}
+
+async function postTicket(ticket) {
+  if (!state.selectedId || !ticket) return;
+  try {
+    await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/tickets/${encodeURIComponent(ticket)}`,
+      { method: "POST", body: JSON.stringify({}) });
+    await refreshSelected();
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 function referenceKey(reference) {
@@ -2671,9 +2774,12 @@ async function refreshSelected() {
   if (!meetingId) return;
   const cursor = state.cursor;
   const eventsEtag = cursor === state.eventsEtagCursor ? state.eventsEtag : "";
-  const [snapshotResult, eventsResult] = await Promise.all([
+  const [snapshotResult, eventsResult, ticketsResult] = await Promise.all([
     apiConditional(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`, state.snapshotEtag),
     apiConditional(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=${cursor}`, eventsEtag),
+    // 工单那一侧（这场会跑了流程才有）
+    apiConditional(`/api/meetings/${encodeURIComponent(meetingId)}/tickets`, state.ticketsEtag)
+      .catch(() => null),
   ]);
   if (meetingId !== state.selectedId) return;
   let changed = false;
@@ -2681,6 +2787,11 @@ async function refreshSelected() {
   if (!snapshotResult.notModified) {
     state.snapshot = snapshotResult.payload;
     state.snapshotEtag = snapshotResult.etag;
+    changed = true;
+  }
+  if (ticketsResult && !ticketsResult.notModified) {
+    state.tickets = ticketsResult.payload.tickets || null;
+    state.ticketsEtag = ticketsResult.etag;
     changed = true;
   }
   if (!eventsResult.notModified) {
@@ -2882,6 +2993,10 @@ function bind() {
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
   el.cleanup_button.addEventListener("click", () => postMeetingAction("cleanup").catch((error) => toast(error.message)));
+  el.ticket_issue_button.addEventListener("click", () => postTicket(el.ticket_issue_button.dataset.ticket));
+  el.ticket_toggle.addEventListener("click", () => {
+    el.session_view.classList.toggle("tickets-open");
+  });
   document.querySelectorAll("[data-chat-filter]").forEach((button) => button.addEventListener("click", () => {
     state.chatFilter = button.dataset.chatFilter;
     document.querySelectorAll("[data-chat-filter]").forEach((item) => item.classList.toggle("active", item === button));

@@ -1,0 +1,11 @@
+# design/tickets/close_the_meeting.viba
+#
+# assistant 看情况发起这一张——最后那版改完了、也判过了的时候。收尾读的是第二版的判语：
+# 这一趟的五张工单是一条定死的流程（判完第一版照判语改一版，收尾判的是改完的那一版）。
+
+import assistant_api as assistant
+
+__ret__ = assistant.closing_note
+  << $env (environ.sub_env << "closing")
+  << $code ($module_path "revised" * $func_name "revise_code")
+  << $verdict ($module_path "judged_revision" * $func_name "judge")

@@ -187,8 +187,10 @@ def main(argv: list[str] | None = None) -> int:
             def agent_working() -> dict:
                 events = live.events()["events"]
                 kinds = {e.get("kind") for e in events}
+                # 会议里的 actor 就叫 "actor"（`meeting_v2.DEFAULT_AGENT_ROLE_MAP`），
+                # 不是 "agent"；这一条原来等的是 "agent"，所以真跑也等不到。
                 agent_chat = any(
-                    e.get("kind") == "chat" and e.get("actor") == "agent"
+                    e.get("kind") == "chat" and e.get("actor") == "actor"
                     for e in events
                 )
                 if agent_chat and {"screen", "action"} <= kinds:

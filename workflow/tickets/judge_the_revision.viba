@@ -1,0 +1,9 @@
+# design/tickets/judge_the_revision.viba
+#
+# assistant 看情况发起这一张——改的那一版交上来了、还没判过的时候。
+
+import critic_api as critic
+
+__ret__ = critic.judge
+  << $env (environ.sub_env << "judged_revision")
+  << $code ($module_path "revised" * $func_name "revise_code")

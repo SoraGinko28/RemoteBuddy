@@ -6,7 +6,7 @@
 材料）。示例工单：
 
 ```viba
-# design/tickets/write_a_draft.viba
+# workflow/tickets/write_a_draft.viba
 import actor_api as actor
 
 greeted = actor.acknowledge          # 回一句"知道了"
@@ -49,13 +49,13 @@ __ret__ = actor.report_done          # 回一句"做好了"
 
 ## 本设计由这五类文件组成
 
-1. `design/actor_api.viba` —— actor 会做的事
-2. `design/assistant_api.viba` —— assistant 会做的事
-3. `design/critic_api.viba` —— critic 会做的事
-4. `design/tickets/*.viba` —— 工单程序：一场会很多张（这一趟五张：`write_a_draft`、
+1. `workflow/actor_api.viba` —— actor 会做的事
+2. `workflow/assistant_api.viba` —— assistant 会做的事
+3. `workflow/critic_api.viba` —— critic 会做的事
+4. `workflow/tickets/*.viba` —— 工单程序：一场会很多张（这一趟五张：`write_a_draft`、
    `judge_the_draft`、`revise_the_draft`、`judge_the_revision`、`close_the_meeting`），都是开会前
    设计好的；assistant 看情况发起哪一张
-5. `design/rules/*.viba` —— 规则：critic 跑的程序
+5. `workflow/rules/*.viba` —— 规则：critic 跑的程序
 
 三个角色各自的事只在各自的 api 里定义一次；**一张工单至少 import 它要调的那些角色的 api**
 （`import actor_api as actor` 这样），每一步只写调用，一个问题都不重复定义。一张工单可以同时调几个

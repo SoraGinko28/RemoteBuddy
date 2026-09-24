@@ -365,3 +365,27 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
 /* Per-member status chips in the session header (multi-agent). */
 .agent-states { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; justify-content: flex-end; }
 .header-actions { flex-wrap: wrap; }
+
+
+.ticket-details { position: absolute; top: 56px; right: 12px; left: auto; width: min(720px, calc(100vw - 24px)); z-index: 41; display: none; padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 16px 40px rgb(0 0 0 / .55); }
+.session-view.tickets-open .ticket-details { display: block; }
+.ticket-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.ticket-head h2 { margin: 0; font-size: 14px; }
+.ticket-head .pane-kicker { margin: 0; }
+.ticket-head #ticket-issue-button { margin-left: auto; }
+.ticket-chip { padding: 2px 6px; border-radius: 3px; background: var(--surface-2); color: var(--muted); font: 10px/1.4 ui-monospace, monospace; }
+.ticket-line { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
+.ticket-outcome { margin: 5px 0 0; color: var(--ink); font-size: 12px; line-height: 1.5; }
+.ticket-details > summary, .ticket-record-shell > summary { color: var(--muted); font-size: 11px; cursor: pointer; }
+.ticket-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.ticket-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); }
+.ticket-row.due { border-color: var(--accent); }
+.ticket-row-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ticket-chip.state-bad { color: var(--red); }
+.ticket-name { color: var(--ink); font-size: 12px; font-weight: 700; }
+.ticket-chip.state-due { color: var(--accent); }
+.ticket-chip.state-issued { color: var(--green); }
+.ticket-meta { color: var(--muted); font-size: 11px; }
+.ticket-steps { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font: 10px/1.5 ui-monospace, monospace; }
+.ticket-step.answered { color: var(--green); }
+.ticket-record { max-height: 150px; overflow: auto; margin: 6px 0 0; color: var(--muted); white-space: pre-wrap; font: 10px/1.5 ui-monospace, monospace; }
