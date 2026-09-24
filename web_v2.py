@@ -72,6 +72,11 @@ from model_api_client import (
     _validate_base_url,
 )
 from tmux_transport import TmuxError, TmuxTransport, libtmux_version
+import meeting_loader
+import meeting_local_sdk
+import meeting_sdk_json
+import meeting_sdk_viba
+from viba.type import VibaProgramErr as _SdkErr
 from ticket_centered import Meeting, Member, Store as TicketStore, WORKFLOW_DIR, load_workflow
 
 
@@ -394,6 +399,38 @@ class MeetingWebService:
         self._backend_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._claude_check_cache: Optional[Tuple[float, str, bool, str]] = None
         self._trae_check_cache: Optional[Tuple[float, str, bool, str]] = None
+
+    def sdk_meeting_data(self, meeting_id: str) -> Any:
+        """The record this server holds for that meeting.
+
+        One place to change when a test wants to hand out a record that never
+        went through a journal.
+        """
+        store = self.load_store(meeting_id)
+        data, _summary = meeting_loader.load_meeting_data_from_run(store.run_dir)
+        return data
+
+    def sdk_call(self, meeting_id: str, api: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """One meeting-sdk api, run here over the record this server holds.
+
+        The answer is a viba script (``entry = ...``) whatever happened: an api
+        that failed answers its own $err branch, so the script is always a
+        resident of that api's return type.
+        """
+        if api not in meeting_local_sdk.__all__:
+            raise WebError(404, f"no such meeting sdk api: {api}")
+        if api not in meeting_sdk_viba.return_types():
+            raise WebError(400, f"{api} builds a value; it is not served over the wire")
+        script = meeting_sdk_viba.script_for(api, self._sdk_result(meeting_id, api, args))
+        if isinstance(script, _SdkErr):
+            raise WebError(500, script.err_msg)
+        return {"script": script.ok_value}
+
+    def _sdk_result(self, meeting_id: str, api: str, args: Dict[str, Any]):
+        """The api's own Result, evaluated over the record this server holds."""
+        function = getattr(meeting_local_sdk, api)
+        return function(self.sdk_meeting_data(meeting_id),
+                        **meeting_sdk_json.decode(args or {}))
 
     def _meeting_lock(self, meeting_id: str) -> threading.RLock:
         with self.lock:
@@ -2299,6 +2336,12 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/credentials":
                 self._json(self.service.update_credentials(self._read_json()))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/sdk/([A-Za-z_][A-Za-z0-9_]*)", path)
+            if match:
+                payload = self._read_json() or {}
+                self._json(self.service.sdk_call(unquote(match.group(1)), match.group(2),
+                                                 payload.get("args") or {}))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/scores", path)
             if match:
