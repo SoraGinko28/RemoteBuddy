@@ -35,6 +35,7 @@ const state = {
   healthy: false,
   meetings: [],
   workspaces: [],
+  workspaceDefaulted: false,
   selectedId: null,
   snapshot: null,
   tickets: null,
@@ -290,6 +291,14 @@ function node(tag, className, text) {
   return value;
 }
 
+// The status travels with the error: callers that poll need to tell "this
+// meeting is gone" (404) from a transient failure.
+function httpError(response, payload) {
+  const error = new Error(payload.error || `请求失败 (${response.status})`);
+  error.status = response.status;
+  return error;
+}
+
 async function api(path, options = {}, retryCsrf = true) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers || {});
@@ -316,7 +325,7 @@ async function api(path, options = {}, retryCsrf = true) {
       }
     }
   }
-  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  if (!response.ok) throw httpError(response, payload);
   return payload;
 }
 
@@ -328,7 +337,7 @@ async function apiConditional(path, etag) {
   const text = await response.text();
   let payload = {};
   try { payload = text ? JSON.parse(text) : {}; } catch (_error) { payload = { error: text }; }
-  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  if (!response.ok) throw httpError(response, payload);
   return { notModified: false, etag: response.headers.get("ETag") || "", payload };
 }
 
@@ -565,7 +574,16 @@ function renderWorkspaceOptions() {
     option.textContent = `${basename(workspace)}（${workspace}）`;
     el.workspace_select.append(option);
   }
-  if (chosen && state.workspaces.includes(chosen)) el.workspace_select.value = chosen;
+  if (chosen && state.workspaces.includes(chosen)) {
+    el.workspace_select.value = chosen;
+  } else if (!state.workspaceDefaulted) {
+    // Default to wherever the human was last working, never to an arbitrary
+    // project: with no meetings yet the choice stays "no workspace" until they
+    // make it in the dialog.
+    const recent = state.meetings[0] && state.meetings[0].workspace_root;
+    if (recent && state.workspaces.includes(recent)) el.workspace_select.value = recent;
+  }
+  state.workspaceDefaulted = true;
 }
 
 // A live DOM selection must never be clobbered by a periodic redraw: the
@@ -2927,7 +2945,18 @@ function schedulePoll() {
       if (active && Date.now() - (state.meetingsRefreshedAt || 0) >= 10000) {
         await loadMeetings();
       }
-    } catch (error) { toast(error.message); }
+    } catch (error) {
+      if (error.status === 404) {
+        // The open meeting was deleted on disk: stop polling it instead of
+        // toasting the same failure once a second, and let the sidebar stand.
+        state.selectedId = null;
+        state.snapshot = null;
+        state.tickets = null;
+        renderAll();
+        return;
+      }
+      toast(error.message);
+    }
     schedulePoll();
   }, active ? 500 : 1000);
 }
@@ -3328,16 +3357,6 @@ function stopPlayback() {
   el.play_button.textContent = "▶";
 }
 
-// Nothing to reopen yet: rather than parking the human on the welcome card,
-// open a meeting with no first message. It owns a fresh workspace directory
-// (the temporary directory that acts as the meeting) and the agent starts as
-// soon as they say something.
-async function openScratchMeeting() {
-  const created = await api("/api/meetings", { method: "POST", body: JSON.stringify({}) });
-  await loadMeetings();
-  await selectMeeting(created.meeting_id);
-}
-
 async function boot() {
   bind();
   try {
@@ -3350,9 +3369,11 @@ async function boot() {
     loadHealth().catch((error) => toast(error.message));
     await Promise.all([loadMeetings(), loadSettings()]);
     // The list is ordered by last activity, so its first entry is the meeting
-    // the human was most recently in. A reload always lands there.
+    // the human was most recently in. A reload always lands there; with nothing
+    // to reopen the welcome card stands, and the human picks a workspace when
+    // they open a session (no more phantom meeting in a `runs/` pile).
     if (state.meetings.length) await selectMeeting(state.meetings[0].meeting_id);
-    else await openScratchMeeting();
+    else renderAll();
   } catch (error) {
     // Only a genuine failure (service down, meeting unreadable) leaves the
     // welcome card on screen.
