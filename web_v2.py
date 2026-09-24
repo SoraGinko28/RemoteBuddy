@@ -1092,8 +1092,31 @@ class MeetingWebService:
                 "workspace": str(self.workspace),
                 "workspaces": [str(workspace) for workspace in self._known_workspaces()]}
 
+    def _open_terminal_if_needed(self, store: MeetingStore) -> None:
+        """只开了工作区、终端还没开出来的会：被看上一眼就把终端补上。
+
+        页面上"打开工作区"本来就会开终端；这是给更早建的空会话兜底——否则页面会
+        一直停在「等待终端画面…」，等的是一帧永远不会有的画面。
+        """
+        if store.meeting.phase != "created" or store.meeting.pane_id:
+            return
+        if store.meeting.status in TERMINAL_STATUSES:
+            return
+        meeting_id = store.meeting.meeting_id
+        with self.lock:
+            worker = self.jobs.get(meeting_id)
+            if worker and worker.is_alive():
+                return
+        try:
+            config = self._config_for_store(store)
+        except (WebError, ModelConfigError, OSError):
+            return
+        self._ensure_worker(store, config, resume=False, fresh_conversation=False,
+                            terminal_only=True)
+
     def snapshot(self, meeting_id: str) -> Dict[str, Any]:
         store = self.load_store(meeting_id)
+        self._open_terminal_if_needed(store)
         if store.meeting.control_owner == "human":
             self._ensure_capture_worker(store)
             self._sync_human_pipe(store)

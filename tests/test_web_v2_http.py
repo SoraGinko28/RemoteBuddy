@@ -752,6 +752,24 @@ class MeetingWebServiceTest(unittest.TestCase):
         chats = [e for e in loaded.chat_messages() if e["actor"] == "human"]
         self.assertEqual(["start here"], [e["content"] for e in chats])
 
+    def test_an_older_empty_meeting_gets_its_terminal_when_it_is_looked_at(self):
+        """更早建的空会话（那时还不开终端）看一眼就把终端补上，页面不用空等画面。"""
+        store = MeetingStore.create(
+            self.root, "old-empty", " ", self.skill, "remotebuddy-old-empty", "test-model",
+            workspace=self.root,
+        )
+        self.assertEqual("created", store.meeting.phase)
+        self.assertIsNone(store.meeting.pane_id)
+
+        snapshot = self.service.snapshot("old-empty")
+        self.assertEqual("old-empty", snapshot["meeting"]["meeting_id"])
+        self.wait_for_workers()
+
+        reloaded = MeetingStore.load_in_workspace(self.root, "old-empty")
+        self.assertTrue(reloaded.meeting.pane_id)
+        self.assertEqual("waiting_for_user", reloaded.meeting.phase)
+        self.assertTrue([e for e in reloaded.events() if e["kind"] == "screen"])
+
     def test_validation_and_missing_model_configuration(self):
         with self.assertRaises(WebError):
             self.service.start({"brief": "legacy input"})
