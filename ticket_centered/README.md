@@ -12,7 +12,7 @@
 跑在一场**真实的会**上（真 agent、真 tmux、真 HTTP、真规则）：
 `.venv/bin/python e2e_ticket_meeting.py`
 
-改流程的人（自进化）先看 [`self_evolution.md`](self_evolution.md)：能改哪一层、改完怎么验、真踩过的坑。
+自进化（改 `workflow/` 那一侧）：看 [`self_evolution.md`](self_evolution.md) —— 位置、怎么验、你会踩的坑。
 
 ## 五类文件（`workflow/`）
 
