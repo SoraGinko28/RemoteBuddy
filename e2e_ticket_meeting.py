@@ -152,25 +152,29 @@ def issue(service: MeetingService, ticket: str) -> dict:
 
 
 def wait_for_ticket(service: MeetingService, ticket: str, timeout: float) -> dict:
-    """等这一张答完（页面也是这么轮询的）：该答的那几步都有答案了，或者服务说它不在跑了。"""
+    """等这一张跑完（页面也是这么轮询的）：这一步该答的都有了答案，而且服务说它不在跑了。"""
     deadline = time.monotonic() + timeout
+    payload = board(service)
     while time.monotonic() < deadline:
         payload = board(service)
         one = next((item for item in payload["tickets"] if item["ticket"] == ticket), None)
-        if one and one["answers"] and all(step["answered"] for step in one["answers"]):
+        if one and one["answers"] and all(step["answered"] for step in one["answers"]) \
+                and not payload.get("running"):
             return payload
-        if one and one["issued"] and not payload.get("running") and not any(
-                step["answered"] for step in one["answers"]):
-            time.sleep(2.0)                      # 刚发出去还没轮到成员
         time.sleep(1.0)
-    return board(service)
+    return payload
 
 
-def current_ticket(service: MeetingService) -> Optional[str]:
-    """该发哪一张由服务读 store 算出来（页面看的是同一个字段）。"""
+def current_ticket(service: MeetingService, timeout: float = 120.0) -> Optional[str]:
+    """该发哪一张由服务读 store 算出来（页面看的是同一个字段）。
+
+    还有成员在跑就等它跑完——不然会把"跑着"当成"没有该发的"。
+    """
+    deadline = time.monotonic() + timeout
     payload = board(service)
-    if payload.get("running"):
-        return None
+    while payload.get("running") and time.monotonic() < deadline:
+        time.sleep(1.0)
+        payload = board(service)
     for one in payload["tickets"]:
         if one["due"]:
             return one["ticket"]

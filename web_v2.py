@@ -338,7 +338,10 @@ def _ticket_board(store: MeetingStore) -> Dict[str, Any]:
 def _ticket_command(role: str, root: Path, case: str, bundle: Path, url: str, meeting_id: str,
                     workspace: Path, target: str) -> List[str]:
     """一个成员进程的命令行：发给它的那一包在哪儿，跑在哪个案子下。"""
-    command = [sys.executable, "-m", f"ticket_centered.{role}",
+    # `-c` 而不是 `-m`：包的 __init__ 已经把这些模块导进来了，`-m` 会在子进程里再导一次并
+    # 往 journal 里留一句 RuntimeWarning。入口是一样的。
+    command = [sys.executable, "-c",
+               f"import sys; from ticket_centered.{role} import main; sys.exit(main())",
                "--meeting", str(root), "--case", case, "--bundle", str(bundle)]
     if role == "actor":
         command += ["--meeting-url", url, "--meeting-id", meeting_id,
@@ -1358,6 +1361,14 @@ class MeetingWebService:
             and store.meeting.pending_action_id is None
         )
 
+    def _ticket_driven(self, store: MeetingStore) -> bool:
+        """这场会是不是工单那一侧在开：会议目录下面有工单的东西就是。
+
+        工单在开的时候，旧的 harness 不许插手——assistant 的 watch 不起、@mention 唤不醒 critic：
+        三个角色各听工单的，同一件事只有一个驱动者。
+        """
+        return (Path(store.run_dir) / TICKET_ROOT).is_dir()
+
     def _ensure_assistant_worker(self, store: MeetingStore) -> None:
         """Start the assistant's watch when the meeting has one.
 
@@ -1365,6 +1376,8 @@ class MeetingWebService:
         ``reviewer_harness.WATCH_INTERVAL_SECONDS``, and decides whether the
         critic should be woken. One watcher per meeting.
         """
+        if self._ticket_driven(store):
+            return
         meeting_id = store.meeting.meeting_id
         roles = store.meeting.effective_role_map
         assistant = next((name for name, role in roles.items() if role == "assistant"), None)
@@ -1391,7 +1404,8 @@ class MeetingWebService:
             except Exception:  # noqa: BLE001
                 return True
             return (store.meeting.status in TERMINAL_STATUSES
-                    or store.meeting.session_state == "stopped")
+                    or store.meeting.session_state == "stopped"
+                    or self._ticket_driven(store))
 
         try:
             reviewer_harness.watch(
@@ -1487,6 +1501,9 @@ class MeetingWebService:
                 except Exception:  # noqa: BLE001
                     pass
 
+            if self._ticket_driven(store):
+                trace("skip", "ticket_driven")
+                return
             if store.meeting.status in TERMINAL_STATUSES:
                 trace("skip", "terminal_status")
                 return
