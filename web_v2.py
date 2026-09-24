@@ -73,7 +73,7 @@ from model_api_client import (
 )
 from tmux_transport import TmuxError, TmuxTransport, libtmux_version
 import meeting_loader
-import meeting_local_sdk
+import meeting_sdk_server
 import meeting_sdk_json
 import meeting_sdk_viba
 from viba.type import VibaProgramErr as _SdkErr
@@ -417,9 +417,9 @@ class MeetingWebService:
         that failed answers its own $err branch, so the script is always a
         resident of that api's return type.
         """
-        if api not in meeting_local_sdk.__all__:
+        if api not in meeting_sdk_viba.api_names() and api not in meeting_sdk_viba.builders():
             raise WebError(404, f"no such meeting sdk api: {api}")
-        if api not in meeting_sdk_viba.return_types():
+        if api not in meeting_sdk_viba.api_names():
             raise WebError(400, f"{api} builds a value; it is not served over the wire")
         script = meeting_sdk_viba.script_for(api, self._sdk_result(meeting_id, api, args))
         if isinstance(script, _SdkErr):
@@ -428,7 +428,7 @@ class MeetingWebService:
 
     def _sdk_result(self, meeting_id: str, api: str, args: Dict[str, Any]):
         """The api's own Result, evaluated over the record this server holds."""
-        function = getattr(meeting_local_sdk, api)
+        function = getattr(meeting_sdk_server, api)
         return function(self.sdk_meeting_data(meeting_id),
                         **meeting_sdk_json.decode(args or {}))
 

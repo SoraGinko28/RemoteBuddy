@@ -1,8 +1,8 @@
-"""Test cases for meeting_local_sdk: every test_case_* only takes (ctx, sdk, reflect).
+"""Test cases for meeting_sdk_server: every test_case_* only takes (ctx, sdk, reflect).
 
 The style is practice for future metric getters:
 
-    import meeting_local_sdk
+    import meeting_sdk_server
     import meeting_core_reflect
 
     def prepare_meeting_data_as_ctx():
@@ -16,9 +16,9 @@ Three rules:
 1. **The whole file touches the record layer only in
    prepare_meeting_data_as_ctx** (meeting_adt); values like references are
    always built with the ``make_*`` constructors on ``sdk`` (they are the
-   interface in meeting_local_sdk.viba).
+   interface in meeting_sdk_server.viba).
 2. **Test cases must not know the details of meeting data** — data can only be
-   fetched with ``sdk`` (meeting_local_sdk), and whatever comes back can only be read
+   fetched with ``sdk`` (meeting_sdk_server), and whatever comes back can only be read
    through ``reflect`` (meeting_core_reflect) per the design.
 3. **Results are read through the design's interface**: Result is a type in
    meeting_core, the SDK does not expose its own Ok / VibaProgramErr; always go through
@@ -35,7 +35,7 @@ import datetime as _dt
 import pytest
 
 import meeting_core_reflect
-import meeting_local_sdk
+import meeting_sdk_server
 import meeting_adt  # only prepare_meeting_data_as_ctx uses this
 from viba.type import Ok  # noqa: E402  (Ok / VibaProgramErr in the protocol)
 from viba.viba_type_descriptor import pool_find_definition  # noqa: E402
@@ -52,29 +52,29 @@ _BOB = "bob"
 def prepare_meeting_data_as_ctx():
     """A meeting record, handed to the cases as ctx."""
     adt = meeting_adt
-    text_region = meeting_local_sdk.make_text_region
+    text_region = adt.make_text_region
 
     file_id = adt.FileId(file_id="f1")
     file_entry = adt.FileEntry(entry_name="a.py", file_id=file_id)
-    file_ref = meeting_local_sdk.make_versioned_file_reference(file_id, _T0)
+    file_ref = adt.make_versioned_file_reference(file_id, _T0)
     # one that is too early: that version of a.py only exists from _T0
-    stale_file_ref = meeting_local_sdk.make_versioned_file_reference(
+    stale_file_ref = adt.make_versioned_file_reference(
         file_id, _T0 - _dt.timedelta(seconds=1))
-    controls = [meeting_local_sdk.make_terminal_control_reference(_T0, _ALICE, text_region(0, 3)),
-                meeting_local_sdk.make_terminal_control_reference(_T2, None, text_region(0, 3))]
+    controls = [adt.make_terminal_control_reference(_T0, _ALICE, text_region(0, 3)),
+                adt.make_terminal_control_reference(_T2, None, text_region(0, 3))]
 
     # alice's first message carries all six kinds of reference; later cases
     # pull them out of the data
     first_message = adt.ChatMessage(user_name=_ALICE, time=_T1, message=[
         adt.RawMessage("hi"),
-        meeting_local_sdk.make_screen_reference(_T1, "screen", text_region(0, 2)),
-        meeting_local_sdk.make_chat_reference(_T2, _BOB, text_region(0, 2)),
-        meeting_local_sdk.make_score_reference(_T2, _BOB),
+        adt.make_screen_reference(_T1, "screen", text_region(0, 2)),
+        adt.make_chat_reference(_T2, _BOB, text_region(0, 2)),
+        adt.make_score_reference(_T2, _BOB),
         controls[0],
         controls[1],
         file_ref,
         stale_file_ref,
-        meeting_local_sdk.make_versioned_file_content_reference(file_ref, text_region(0, 5)),
+        adt.make_versioned_file_content_reference(file_ref, text_region(0, 5)),
     ])
 
     controls_chunk = adt.TerminalControlStreamChunk(chunks=[
@@ -93,7 +93,7 @@ def prepare_meeting_data_as_ctx():
     scores = adt.ScoreStreamChunk(chunks=[
         adt.ScoreMessage(tag="correctness", score=1.0, comment="good", judge_name=_BOB,
                          time=_T2,
-                         reference=meeting_local_sdk.make_chat_reference(
+                         reference=adt.make_chat_reference(
                              _T1, _ALICE, text_region(0, 2))),
     ])
 
@@ -227,7 +227,7 @@ def _message_of(messages, user_name, reflect):
 
 @pytest.fixture(name="sdk")
 def _sdk_module():
-    return meeting_local_sdk
+    return meeting_sdk_server
 
 
 @pytest.fixture(name="reflect")

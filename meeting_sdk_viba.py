@@ -22,16 +22,19 @@ from functools import lru_cache
 from pathlib import Path
 
 import meeting_core_reflect as _reflect
-import meeting_local_sdk as _local
 from viba import serialize as _serialize
 from viba.type import VibaProgramErr, Ok, Result, custom_module
 
 DESIGN_CHAPTER = "The data interface"
-API_LINE = re.compile(r"(?m)^(\w+)\[Ctx\] =[ \t]*\n?[ \t]*(.*?)(?=\n[ \t]*<-|\n\w|\n#|\n\n|\Z)",
-                      re.DOTALL)
+API_LINE_WITH_TYPE = re.compile(
+    r"(?m)^(\w+)\[Ctx\] =[ \t]*\n?[ \t]*(.*?)(?=\n[ \t]*<-|\n\w|\n#|\n\n|\Z)",
+    re.DOTALL)
 
-__all__ = ["return_type", "return_types", "script_for", "access_of",
-           "definition_of", "is_a_valid_answer"]
+API_LINE = re.compile(r"(?m)^(\w+)\[Ctx\] =")
+BUILDER_LINE = re.compile(r"(?m)^(make_\w+) =")
+
+__all__ = ["api_names", "builders", "return_type", "return_types", "script_for",
+           "access_of", "definition_of", "is_a_valid_answer"]
 
 
 @lru_cache(maxsize=1)
@@ -48,14 +51,22 @@ def _chapter_source() -> str:
 
 
 @lru_cache(maxsize=1)
+def api_names() -> list:
+    """The apis of the chapter: the definitions written with `[Ctx]`."""
+    return list(return_types())
+
+
+def builders() -> list:
+    """The make_* group: values a caller builds, never served over the wire."""
+    return [match.group(1) for match in BUILDER_LINE.finditer(_chapter_source())]
+
+
 def return_types() -> dict:
     """api -> its return type, exactly as the chapter writes it."""
     found = {}
     source = _chapter_source()
-    for match in API_LINE.finditer(source):
+    for match in API_LINE_WITH_TYPE.finditer(source):
         name, written = match.group(1), match.group(2)
-        if name not in _local.__all__:
-            continue                      # the two hint definitions are not apis
         written = written.split("#")[0].strip()
         found[name] = re.sub(r"\s+", " ", written)
     return found

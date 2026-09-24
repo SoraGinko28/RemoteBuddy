@@ -12,7 +12,7 @@ return type in the data-interface chapter. This binding checks that before it
 hands the script back (``Ok(script)``); read it with viba.reflect, the way a
 local answer is read with meeting_core_reflect. Arguments travel through
 meeting_sdk_json. The server answers by running the same api of
-meeting_local_sdk over the record it holds, so the two bindings agree by
+meeting_sdk_server over the record it holds, so the two sides agree by
 construction.
 
 The binding is a ``Client``: one kept connection, one token, one timeout, and
@@ -34,7 +34,7 @@ import json
 import urllib.parse
 from typing import Any, Optional
 
-import meeting_local_sdk as local
+import meeting_adt as adt
 import meeting_sdk_viba
 from meeting_sdk_json import decode, encode
 from viba.type import VibaProgramErr as _Err, Ok as _Ok, Result as _Result
@@ -369,25 +369,25 @@ def read_text(ctx: Ctx, file: 'adt.FileId') -> _Result:
     return _DEFAULT.read_text(ctx, file)
 
 
-make_text_region = local.make_text_region
+make_text_region = adt.make_text_region
 
 
-make_screen_reference = local.make_screen_reference
+make_screen_reference = adt.make_screen_reference
 
 
-make_chat_reference = local.make_chat_reference
+make_chat_reference = adt.make_chat_reference
 
 
-make_score_reference = local.make_score_reference
+make_score_reference = adt.make_score_reference
 
 
-make_terminal_control_reference = local.make_terminal_control_reference
+make_terminal_control_reference = adt.make_terminal_control_reference
 
 
-make_versioned_file_reference = local.make_versioned_file_reference
+make_versioned_file_reference = adt.make_versioned_file_reference
 
 
-make_versioned_file_content_reference = local.make_versioned_file_content_reference
+make_versioned_file_content_reference = adt.make_versioned_file_content_reference
 
 __all__ = [
     "now",

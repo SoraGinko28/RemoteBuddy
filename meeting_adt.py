@@ -1826,3 +1826,42 @@ __all__ += [
 __all__ += [
     "ScreenCapture",
 ]
+
+
+# ----------------------------------------------------------------------
+# Building reference values (the make_* group of the data interface)
+# ----------------------------------------------------------------------
+#
+# These take no ctx and never touch a record: they are the values a caller
+# passes in as arguments. They live here because they build this module's own
+# records; the data interface's chapter declares their signatures.
+
+
+def make_text_region(start: int, end: int) -> "TextRegion":
+    return TextRegion(start=start, end=end)
+
+
+def make_screen_reference(capture_time, stream_name: str,
+                          region: "TextRegion") -> "ScreenReference":
+    return ScreenReference(capture_time=capture_time, stream_name=stream_name, region=region)
+
+
+def make_chat_reference(msg_time, user_name: str, region: "TextRegion") -> "ChatReference":
+    return ChatReference(msg_time=msg_time, user_name=user_name, region=region)
+
+
+def make_score_reference(judge_time, judge_name: str) -> "ScoreReference":
+    return ScoreReference(judge_time=judge_time, judge_name=judge_name)
+
+
+def make_terminal_control_reference(start_time, user_name, region: "TextRegion"):
+    return TerminalControlReference(start_time=start_time, user_name=user_name, region=region)
+
+
+def make_versioned_file_reference(file_id: "FileId", version_time) -> "VersionedFileReference":
+    return VersionedFileReference(file_id=file_id, version_time=version_time)
+
+
+def make_versioned_file_content_reference(versioned_file_ref: "VersionedFileReference",
+                                          region: "TextRegion"):
+    return VersionedFileContentReference(versioned_file_ref=versioned_file_ref, region=region)

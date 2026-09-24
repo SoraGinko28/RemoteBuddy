@@ -2,7 +2,7 @@
 
 Every api answers with a viba script (``entry = ...``) that is a resident of the
 api's return type in the data-interface chapter; the script is read with
-viba.reflect and must read exactly what meeting_local_sdk answers here.
+viba.reflect and must read exactly what meeting_sdk_server answers here.
 
 The server in these tests is a real RemoteBuddyHTTPServer whose record is the
 fixture the local tests use, handed over `sdk_meeting_data` instead of a journal.
@@ -15,10 +15,10 @@ from pathlib import Path
 import pytest
 
 import meeting_core_reflect as reflect
-import meeting_local_sdk as local
+import meeting_sdk_server as server
 import meeting_remote_sdk as remote
 import meeting_sdk_viba as viba_sdk
-from tests.test_meeting_local_sdk import prepare_meeting_data_as_ctx
+from tests.test_meeting_sdk_server import prepare_meeting_data_as_ctx
 from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,
                          at_key as viba_at_key, by_field_index as viba_by_field_index,
                          by_tag as viba_by_tag)
@@ -96,17 +96,17 @@ def _reads_the_same(api, local_result, script) -> int:
 def _api_calls():
     """(api, args): every read api with arguments the fixture can answer."""
     data = prepare_meeting_data_as_ctx()
-    first = local.first_chunk_time(data).ok_value
-    last = local.last_chunk_time(data).ok_value
-    file_id = local.file_id_by_path(data, "/ws/a.py").ok_value
-    file_ref = local.make_versioned_file_reference(file_id, first)
-    content_ref = local.make_versioned_file_content_reference(file_ref,
-                                                              local.make_text_region(0, 5))
-    chat_ref = local.make_chat_reference(last, "bob", local.make_text_region(0, 2))
-    score_ref = local.make_score_reference(last, "bob")
-    screen_ref = local.make_screen_reference(first, "screen", local.make_text_region(0, 2))
-    control_ref = local.make_terminal_control_reference(first, "alice",
-                                                        local.make_text_region(0, 3))
+    first = server.first_chunk_time(data).ok_value
+    last = server.last_chunk_time(data).ok_value
+    file_id = server.file_id_by_path(data, "/ws/a.py").ok_value
+    file_ref = remote.make_versioned_file_reference(file_id, first)
+    content_ref = remote.make_versioned_file_content_reference(file_ref,
+                                                              remote.make_text_region(0, 5))
+    chat_ref = remote.make_chat_reference(last, "bob", remote.make_text_region(0, 2))
+    score_ref = remote.make_score_reference(last, "bob")
+    screen_ref = remote.make_screen_reference(first, "screen", remote.make_text_region(0, 2))
+    control_ref = remote.make_terminal_control_reference(first, "alice",
+                                                        remote.make_text_region(0, 3))
     return [
         ("chunk_times", (data, first, last)),
         ("streams_between", (data, first, last)),
@@ -163,7 +163,7 @@ def _calls(apis):
 def test_every_answer_is_the_script_for_the_local_answer(api, args, wired) -> None:
     """What the server sends is the script the same actor makes here."""
     data, rest = args[0], args[1:]
-    ours = getattr(local, api)(data, *rest)
+    ours = getattr(server, api)(data, *rest)
     given = getattr(remote, api)(data.meeting_uid, *rest)
     assert isinstance(given, Ok), given
     assert given.ok_value == viba_sdk.script_for(api, ours).ok_value
@@ -172,7 +172,7 @@ def test_every_answer_is_the_script_for_the_local_answer(api, args, wired) -> No
 @pytest.mark.parametrize("api,args", _calls(set(WALKABLE)), ids=lambda item: None)
 def test_the_walkable_answers_read_the_same(api, args, wired) -> None:
     data, rest = args[0], args[1:]
-    ours = getattr(local, api)(data, *rest)
+    ours = getattr(server, api)(data, *rest)
     given = getattr(remote, api)(data.meeting_uid, *rest)
     assert isinstance(given, Ok), given
     assert _reads_the_same(api, ours, given.ok_value) > 0
@@ -183,11 +183,11 @@ def test_the_chat_apis_hit_the_known_binding_gap(api, wired) -> None:
     """The record layer's RawMessage does not land on $raw_msg str, so no
     script yet."""
     data = wired
-    moment = local.last_chunk_time(data).ok_value
+    moment = server.last_chunk_time(data).ok_value
     calls = {"chat_messages": (data, moment, moment),
              "chat_message_at": (data, moment, "bob"),
-             "resolve_chat_reference": (data, local.make_chat_reference(
-                 moment, "bob", local.make_text_region(0, 2)))}
+             "resolve_chat_reference": (data, remote.make_chat_reference(
+                 moment, "bob", remote.make_text_region(0, 2)))}
     given = getattr(remote, api)(data.meeting_uid, *calls[api][1:])
     assert isinstance(given, VibaProgramErr)
     assert "no branch of this sum carries a value" in given.err_msg
@@ -195,7 +195,7 @@ def test_the_chat_apis_hit_the_known_binding_gap(api, wired) -> None:
 
 def test_a_failed_api_answers_its_err_branch(wired) -> None:
     data = wired
-    moment = local.last_chunk_time(data).ok_value
+    moment = server.last_chunk_time(data).ok_value
     given = remote.chat_message_at(data.meeting_uid, moment, "alice")
     assert isinstance(given, Ok)
     entry = viba_sdk.is_a_valid_answer("chat_message_at", given.ok_value).ok_value
@@ -232,17 +232,17 @@ def test_now_comes_from_the_server(wired) -> None:
 def test_the_make_group_is_local_and_identical() -> None:
     for name in remote.__all__:
         if name.startswith("make_"):
-            assert getattr(remote, name) is getattr(local, name)
+            assert getattr(remote, name) is getattr(server, name)
 
 
 def test_the_contract_is_the_same_34() -> None:
     """screen_times arrived for the critic: it needs the screen stream's
     moments, not just the first one."""
-    assert remote.__all__ == local.__all__
+    assert remote.__all__ == server.__all__
     assert len(remote.__all__) == 34
 
 
 def test_every_data_api_has_a_return_type() -> None:
     types = viba_sdk.return_types()
-    assert set(types) == {name for name in local.__all__ if not name.startswith("make_")}
+    assert set(types) == {name for name in server.__all__ if not name.startswith("make_")}
     assert viba_sdk.return_type("read_text") == viba_sdk.return_type("latest_file")

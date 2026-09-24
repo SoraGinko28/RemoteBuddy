@@ -715,9 +715,10 @@ make_versioned_file_content_reference =
 
 
 local_version_hint = Hint[{
-	Ctx is python object in current process
+	Ctx is a meeting_adt.MeetingData record in this process
 	usage:
-  	import meeting_local_sdk as sdk
+  	the server side of this interface: meeting_sdk_server answers these apis
+  	over the record it holds (POST /api/meetings/<meeting-uid>/sdk/<api>)
 }]
 
 remote_version_hint = Hint[{
