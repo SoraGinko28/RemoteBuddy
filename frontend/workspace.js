@@ -126,8 +126,16 @@ const IDLE_PHASE_BOUNDARY = new Set([
 
 // If a terminal owner claims to be thinking/acting but authored no event for
 // this long, the worker is likely orphaned (state parked after a crash);
-// stop reporting a live turn.
+// stop reporting a live turn. The meeting's own updated_at is the other half:
+// a turn that just started has no band of its own yet, and the gap since the
+// last one can be minutes (a ticket flow waits for the agent between steps) —
+// the phase change itself keeps the meeting fresh.
 const STALE_BAND_MS = 180_000;
+
+function meetingAge(meeting) {
+  const stamp = Date.parse(meeting?.updated_at || "");
+  return Number.isFinite(stamp) ? Date.now() - stamp : Number.POSITIVE_INFINITY;
+}
 
 function latestBandTime(actor) {
   const timeline = state.timeline || [];
@@ -154,8 +162,9 @@ function memberState(actor, meeting) {
   if (meeting.control_owner === actor) {
     const stateName = agentStateForPhase(meeting.phase);
     if ((stateName === "thinking" || stateName === "acting")
-        && Date.now() - latestBandTime(actor) > STALE_BAND_MS) {
-      return "error";  // parked/orphaned: no live turn for minutes
+        && Date.now() - latestBandTime(actor) > STALE_BAND_MS
+        && meetingAge(meeting) > STALE_BAND_MS) {
+      return "error";  // parked/orphaned: nothing from it and nothing from the meeting
     }
     return stateName;
   }
