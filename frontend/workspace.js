@@ -31,7 +31,7 @@ const el = Object.fromEntries([
   "close-dialog", "cancel-new", "initial-message", "workspace-input", "choose-directory", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "skill-cell", "reload-skill-button", "restart-agent-button",
-  "event-dialog", "event-title", "event-content", "close-event", "toast",
+  "event-dialog", "event-title", "event-content", "close-event", "toast", "welcome-toast",
   "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
   "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
@@ -366,9 +366,15 @@ async function apiConditional(path, etag) {
 
 function toast(message) {
   clearTimeout(state.toastTimer);
-  el.toast.textContent = message;
-  el.toast.hidden = false;
-  state.toastTimer = setTimeout(() => { el.toast.hidden = true; }, 5000);
+  // 两个位置同一句话：会话里那个在上边栏靠右，欢迎卡片上那个没有上边栏，贴右上角。
+  const visible = [el.toast, el.welcome_toast].filter(Boolean);
+  for (const node of visible) {
+    node.textContent = message;
+    node.hidden = false;
+  }
+  state.toastTimer = setTimeout(() => {
+    for (const node of visible) node.hidden = true;
+  }, 5000);
 }
 
 function fmtTime(value) {
