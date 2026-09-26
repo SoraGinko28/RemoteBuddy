@@ -248,9 +248,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .image-lightbox-close svg { display: block; width: 14px; height: 14px; }
 .image-lightbox-close:hover { background: rgb(30 30 30 / 1); }
 .reference-card { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 5px; margin-top: 7px; padding: 6px; border: 1px solid #2f4a3c; border-radius: 5px; background: var(--surface-2); color: var(--muted); font-size: 10px; overflow: hidden; }
-.reference-item { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) 24px; align-items: start; gap: 7px; padding: 4px 3px; border-bottom: 1px solid var(--line); }
+.reference-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: start; gap: 7px; padding: 4px 3px; border-bottom: 1px solid var(--line); }
 .reference-item:last-child { border-bottom: 0; }
-.reference-kind { color: var(--green); font-weight: 700; white-space: nowrap; }
 .reference-excerpt { min-width: 0; max-height: 72px; overflow: auto; overflow-wrap: anywhere; word-break: break-word; white-space: pre-wrap; }
 .reference-card .icon-button { flex: 0 0 24px; margin-left: auto; min-width: 24px; min-height: 24px; }
 

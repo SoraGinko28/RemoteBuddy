@@ -2244,10 +2244,9 @@ function setReferences(references) {
   el.reference_card.replaceChildren();
   unique.forEach((reference, index) => {
     const item = node("div", "reference-item");
-    item.append(
-      node("span", "reference-kind", referenceKindLabel(reference.kind)),
-      node("span", "reference-excerpt", reference.excerpt || ""),
-    );
+    // 引的是哪一类，不占一行字：它是给悬浮提示的（聊天、终端画面、接管记录）。
+    item.title = referenceKindLabel(reference.kind);
+    item.append(node("span", "reference-excerpt", reference.excerpt || ""));
     const remove = node("button", "icon-button", "×");
     remove.type = "button";
     remove.title = `移除第 ${index + 1} 个引用`;
