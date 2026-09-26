@@ -5,11 +5,11 @@
 import actor_api as actor
 
 revised = actor.revise_code
-  << $env (environ.sub_env << "revised")
+  << $env ($sub_env << environ << "revised")
   << $code ($module_path "drafted" * $func_name "write_code")
   << $objection ($module_path "judged" * $func_name "objection")
 
 __ret__ = actor.report_done
-  << $env (environ.sub_env << "revised_done")
+  << $env ($sub_env << environ << "revised_done")
   << $code revised
   << $after revised

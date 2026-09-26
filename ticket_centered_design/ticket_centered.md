@@ -10,16 +10,16 @@
 import actor_api as actor
 
 greeted = actor.acknowledge          # 回一句"知道了"
-  << $env (environ.sub_env << "greeted")
+  << $env ($sub_env << environ << "greeted")
   << $about ($module_path "" * $func_name "stated_task")
 
 drafted = actor.write_code           # 写一版
-  << $env (environ.sub_env << "drafted")
+  << $env ($sub_env << environ << "drafted")
   << $task ($module_path "" * $func_name "stated_task")
 
 
 __ret__ = actor.report_done          # 回一句"做好了"
-  << $env (environ.sub_env << "report_done")
+  << $env ($sub_env << environ << "report_done")
   << $code drafted
 
 ```

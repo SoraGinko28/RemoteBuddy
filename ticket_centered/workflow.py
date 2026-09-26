@@ -363,10 +363,24 @@ def _env_name(node) -> str:
         return str(node.value)
     if isinstance(node, viba_ast.TypeRef):
         return "" if node.name == "environ" else node.name
-    if isinstance(node, viba_ast.Partial) and isinstance(node.function, viba_ast.TypeRef):
-        if node.function.name.split(".")[-1] in SUB_ENVS:
-            if isinstance(node.argument, viba_ast.Constant):
-                return str(node.argument.value)
+    if isinstance(node, viba_ast.Partial):
+        # 链要摊平看：环境成员把环境自己当第一个实参，名字写在最后——
+        # `$sub_env << environ << "名字"`（tag 写法）和 `environ.sub_env << environ << "名字"`
+        # 一样，摊平后基名在 `Member.tag` 或 `TypeRef.name` 上。
+        base, arguments = node, []
+        while isinstance(base, viba_ast.Partial):
+            if base.argument is not None:
+                arguments.append(base.argument)
+            base = base.function
+        if isinstance(base, viba_ast.Member):
+            called = base.tag.lstrip("$")
+        elif isinstance(base, viba_ast.TypeRef):
+            called = base.name.split(".")[-1]
+        else:
+            return ""
+        if (called in SUB_ENVS and arguments
+                and isinstance(arguments[0], viba_ast.Constant)):
+            return str(arguments[0].value)
     return ""
 
 

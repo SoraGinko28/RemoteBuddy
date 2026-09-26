@@ -14,7 +14,7 @@ code_under_judgment =
 widest_parameters =
     int
   <- $env environ
-  <- $code code_under_judgment
+  <- $code str
   <- { 参数最多的那个函数有几个参数 }
 
 within_limit =

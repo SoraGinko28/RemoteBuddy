@@ -43,6 +43,7 @@ const state = {
   workspaceTitles: {},
   workspaceMenuPath: "",
   workspace: "",
+  listed: [],
   workspaceFilled: false,
   selectedId: null,
   snapshot: null,
@@ -501,9 +502,11 @@ function meetingGroups() {
   for (const meeting of state.meetings) {
     groupFor(meeting.workspace_root || state.workspace || "").meetings.push(meeting);
   }
-  // The default workspace is the directory the service itself runs in: nobody
-  // added it, so it stays out of the list until it actually holds a session.
-  return groups.filter((group) => group.meetings.length > 0 || group.path !== state.workspace);
+  // The default workspace is the directory the service itself runs in: it stays
+  // out of the list until it holds a session or somebody added it by hand.
+  return groups.filter((group) => group.meetings.length > 0
+    || group.path !== state.workspace
+    || state.listed.includes(group.path));
 }
 
 function basename(path) {
@@ -1157,21 +1160,13 @@ function copyTextToClipboard(text) {
     toast("没有可复制的内容");
     return false;
   }
-  const notify = () => toast(`已复制 ${codePointLength(text)} 字符`);
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(
-      notify,
-      () => {
-        if (legacyCopy(text)) notify();
-        else copyFallbackDialog(text);
-      },
-    );
+    navigator.clipboard.writeText(text).catch(() => {
+      if (!legacyCopy(text)) copyFallbackDialog(text);
+    });
     return true;
   }
-  if (legacyCopy(text)) {
-    notify();
-    return true;
-  }
+  if (legacyCopy(text)) return true;
   copyFallbackDialog(text);
   return false;
 }
@@ -2847,6 +2842,7 @@ async function loadMeetings() {
   state.meetings = payload.meetings || [];
   state.workspace = payload.workspace || "";
   state.workspaces = payload.workspaces || [];
+  state.listed = payload.listed || [];
   state.workspaceTitles = payload.workspace_titles || {};
   state.meetingsRefreshedAt = Date.now();
   renderWorkspaceHint();
@@ -3233,22 +3229,27 @@ async function addWorkspace() {
   el.add_workspace_button.disabled = true;
   try {
     let directory = "";
+    // 加的是"另一个项目"，所以对话框从服务自己那个目录的上一层打开：那一层通常就是
+    // 放各个项目的地方。停在项目自己身上，一点就选中它，等于没加。
+    const startAt = state.workspace.replace(/\/[^/]+$/, "") || "/";
     try {
       const answer = await api("/api/choose-directory", {
         method: "POST",
-        body: JSON.stringify({ directory: state.workspace || "" }),
+        body: JSON.stringify({ directory: startAt }),
       });
       directory = answer.directory || "";
     } catch (error) {
       // No system picker (not macOS): fall back to typing a path.
       toast(error.message);
-      directory = (window.prompt("工作区目录", state.workspace || "") || "").trim();
+      directory = (window.prompt("工作区目录", startAt) || "").trim();
     }
     if (!directory) return;                     // the picker was cancelled
-    await api("/api/workspaces", {
+    const answer = await api("/api/workspaces", {
       method: "POST",
       body: JSON.stringify({ directory }),
     });
+    // 已经在名单上（或者就是默认那一个）时说一句：不然"点了没反应"看着像坏了。
+    if (answer.added === false) toast(`${basename(directory)} 已经在工作区列表里`);
     await loadMeetings();
   } catch (error) {
     toast(error.message);
