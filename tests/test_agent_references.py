@@ -279,7 +279,7 @@ class AgentActionToleranceTest(unittest.TestCase):
 
     def test_non_chat_action_defaults_message_type_to_none(self):
         action = AgentAction.from_dict(
-            {"type": "keystrokes", "keys": [{"kind": "literal", "value": "ls -la"}]}
+            {"type": "keystrokes", "keys": [{"kind": "text", "value": "ls -la"}]}
         )
         self.assertEqual("none", action.message_type)
 

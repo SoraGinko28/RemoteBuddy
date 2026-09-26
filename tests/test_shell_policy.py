@@ -157,7 +157,7 @@ class InteractiveProgramTransport(FakeTransport):
 
     def send_tokens(self, pane_id, keys):
         if self.command == "top" and any(
-            token.get("kind") == "key" and token.get("value") == "C-c" for token in keys
+            token.get("kind") == "ctrl" and token.get("value") == "C-c" for token in keys
         ):
             self.tokens.append((pane_id, list(keys)))
             self.command = "bash"
@@ -224,7 +224,7 @@ class ShellPolicyRunnerTest(unittest.TestCase):
             [
                 make_action(),
                 make_action("command", command="top"),
-                make_action("keystrokes", keys=[{"kind": "key", "value": "C-c"}]),
+                make_action("keystrokes", keys=[{"kind": "ctrl", "value": "C-c"}]),
                 make_action("done", message_type="final", content="Checked the process list."),
             ]
         )
@@ -238,7 +238,7 @@ class ShellPolicyRunnerTest(unittest.TestCase):
             ("chat", "keystrokes", "observe"),
             client.calls[2][3]["allowed_types"],
         )
-        self.assertIn(("%1", [{"kind": "key", "value": "C-c"}]), transport.tokens)
+        self.assertIn(("%1", [{"kind": "ctrl", "value": "C-c"}]), transport.tokens)
 
 
 if __name__ == "__main__":

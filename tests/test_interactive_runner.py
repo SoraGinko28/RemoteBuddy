@@ -172,7 +172,7 @@ class FakeTransport:
     def send_literal(self, pane_id, text):
         self.literal_sends.append((pane_id, text))
         if self.command in {"vim", "vi"} or self.command.startswith("python"):
-            self.tokens.append((pane_id, [{"kind": "literal", "value": text}]))
+            self.tokens.append((pane_id, [{"kind": "text", "value": text}]))
         self.pending_input += text
         self.screen_revision += 1
 
@@ -182,14 +182,14 @@ class FakeTransport:
 
     def send_special(self, pane_id, key):
         if key == "C-c" and self.command in {"bash", "zsh", "sh"}:
-            self.tokens.append((pane_id, [{"kind": "key", "value": key}]))
+            self.tokens.append((pane_id, [{"kind": "ctrl", "value": key}]))
             self.pending_input = ""
             self.screen_revision += 1
             return
         if key == "Enter" and self.command in {"bash", "zsh", "sh"}:
             self.send_enter(pane_id)
             return
-        self.tokens.append((pane_id, [{"kind": "key", "value": key}]))
+        self.tokens.append((pane_id, [{"kind": "ctrl", "value": key}]))
         self.screen_revision += 1
 
     def send_enter(self, pane_id):
@@ -221,15 +221,34 @@ class FakeTransport:
         for token in keys:
             if self.command not in {"vim", "vi"}:
                 continue
-            if token.get("kind") == "key" and token.get("value") == "Escape":
+            if token.get("kind") == "ctrl" and token.get("value") == "Escape":
                 self.pending_input = ""
-            elif token.get("kind") == "literal":
+            elif token.get("kind") == "text":
                 self.pending_input += token.get("value", "")
-            elif token.get("kind") == "key" and token.get("value") == "Enter":
+            elif token.get("kind") == "ctrl" and token.get("value") == "Enter":
                 if self.pending_input in {":q", ":q!", ":wq", ":wq!", ":x", ":x!"}:
                     self.command = "bash"
                 self.pending_input = ""
         self.screen_revision += 1
+
+
+class AskingClient(FakeClient):
+    """第一次请求飞着的时候按下页面那个按钮。
+
+    页面上就是"请求在路上、人按下去"这个时序；用真线程去卡这个窗口是碰运气，
+    所以让前端自己在下第一枪时按。
+    """
+
+    def __init__(self, outcomes, ask):
+        super().__init__(outcomes)
+        self.ask = ask
+        self.asked = False
+
+    def create_action(self, conversation_id, instructions, observation, **kwargs):
+        if not self.asked:
+            self.asked = True
+            self.ask()
+        return super().create_action(conversation_id, instructions, observation, **kwargs)
 
 
 class BackendRequestTest(unittest.TestCase):
@@ -253,27 +272,17 @@ class BackendRequestTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_skill_reload_swaps_the_text_without_touching_the_process(self):
-        client = PauseOnThirdClient([
-            make_action("command", command="pwd"),
-        ])
+        holder = {}
+        client = AskingClient(
+            [make_action("command", command="pwd")],
+            lambda: (self.store.runtime_skill_path.write_text(
+                "---\nname: workspace-collaborator\n---\n新的一句。", encoding="utf-8"),
+                holder["runner"].request_skill_reload()),
+        )
         runner = InteractiveRunner(self.store, self.transport, client,
                                    action_settle_seconds=0, typing_interval_seconds=0)
-
-        def mark():
-            # 在第一个请求还在飞的时候按"更新"：下一句就该用新文本。
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                if client.calls:
-                    self.store.runtime_skill_path.write_text(
-                        "---\nname: workspace-collaborator\n---\n新的一句。", encoding="utf-8")
-                    runner.request_skill_reload()
-                    return
-                time.sleep(0.01)
-
-        thread = threading.Thread(target=mark, daemon=True)
-        thread.start()
+        holder["runner"] = runner
         runner.start()
-        thread.join(timeout=5)
 
         self.assertEqual(0, client.closed, "更新不该关掉进程")
         self.assertEqual(1, len(client.conversations), "更新不该重开会话")
@@ -284,24 +293,15 @@ class BackendRequestTest(unittest.TestCase):
         self.assertEqual("completed", events[0]["data"]["status"])
 
     def test_backend_restart_closes_the_process_and_starts_a_new_cycle(self):
-        client = PauseOnThirdClient([
-            make_action("command", command="pwd"),
-        ])
+        holder = {}
+        client = AskingClient(
+            [make_action("command", command="pwd")],
+            lambda: holder["runner"].request_backend_restart(),
+        )
         runner = InteractiveRunner(self.store, self.transport, client,
                                    action_settle_seconds=0, typing_interval_seconds=0)
-
-        def mark():
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                if client.calls:
-                    runner.request_backend_restart()
-                    return
-                time.sleep(0.01)
-
-        thread = threading.Thread(target=mark, daemon=True)
-        thread.start()
+        holder["runner"] = runner
         runner.start()
-        thread.join(timeout=5)
 
         self.assertEqual(1, client.closed, "重启要关掉旧进程")
         self.assertEqual(2, len(client.conversations), "重启要重开一个新会话")
@@ -368,7 +368,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             self.store,
             self.transport,
             pane_id,
-            [{"kind": "literal", "value": "alpha  beta gamma"}],
+            [{"kind": "text", "value": "alpha  beta gamma"}],
             typing_interval_seconds=0,
         )
 
@@ -385,7 +385,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         self.store.set_session(pane_id)
         plan = plan_input(
-            [{"kind": "literal", "value": "print(alpha + beta)"}],
+            [{"kind": "text", "value": "print(alpha + beta)"}],
             "balanced",
             "runner-demo",
             "paced-action",
@@ -429,9 +429,9 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.store.set_session(pane_id)
         plan = plan_input(
             [
-                {"kind": "literal", "value": "echo hi"},
+                {"kind": "text", "value": "echo hi"},
                 {"kind": "rest", "value": 200},
-                {"kind": "key", "value": "Enter"},
+                {"kind": "ctrl", "value": "Enter"},
             ],
             "balanced",
             "runner-demo",
@@ -494,7 +494,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             item[1]
             for item in self.transport.tokens
             if any(
-                token.get("kind") == "literal" and token.get("value") == "echo hi"
+                token.get("kind") == "text" and token.get("value") == "echo hi"
                 for token in item[1]
             )
         ]
@@ -540,7 +540,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             token.get("value")
             for _pane, tokens in self.transport.tokens
             for token in tokens
-            if token.get("kind") == "literal"
+            if token.get("kind") == "text"
         ]
         self.assertIn("import socket", typed)
 
@@ -552,11 +552,11 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.store.set_session(pane_id)
         plan = plan_input(
             [
-                {"kind": "literal", "value": "alpha"},
-                {"kind": "key", "value": "Enter"},
-                {"kind": "literal", "value": "beta"},
-                {"kind": "key", "value": "Enter"},
-                {"kind": "literal", "value": "gamma"},
+                {"kind": "text", "value": "alpha"},
+                {"kind": "ctrl", "value": "Enter"},
+                {"kind": "text", "value": "beta"},
+                {"kind": "ctrl", "value": "Enter"},
+                {"kind": "text", "value": "gamma"},
             ],
             "demo",
             "runner-demo",
@@ -657,7 +657,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         runner._screen_before_think = before
         # The screen changes while the model "thinks" (simulate by emitting
         # pane output that changes the captured text).
-        self.transport.send_tokens(pane_id, [{"kind": "literal", "value": "change"}])
+        self.transport.send_tokens(pane_id, [{"kind": "text", "value": "change"}])
         now = runner._pane_snapshot(pane_id)
         self.assertNotEqual(before, now)
         action = make_action("command", command="pwd", path="")
@@ -688,11 +688,11 @@ class InteractiveRunnerTest(unittest.TestCase):
                 make_action(
                     "keystrokes",
                     keys=[
-                        {"kind": "literal", "value": "i"},
-                        {"kind": "literal", "value": "# Notes"},
-                        {"kind": "key", "value": "Escape"},
-                        {"kind": "literal", "value": ":wq"},
-                        {"kind": "key", "value": "Enter"},
+                        {"kind": "text", "value": "i"},
+                        {"kind": "text", "value": "# Notes"},
+                        {"kind": "ctrl", "value": "Escape"},
+                        {"kind": "text", "value": ":wq"},
+                        {"kind": "ctrl", "value": "Enter"},
                     ],
                 ),
                 make_action(
@@ -745,8 +745,8 @@ class InteractiveRunnerTest(unittest.TestCase):
                 make_action(
                     "keystrokes",
                     keys=[
-                        {"kind": "literal", "value": ":wq"},
-                        {"kind": "key", "value": "Enter"},
+                        {"kind": "text", "value": ":wq"},
+                        {"kind": "ctrl", "value": "Enter"},
                     ],
                 ),
                 make_action(
@@ -790,16 +790,16 @@ class InteractiveRunnerTest(unittest.TestCase):
                 make_action(
                     "keystrokes",
                     keys=[
-                        {"kind": "literal", "value": "i"},
-                        {"kind": "literal", "value": "draft"},
+                        {"kind": "text", "value": "i"},
+                        {"kind": "text", "value": "draft"},
                     ],
                 ),
                 make_action("chat", message_type="progress", content="Vim is now visibly open."),
                 make_action(
                     "keystrokes",
                     keys=[
-                        {"kind": "literal", "value": ":wq"},
-                        {"kind": "key", "value": "Enter"},
+                        {"kind": "text", "value": ":wq"},
+                        {"kind": "ctrl", "value": "Enter"},
                     ],
                 ),
                 make_action("done", message_type="final", content="Stopped after checking constraints."),
@@ -827,8 +827,8 @@ class InteractiveRunnerTest(unittest.TestCase):
                 make_action(
                     "keystrokes",
                     keys=[
-                        {"kind": "literal", "value": 'echo "hi"'},
-                        {"kind": "key", "value": "Enter"},
+                        {"kind": "text", "value": 'echo "hi"'},
+                        {"kind": "ctrl", "value": "Enter"},
                     ],
                 ),
                 make_action(
@@ -899,7 +899,7 @@ class InteractiveRunnerTest(unittest.TestCase):
                 make_action("command", command="vim notes.md"),
                 make_action(
                     "keystrokes",
-                    keys=[{"kind": "key", "value": "i"}],
+                    keys=[{"kind": "ctrl", "value": "i"}],
                 ),
                 make_action("done", message_type="final", content="Inserted text."),
             ]
@@ -908,7 +908,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         ).start()
         self.assertEqual(
-            [{"kind": "literal", "value": "i"}],
+            [{"kind": "text", "value": "i"}],
             self.transport.tokens[-1][1],
         )
 
@@ -920,9 +920,9 @@ class InteractiveRunnerTest(unittest.TestCase):
                 make_action(
                     "keystrokes",
                     keys=[
-                        {"kind": "key", "value": "Escape"},
-                        {"kind": "literal", "value": ":w"},
-                        {"kind": "key", "value": "Enter"},
+                        {"kind": "ctrl", "value": "Escape"},
+                        {"kind": "text", "value": ":w"},
+                        {"kind": "ctrl", "value": "Enter"},
                     ],
                 ),
                 make_action("done", message_type="final", content="Saved the file."),

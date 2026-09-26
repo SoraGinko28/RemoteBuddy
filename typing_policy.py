@@ -102,7 +102,7 @@ def _normal_literal_steps(
     rng = _rng(meeting_id, action_id, token_index, context)
     tempo = rng.uniform(0.84, 1.16)
     delay = _pause_for(text, "", spec, rng, tempo)
-    return [TypingStep("literal", text, delay, "typing", context, 0)]
+    return [TypingStep("text", text, delay, "typing", context, 0)]
 
 
 def _paste_literal_steps(
@@ -114,7 +114,7 @@ def _paste_literal_steps(
 ) -> List[TypingStep]:
     rng = _rng(meeting_id, action_id, token_index, context + ":paste")
     return [
-        TypingStep("literal", text[offset : offset + 80], rng.randint(20, 50), "paste", context, 0)
+        TypingStep("text", text[offset : offset + 80], rng.randint(20, 50), "paste", context, 0)
         for offset in range(0, len(text), 80)
     ]
 
@@ -140,7 +140,7 @@ def _key_step(
     # An Enter at a shell prompt submits the line; an Enter anywhere else is
     # just a key handed to whatever program holds the pane's foreground.
     key_context = "shell" if context == "shell" else "program"
-    return TypingStep("key", key, delay, "typing", key_context, 0)
+    return TypingStep("ctrl", key, delay, "typing", key_context, 0)
 
 
 def _with_enter_wind_up(steps: Sequence[TypingStep]) -> List[TypingStep]:
@@ -152,10 +152,10 @@ def _with_enter_wind_up(steps: Sequence[TypingStep]) -> List[TypingStep]:
     """
     held = list(steps)
     for index, step in enumerate(held):
-        if index == 0 or step.kind != "key" or step.value != "Enter":
+        if index == 0 or step.kind != "ctrl" or step.value != "Enter":
             continue
         previous = held[index - 1]
-        if previous.kind == "literal":
+        if previous.kind == "text":
             held[index - 1] = replace(previous, delay_after_ms=ENTER_WIND_UP_MS)
     return held
 
@@ -186,10 +186,10 @@ def plan_input(
     validate_profile(profile)
     spec = PROFILE_SPECS[profile]
     literal_characters = sum(
-        len(token["value"]) for token in tokens if token.get("kind") == "literal"
+        len(token["value"]) for token in tokens if token.get("kind") == "text"
     )
     lines = 1 + sum(
-        token.get("kind") == "key" and token.get("value") == "Enter" for token in tokens
+        token.get("kind") == "ctrl" and token.get("value") == "Enter" for token in tokens
     )
     threshold_paste = allow_paste and context in {"code", "python"} and (
         literal_characters >= spec.paste_threshold_chars or lines >= spec.paste_threshold_lines
@@ -198,7 +198,7 @@ def plan_input(
     for token_index, token in enumerate(tokens):
         kind = token["kind"]
         value = token["value"]
-        if kind == "key":
+        if kind == "ctrl":
             steps.append(
                 _key_step(value, profile, meeting_id, action_id, token_index, context)
             )
@@ -245,7 +245,7 @@ def plan_input(
 
             for step in steps:
                 keep_typing = elapsed < hand_typed_budget
-                if step.kind == "literal" and step.input_context == "code" and not keep_typing:
+                if step.kind == "text" and step.input_context == "code" and not keep_typing:
                     paste_buffer += step.value
                 else:
                     flush_paste()

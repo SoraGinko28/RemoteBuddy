@@ -146,7 +146,7 @@ class PipeTransport:
 
     def send_tokens(self, pane_id: str, keys: Sequence[Dict[str, str]]) -> None:
         for token in keys:
-            if token.get("kind") == "key":
+            if token.get("kind") == "ctrl":
                 self.send_special(pane_id, token.get("value", ""))
             else:
                 self.send_literal(pane_id, token.get("value", ""))

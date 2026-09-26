@@ -349,15 +349,15 @@ class TmuxTransportTest(unittest.TestCase):
         self.transport.send_tokens(
             "%7",
             [
-                {"kind": "literal", "value": "hello $(still-literal)"},
-                {"kind": "key", "value": "Escape"},
+                {"kind": "text", "value": "hello $(still-literal)"},
+                {"kind": "ctrl", "value": "Escape"},
             ],
         )
         self.assertTrue(self.pane.inputs[0]["literal"])
         self.assertEqual("Escape", self.pane.inputs[1]["text"])
         self.assertFalse(self.pane.inputs[1]["literal"])
         with self.assertRaises(TmuxError):
-            self.transport.send_tokens("%7", [{"kind": "key", "value": "F12"}])
+            self.transport.send_tokens("%7", [{"kind": "ctrl", "value": "F12"}])
 
         self.pane.inputs.clear()
         self.transport.send_workspace_command("%7", "python", "/tmp/workspace/snake.py")

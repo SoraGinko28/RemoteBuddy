@@ -396,9 +396,9 @@ class TmuxTransport:
         for token in tokens:
             if not isinstance(token, dict) or set(token) != {"kind", "value"}:
                 raise TmuxError("invalid terminal input token")
-            if token["kind"] == "literal":
+            if token["kind"] == "text":
                 self.send_literal(pane_id, token["value"])
-            elif token["kind"] == "key":
+            elif token["kind"] == "ctrl":
                 self.send_special(pane_id, token["value"])
             else:
                 raise TmuxError("invalid terminal input token kind")

@@ -65,8 +65,8 @@ def send_command_with_captures(
         return
     plan = plan_input(
         [
-            {"kind": "literal", "value": text},
-            {"kind": "key", "value": "Enter"},
+            {"kind": "text", "value": text},
+            {"kind": "ctrl", "value": "Enter"},
         ],
         profile,
         meeting_id,
@@ -92,10 +92,10 @@ def _send_typing_plan(
     for step_index, step in enumerate(plan.steps):
         if interrupt_check and interrupt_check():
             raise TypingInterrupted(sent, plan.total_characters - sent, submitted)
-        if step.kind == "literal":
+        if step.kind == "text":
             transport.send_literal(pane_id, step.value)
             sent += len(step.value)
-        elif step.kind == "key":
+        elif step.kind == "ctrl":
             transport.send_special(pane_id, step.value)
             submitted = submitted or (step.value == "Enter" and step.input_context == "shell")
         # A rest step sends nothing; its delay_after_ms holds the pacing below.

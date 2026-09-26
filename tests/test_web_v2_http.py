@@ -356,7 +356,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(self.transport.tokens)
         flattened = [token for (_pane, keys) in self.transport.tokens for token in keys]
         self.assertEqual(
-            [{"kind": "literal", "value": "git status"}, {"kind": "key", "value": "Enter"}],
+            [{"kind": "text", "value": "git status"}, {"kind": "ctrl", "value": "Enter"}],
             flattened,
         )
         events = store.events()

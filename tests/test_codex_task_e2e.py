@@ -38,17 +38,17 @@ def act(a_type, message_type="none", content="", command="none", path="", keys=N
             "command": command, "path": path, "keys": keys or [], "delay_ms": delay_ms}
 
 EDIT_KEYS = [
-    {"kind": "literal", "value": "i"},
-    {"kind": "literal", "value": "Machine Notes: benchmark plan"},
-    {"kind": "key", "value": "Escape"},
-    {"kind": "literal", "value": ":wq"},
-    {"kind": "key", "value": "Enter"},
+    {"kind": "text", "value": "i"},
+    {"kind": "text", "value": "Machine Notes: benchmark plan"},
+    {"kind": "ctrl", "value": "Escape"},
+    {"kind": "text", "value": ":wq"},
+    {"kind": "ctrl", "value": "Enter"},
 ]
 
 LEAVE_EDITOR_KEYS = [
-    {"kind": "key", "value": "Escape"},
-    {"kind": "literal", "value": ":q!"},
-    {"kind": "key", "value": "Enter"},
+    {"kind": "ctrl", "value": "Escape"},
+    {"kind": "text", "value": ":q!"},
+    {"kind": "ctrl", "value": "Enter"},
 ]
 
 SCRIPT = {
@@ -62,7 +62,7 @@ SCRIPT = {
     8: act("command", command="none"),
     9: act("chat", "progress", "已在 notes.md 里写入了基准计划。"),
     10: act("command", command="python", path="analysis.py"),
-    11: act("keystrokes", keys=[{"kind": "key", "value": "C-c"}]),
+    11: act("keystrokes", keys=[{"kind": "ctrl", "value": "C-c"}]),
     12: act("command", command="vim notes.md"),
     13: act("command", command="pwd"),  # the editor owns the pane: structurally invalid
     14: act("keystrokes", keys=LEAVE_EDITOR_KEYS),
@@ -142,7 +142,7 @@ class ScenarioTransport(FakeTransport):
 
     def _python_interrupt(self, keys):
         return self.command.startswith("python") and any(
-            token.get("kind") == "key" and token.get("value") == "C-c" for token in keys
+            token.get("kind") == "ctrl" and token.get("value") == "C-c" for token in keys
         )
 
     def send_tokens(self, pane_id, keys):
@@ -155,8 +155,8 @@ class ScenarioTransport(FakeTransport):
         super().send_tokens(pane_id, keys)
 
     def send_special(self, pane_id, key):
-        if self._python_interrupt([{"kind": "key", "value": key}]):
-            self.send_tokens(pane_id, [{"kind": "key", "value": key}])
+        if self._python_interrupt([{"kind": "ctrl", "value": key}]):
+            self.send_tokens(pane_id, [{"kind": "ctrl", "value": key}])
             return
         super().send_special(pane_id, key)
 
