@@ -247,12 +247,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .image-lightbox-close { position: absolute; top: -15px; right: -15px; width: 32px; height: 32px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgb(255 255 255 / .5); border-radius: 50%; background: rgb(30 30 30 / .88); color: #fff; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .35); }
 .image-lightbox-close svg { display: block; width: 14px; height: 14px; }
 .image-lightbox-close:hover { background: rgb(30 30 30 / 1); }
-.reference-card { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 5px; margin-top: 7px; padding: 6px; border: 1px solid #2f4a3c; border-radius: 5px; background: var(--surface-2); color: var(--muted); font-size: 10px; overflow: hidden; }
-.reference-item { position: relative; min-width: 0; display: block; padding: 4px 24px 4px 3px; border-bottom: 1px solid var(--line); }
+/* overflow 要看得见：叉挂在角上，一半在卡片外面。 */
+.reference-card { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 5px; margin-top: 7px; padding: 6px; border: 1px solid #2f4a3c; border-radius: 5px; background: var(--surface-2); color: var(--muted); font-size: 10px; overflow: visible; }
+.reference-item { position: relative; min-width: 0; display: block; padding: 4px 3px; border-bottom: 1px solid var(--line); }
 .reference-item:last-child { border-bottom: 0; }
 .reference-excerpt { min-width: 0; max-height: 72px; overflow: auto; overflow-wrap: anywhere; word-break: break-word; white-space: pre-wrap; }
-/* 去掉这一条引用的叉：右上角一个小圆圈，浮在字上，不占一列版面。 */
-.reference-remove { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface-2); color: var(--muted); cursor: pointer; }
+/* 去掉这一条引用的叉：挂在卡片右上角那个角上，一半在卡片外——一个字的位置都不占。 */
+.reference-remove { position: absolute; top: -6px; right: -12px; width: 18px; height: 18px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface-2); color: var(--muted); cursor: pointer; }
 .reference-remove:hover { border-color: var(--ink); color: var(--ink); }
 .reference-remove svg { display: block; width: 9px; height: 9px; }
 
