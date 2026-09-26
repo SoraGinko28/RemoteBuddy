@@ -2247,10 +2247,12 @@ function setReferences(references) {
     // 引的是哪一类，不占一行字：它是给悬浮提示的（聊天、终端画面、接管记录）。
     item.title = referenceKindLabel(reference.kind);
     item.append(node("span", "reference-excerpt", reference.excerpt || ""));
-    const remove = node("button", "icon-button", "×");
+    // 右上角一个圆圈叉：悬浮在引文上方，不占版面。
+    const remove = node("button", "reference-remove");
     remove.type = "button";
     remove.title = `移除第 ${index + 1} 个引用`;
     remove.setAttribute("aria-label", remove.title);
+    remove.append(closeCrossIcon());
     remove.addEventListener("click", () => setReferences(state.references.filter((_item, itemIndex) => itemIndex !== index)));
     item.append(remove);
     el.reference_card.append(item);
@@ -3029,6 +3031,21 @@ function renderAttachments() {
 function setAttachments(list) {
   state.pendingAttachments = Array.isArray(list) ? list.slice() : [];
   renderAttachments();
+}
+
+// 一个圆里画出来的叉：字符 × 有基线，在圆里看着偏。
+function closeCrossIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2.6");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M6 6l12 12M18 6L6 18");
+  svg.append(path);
+  return svg;
 }
 
 // 点开一张图：弹一层盖住页面，点图以外的任何地方（或按 Esc）关掉。
