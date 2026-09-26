@@ -9,8 +9,8 @@ class TypingPolicyTest(unittest.TestCase):
         tokens = [{"kind": "literal", "value": text}]
         balanced = None
         for profile in TYPING_PROFILES:
-            first = plan_input(tokens, profile, "meeting-a", "action-a", "vim")
-            second = plan_input(tokens, profile, "meeting-a", "action-a", "vim")
+            first = plan_input(tokens, profile, "meeting-a", "action-a", "code")
+            second = plan_input(tokens, profile, "meeting-a", "action-a", "code")
             self.assertEqual(first, second)
             self.assertEqual(text, "".join(step.value for step in first.steps))
             self.assertTrue(all(20 <= step.delay_after_ms <= 500 for step in first.steps))
@@ -18,7 +18,7 @@ class TypingPolicyTest(unittest.TestCase):
             if profile == "balanced":
                 balanced = first
 
-        changed = plan_input(tokens, "balanced", "meeting-a", "action-b", "vim")
+        changed = plan_input(tokens, "balanced", "meeting-a", "action-b", "code")
         self.assertNotEqual(balanced.steps, changed.steps)
 
     def test_one_literal_is_one_line_and_the_return_keeps_the_profile_pace(self):
@@ -31,7 +31,7 @@ class TypingPolicyTest(unittest.TestCase):
             {"kind": "literal", "value": "    return items"},
             {"kind": "key", "value": "Enter"},
         ]
-        plan = plan_input(tokens, "fast", "meeting", "action", "vim", allow_paste=False)
+        plan = plan_input(tokens, "fast", "meeting", "action", "code", allow_paste=False)
         self.assertEqual(["literal", "key", "literal", "key"],
                          [step.kind for step in plan.steps])
         self.assertEqual(["def quick_sort(items):", "Enter", "    return items", "Enter"],
@@ -52,7 +52,7 @@ class TypingPolicyTest(unittest.TestCase):
             "fast",
             "meeting",
             "action",
-            "vim",
+            "code",
             allow_paste=False,
         )
         rest = next(step for step in plan.steps if step.kind == "rest")
@@ -63,9 +63,9 @@ class TypingPolicyTest(unittest.TestCase):
         """The profile's semantic pause still lands, now after the whole line."""
         spec = PROFILE_SPECS["balanced"]
         plain = plan_input([{"kind": "literal", "value": "value = other"}],
-                           "balanced", "m", "a", "vim", allow_paste=False)
+                           "balanced", "m", "a", "code", allow_paste=False)
         boundary = plan_input([{"kind": "literal", "value": "value = other;"}],
-                              "balanced", "m", "a", "vim", allow_paste=False)
+                              "balanced", "m", "a", "code", allow_paste=False)
         self.assertGreaterEqual(boundary.steps[0].delay_after_ms, spec.semantic_min_ms)
         self.assertGreater(boundary.steps[0].delay_after_ms, plain.steps[0].delay_after_ms)
 
@@ -76,7 +76,7 @@ class TypingPolicyTest(unittest.TestCase):
             "balanced",
             "meeting",
             "long-action",
-            "vim",
+            "code",
         )
         self.assertTrue(plan.uses_paste)
         self.assertEqual(text, "".join(step.value for step in plan.steps))
@@ -91,27 +91,12 @@ class TypingPolicyTest(unittest.TestCase):
             "balanced",
             "meeting",
             "slow-action",
-            "vim",
+            "code",
             allow_paste=False,
         )
         self.assertFalse(plan.uses_paste)
         self.assertEqual(text, "".join(step.value for step in plan.steps))
         self.assertTrue(all(step.change_kind == "typing" for step in plan.steps))
-
-    def test_editor_commands_and_special_keys_are_not_converted_to_paste(self):
-        tokens = [
-            {"kind": "literal", "value": "i"},
-            {"kind": "literal", "value": "x" * 300},
-            {"kind": "key", "value": "Escape"},
-            {"kind": "literal", "value": ":wq"},
-            {"kind": "key", "value": "Enter"},
-        ]
-        plan = plan_input(tokens, "balanced", "meeting", "action", "vim")
-        self.assertEqual("i", plan.steps[0].value)
-        self.assertEqual("editor_command", plan.steps[0].input_context)
-        self.assertTrue(any(step.change_kind == "paste" for step in plan.steps))
-        self.assertEqual(["Escape", "Enter"], [step.value for step in plan.steps if step.kind == "key"])
-        self.assertIn(":wq", "".join(step.value for step in plan.steps))
 
     def test_rest_pauses_before_enter_without_sending_keys(self):
         plan = plan_input(
@@ -145,7 +130,7 @@ class TypingPolicyTest(unittest.TestCase):
         self.assertGreaterEqual(plan.planned_duration_ms, 200)
 
     def test_command_never_uses_paste(self):
-        text = "vim -- " + "very-long-path/" * 30 + "notes.md"
+        text = "python -- " + "very-long-path/" * 30 + "notes.md"
         plan = plan_input(
             [{"kind": "literal", "value": text}, {"kind": "key", "value": "Enter"}],
             "fast",

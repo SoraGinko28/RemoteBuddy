@@ -271,8 +271,8 @@ class InteractiveRunnerTest(unittest.TestCase):
             self.store,
             self.transport,
             pane_id,
-            "vim",
-            str(self.store.workspace_path / "notes file.md"),
+            "vim 'notes file.md'",
+            "",
             0,
         )
         send_tokens_with_captures(
@@ -411,10 +411,10 @@ class InteractiveRunnerTest(unittest.TestCase):
         ]
         self.assertTrue(typed)
 
-    def test_multiline_keystrokes_at_shell_are_rejected(self):
-        # Regression for the vim-state confusion failure: a model typed a whole
-        # Python file (framed by Vim `i` ... `:wq`) as keystrokes while bash was
-        # still the foreground program, executing every line as a command.
+    def test_keystrokes_at_a_shell_prompt_are_not_policed_by_the_harness(self):
+        # The harness keeps no per-program knowledge: keys go to whatever holds
+        # the foreground, and the Skill -- not a validator -- is what tells the
+        # Agent why typing a document at a shell prompt is a mistake.
         client = FakeClient(
             [
                 make_action(),
@@ -424,8 +424,6 @@ class InteractiveRunnerTest(unittest.TestCase):
                         "$text i",
                         "$text import socket",
                         "$ctrl Enter",
-                        "$text HOST = \"127.0.0.1\"",
-                        "$ctrl Enter",
                         "$text :wq",
                         "$ctrl Enter",
                     ],
@@ -434,7 +432,7 @@ class InteractiveRunnerTest(unittest.TestCase):
                 make_action(
                     "chat",
                     message_type="question",
-                    content="I will open the file with the structured vim command instead.",
+                    content="I will open the file in the editor instead.",
                 ),
             ]
         )
@@ -443,21 +441,19 @@ class InteractiveRunnerTest(unittest.TestCase):
             typing_interval_seconds=0,
         ).start()
         loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual("waiting_for_user", loaded.meeting.phase)
         rejected = [
             event
             for event in loaded.events()
             if event["kind"] == "action" and event["data"].get("status") == "rejected"
         ]
-        self.assertEqual(1, len(rejected))
-        self.assertIn("at most one input line", rejected[0]["content"])
+        self.assertEqual([], rejected)
         typed = [
             token.get("value")
             for _pane, tokens in self.transport.tokens
             for token in tokens
             if token.get("kind") == "literal"
         ]
-        self.assertNotIn("import socket", typed)
+        self.assertIn("import socket", typed)
 
     def test_rule_plan_can_interrupt_between_lines(self):
         pane_id = self.transport.create_workspace_session(
@@ -504,7 +500,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         client = FakeClient(
             [
                 make_action(),
-                make_action("command", command="vim", path="notes.md"),
+                make_action("command", command="vim notes.md"),
             ]
         )
         shared_lock = threading.RLock()
@@ -599,9 +595,9 @@ class InteractiveRunnerTest(unittest.TestCase):
         client = FakeClient(
             [
                 make_action(),
-                make_action("command", command="vim", path="notes.md"),
+                make_action("command", command="vim notes.md"),
                 make_action(
-                    "vim_keys",
+                    "keystrokes",
                     keys=[
                         {"kind": "literal", "value": "i"},
                         {"kind": "literal", "value": "# Notes"},
@@ -634,7 +630,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             client.calls[0][3]["allowed_types"],
         )
         self.assertEqual(
-            ("chat", "vim_keys", "keystrokes", "observe"),
+            ("chat", "keystrokes", "observe"),
             client.calls[2][3]["allowed_types"],
         )
         self.assertIn("Be specific.", client.calls[0][1])
@@ -654,11 +650,11 @@ class InteractiveRunnerTest(unittest.TestCase):
         client = FakeClient(
             [
                 make_action(),
-                make_action("command", command="vim", path="notes.md"),
+                make_action("command", command="vim notes.md"),
                 # This is structurally valid, but invalid once Vim owns the pane.
                 make_action("command", command="pwd"),
                 make_action(
-                    "vim_keys",
+                    "keystrokes",
                     keys=[
                         {"kind": "literal", "value": ":wq"},
                         {"kind": "key", "value": "Enter"},
@@ -693,7 +689,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual("command", rejected[0]["data"]["action"]["type"])
         self.assertEqual(5, len(client.calls))
         self.assertEqual(
-            ("chat", "vim_keys", "keystrokes", "observe"),
+            ("chat", "keystrokes", "observe"),
             client.calls[3][3]["allowed_types"],
         )
 
@@ -701,9 +697,9 @@ class InteractiveRunnerTest(unittest.TestCase):
         client = FakeClient(
             [
                 make_action(),
-                make_action("command", command="vim", path="notes.md"),
+                make_action("command", command="vim notes.md"),
                 make_action(
-                    "vim_keys",
+                    "keystrokes",
                     keys=[
                         {"kind": "literal", "value": "i"},
                         {"kind": "literal", "value": "draft"},
@@ -711,7 +707,7 @@ class InteractiveRunnerTest(unittest.TestCase):
                 ),
                 make_action("chat", message_type="progress", content="Vim is now visibly open."),
                 make_action(
-                    "vim_keys",
+                    "keystrokes",
                     keys=[
                         {"kind": "literal", "value": ":wq"},
                         {"kind": "key", "value": "Enter"},
@@ -724,7 +720,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         ).start()
         self.assertEqual(
-            ("chat", "vim_keys", "keystrokes", "observe"),
+            ("chat", "keystrokes", "observe"),
             client.calls[4][3]["allowed_types"],
         )
         self.assertEqual(
@@ -777,12 +773,12 @@ class InteractiveRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(AgentProtocolError, "send a plain chat or observe"):
             runner._validate_action_for_current_phase(claimed)
 
-    def test_agent_capture_pump_records_delayed_vim_redraw(self):
+    def test_agent_capture_pump_records_delayed_editor_redraw(self):
         self.transport = DelayedVimTransport()
         client = PauseOnThirdClient(
             [
                 make_action(),
-                make_action("command", command="vim", path="notes.md"),
+                make_action("command", command="vim notes.md"),
                 make_action(
                     "chat",
                     message_type="question",
@@ -811,9 +807,9 @@ class InteractiveRunnerTest(unittest.TestCase):
         client = FakeClient(
             [
                 make_action(),
-                make_action("command", command="vim", path="notes.md"),
+                make_action("command", command="vim notes.md"),
                 make_action(
-                    "vim_keys",
+                    "keystrokes",
                     keys=[{"kind": "key", "value": "i"}],
                 ),
                 make_action("done", message_type="final", content="Inserted text."),
@@ -831,9 +827,9 @@ class InteractiveRunnerTest(unittest.TestCase):
         client = FakeClient(
             [
                 make_action(),
-                make_action("command", command="vim", path="notes.md"),
+                make_action("command", command="vim notes.md"),
                 make_action(
-                    "vim_keys",
+                    "keystrokes",
                     keys=[
                         {"kind": "key", "value": "Escape"},
                         {"kind": "literal", "value": ":w"},
@@ -1067,9 +1063,9 @@ class InteractiveRunnerTest(unittest.TestCase):
     def test_workspace_paths_cannot_escape(self):
         current = str(self.store.workspace_path)
         with self.assertRaises(RunnerError):
-            resolve_workspace_path(self.store, current, "../outside", "vim")
+            resolve_workspace_path(self.store, current, "../outside", "cd")
         with self.assertRaises(RunnerError):
-            resolve_workspace_path(self.store, current, "/tmp/outside", "vim")
+            resolve_workspace_path(self.store, current, "/tmp/outside", "cd")
         with self.assertRaises(RunnerError):
             resolve_workspace_path(self.store, current, "missing.py", "python")
         script = self.store.workspace_path / "snake.py"
@@ -1206,113 +1202,3 @@ class AttachmentObservationTest(unittest.TestCase):
         runner = InteractiveRunner(self.store, FakeTransport(), FakeClient([]),
                                    lock=threading.RLock())
         self.assertEqual([], runner._images_of(self.store.events_after(0)))
-
-
-class ShellKeystrokeFramingTest(unittest.TestCase):
-    """bash 在前台时，keystrokes 不许带 Vim 的那套写法（Escape、`:wq`）。"""
-
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
-        skill = self.root / "SKILL.md"
-        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
-        self.store = MeetingStore.create(
-            self.root, "shell-framing", "改一下 CSS。", skill, "remotebuddy-shell-framing",
-            "test-model", workspace=self.root,
-        )
-        self.transport = FakeTransport()
-
-    def tearDown(self):
-        self.temporary.cleanup()
-
-    def run_client(self, action):
-        client = FakeClient([action, make_action("chat", message_type="question",
-                                                 content="先看看现在是什么状态")])
-        InteractiveRunner(self.store, self.transport, client, action_settle_seconds=0,
-                          typing_interval_seconds=0).start()
-        loaded = MeetingStore.load_in_workspace(self.root, "shell-framing")
-        rejections = [event for event in loaded.events()
-                      if event["kind"] == "action" and event["data"].get("status") == "rejected"]
-        return rejections
-
-    def test_escape_then_wq_at_the_shell_is_refused(self):
-        rejections = self.run_client(make_action(
-            "keystrokes",
-            keys=[{"kind": "key", "value": "Escape"},
-                  {"kind": "literal", "value": ":wq"},
-                  {"kind": "key", "value": "Enter"}],
-        ))
-        self.assertEqual(1, len(rejections))
-        self.assertIn("may not use Vim keys", rejections[0]["content"])
-        # 一个字都没落到 shell 里
-        typed = [token.get("value") for _pane, tokens in self.transport.tokens
-                 for token in tokens if token.get("kind") == "literal"]
-        self.assertEqual([], typed)
-
-    def test_one_plain_command_line_at_the_shell_is_still_allowed(self):
-        rejections = self.run_client(make_action(
-            "keystrokes",
-            keys=[{"kind": "literal", "value": "ls -la"},
-                  {"kind": "key", "value": "Enter"}],
-        ))
-        self.assertEqual([], rejections)
-
-
-class EditingLoopHintTest(unittest.TestCase):
-    """反复开关同一个文件、以及"以为存了其实没存"，都要在观察里说出来。"""
-
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
-        skill = self.root / "SKILL.md"
-        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
-        self.store = MeetingStore.create(
-            self.root, "editing-loop", "改一下样式。", skill, "remotebuddy-editing-loop",
-            "test-model", workspace=self.root,
-        )
-        self.transport = FakeTransport()
-        self.runner = InteractiveRunner(self.store, self.transport, FakeClient([]),
-                                        lock=threading.RLock())
-        (self.root / "page.css").write_text("a { color: red }\n", encoding="utf-8")
-
-    def tearDown(self):
-        self.temporary.cleanup()
-
-    def observe(self):
-        return self.runner._observation(self.store.events_after(0), False, force_history=True)
-
-    def test_opening_the_same_file_again_is_counted_and_said(self):
-        for _ in range(3):
-            self.runner._note_editing(make_action("command", command="vim", path="page.css"))
-        observation = self.observe()
-        self.assertIn("opened page.css at least 3 times", observation)
-        self.assertIn('"open_in_this_meeting"', observation)
-
-    def test_a_save_that_never_reached_the_file_is_said(self):
-        self.runner._note_editing(make_action("command", command="vim", path="page.css"))
-        # 盘上什么都没发生（按键其实打到了 shell 上），所以这次 :wq 没落地
-        self.runner._note_write_attempt(make_action(
-            "vim_keys", keys=[{"kind": "literal", "value": ":wq"},
-                              {"kind": "key", "value": "Enter"}]))
-        observation = self.observe()
-        self.assertIn("did not change after your last save", observation)
-        # 说过一次就不再重复
-        self.assertNotIn("did not change after your last save", self.observe())
-
-    def test_a_save_that_landed_says_nothing(self):
-        self.runner._note_editing(make_action("command", command="vim", path="page.css"))
-        (self.root / "page.css").write_text("a { color: blue }\n", encoding="utf-8")
-        self.runner._note_write_attempt(make_action(
-            "vim_keys", keys=[{"kind": "literal", "value": ":wq"},
-                              {"kind": "key", "value": "Enter"}]))
-        self.assertNotIn("did not change after your last save", self.observe())
-
-    def test_a_vim_line_typed_into_the_shell_counts_as_opening(self):
-        self.runner._note_editing(make_action("command", command="vim page.css"))
-        self.runner._note_editing(make_action("command", command="vim page.css"))
-        self.runner._note_editing(make_action("command", command="vim page.css"))
-        self.assertIn("opened page.css at least 3 times", self.observe())
-
-    def test_a_path_outside_the_workspace_is_ignored(self):
-        self.runner._note_editing(make_action("command", command="vim", path="../../etc/hosts"))
-        self.assertEqual({}, self.runner._edit_rounds)

@@ -37,11 +37,17 @@ def act(a_type, message_type="none", content="", command="none", path="", keys=N
     return {"type": a_type, "message_type": message_type, "content": content,
             "command": command, "path": path, "keys": keys or [], "delay_ms": delay_ms}
 
-VIM_KEYS = [
+EDIT_KEYS = [
     {"kind": "literal", "value": "i"},
     {"kind": "literal", "value": "Machine Notes: benchmark plan"},
     {"kind": "key", "value": "Escape"},
     {"kind": "literal", "value": ":wq"},
+    {"kind": "key", "value": "Enter"},
+]
+
+LEAVE_EDITOR_KEYS = [
+    {"kind": "key", "value": "Escape"},
+    {"kind": "literal", "value": ":q!"},
     {"kind": "key", "value": "Enter"},
 ]
 
@@ -51,15 +57,15 @@ SCRIPT = {
     3: act("command", command="ls -la"),
     4: act("command", command="rm -rf build"),
     5: act("command", command="mkdir -p build"),
-    6: act("command", command="vim", path="notes.md"),
-    7: act("vim_keys", keys=VIM_KEYS),
+    6: act("command", command="vim notes.md"),
+    7: act("keystrokes", keys=EDIT_KEYS),
     8: act("command", command="none"),
     9: act("chat", "progress", "已在 notes.md 里写入了基准计划。"),
     10: act("command", command="python", path="analysis.py"),
-    11: act("terminal_keys", keys=[{"kind": "key", "value": "C-c"}]),
-    12: act("chat", "progress", "analysis.py 已运行完毕，输出正常。"),
-    13: act("vim_keys", keys=[{"kind": "literal", "value": "i"}]),  # no editor is open
-    14: act("command", command="git status"),
+    11: act("keystrokes", keys=[{"kind": "key", "value": "C-c"}]),
+    12: act("command", command="vim notes.md"),
+    13: act("command", command="pwd"),  # the editor owns the pane: structurally invalid
+    14: act("keystrokes", keys=LEAVE_EDITOR_KEYS),
     15: act("done", "final", "笔记与分析脚本均已就绪，任务完成。"),
 }
 
@@ -233,7 +239,7 @@ class CodexTaskEndToEndTest(unittest.TestCase):
             if event["kind"] == "action" and event.get("data", {}).get("reason") == "phase_mismatch"
         ]
         self.assertEqual(2, len(invalid))  # rm -rf build, command:"none"
-        self.assertEqual(1, len(mismatch))  # vim keys while the shell owns the pane
+        self.assertEqual(1, len(mismatch))  # a shell line while the editor owns the pane
 
         records = self.audit_records()
         feedback = {r["turn"]: r["feedback_seen"] for r in records if "feedback_seen" in r}

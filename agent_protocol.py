@@ -25,13 +25,13 @@ REST_MIN_MS = 20
 REST_MAX_MS = 2000
 # The vocabulary one action may use. Kept as an ordered tuple as well: a
 # rejection has to name the choices, and that text goes back to the model.
-ACTION_TYPE_ORDER = ("chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done")
+ACTION_TYPE_ORDER = ("chat", "command", "keystrokes", "observe", "done")
 ACTION_TYPES = set(ACTION_TYPE_ORDER)
 REFERENCE_KINDS = {"chat", "screen"}
 # Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
 MAX_ACTION_REFERENCES = 32
 # Structured commands keep workspace path resolution and safe quoting.
-STRUCTURED_COMMANDS = {"pwd", "cd", "vim", "python"}
+STRUCTURED_COMMANDS = {"pwd", "cd", "python"}
 MAX_SHELL_COMMAND_CHARS = 2000
 # The relaxed shell policy allows general bash and restricts only the
 # deletion/destruction family. Tokens are matched against every whitespace-
@@ -285,7 +285,7 @@ class AgentAction:
             if command in STRUCTURED_COMMANDS:
                 if command == "pwd" and path:
                     raise AgentProtocolError("pwd does not accept a path")
-                if command in {"cd", "vim", "python"} and not path:
+                if command in {"cd", "python"} and not path:
                     raise AgentProtocolError(f"{command} requires a path")
             else:
                 # Relaxed policy: any bash command line is accepted except the
@@ -300,7 +300,7 @@ class AgentAction:
                     raise AgentProtocolError("a bash command line does not accept a separate path")
             if keys or delay_ms:
                 raise AgentProtocolError("command has unrelated fields")
-        elif action_type in {"vim_keys", "terminal_keys", "keystrokes"}:
+        elif action_type == "keystrokes":
             if message_type != "none" or content or command != "none" or path or delay_ms:
                 raise AgentProtocolError(f"{action_type} has unrelated fields")
             validate_key_tokens(keys)
@@ -577,7 +577,7 @@ def normalize_reference_tokens(raw: Any) -> list:
 
 def validate_key_tokens(tokens: Sequence[Any]) -> None:
     if not tokens or len(tokens) > 128:
-        raise AgentProtocolError("vim_keys must contain 1 to 128 tokens")
+        raise AgentProtocolError("keystrokes must contain 1 to 128 tokens")
     total = 0
     for token in tokens:
         if not isinstance(token, dict) or set(token) != {"kind", "value"}:
@@ -838,7 +838,7 @@ def action_json_schema(
     allowed_message_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     action_types = list(
-        allowed_types or ("chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done")
+        allowed_types or ("chat", "command", "keystrokes", "observe", "done")
     )
     message_types = set(
         allowed_message_types or ("none", "ack", "progress", "question", "final")
@@ -1008,7 +1008,7 @@ def action_json_schema(
         variants.append(branch("done", ("final",), ("none",), content=True, references=True))
     if "command" in action_types and "none" in message_types:
         variants.append(branch("command", ("none",), ("pwd",)))
-        for command in ("cd", "vim", "python"):
+        for command in ("cd", "python"):
             variants.append(branch("command", ("none",), (command,), path=True))
         variants.append(
             branch(
@@ -1025,15 +1025,14 @@ def action_json_schema(
                         "Deletion-class commands (rm, rmdir, unlink, shred, truncate, dd, "
                         "mkfs, find -delete, rsync --delete, git clean/rm) and anything "
                         "leaving the shared interface (background '&' jobs, nohup, setsid, "
-                        "disown, tmux, screen, open, osascript, exec) are rejected."
+                        "disown, tmux, screen, open, osascript, exec) are rejected. Any "
+                        "program started this way (an editor, a REPL, a pager) takes the "
+                        "pane's foreground; read the screen to see what is in front, then "
+                        "type into it with the keystrokes action."
                     ),
                 },
             )
         )
-    if "vim_keys" in action_types and "none" in message_types:
-        variants.append(branch("vim_keys", ("none",), ("none",), keys=True))
-    if "terminal_keys" in action_types and "none" in message_types:
-        variants.append(branch("terminal_keys", ("none",), ("none",), keys=True))
     if "keystrokes" in action_types and "none" in message_types:
         variants.append(branch("keystrokes", ("none",), ("none",), keys=True))
     if "observe" in action_types and "none" in message_types:

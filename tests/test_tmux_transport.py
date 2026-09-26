@@ -252,12 +252,16 @@ class TmuxTransportTest(unittest.TestCase):
 
     def test_workspace_command_text_is_safe_and_exact(self):
         self.assertEqual("pwd", workspace_command_text("pwd"))
+        # Starting an editor is an ordinary bash command line: it passes
+        # through verbatim and takes no separate path argument.
         self.assertEqual(
-            "vim -Nu NONE -i NONE -n -- '/tmp/work space/note.md'",
-            workspace_command_text("vim", "/tmp/work space/note.md"),
+            "vim -Nu NONE -n '/tmp/work space/note.md'",
+            workspace_command_text("vim -Nu NONE -n '/tmp/work space/note.md'"),
         )
         with self.assertRaises(TmuxError):
             workspace_command_text("bash", "notes.md")
+        with self.assertRaises(TmuxError):
+            workspace_command_text("vim", "notes.md")
 
     def test_menu_choice_is_literal_and_validated(self):
         self.transport.send_menu_choice("%7", "2")
@@ -330,10 +334,12 @@ class TmuxTransportTest(unittest.TestCase):
         self.pane.dead = "1"
         self.assertFalse(self.transport.pane_alive("%7"))
 
-    def test_workspace_commands_and_vim_keys_are_structured(self):
-        self.transport.send_workspace_command("%7", "vim", "/tmp/workspace/a;$(x).md")
+    def test_workspace_commands_and_keystrokes_are_structured(self):
+        self.transport.send_workspace_command(
+            "%7", "vim -Nu NONE -n '/tmp/workspace/a;$(x).md'"
+        )
         self.assertEqual(
-            "vim -Nu NONE -i NONE -n -- '/tmp/workspace/a;$(x).md'",
+            "vim -Nu NONE -n '/tmp/workspace/a;$(x).md'",
             self.pane.inputs[0]["text"],
         )
         self.assertTrue(self.pane.inputs[0]["literal"])

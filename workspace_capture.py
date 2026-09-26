@@ -61,8 +61,6 @@ def resolve_workspace_path(store: MeetingStore, current_path: str, requested: st
         raise RunnerError("requested path escapes the shared workspace")
     if command == "cd" and not candidate.is_dir():
         raise RunnerError("cd target is not a directory")
-    if command == "vim" and not candidate.parent.is_dir():
-        raise RunnerError("vim target parent does not exist")
     if command == "python" and (candidate.suffix != ".py" or not candidate.is_file()):
         raise RunnerError("python target must be an existing .py file in the workspace")
     return candidate

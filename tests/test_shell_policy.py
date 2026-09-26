@@ -224,7 +224,7 @@ class ShellPolicyRunnerTest(unittest.TestCase):
             [
                 make_action(),
                 make_action("command", command="top"),
-                make_action("terminal_keys", keys=[{"kind": "key", "value": "C-c"}]),
+                make_action("keystrokes", keys=[{"kind": "key", "value": "C-c"}]),
                 make_action("done", message_type="final", content="Checked the process list."),
             ]
         )
@@ -235,7 +235,7 @@ class ShellPolicyRunnerTest(unittest.TestCase):
         loaded = MeetingStore.load(self.root, "shell-demo")
         self.assertEqual("completion_proposed", loaded.meeting.phase)
         self.assertEqual(
-            ("chat", "terminal_keys", "keystrokes", "observe"),
+            ("chat", "keystrokes", "observe"),
             client.calls[2][3]["allowed_types"],
         )
         self.assertIn(("%1", [{"kind": "key", "value": "C-c"}]), transport.tokens)

@@ -277,17 +277,16 @@ class AgentActionTest(unittest.TestCase):
                 type="command",
                 message_type="none",
                 content="",
-                command="vim",
-                path="notes.md",
+                command="vim notes.md",
             )
         )
-        self.assertEqual("vim", command.command)
+        self.assertEqual("vim notes.md", command.command)
         with self.assertRaises(ModelResponseError):
             AgentAction.from_dict(action_payload(type="command", content="rm -rf ."))
         with self.assertRaisesRegex(ModelResponseError, "not allowed"):
             AgentAction.from_dict(
                 action_payload(
-                    type="vim_keys",
+                    type="keystrokes",
                     message_type="none",
                     content="",
                     keys=[{"kind": "key", "value": "F12"}],
@@ -296,7 +295,7 @@ class AgentActionTest(unittest.TestCase):
         with self.assertRaisesRegex(ModelResponseError, "control characters"):
             AgentAction.from_dict(
                 action_payload(
-                    type="vim_keys",
+                    type="keystrokes",
                     message_type="none",
                     content="",
                     keys=[{"kind": "literal", "value": "\x1b"}],
@@ -304,7 +303,7 @@ class AgentActionTest(unittest.TestCase):
             )
         insert = AgentAction.from_dict(
             action_payload(
-                type="vim_keys",
+                type="keystrokes",
                 message_type="none",
                 content="",
                 keys=[{"kind": "key", "value": "i"}],
@@ -314,10 +313,10 @@ class AgentActionTest(unittest.TestCase):
         with self.assertRaises(ModelResponseError):
             AgentAction.from_dict(action_payload(), allowed_types=("command",))
 
-    def test_vim_visible_newlines_become_enter_without_corrupting_string_escapes(self):
+    def test_visible_newlines_become_enter_without_corrupting_string_escapes(self):
         action = AgentAction.from_dict(
             action_payload(
-                type="vim_keys",
+                type="keystrokes",
                 message_type="none",
                 content="",
                 keys=[
@@ -343,7 +342,7 @@ class AgentActionTest(unittest.TestCase):
 
         actual_newline = AgentAction.from_dict(
             action_payload(
-                type="vim_keys",
+                type="keystrokes",
                 message_type="none",
                 content="",
                 keys=[{"kind": "literal", "value": "first\nsecond"}],
@@ -453,7 +452,7 @@ class AgentActionTest(unittest.TestCase):
         key_variants = [
             variant
             for variant in full_schema["properties"]["action"]["anyOf"]
-            if variant["properties"]["type"]["enum"] == ["vim_keys"]
+            if variant["properties"]["type"]["enum"] == ["keystrokes"]
         ][0]["properties"]["keys"]["items"]["anyOf"]
         self.assertEqual(["literal"], key_variants[0]["properties"]["kind"]["enum"])
         self.assertIn("pattern", key_variants[0]["properties"]["value"])

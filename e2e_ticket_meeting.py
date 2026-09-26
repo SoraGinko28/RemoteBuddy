@@ -211,7 +211,7 @@ def main(argv=None) -> int:
                         help="跑完怎么处置这场会：留着（默认，页面上还能接管、聊天、发下一张）、"
                              "收掉（照页面的结束并保留）还是停掉")
     args = parser.parse_args(argv)
-    human = args.task + "\n结果写进 quicksort.py（就地写文件），写完回复 DONE，不要问我问题。"
+    human = args.task + f"\n结果写进 {args.target}（就地写文件），写完回复 DONE，不要问我问题。"
 
     workflow = load_workflow(project_root=REPO_ROOT)
     service = MeetingService(REPO_ROOT, human, meeting_id=args.meeting_id,
@@ -228,7 +228,7 @@ def main(argv=None) -> int:
     meeting = Meeting(ticket_root, workflow)
     for name in ("actor", "assistant", "critic"):
         meeting.join(Member(name, name, {}))            # 能力表在成员自己的进程里
-    case = meeting.case("quicksort")
+    case = meeting.case(Path(args.target).stem or "quicksort")
 
     issued: List[str] = []
     try:
@@ -288,8 +288,8 @@ def _summary(service: MeetingService, workflow, meeting: Meeting, case: str, iss
 
     if issued != FLOW:
         failures.append(f"五张工单没按流程发完：{issued}")
-    if "def quick_sort" not in written:
-        failures.append(f"{args.target} 里没有 quick_sort：{target}")
+    if not written:
+        failures.append(f"{args.target} 没写出来：{target}")
     if verdicts["judged_revision"] is not True:
         failures.append(f"最后那版没被判合格：judged_revision={verdicts['judged_revision']}")
     if args.expect not in written:

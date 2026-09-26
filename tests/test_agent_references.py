@@ -309,8 +309,8 @@ class AgentActionRejectionHintTest(unittest.TestCase):
     def test_an_unknown_type_is_told_which_types_exist(self):
         with self.assertRaisesRegex(
                 AgentActionError,
-                "model action type is invalid: expected chat, command, vim_keys, "
-                "terminal_keys, keystrokes, observe, or done"):
+                "model action type is invalid: expected chat, command, keystrokes, "
+                "observe, or done"):
             decode_action_text(json.dumps({"type": "write", "message_type": "none"}))
 
     def test_a_type_the_phase_forbids_is_told_what_the_phase_allows(self):

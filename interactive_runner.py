@@ -7,7 +7,6 @@ import threading
 import time
 import uuid
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from agent_protocol import (
@@ -17,13 +16,10 @@ from agent_protocol import (
     AgentBackendError,
     AgentInterrupted,
     AgentProtocolError,
-    _name_list,
-    normalize_model_key_tokens,
 )
 from meeting_v2 import MeetingError, MeetingStore, utc_now
 from references import reference_from_event
-from tmux_transport import TmuxError, TmuxTransport, workspace_command_text
-from typing_policy import TypingPlan, plan_input
+from tmux_transport import TmuxError, TmuxTransport
 
 from typing_executor import (  # noqa: F401
     send_command_with_captures,
@@ -49,12 +45,6 @@ MAX_INVALID_ACTION_RETRIES = 3
 # completes; once the threshold is hit, move on").
 DYNAMIC_STALL_LIMIT = 3
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
-# 同一个文件被打开多少次就开始提醒模型（"反复开关同一个位置"是实测里最贵的打转）。
-EDIT_ROUNDS_HINT = 3
-# 一条命令行里 `vim <路径>` 的样子：结构化 vim 动作之外，模型也常把整行打进 shell。
-VIM_LINE_RE = re.compile(r"(?:^|[\s;&|(])vim\s+(?P<path>[^\s;&|)]+)")
-# 会写盘的那些 Ex 命令。
-WRITE_COMMAND_RE = re.compile(r"^:\s*(?:w|wq|wa|wqa|x|xa)\s*!?\s*$")
 # 一轮里最多交给模型几张图：够用就行，免得一次把整场会的图都塞进去。
 MAX_IMAGES_PER_TURN = 4
 # 太大的图不随请求走（观察里仍然写着它在哪），免得一次请求大到发不出去。
@@ -62,35 +52,6 @@ MAX_IMAGE_BYTES_PER_TURN = 4 * 1024 * 1024
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
 MESSAGE_TYPES = ("none", "ack", "progress", "question", "final")
-
-
-def _edited_file(action: AgentAction) -> Optional[str]:
-    """这次动作在编辑哪个文件：结构化的 `vim <路径>`，或者整行打进去的 `vim <路径>`。"""
-    if getattr(action, "type", "") != "command":
-        return None
-    if getattr(action, "command", "") == "vim":
-        return str(getattr(action, "path", "") or "") or None
-    found = VIM_LINE_RE.search(str(getattr(action, "command", "") or ""))
-    return found.group("path") if found else None
-
-
-def _writes_the_file(keys: Sequence[Any]) -> bool:
-    """这些按键里有没有写盘的那一条（`:w` / `:wq` / `:x`）。"""
-    for token in keys or []:
-        if not isinstance(token, dict):
-            continue
-        if WRITE_COMMAND_RE.match(str(token.get("value") or "").strip()):
-            return True
-    return False
-
-
-def _file_signature(path) -> Optional[tuple]:
-    """一个文件的（改动时间, 大小）；文件不在了就是 None。"""
-    try:
-        stat = Path(path).stat()
-    except OSError:
-        return None
-    return (stat.st_mtime_ns, stat.st_size)
 
 
 class InteractiveRunner:
@@ -131,12 +92,6 @@ class InteractiveRunner:
         self._current_input_seq = self.store.last_event_sequence()
         self._stall_fingerprint: Optional[tuple] = None
         self._stall_streak = 0
-        # 编辑这本书：这场会里每个文件开过几次、这次开着的是哪个、开之前它长什么样。
-        # 反复开关同一个位置，和"以为存了其实没存"，都从这里看得出来。
-        self._editing_path: Optional[str] = None
-        self._edit_rounds: Dict[str, int] = {}
-        self._edit_signature: Optional[tuple] = None
-        self._save_missed: Optional[str] = None
 
     @property
     def agent_name(self) -> str:
@@ -693,7 +648,7 @@ class InteractiveRunner:
                 # refuse to run it, then re-observe and let the model decide
                 # again against the current screen.
                 if response.action.type in {
-                    "command", "vim_keys", "terminal_keys", "keystrokes",
+                    "command", "keystrokes",
                 }:
                     pane_id = self.store.meeting.pane_id
                     before = self._screen_before_think
@@ -771,9 +726,10 @@ class InteractiveRunner:
         """What the pane structurally allows now, and whether the cycle must close.
 
         The runner constrains only what is physically possible in the shared
-        pane (you cannot drive Vim from a shell prompt). How the Agent talks to
-        the human — when to acknowledge, when to answer in one line, when to
-        report a result — belongs to the Skill, not to the harness.
+        pane: a shell command line has to be typed at a shell prompt, while keys
+        go to whatever program currently holds the foreground. How the Agent
+        talks to the human — when to acknowledge, when to answer in one line,
+        when to report a result — belongs to the Skill, not to the harness.
         """
         elapsed = self._cycle_elapsed()
         configured_timeout = float(
@@ -791,15 +747,11 @@ class InteractiveRunner:
             return ("chat",), MESSAGE_TYPES, True
         if command in SHELL_COMMANDS:
             return ("chat", "command", "done", "observe", "keystrokes"), MESSAGE_TYPES, False
-        if command in {"vim", "vi"}:
-            return ("chat", "vim_keys", "keystrokes", "observe"), MESSAGE_TYPES, False
-        if command.startswith("python"):
-            return ("chat", "terminal_keys", "keystrokes", "observe"), MESSAGE_TYPES, False
         if command:
-            # Any other foreground program launched by a relaxed bash command:
-            # the Agent may type into it (including C-c) or observe, keeping
-            # every interaction inside the shared pane.
-            return ("chat", "terminal_keys", "keystrokes", "observe"), MESSAGE_TYPES, False
+            # A foreground program launched by a relaxed bash command: the
+            # Agent may type into it (including C-c) or observe, keeping every
+            # interaction inside the shared pane.
+            return ("chat", "keystrokes", "observe"), MESSAGE_TYPES, False
         return ("chat", "observe"), MESSAGE_TYPES, False
 
     def _cycle_elapsed(self) -> float:
@@ -896,51 +848,11 @@ class InteractiveRunner:
         try:
             AgentAction.from_dict(payload, allowed_types, allowed_messages)
             self._resolved_action_references(action)
-            if action.type == "keystrokes":
-                command = (self.store.meeting.current_command or "").lower()
-                if command in SHELL_COMMANDS:
-                    # Multi-line typing at a shell prompt executes every line
-                    # as a command — the classic failure is a model typing a
-                    # whole document (with Vim `i`/`:wq` framing) into bash.
-                    tokens = normalize_model_key_tokens(action.keys)
-                    enters = sum(
-                        1
-                        for token in tokens
-                        if token.get("kind") == "key" and token.get("value") == "Enter"
-                    )
-                    if enters > 1:
-                        raise AgentProtocolError(
-                            "the foreground program is the shell, so one keystrokes "
-                            "action may submit at most one input line; run shell "
-                            "command lines with the command action, and to type "
-                            "document text open the editor first with the structured "
-                            "vim command and wait until Vim is visible on screen"
-                        )
-                    # Vim framing is the same mistake with one line: `Escape`
-                    # then `:wq` at a shell is a model that still believes it is
-                    # in the editor, and the text leaks in as a command. The
-                    # named keys are the shell's; everything else belongs to a
-                    # foreground program and has to go through `vim_keys` or
-                    # `terminal_keys`, which check what is actually running.
-                    framing = [
-                        token for token in tokens
-                        if (token.get("kind") == "key"
-                            and token.get("value") not in {"Enter", "Tab", "C-c"})
-                        or (token.get("kind") == "literal"
-                            and str(token.get("value", "")).lstrip().startswith(":"))
-                    ]
-                    if framing:
-                        raise AgentProtocolError(
-                            "the foreground program is the shell, so a keystrokes action "
-                            "may not use Vim keys (Escape, `:wq`, and the like): open the "
-                            "file with the structured vim command first and wait until Vim "
-                            "is visible on screen, then send the keys as a vim_keys action"
-                        )
             if action.type == "chat" and action.message_type == "progress":
                 if self._last_terminal_evidence is None:
                     raise AgentProtocolError(
-                        "progress requires a completed Vim edit, Python run, or "
-                        "keystrokes/terminal-input action in this cycle; send a plain "
+                        "progress requires a completed terminal action in this cycle; "
+                        "send a plain "
                         "chat or observe instead when there is nothing new to report"
                     )
             if action.type == "done":
@@ -1154,36 +1066,7 @@ class InteractiveRunner:
                 "screen": screen.get("content", ""),
             },
         }
-        rounds = {
-            Path(path).name: count for path, count in self._edit_rounds.items()
-            if count >= 2
-        }
-        if rounds:
-            packet["editing"] = {
-                "open_in_this_meeting": rounds,
-                "now_editing": Path(self._editing_path).name if self._editing_path else "",
-            }
         notes = ""
-        if self._save_missed:
-            missed = Path(self._save_missed).name
-            notes += (
-                f"The file {missed} on disk did not change after your last save, so the "
-                "write never reached the editor (an Ex command typed while the shell is "
-                "the foreground program only answers `command not found`). Check that the "
-                "editor is the foreground program before sending `:w`, then save again -- "
-                "and read the file back before claiming the change. "
-            )
-            self._save_missed = None
-        repeated = [name for name, count in rounds.items() if count >= EDIT_ROUNDS_HINT]
-        if repeated:
-            notes += (
-                "You have opened "
-                + _name_list(repeated)
-                + f" at least {EDIT_ROUNDS_HINT} times in this meeting. Read the region "
-                "once, make the whole change in one editor session, save it, and check it "
-                "with a single `git diff`; if the change needs the human's decision, ask "
-                "instead of opening it again. "
-            )
         pictures = ""
         if self._images_of(unread):
             # 图片随这次请求一起交给模型了：直说一句，免得它去命令行里找 OCR。
@@ -1411,7 +1294,7 @@ class InteractiveRunner:
                 if info["command"] not in SHELL_COMMANDS:
                     raise RunnerError("structured commands are allowed only at the shell")
                 typed_path = ""
-                if action.command in {"cd", "vim", "python"}:
+                if action.command in {"cd", "python"}:
                     resolve_workspace_path(
                         self.store,
                         info["path"],
@@ -1431,46 +1314,11 @@ class InteractiveRunner:
                     profile=profile,
                     interrupt_check=interrupt_check,
                 )
-                self._note_editing(action)
-            elif action.type == "vim_keys":
-                if info["command"] not in {"vim", "vi"}:
-                    raise RunnerError("vim keys are allowed only while Vim is active")
-                send_tokens_with_captures(
-                    self.store,
-                    self.transport,
-                    pane_id,
-                    action.keys,
-                    min(self.action_settle_seconds, 0.05),
-                    self.typing_interval_seconds,
-                    meeting_id=self.store.meeting.meeting_id,
-                    action_id=action_id,
-                    profile=profile,
-                    context="vim",
-                    interrupt_check=interrupt_check,
-                )
-                self._note_write_attempt(action)
-            elif action.type == "terminal_keys":
-                if info["command"] in SHELL_COMMANDS or info["command"] in {"vim", "vi"} or not info["command"]:
-                    raise RunnerError(
-                        "terminal keys require an active foreground program (not the shell or Vim)"
-                    )
-                send_tokens_with_captures(
-                    self.store,
-                    self.transport,
-                    pane_id,
-                    action.keys,
-                    min(self.action_settle_seconds, 0.05),
-                    self.typing_interval_seconds,
-                    meeting_id=self.store.meeting.meeting_id,
-                    action_id=action_id,
-                    profile=profile,
-                    context="python",
-                    interrupt_check=interrupt_check,
-                )
             elif action.type == "keystrokes":
-                # Unified low-level keystroke DSL. It is allowed in the shell,
-                # Vim, Python, or any foreground program; the model is
-                # responsible for producing safe, human-like input sequences.
+                # One low-level keystroke DSL for the whole pane. Whatever holds
+                # the foreground receives the keys verbatim -- the shell, an
+                # editor, a REPL, a pager -- so the Agent reads the screen and
+                # decides what to send; the harness adds no per-program rules.
                 send_tokens_with_captures(
                     self.store,
                     self.transport,
@@ -1484,7 +1332,6 @@ class InteractiveRunner:
                     context="keystrokes",
                     interrupt_check=interrupt_check,
                 )
-                self._note_write_attempt(action)
             else:
                 raise RunnerError("unsupported agent action")
             if self.action_settle_seconds > 0:
@@ -1494,8 +1341,8 @@ class InteractiveRunner:
                 self._check_stop()
                 capture_workspace(self.store, self.transport)
                 self._complete_action(action_id)
-                if action.type in {"vim_keys", "terminal_keys", "keystrokes"} or (
-                    action.type == "command" and action.command == "python"
+                if action.type in {"keystrokes"} or (
+                    action.type == "command" and action.command != "cd"
                 ):
                     self._last_terminal_evidence = action.type
                 self.store.update(phase="agent_thinking")
@@ -1584,49 +1431,6 @@ class InteractiveRunner:
                 or self.store.meeting.control_owner != self.agent_name
                 or self.store.meeting.status != "running"
             )
-
-    def _note_editing(self, action: AgentAction) -> None:
-        """这次动作打开的是哪个文件：记下轮次，以及打开之前它的样子。"""
-        relative = _edited_file(action)
-        if not relative:
-            return
-        target = self._workspace_file(relative)
-        if target is None:
-            return
-        path = str(target)
-        self._editing_path = path
-        self._edit_rounds[path] = self._edit_rounds.get(path, 0) + 1
-        self._edit_signature = (path, _file_signature(target))
-
-    def _workspace_file(self, relative: str):
-        """工作区里的一个文件；跑到工作区外面去就不认。"""
-        try:
-            root = self.store.workspace_path.resolve()
-        except (MeetingError, OSError):
-            return None
-        candidate = Path(str(relative).strip().strip("'\""))
-        if not str(candidate):
-            return None
-        if not candidate.is_absolute():
-            candidate = root / candidate
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            return None
-        if root != resolved and root not in resolved.parents:
-            return None
-        return resolved
-
-    def _note_write_attempt(self, action: AgentAction) -> None:
-        """带写命令的按键跑完了：盘上那个文件有没有真的变。"""
-        if not _writes_the_file(action.keys) or self._edit_signature is None:
-            return
-        path, before = self._edit_signature
-        target = Path(path)
-        self._edit_signature = (path, _file_signature(target))
-        # vim 的 `:w` 会把文件整个重写一遍，内容一字不改也动 mtime：mtime 没动，就是这条
-        # `:w` 根本没到编辑器手里（命令行打到 shell 上只会回一句 command not found）。
-        self._save_missed = None if _file_signature(target) != before else path
 
     def _pane_snapshot(self, pane_id: str) -> Optional[tuple]:
         try:

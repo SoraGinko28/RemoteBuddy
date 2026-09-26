@@ -1976,8 +1976,8 @@ class MeetingWebService:
           ``$ctrl`` / ``$rest`` plus bare literal strings), retained for
           programmatic callers and tests.
 
-        The human is deliberately free to type anywhere -- shell, Vim, a
-        REPL, or any foreground program -- so no process whitelist is
+        The human is deliberately free to type anywhere -- the shell, an
+        editor, a REPL, or any foreground program -- so no process whitelist is
         enforced. Input re-checks ownership before sending, so a burst stops
         the moment the human releases, chats, or stops the meeting.
         """

@@ -29,7 +29,6 @@ PROFILE_SPECS: Dict[str, ProfileSpec] = {
 
 STRONG_BOUNDARIES = set(":;)]}")
 MEDIUM_BOUNDARIES = set(",=+-*/%<>|&^")
-EDITOR_LITERALS = {"i", "a", "o", "O", "I", "A", "v", "V"}
 
 
 @dataclass(frozen=True)
@@ -59,17 +58,6 @@ def validate_profile(profile: str) -> str:
 def _rng(meeting_id: str, action_id: str, token_index: int, context: str) -> random.Random:
     source = f"{meeting_id}\0{action_id}\0{token_index}\0{context}".encode("utf-8")
     return random.Random(int.from_bytes(hashlib.sha256(source).digest(), "big"))
-
-
-def _literal_context(value: str, context: str) -> str:
-    # A `$rest` token carries milliseconds, not text: only text has a context.
-    if not isinstance(value, str):
-        return context
-    if context == "vim" and (value in EDITOR_LITERALS or value.startswith(":")):
-        return "editor_command"
-    if context in {"vim", "python"}:
-        return "code"
-    return context
 
 
 def _pause_for(
@@ -146,7 +134,9 @@ def _key_step(
         delay = rng.randint(20, 50)
     else:
         delay = rng.randint(spec.interval_min_ms, min(180, spec.interval_max_ms + 30))
-    key_context = "shell" if context == "shell" else "editor_command"
+    # An Enter at a shell prompt submits the line; an Enter anywhere else is
+    # just a key handed to whatever program holds the pane's foreground.
+    key_context = "shell" if context == "shell" else "program"
     return TypingStep("key", key, delay, "typing", key_context, 0)
 
 
@@ -181,37 +171,36 @@ def plan_input(
     lines = 1 + sum(
         token.get("kind") == "key" and token.get("value") == "Enter" for token in tokens
     )
-    threshold_paste = allow_paste and context in {"vim", "python", "code"} and (
+    threshold_paste = allow_paste and context in {"code", "python"} and (
         literal_characters >= spec.paste_threshold_chars or lines >= spec.paste_threshold_lines
     )
     steps: List[TypingStep] = []
     for token_index, token in enumerate(tokens):
         kind = token["kind"]
         value = token["value"]
-        literal_context = _literal_context(value, context)
         if kind == "key":
             steps.append(
-                _key_step(value, profile, meeting_id, action_id, token_index, literal_context)
+                _key_step(value, profile, meeting_id, action_id, token_index, context)
             )
         elif kind == "rest":
             # A musical rest: nothing is sent, the pacing simply holds for the
             # requested milliseconds before the next step goes out.
             rest_ms = int(value)
             steps.append(TypingStep("rest", "", rest_ms, "rest", context, 0))
-        elif threshold_paste and literal_context == "code":
+        elif threshold_paste:
             steps.extend(
                 _paste_literal_steps(
-                    value, meeting_id, action_id, token_index, literal_context
+                    value, meeting_id, action_id, token_index, context
                 )
             )
         else:
             steps.extend(
                 _normal_literal_steps(
-                    value, profile, meeting_id, action_id, token_index, literal_context
+                    value, profile, meeting_id, action_id, token_index, context
                 )
             )
 
-    if allow_paste and context in {"vim", "python", "code"} and not threshold_paste:
+    if allow_paste and context in {"code", "python"} and not threshold_paste:
         planned = sum(step.delay_after_ms for step in steps)
         if planned > spec.action_limit_ms:
             hand_typed_budget = min(3_000, spec.action_limit_ms // 4)
@@ -235,7 +224,7 @@ def plan_input(
                 paste_buffer = ""
 
             for step in steps:
-                keep_typing = elapsed < hand_typed_budget or step.input_context == "editor_command"
+                keep_typing = elapsed < hand_typed_budget
                 if step.kind == "literal" and step.input_context == "code" and not keep_typing:
                     paste_buffer += step.value
                 else:
