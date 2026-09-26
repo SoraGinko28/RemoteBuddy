@@ -226,7 +226,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .attachment-chip { position: relative; width: 56px; height: 56px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: var(--surface-2); }
 .attachment-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
 .attachment-remove { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; min-height: 0; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: rgb(0 0 0 / .65); color: var(--ink); font-size: 11px; line-height: 1; cursor: pointer; }
-.composer-footer #attach-image-button { margin-right: auto; }
+/* 回形针是一个入口，不是一颗按钮：不要边框和底色，悬停时才有一点反应。 */
+.composer-footer #attach-image-button { margin-right: auto; border-color: transparent; background: transparent; display: inline-flex; align-items: center; justify-content: center; }
+.composer-footer #attach-image-button svg { width: 17px; height: 17px; }
+.composer-footer #attach-image-button:hover:not(:disabled) { border-color: transparent; background: var(--surface-2); }
 /* 消息里的图：点开看原图。 */
 .message-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 .message-image-link { display: block; }
