@@ -108,8 +108,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
    横着铺成一排窄格子会把 Skill 那两个按钮挤出面板边缘。
    右上角那个圆圈叉跟图片灯箱是同一个做法。 */
 .member-dialog { width: min(420px, calc(100vw - 28px)); overflow: visible; }
-/* 外围跟图片灯箱一样是浅色：压成黑的会把这个深色面板闷在里面，看不出边。 */
-.member-dialog::backdrop { background: rgb(244 244 244 / .92); }
+/* 外围是浅色，但不是一块白纸：半透明的浅灰压上来，终端还看得见一点，
+   深色面板的边和角上的圆圈叉也立得住。 */
+.member-dialog::backdrop { background: rgb(226 226 226 / .5); }
 .member-dialog-header { display: flex; align-items: baseline; gap: 9px; padding: 14px 16px 11px; border-bottom: 1px solid var(--line); }
 .member-dialog-header strong { font-size: 15px; }
 .member-dialog-header span { color: var(--muted); font-size: 11px; }
