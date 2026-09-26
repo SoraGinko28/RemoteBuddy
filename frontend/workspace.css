@@ -253,7 +253,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .reference-item:last-child { border-bottom: 0; }
 .reference-excerpt { min-width: 0; max-height: 72px; overflow: auto; overflow-wrap: anywhere; word-break: break-word; white-space: pre-wrap; }
 /* 去掉这一条引用的叉：挂在卡片右上角那个角上，一半在卡片外——一个字的位置都不占。 */
-.reference-remove { position: absolute; top: -6px; right: -12px; width: 18px; height: 18px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface-2); color: var(--muted); cursor: pointer; }
+.reference-remove { position: absolute; top: -15px; right: -15px; width: 18px; height: 18px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface-2); color: var(--muted); cursor: pointer; }
 .reference-remove:hover { border-color: var(--ink); color: var(--ink); }
 .reference-remove svg { display: block; width: 9px; height: 9px; }
 
