@@ -193,6 +193,15 @@ class AgentAction:
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
             raise AgentProtocolError("model action type is invalid")
+        # Models say "final" in the two ways the schema separates: `done` with a
+        # final message, or `chat` with message_type "final" (some also write
+        # "done" there, swapping the two). That means one thing and nothing
+        # else, so it is read as `done` instead of being rejected and retried
+        # until the cycle gives up.
+        if action_type == "chat" and payload.get("message_type") in {"final", "done"} \
+                and str(payload.get("content") or "").strip():
+            action_type = "done"
+            payload = {**payload, "type": "done", "message_type": "final"}
         if allowed_types is not None and action_type not in set(allowed_types):
             raise AgentProtocolError("model action is not allowed in the current phase")
         message_type = payload["message_type"]
@@ -485,7 +494,7 @@ def _require_unused(command: str, path: str, keys: Sequence[Any], delay_ms: int)
 
 
 def normalize_reference_tokens(raw: Any) -> list:
-    """Validate the wire shape of content references on chat/done actions.
+    """Validate the wire format of content references on chat/done actions.
 
     Each reference points at one earlier journal event, mirroring the human
     reference schema: ``kind`` is ``chat`` or ``screen``, the source event is
@@ -709,7 +718,7 @@ def unwrap_action_envelope(payload: Any) -> Any:
     """Flatten the ``action`` wrapper some models put around their action.
 
     A gateway may hand the action over inside a one-key envelope, and a model
-    copying that shape from its own tool schema can either wrap it twice or
+    copying that layout from its own tool schema can either wrap it twice or
     split its fields between the envelope and the wrapped object. No valid
     action uses ``action`` as a key, so merging is unambiguous.
     """

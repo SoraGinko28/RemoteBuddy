@@ -88,6 +88,9 @@ class TestStreamNames:
             "TerminalTextSegment",
             "RawMessage",
             "AtUserMessage",
+            "ImageAttachment",
+            "image_attachment_to_dict",
+            "image_attachment_from_dict",
             "ChatMessage",
             "ChatStreamChunk",
             "chat_part_to_dict",
@@ -740,7 +743,7 @@ class TestChatMessageCodec:
         msg = self._message()
         assert adt.chat_message_from_dict(adt.chat_message_to_dict(msg)) == msg
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.chat_message_to_dict(self._message())
         assert payload["user_name"] == "alice"
         assert payload["time"].startswith("2026-09-02T07:35:41.328")
@@ -787,7 +790,7 @@ class TestChatStreamChunkCodec:
         chunk = self._chunk()
         assert adt.chat_stream_chunk_from_dict(adt.chat_stream_chunk_to_dict(chunk)) == chunk
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.chat_stream_chunk_to_dict(self._chunk())
         assert payload["stream_name"] == "chat"
         assert len(payload["chunks"]) == 2
@@ -1000,7 +1003,7 @@ class TestScoreMessageCodec:
         msg = adt.ScoreMessage(tag="style")
         assert adt.score_message_from_dict(adt.score_message_to_dict(msg)) == msg
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         moment = _datetime(2026, 9, 2, 8, 0, 0, tzinfo=_dt_timezone.utc)
         payload = adt.score_message_to_dict(_score(judge="bob", moment=moment))
         assert payload["tag"] == "correctness"
@@ -1138,7 +1141,7 @@ class TestKeystrokeCodec:
     def test_roundtrip(self) -> None:
         assert adt.keystroke_from_dict(adt.keystroke_to_dict(self._key())) == self._key()
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.keystroke_to_dict(self._key())
         assert payload == {
             "data": {"text": "h"},
@@ -1165,7 +1168,7 @@ class TestTerminalControlCodec:
         ctl = self._control()
         assert adt.terminal_control_from_dict(adt.terminal_control_to_dict(ctl)) == ctl
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.terminal_control_to_dict(self._control())
         assert payload["tmux_window_name"] == "w0"
         assert payload["tmux_pane"] == 0
@@ -1299,7 +1302,7 @@ class TestScreenCaptureCodec:
         cap = self._capture()
         assert adt.screen_capture_from_dict(adt.screen_capture_to_dict(cap)) == cap
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.screen_capture_to_dict(self._capture())
         assert payload["screen_data"] == "ab"
         assert payload["terminal_text_content"][0]["fg"] == {"palette": 7}
@@ -1422,7 +1425,7 @@ class TestMeetingData:
         data = self._sample()
         assert adt.meeting_data_from_dict(adt.meeting_data_to_dict(data)) == data
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.meeting_data_to_dict(self._sample())
         assert payload["meeting_uid"] == "m-1"
         assert payload["agent_name2role"] == {
@@ -1738,3 +1741,39 @@ class TestMeetingDataFileLayer:
         data = adt.meeting_data_from_dict(payload)
         assert data.file_kv_store.file_id2file == {}
         assert data.file_desktop.workspaces == []
+
+
+class TestImageAttachment:
+    """随消息交出去的图片：ADT 上有位置，journal 里只有名字和指纹。"""
+
+    def test_a_chat_message_carries_its_images(self) -> None:
+        moment = adt._iso_parse("2026-09-26T10:00:00Z")
+        message = adt.ChatMessage(
+            user_name=adt.HUMAN_USER_NAME,
+            time=moment,
+            message=[adt.RawMessage(text="看这张")],
+            attachments=[adt.ImageAttachment(name="image-1.png", media_type="image/png",
+                                             sha256="ab" * 32, byte_count=21)],
+        )
+        payload = adt.chat_message_to_dict(message)
+        assert payload["attachments"] == [
+            {"name": "image-1.png", "media_type": "image/png", "sha256": "ab" * 32, "byte_count": 21}
+        ]
+        assert adt.chat_message_from_dict(payload) == message
+
+    def test_a_message_without_images_keeps_the_old_json(self) -> None:
+        moment = adt._iso_parse("2026-09-26T10:00:00Z")
+        payload = adt.chat_message_to_dict(
+            adt.ChatMessage(user_name=adt.HUMAN_USER_NAME, time=moment,
+                            message=[adt.RawMessage(text="没有图")])
+        )
+        assert "attachments" not in payload
+        assert adt.chat_message_from_dict(payload).attachments == []
+
+    def test_a_message_may_have_no_text_at_all(self) -> None:
+        moment = adt._iso_parse("2026-09-26T10:00:00Z")
+        message = adt.ChatMessage(
+            user_name=adt.HUMAN_USER_NAME, time=moment, message=[],
+            attachments=[adt.ImageAttachment(name="image-2.jpg", media_type="image/jpeg")],
+        )
+        assert adt.chat_message_from_dict(adt.chat_message_to_dict(message)) == message

@@ -222,6 +222,17 @@ class TmuxTransportTest(unittest.TestCase):
         self.assertFalse(self.pane.inputs[0]["enter"])
         self.assertTrue(self.pane.inputs[0]["literal"])
 
+    def test_a_long_line_is_sent_in_several_calls_byte_for_byte(self):
+        # tmux rejects one huge `send-keys` with "command too long", so a long
+        # line (an agent typing a whole expression) goes over in pieces — the
+        # pane must still receive exactly the same bytes, in the same order.
+        line = "def quick_sort(items, key=None): return sorted(items, key=key)  # " + "x" * 4000
+        self.transport.send_literal("%7", line)
+        sends = [args for command, args in self.pane.commands if command == "send-keys"]
+        self.assertGreater(len(sends), 1)
+        self.assertTrue(all(len(args) - 1 <= self.transport.SEND_HEX_CHUNK_BYTES for args in sends))
+        self.assertEqual(line, "".join(item["text"] for item in self.pane.inputs))
+
     def test_send_keys_rejects_multiline_input(self):
         with self.assertRaises(TmuxError):
             self.transport.send_keys("%7", "first\nsecond")

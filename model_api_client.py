@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import json
 import math
 import os
@@ -766,9 +767,10 @@ class OpenAIResponsesClient:
         initial_context: str,
         *,
         model: Optional[str] = None,
+        images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Any = None,
     ) -> str:
-        del initial_context, model
+        del initial_context, model, images
         self._cycle_instructions = instructions
         session_id = self.create_conversation(meeting_id)
         if event_callback:
@@ -788,6 +790,7 @@ class OpenAIResponsesClient:
         observation: str,
         *,
         model: Optional[str] = None,
+        images: Optional[Sequence[Dict[str, Any]]] = None,
         allowed_types: Optional[Sequence[str]] = None,
         allowed_message_types: Optional[Sequence[str]] = None,
         request_timeout_seconds: Optional[float] = None,
@@ -799,6 +802,7 @@ class OpenAIResponsesClient:
             self._cycle_instructions,
             observation,
             model=model,
+            images=images,
             allowed_types=allowed_types,
             allowed_message_types=allowed_message_types,
             request_timeout_seconds=request_timeout_seconds,
@@ -819,6 +823,7 @@ class OpenAIResponsesClient:
         observation: str,
         *,
         model: Optional[str] = None,
+        images: Optional[Sequence[Dict[str, Any]]] = None,
         allowed_types: Optional[Sequence[str]] = None,
         allowed_message_types: Optional[Sequence[str]] = None,
         request_timeout_seconds: Optional[float] = None,
@@ -829,8 +834,9 @@ class OpenAIResponsesClient:
             "model": model or self.config.model,
             "instructions": instructions,
             # A plain input string is accepted by both the official Responses
-            # API and smaller compatible gateways.
-            "input": observation,
+            # API and smaller compatible gateways; pictures come as content
+            # blocks beside it, so the model looks at them itself.
+            "input": _input_with_images(observation, images),
             "max_output_tokens": _EFFORT_OUTPUT_BUDGET.get(effort, 4096),
             "text": {
                 "format": {
@@ -870,8 +876,34 @@ class OpenAIResponsesClient:
         return AgentResponse(response_id, action)
 
 
+def _input_with_images(observation: str,
+                       images: Optional[Sequence[Dict[str, Any]]] = None) -> Any:
+    """The Responses `input`: the text, plus any picture the human sent.
+
+    A picture goes to the model as a picture (`input_image` with a data URL), so
+    understanding it is the model's own ability; nothing here asks the Agent to
+    recognise it with a command-line tool.
+    """
+    blocks: List[Dict[str, Any]] = [{"type": "input_text", "text": observation}]
+    for image in images or []:
+        path = Path(str(image.get("path") or ""))
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        media_type = str(image.get("media_type") or "image/png")
+        encoded = base64.b64encode(data).decode("ascii")
+        blocks.append({
+            "type": "input_image",
+            "image_url": f"data:{media_type};base64,{encoded}",
+        })
+    if len(blocks) == 1:
+        return observation
+    return [{"role": "user", "content": blocks}]
+
+
 def _http_error_detail(body: Any, api_key: str) -> str:
-    """Extract common gateway error shapes without exposing credentials."""
+    """Extract common gateway error formats without exposing credentials."""
     if not isinstance(body, dict):
         return ""
     nested = body.get("error")

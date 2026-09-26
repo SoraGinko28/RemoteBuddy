@@ -4,15 +4,25 @@
 > （每个类型都带 `*_to_dict / *_from_dict`，本文只做面向人类的摘要）。
 > 与 ADT（`MEETING_ADT.md`）分层：ADT 讲能力层不变量，本文讲这些记录如何落盘。
 
-## 1. 目录布局（沿用现有 runs/ 结构）
+## 1. 目录布局
+
+工作区是一个目录；会议的每一份数据都在它的 `.meeting/` 下：
 
 ```
-runs/<meeting_uid>/
-  meeting.json            # 会议清单：uid/name/role map 等元数据（见 §4）
+<workspace>/.meeting/<meeting_uid>/
+  meeting.json            # 会议清单：uid/name/role map/workspace_root（见 §4）
   streams/events.jsonl    # 原始事件 journal（append-only，写入源）
-  workspace/              # 工作目录快照（数据层，不在本文）
+  attachments/            # 人类交进来的图片（存成文件，不进 journal）
 ```
 
+一个工作区可以有多个 `<meeting_uid>`；这时的 `workspace/` 就是工作区根目录本身，不在会议目录下。
+另外 `.meeting/workspaces` 是一行一个目录的索引（用过的工作区），不是会议。
+
+老布局（`runs/<meeting_uid>/` + 会议目录里的一个 `workspace/`）还能读：`workspace_root` 为 null
+就是这个布局。Web 服务不再写它。
+
+- 图片是存下来的文件，不是事件：`attachments/image-<n>.<ext>` 存字节，chat 事件的 `data.attachments`
+  里只有名字、media type、sha256、字节数；一条消息可以只有图没有字。
 - 冻结后 `meeting.json` 固化只读；新事件只 **append** 到 `events.jsonl`，绝不原地改。
 - loader（`meeting_loader.py`）把 events.jsonl 投影成 MeetingData，**只读不改 journal**。
 

@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -45,6 +46,7 @@ from interactive_runner import (
     capture_workspace,
 )
 from meeting_v2 import (
+    MAX_ATTACHMENT_BYTES,
     MAX_CHAT_REFERENCES,
     MAX_MESSAGE_BYTES,
     MEETING_ID_RE,
@@ -58,12 +60,6 @@ from meeting_v2 import (
     sha256_text,
     utc_now,
 )
-import reviewer_harness
-import meeting_loader
-import meeting_local_sdk
-import meeting_sdk_json
-import meeting_sdk_viba
-from viba.type import VibaProgramErr as _SdkErr
 from references import reference_from_event
 from model_api_client import (
     MODEL_RE,
@@ -77,9 +73,21 @@ from model_api_client import (
     _validate_base_url,
 )
 from tmux_transport import TmuxError, TmuxTransport, libtmux_version
+import meeting_loader
+import meeting_sdk_server
+import meeting_sdk_json
+import meeting_sdk_viba
+from viba.type import VibaProgramErr as _SdkErr
+from ticket_centered import Meeting, Member, Store as TicketStore, load_workflow, workflow_root
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+# 一块工作区 = 一个目录。会议的每一份数据都放在它的 `.meeting/<会议号>/` 下面；
+# 服务默认就用项目根，`--workspace DIR` 换一个。
+WORKSPACE_INDEX = "workspaces"
+WORKSPACE_NAMES = "workspace_names"
+# 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
+CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
 MODEL_API_PATH = PROJECT_ROOT / "model_api"
 DEFAULT_HOST = "127.0.0.1"
@@ -87,6 +95,10 @@ DEFAULT_PORT = 8765
 CSRF_HEADER = "X-RemoteBuddy-CSRF"
 MAX_REQUEST_BYTES = MAX_MESSAGE_BYTES + 32 * 1024
 TERMINAL_STATUSES = {"completed", "failed", "interrupted"}
+# 工单那一侧（ticket_centered）：数据放在这场会的目录下面，每个成员各是一个进程。
+TICKET_ROOT = "ticket_centered"
+TICKET_MEMBERS = ("actor", "assistant", "critic")
+TICKET_TIMEOUT_S = 900.0
 # Phases from which the human can resume or wake the Agent. The frontend
 # mirrors this set for its resume-button predicate.
 RESUMABLE_PHASES = {"waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"}
@@ -219,11 +231,173 @@ def _events_by_id(store: MeetingStore) -> Dict[str, Dict[str, Any]]:
     }
 
 
+def _applescript_string(value: str) -> str:
+    """把一段文本变成 AppleScript 的字符串字面量。"""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def meeting_title(store: MeetingStore) -> str:
+    """A meeting's one-line title: the human's first message.
+
+    `conversation.md` starts with it, so the list does not parse a journal for
+    every meeting just to name it.
+    """
+    try:
+        head = (store.run_dir / "conversation.md").read_text(encoding="utf-8")[:4096]
+    except OSError:
+        return ""
+    for block in head.split("\n## ")[1:]:
+        if not block.startswith("You ·"):
+            continue
+        lines = [line.strip() for line in block.splitlines()[1:] if line.strip()]
+        if lines:
+            return lines[0][:80]
+    return ""
+
+
 def _public_manifest(store: MeetingStore) -> Dict[str, Any]:
     payload = store.meeting.to_dict()
-    payload["run_path"] = f"runs/{store.meeting.meeting_id}"
+    payload["run_path"] = str(store.run_dir)
     payload["event_count"] = store.event_count()
+    payload["workspace_root"] = store.meeting.workspace_root or ""
+    payload["title"] = meeting_title(store)
     return payload
+
+
+def _as_workspace(asked: Any, base: Path) -> Path:
+    """把对话框里填的那个目录变成一个工作区。
+
+    留空就是默认的那一个；填了就用它（相对路径按默认那个算）。填的目录必须已经
+    存在——工作区是**已有的项目**，不是随手新造一个空目录。
+    """
+    text = "" if asked is None else str(asked).strip()
+    if not text:
+        return base
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    path = path.resolve()
+    if not path.is_dir():
+        raise WebError(400, f"目录不存在：{text}")
+    return path
+
+
+def _ticket_root(store: MeetingStore) -> Path:
+    """这场会的工单那一侧放在哪儿：会议目录下面。"""
+    return Path(store.run_dir) / TICKET_ROOT
+
+
+def _ticket_record(root: Path) -> List[str]:
+    """工单那张会议记录（没有就是空的）。"""
+    try:
+        return (Path(root) / "meeting_record.md").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
+def _ticket_case(meeting: Meeting) -> str:
+    """工单跑在哪个案子下：值都在案子自己的数据路径下，看 store 里的头两段。"""
+    cases: List[str] = []
+    for data_path, _name in meeting.store.stored():
+        parts = data_path.split("/")
+        if len(parts) >= 2 and parts[0] == "case":
+            case = "/".join(parts[:2])
+            if case not in cases:
+                cases.append(case)
+    return cases[0] if cases else ""
+
+
+def _ticket_issued(meeting: Meeting) -> List[str]:
+    """发过的工单，按发的先后（就是会议记录里那几行的先后）。"""
+    out: List[str] = []
+    for line in _ticket_record(meeting.root):
+        match = re.match(r"- 工单 (\S+)（", line)
+        if match and match.group(1) not in out:
+            out.append(match.group(1))
+    return out
+
+
+def _ticket_step(meeting: Meeting, case: str, path: str, op: str) -> Dict[str, Any]:
+    """一步：哪条数据路径、哪个算子、答了没有、归哪个角色答、答的是什么（叶子是标量时）。"""
+    absolute = meeting.absolute(case, path)
+    # `read` 交回的就是存下来的那个值：叶子是标量。一版代码那种长值不往页面上搬，
+    # 只有判语、收尾这类短的话才带上——这一块是给页面看的。
+    value, answered = meeting.store.read(absolute, op)
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        leaf = value
+    elif isinstance(value, str) and 0 < len(value) <= 200:
+        leaf = value
+    else:
+        leaf = None
+    return {"path": absolute, "op": op, "answered": answered,
+            "role": meeting.workflow.role_of_op(op),
+            "value": leaf}
+
+
+def _ticket_target(store: MeetingStore) -> str:
+    """agent 要交的那个文件：人类第一句话里点名的文件名（页面上没有别的来源）。"""
+    for event in store.events():
+        if event.get("kind") == "chat" and event.get("actor") == "human":
+            for token in re.findall(r"[\w./-]+\.[A-Za-z0-9]+", str(event.get("content", ""))):
+                if not token.startswith("http"):
+                    return token
+            break
+    return ""
+
+
+def _ticket_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
+    """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。
+
+    页面那一块"工单"就是它：`GET /api/meetings/<id>/tickets`。
+    """
+    root = _ticket_root(store)
+    workflow = load_workflow(project_root=project_root)
+    meeting = Meeting(root, workflow)
+    case = _ticket_case(meeting)
+    issued = _ticket_issued(meeting)
+    order = issued + [name for name in sorted(workflow.tickets()) if name not in issued]
+    tickets: List[Dict[str, Any]] = []
+    for ticket in order:
+        due, why = meeting.due(ticket, case) if case else (False, "还没有案子：人类得先说话")
+        directory = root / "tickets" / ticket
+        bundles = sorted(path.name for path in directory.iterdir() if path.is_dir()) \
+            if directory.is_dir() else []
+        tickets.append({
+            "ticket": ticket,
+            "issued": bool(bundles),
+            "due": bool(due),
+            "why": why,
+            "reads": [_ticket_step(meeting, case, path, op)
+                      for path, op in workflow.addresses_in(ticket)],
+            "answers": [_ticket_step(meeting, case, path, op)
+                        for path, op in workflow.answers_of(ticket)],
+            "bundles": bundles,
+        })
+    return {
+        "root": f"runs/{store.meeting.meeting_id}/{TICKET_ROOT}",
+        "ran": (root / "store").is_dir() or (root / "meeting_record.md").is_file(),
+        "workflow_dir": str(workflow_root(project_root=project_root)),
+        "digest": workflow.digest(),
+        "rules": sorted(workflow.rules()),
+        "case": case,
+        "target": _ticket_target(store),
+        "tickets": tickets,
+        "record": _ticket_record(root),
+    }
+
+
+def _ticket_command(role: str, root: Path, case: str, bundle: Path, url: str, meeting_id: str,
+                    workspace: Path, target: str) -> List[str]:
+    """一个成员进程的命令行：发给它的那一包在哪儿，跑在哪个案子下。"""
+    # `-c` 而不是 `-m`：包的 __init__ 已经把这些模块导进来了，`-m` 会在子进程里再导一次并
+    # 往 journal 里留一句 RuntimeWarning。入口是一样的。
+    command = [sys.executable, "-c",
+               f"import sys; from ticket_centered.{role} import main; sys.exit(main())",
+               "--meeting", str(root), "--case", case, "--bundle", str(bundle)]
+    if role == "actor":
+        command += ["--meeting-url", url, "--meeting-id", meeting_id,
+                    "--workspace", str(workspace), "--target", target]
+    return command
 
 
 def _apply_meeting_effort(config: ModelApiConfig, store: MeetingStore) -> ModelApiConfig:
@@ -243,8 +417,15 @@ class MeetingWebService:
         transport_factory: Callable[[str], TmuxTransport] = TmuxTransport,
         default_backend: Optional[str] = None,
         default_provider: Optional[str] = None,
+        workspace: Optional[Path] = None,
     ) -> None:
         self.project_root = project_root.expanduser().resolve()
+        # 这块程序只有**一个**工作区：一个目录。会议数据在 `<它>/.meeting/` 下，
+        # 没有第二套存放方式、也没有一张工作区清单要挑。
+        self.workspace = (Path(workspace).expanduser().resolve() if workspace is not None
+                          else self.project_root)
+        if not self.workspace.is_dir():
+            raise WebError(500, f"workspace not found: {self.workspace}")
         self.model_api_path = (model_api_path or self.project_root / "model_api").expanduser().resolve()
         self.skill_path = (
             skill_path
@@ -256,11 +437,15 @@ class MeetingWebService:
         self.default_backend = default_backend
         self.default_provider = default_provider
         self.csrf_token = secrets.token_urlsafe(32)
+        # The page issues tickets through the service; the member processes need
+        # the service's own address to talk to the meeting, so it is kept here
+        # (build_server fills in the real port).
+        self.public_url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+        self.ticket_jobs: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
-        self.reviewer_jobs: Dict[str, Dict[str, threading.Thread]] = {}
-        self.assistant_jobs: Dict[str, threading.Thread] = {}
-        self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool]] = {}
+        # (store, config, resume, fresh_conversation, terminal_only)
+        self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = {}
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
@@ -292,9 +477,9 @@ class MeetingWebService:
         that failed answers its own $err branch, so the script is always a
         resident of that api's return type.
         """
-        if api not in meeting_local_sdk.__all__:
+        if api not in meeting_sdk_viba.api_names() and api not in meeting_sdk_viba.builders():
             raise WebError(404, f"no such meeting sdk api: {api}")
-        if api not in meeting_sdk_viba.return_types():
+        if api not in meeting_sdk_viba.api_names():
             raise WebError(400, f"{api} builds a value; it is not served over the wire")
         script = meeting_sdk_viba.script_for(api, self._sdk_result(meeting_id, api, args))
         if isinstance(script, _SdkErr):
@@ -303,7 +488,7 @@ class MeetingWebService:
 
     def _sdk_result(self, meeting_id: str, api: str, args: Dict[str, Any]):
         """The api's own Result, evaluated over the record this server holds."""
-        function = getattr(meeting_local_sdk, api)
+        function = getattr(meeting_sdk_server, api)
         return function(self.sdk_meeting_data(meeting_id),
                         **meeting_sdk_json.decode(args or {}))
 
@@ -549,13 +734,6 @@ class MeetingWebService:
             "pane_height": pane_height,
         }
 
-    def _runs_root(self) -> Path:
-        runs = self.project_root / "runs"
-        if runs.exists() and runs.is_symlink():
-            raise WebError(500, "runs directory must not be a symlink")
-        runs.mkdir(parents=True, exist_ok=True)
-        return runs
-
     def load_store(self, meeting_id: str) -> MeetingStore:
         if not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
@@ -572,7 +750,7 @@ class MeetingWebService:
                 with self.lock:
                     self._store_cache.pop(meeting_id, None)
         try:
-            store = MeetingStore.load(self.project_root, meeting_id)
+            store = self._open_store(meeting_id)
         except UnsupportedMeetingError as exc:
             raise WebError(404, "meeting not found") from exc
         except MeetingError as exc:
@@ -585,6 +763,13 @@ class MeetingWebService:
             while len(self._store_cache) > 2:
                 self._store_cache.pop(next(iter(self._store_cache)))
         return store
+
+    def _open_store(self, meeting_id: str) -> MeetingStore:
+        """这场会在哪个工作区的 `.meeting/` 下，就按那条数据路径读回来。"""
+        for directory in self._meeting_dirs():
+            if directory.name == meeting_id:
+                return MeetingStore.load_at(directory, meeting_id)
+        raise MeetingError(f"meeting not found: {meeting_id}")
 
     def revision(self, meeting_id: str) -> str:
         """Stat-only change marker used to answer conditional GETs early."""
@@ -850,29 +1035,191 @@ class MeetingWebService:
         self._probe_selected_config(resolved)
         return resolved
 
+    def _workspace_index(self) -> Path:
+        """默认工作区里记着"还用过哪些目录"的那一行行文本。"""
+        return self.workspace / MeetingStore.WORKSPACE_DIR / WORKSPACE_INDEX
+
+    def _known_workspaces(self) -> List[Path]:
+        """默认那一个，加上以前用过、现在还在的那些目录。"""
+        found = [self.workspace]
+        try:
+            lines = self._workspace_index().read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return found
+        for line in lines:
+            path = Path(line.strip()).expanduser()
+            if line.strip() and path.is_dir() and path not in found:
+                found.append(path.resolve())
+        return found
+
+    def _remember_workspace(self, workspace: Path) -> None:
+        """用过一次的目录记下来：不然重启之后它的会议就从列表里消失了。"""
+        if workspace == self.workspace or workspace in self._known_workspaces():
+            return
+        index = self._workspace_index()
+        index.parent.mkdir(parents=True, exist_ok=True)
+        with index.open("a", encoding="utf-8") as handle:
+            handle.write(f"{workspace}\n")
+
+    def _forget_workspace(self, workspace: Path) -> None:
+        """索引里那一行去掉，别的行原样留着；名字也一起擦掉。"""
+        index = self._workspace_index()
+        try:
+            lines = index.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        keep = [line.strip() for line in lines
+                if line.strip() and Path(line.strip()).expanduser().resolve() != workspace]
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(f"{line}\n" for line in keep), encoding="utf-8")
+        self._set_workspace_name(workspace, "")
+
+    def _workspace_name_index(self) -> Path:
+        """显示名单独记一份：一行一个"路径 + 制表符 + 名字"。
+
+        不塞进 `workspaces` 那份索引里，是因为索引的每一行就是一个目录，改名字不该动它；
+        老的那份文件也不用跟着迁移。
+        """
+        return self.workspace / MeetingStore.WORKSPACE_DIR / WORKSPACE_NAMES
+
+    def _workspace_names(self) -> Dict[str, str]:
+        """目录 -> 显示名；没起过名字的目录不在这张表里。"""
+        found: Dict[str, str] = {}
+        try:
+            lines = self._workspace_name_index().read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return found
+        for line in lines:
+            path, _tab, title = line.partition("\t")
+            if path.strip() and title.strip():
+                found[str(Path(path.strip()).expanduser().resolve())] = title.strip()
+        return found
+
+    def _set_workspace_name(self, workspace: Path, title: str) -> None:
+        """起名或擦名：写进那一份名字表。"""
+        names = self._workspace_names()
+        if title:
+            names[str(workspace)] = title
+        else:
+            names.pop(str(workspace), None)
+        index = self._workspace_name_index()
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(f"{path}\t{name}\n" for path, name in sorted(names.items())),
+                         encoding="utf-8")
+
+    def _meeting_dirs(self) -> List[Path]:
+        """每一场会的数据目录：各个工作区 `.meeting/` 下的一个会议号目录。"""
+        found: List[Path] = []
+        seen: set = set()
+        for workspace in self._known_workspaces():
+            folder = workspace / MeetingStore.WORKSPACE_DIR
+            if not folder.is_dir() or folder.is_symlink():
+                continue
+            for child in sorted(folder.iterdir()):
+                if child.is_dir() and not child.is_symlink() and child not in seen:
+                    seen.add(child)
+                    found.append(child)
+        return found
+
     def list_meetings(self) -> Dict[str, Any]:
         summaries: List[Dict[str, Any]] = []
         warnings: List[str] = []
-        try:
-            children = list(self._runs_root().iterdir())
-        except OSError as exc:
-            raise WebError(500, f"cannot read runs directory: {exc}") from exc
-        for directory in children:
-            if not directory.is_dir() or not MEETING_ID_RE.fullmatch(directory.name):
+        for directory in self._meeting_dirs():
+            if not MEETING_ID_RE.fullmatch(directory.name):
                 continue
             manifest = directory / "meeting.json"
             if MeetingStore.peek_schema(manifest) != SCHEMA_VERSION:
                 continue
             try:
-                store = MeetingStore.load(self.project_root, directory.name)
+                store = MeetingStore.load_at(directory, directory.name)
                 summaries.append(_public_manifest(store))
             except (MeetingError, OSError, ValueError) as exc:
                 warnings.append(f"{directory.name}: {exc}")
         summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
-        return {"meetings": summaries, "warnings": warnings}
+        return {"meetings": summaries, "warnings": warnings,
+                "workspace": str(self.workspace),
+                "workspaces": [str(workspace) for workspace in self._known_workspaces()],
+                "workspace_titles": self._workspace_names()}
+
+    def add_workspace(self, payload: Any = None) -> Dict[str, Any]:
+        """把一个目录记成工作区，不开会。
+
+        侧边栏「工作区」旁边那个「＋」就是这个：工作区可以先有，会议以后再开。目录必须已经
+        存在（工作区是已有的项目，不是随手新造一个空目录）；记在默认工作区的
+        `.meeting/workspaces` 里，所以重启之后它还在列表上。留空就是默认那一个，等于没改。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace = _as_workspace(payload.get("directory"), self.workspace)
+        self._remember_workspace(workspace)
+        return self._workspaces_payload(workspace)
+
+    def rename_workspace(self, payload: Any = None) -> Dict[str, Any]:
+        """给一个工作区换个显示名。
+
+        名字只是列表里怎么叫它：磁盘上的目录不动，会议一条也不挪。名字留空就擦掉，
+        回到目录自己的 basename。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace = self._asked_workspace(payload)
+        self._set_workspace_name(workspace, str(payload.get("title") or "").strip())
+        return self._workspaces_payload(workspace)
+
+    def delete_workspace(self, payload: Any = None) -> Dict[str, Any]:
+        """把一个工作区从列表里去掉。
+
+        去掉的只是"记着它"这一行：目录本身、它下面的会议，一条都不删——想找回来，把目录
+        再加一次就回来了。默认那一个（项目根）不在名单上，去不掉；还有没结束的会的工作区
+        也不去，免得那一场从列表上消失、却还在后台跑着。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace = self._asked_workspace(payload)
+        if workspace == self.workspace:
+            raise WebError(400, "默认工作区去不掉：它就是项目根")
+        for summary in self.list_meetings()["meetings"]:
+            if summary.get("workspace_root") == str(workspace) and \
+                    summary.get("status") not in TERMINAL_STATUSES:
+                raise WebError(409, f"这个工作区里 {summary['meeting_id']} 还没结束：先结束它")
+        self._forget_workspace(workspace)
+        return self._workspaces_payload(self.workspace)
+
+    def _asked_workspace(self, payload: Dict[str, Any]) -> Path:
+        """payload 里那个目录：必须是已经记着的工作区。"""
+        workspace = _as_workspace(payload.get("directory"), self.workspace)
+        if workspace not in self._known_workspaces():
+            raise WebError(400, f"不是已记着的工作区：{workspace}")
+        return workspace
+
+    def _workspaces_payload(self, workspace: Path) -> Dict[str, Any]:
+        """改名、添加、删除都回同一份名单，页面只认这一份。"""
+        return {"workspace": str(workspace),
+                "workspaces": [str(one) for one in self._known_workspaces()],
+                "workspace_titles": self._workspace_names()}
+
+    def _open_terminal_if_needed(self, store: MeetingStore) -> None:
+        """只开了工作区、终端还没开出来的会：被看上一眼就把终端补上。
+
+        页面上"打开工作区"本来就会开终端；这是给更早建的空会话兜底——否则页面会
+        一直停在「等待终端画面…」，等的是一帧永远不会有的画面。
+        """
+        if store.meeting.phase != "created" or store.meeting.pane_id:
+            return
+        if store.meeting.status in TERMINAL_STATUSES:
+            return
+        meeting_id = store.meeting.meeting_id
+        with self.lock:
+            worker = self.jobs.get(meeting_id)
+            if worker and worker.is_alive():
+                return
+        try:
+            config = self._config_for_store(store)
+        except (WebError, ModelConfigError, OSError):
+            return
+        self._ensure_worker(store, config, resume=False, fresh_conversation=False,
+                            terminal_only=True)
 
     def snapshot(self, meeting_id: str) -> Dict[str, Any]:
         store = self.load_store(meeting_id)
+        self._open_terminal_if_needed(store)
         if store.meeting.control_owner == "human":
             self._ensure_capture_worker(store)
             self._sync_human_pipe(store)
@@ -888,6 +1235,120 @@ class MeetingWebService:
             "revision": _event_revision(store),
             "cursor": int(events[-1]["seq"]) if events else 0,
         }
+
+    # ------------------------------------------------------------------
+    # 工单那一侧（ticket_centered）
+    # ------------------------------------------------------------------
+
+    def tickets(self, meeting_id: str) -> Dict[str, Any]:
+        """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。"""
+        store = self.load_store(meeting_id)
+        board = _ticket_board(store, self.project_root)
+        with self.lock:
+            job = self.ticket_jobs.get(meeting_id)
+        board["running"] = job["ticket"] if job and job["thread"].is_alive() else None
+        return {"meeting": _public_manifest(store), "tickets": board}
+
+    def issue_ticket(self, meeting_id: str, ticket: str) -> Dict[str, Any]:
+        """发一张工单：`Meeting.publish` 发给会上的每个成员，然后每个成员起一个进程跑。
+
+        页面按一下按钮就是这一下。跑在后台，页面照旧轮询工单板：答下的值成员自己抄回会议。
+        """
+        store = self.load_store(meeting_id)
+        board = _ticket_board(store, self.project_root)
+        if ticket not in [one["ticket"] for one in board["tickets"]]:
+            raise WebError(404, f"这份流程里没有工单 {ticket}")
+        if not board["case"]:
+            raise WebError(409, "这场会还没有案子：人类得先说话")
+        if not board["target"]:
+            raise WebError(409, "人类那句话里没点名要交哪个文件，actor 不知道该读回哪个")
+        with self.lock:
+            job = self.ticket_jobs.get(meeting_id)
+            if job and job["thread"].is_alive():
+                raise WebError(409, f"{job['ticket']} 还在跑，等它跑完")
+            thread = threading.Thread(target=self._run_ticket,
+                                      args=(meeting_id, board["case"], ticket, board["target"]),
+                                      daemon=True)
+            self.ticket_jobs[meeting_id] = {"ticket": ticket, "thread": thread}
+        thread.start()
+        return {"meeting": _public_manifest(store), "tickets": board, "issued": ticket}
+
+    def _run_ticket(self, meeting_id: str, case: str, ticket: str, target: str) -> None:
+        """把包发给每个成员，再给每个成员起一个进程；谁答了什么，看工单板。"""
+        try:
+            store = self.load_store(meeting_id)
+            root = _ticket_root(store)
+            meeting = Meeting(root, load_workflow(project_root=self.project_root))
+            for name in TICKET_MEMBERS:
+                meeting.join(Member(name, name, {}))
+            bundles = meeting.publish(ticket, case)
+            store.append_event("state", "assistant", "ticket_issued",
+                               data={"ticket": ticket, "case": case,
+                                     "bundles": sorted(bundles)})
+            environment = dict(os.environ, PYTHONPATH=str(PROJECT_ROOT))
+            for name, bundle in sorted(bundles.items()):
+                command = _ticket_command(name, root, case, bundle, self.public_url,
+                                          meeting_id, store.workspace_path, target)
+                process = subprocess.Popen(command, cwd=str(PROJECT_ROOT), env=environment,
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           text=True)
+                try:
+                    output, _ = process.communicate(timeout=TICKET_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    output = "（超时，已停）"
+                store.append_event("state", name, "ticket_ran",
+                                   data={"ticket": ticket, "output": output.strip()[-400:]})
+        except Exception as exc:                    # noqa: BLE001 - 后台线程：写进 journal 才算有人知道
+            try:
+                self.load_store(meeting_id).append_event(
+                    "state", "assistant", "ticket_failed",
+                    data={"ticket": ticket, "error": f"{type(exc).__name__}: {exc}"})
+            except Exception:                       # noqa: BLE001 - 连写都写不进去就只剩退出
+                pass
+        finally:
+            with self.lock:
+                self.ticket_jobs.pop(meeting_id, None)
+
+    def _workspace_for(self, asked: Any) -> Path:
+        """新会议开在哪个目录：对话框里填的那个，留空就是默认那个。"""
+        if asked is not None and not isinstance(asked, str):
+            raise WebError(400, "workspace must be a path")
+        workspace = _as_workspace(asked, self.workspace)
+        self._remember_workspace(workspace)
+        return workspace
+
+    def choose_directory(self, payload: Any = None) -> Dict[str, Any]:
+        """弹系统（Finder）的选目录框，把选中的目录回给页面。
+
+        浏览器自己的 `showDirectoryPicker` 只给得到目录名、拿不到绝对路径（那是它的
+        安全设计），所以这一步必须由服务端问系统。取消不是错：回一个空目录，页面
+        什么都不改。
+        """
+        if sys.platform != "darwin":
+            raise WebError(400, "只有 macOS 能弹系统选目录框，请直接填路径")
+        payload = payload if isinstance(payload, dict) else {}
+        asked = payload.get("directory")
+        script = 'tell application "Finder" to activate\n'
+        script += 'POSIX path of (choose folder with prompt "选这场会的工作目录"'
+        if isinstance(asked, str) and asked.strip():
+            candidate = Path(asked.strip()).expanduser()
+            if candidate.is_dir():
+                script += f" default location (POSIX file {_applescript_string(str(candidate.resolve()))})"
+        script += ")"
+        try:
+            done = subprocess.run(
+                ["/usr/bin/osascript", "-e", script],
+                capture_output=True, text=True, timeout=CHOOSE_DIRECTORY_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            raise WebError(504, "选目录框等太久了")
+        except FileNotFoundError:
+            raise WebError(400, "这台机器上没有 /usr/bin/osascript")
+        if done.returncode != 0:
+            return {"directory": ""}
+        # `POSIX path of` a folder alias keeps a trailing slash.
+        return {"directory": done.stdout.strip().rstrip("/") or "/"}
 
     def _validated_reference(
         self,
@@ -964,7 +1425,7 @@ class MeetingWebService:
         if sequence < 0:
             raise WebError(400, "after must be at least zero")
         # The idle poll asks for events after the head; answer it from the
-        # tail sequence without materializing the journal.
+        # tail sequence without building the whole journal in memory.
         head = store.last_event_sequence()
         if head <= sequence:
             return {
@@ -981,10 +1442,11 @@ class MeetingWebService:
             "revision": _event_revision(store),
         }
 
-    def _new_id(self) -> str:
+    def _new_id(self, workspace: Path) -> str:
+        """A fresh meeting id, free in the workspace the meeting is going into."""
         for _ in range(20):
             value = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
-            if not (self.project_root / "runs" / value).exists():
+            if not (workspace / MeetingStore.WORKSPACE_DIR / value).exists():
                 return value
         raise WebError(500, "could not allocate a meeting id")
 
@@ -994,6 +1456,7 @@ class MeetingWebService:
         unexpected = set(payload) - {
             "message",
             "meeting_id",
+            "workspace",
             "model",
             "typing_profile",
             "agent_backend",
@@ -1012,7 +1475,8 @@ class MeetingWebService:
             raise WebError(400, "message must be a string")
         if len(message.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise WebError(413, "message is too large")
-        meeting_id = payload.get("meeting_id") or self._new_id()
+        workspace = self._workspace_for(payload.get("workspace"))
+        meeting_id = payload.get("meeting_id") or self._new_id(workspace)
         if not isinstance(meeting_id, str) or not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
         config = self._load_config()
@@ -1065,13 +1529,20 @@ class MeetingWebService:
                 agent_ordinal=1,
                 reasoning_effort=reasoning_effort,
                 agent_name2role=payload.get("agent_name2role"),
+                workspace=workspace,
             )
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
-        # Without a first message there is nothing for the agent to answer yet;
-        # wait for the human to speak (the message endpoint wakes it).
-        if message.strip():
-            self._ensure_worker(store, config, resume=False, fresh_conversation=False)
+        # Without a first message the agent has nothing to answer yet, but the
+        # workspace itself is opened right away: its terminal is the thing the
+        # human is looking at while they type the first line.
+        self._ensure_worker(
+            store,
+            config,
+            resume=False,
+            fresh_conversation=False,
+            terminal_only=not message.strip(),
+        )
         return store
 
     def _ensure_worker(
@@ -1081,6 +1552,7 @@ class MeetingWebService:
         *,
         resume: bool,
         fresh_conversation: bool,
+        terminal_only: bool = False,
     ) -> None:
         meeting_id = store.meeting.meeting_id
         try:
@@ -1098,248 +1570,21 @@ class MeetingWebService:
                 previous = self.queued_jobs.get(meeting_id)
                 if previous:
                     fresh_conversation = fresh_conversation or previous[3]
-                self.queued_jobs[meeting_id] = (store, config, resume, fresh_conversation)
+                    terminal_only = terminal_only and previous[4]
+                self.queued_jobs[meeting_id] = (store, config, resume, fresh_conversation, terminal_only)
                 return
             client = self._make_backend(config)
             transport = self._transport()
             meeting_lock = self._meeting_lock(meeting_id)
             worker = threading.Thread(
                 target=self._worker,
-                args=(store, client, transport, meeting_lock, resume, fresh_conversation),
+                args=(store, client, transport, meeting_lock, resume, fresh_conversation, terminal_only),
                 name=f"remotebuddy-{meeting_id}",
                 daemon=True,
             )
             self.jobs[meeting_id] = worker
             self.active_backends[meeting_id] = client
             worker.start()
-        # Watching starts with the work: the assistant looks while the actor is
-        # busy and once more when it parks.
-        self._ensure_assistant_worker(store)
-
-    def _summon_reviewer_after_idle(self, meeting_id: str, agent_name: str) -> None:
-        """Parked actor got interrupted: summon the reviewer once its
-        worker has actually exited, so the single-writer rule still holds."""
-
-        def wait_then_summon() -> None:
-            deadline = time.monotonic() + 120.0
-            while time.monotonic() < deadline:
-                if not self._job_alive(meeting_id) and not self._reviewer_busy(meeting_id):
-                    try:
-                        self._start_reviewer(meeting_id, agent_name)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    return
-                time.sleep(0.2)
-
-        thread = threading.Thread(target=wait_then_summon, daemon=True,
-                                  name=f"summon-{agent_name}-{meeting_id}")
-        thread.start()
-
-    def _reviewer_busy(self, meeting_id: str) -> bool:
-        with self.lock:
-            for name in list(self.reviewer_jobs.get(meeting_id, {})):
-                thread = self.reviewer_jobs[meeting_id][name]
-                if thread and thread.is_alive():
-                    return True
-        return False
-
-    def _actor_actively_running(self, meeting_id: str) -> bool:
-        """Whether the actor is mid-turn, as opposed to parked between turns.
-
-        The actor's worker parks in ``waiting_for_user`` but keeps its job slot:
-        that is idle, not busy. Only a turn in flight blocks a reviewer.
-        """
-        if not self._job_alive(meeting_id):
-            return False
-        store = self.load_store(meeting_id)
-        return not (
-            store.meeting.status == "running"
-            and store.meeting.phase == "waiting_for_user"
-            and store.meeting.control_owner == "none"
-            and store.meeting.pending_action_id is None
-        )
-
-    def _ensure_assistant_worker(self, store: MeetingStore) -> None:
-        """Start the assistant's watch when the meeting has one.
-
-        The assistant looks while the actor works, at most every
-        ``reviewer_harness.WATCH_INTERVAL_SECONDS``, and decides whether the
-        critic should be woken. One watcher per meeting.
-        """
-        meeting_id = store.meeting.meeting_id
-        roles = store.meeting.effective_role_map
-        assistant = next((name for name, role in roles.items() if role == "assistant"), None)
-        critic = next((name for name, role in roles.items() if role == "critic"), None)
-        if not assistant or not critic:
-            return
-        with self.lock:
-            current = self.assistant_jobs.get(meeting_id)
-            if current and current.is_alive():
-                return
-            thread = threading.Thread(
-                target=self._assistant_watch,
-                args=(meeting_id, assistant, critic),
-                name=f"assistant-{assistant}-{meeting_id}",
-                daemon=True,
-            )
-            self.assistant_jobs[meeting_id] = thread
-        thread.start()
-
-    def _assistant_watch(self, meeting_id: str, assistant: str, critic: str) -> None:
-        def stop() -> bool:
-            try:
-                store = self.load_store(meeting_id)
-            except Exception:  # noqa: BLE001
-                return True
-            return (store.meeting.status in TERMINAL_STATUSES
-                    or store.meeting.session_state == "stopped")
-
-        try:
-            reviewer_harness.watch(
-                self.load_store(meeting_id),
-                assistant,
-                actor_busy=lambda: self._actor_actively_running(meeting_id),
-                critic_busy=lambda: self._reviewer_busy(meeting_id),
-                act=lambda look: self._assistant_acts(
-                    meeting_id, assistant, critic, look),
-                stop=stop,
-            )
-        except Exception as exc:  # noqa: BLE001 — a watcher must not die loudly
-            try:
-                self.load_store(meeting_id).append_event(
-                    "error", "harness", "assistant_watch_error", content=f"{exc!r}")
-            except Exception:  # noqa: BLE001
-                pass
-        finally:
-            with self.lock:
-                if self.assistant_jobs.get(meeting_id) is threading.current_thread():
-                    self.assistant_jobs.pop(meeting_id, None)
-
-    def _assistant_acts(self, meeting_id: str, assistant: str, critic: str,
-                        look) -> None:
-        """Do what a look decided: wake the critic, ask the actor — or stop.
-
-        `done` is the meeting's own verdict that there is nothing left to ask
-        for: the human's prompt itself asks for what a rule forbids. The
-        assistant says so, once, and nobody is woken.
-        """
-        if look.action == "remind":
-            self._assistant_reminds(meeting_id, assistant, look.line)
-        elif look.action == "done":
-            try:
-                self.load_store(meeting_id).append_chat(assistant, look.line, "final")
-            except Exception:  # noqa: BLE001
-                pass
-        else:
-            self._assistant_summons(meeting_id, assistant, critic, look.line)
-
-    def _assistant_summons(self, meeting_id: str, assistant: str, critic: str,
-                           line: str) -> None:
-        """The assistant says what to look at, and the critic is woken."""
-        try:
-            self.load_store(meeting_id).append_chat(assistant, line, "request")
-        except Exception:  # noqa: BLE001
-            pass
-        self._start_reviewer(meeting_id, critic)
-
-    def _assistant_reminds(self, meeting_id: str, assistant: str, line: str) -> None:
-        """The assistant asks the actor, and the actor is woken to answer.
-
-        Nobody may be woken beside the actor, so this runs when the actor is
-        parked; it is the same wake a human's message causes.
-        """
-        with self._meeting_lock(meeting_id):
-            store = self.load_store(meeting_id)
-            if store.meeting.status in TERMINAL_STATUSES:
-                return
-            if store.meeting.control_owner == "human":
-                return
-            try:
-                store.append_chat(assistant, line, "request")
-            except Exception:  # noqa: BLE001
-                pass
-            self._require_terminal(store, "run the actor")
-            store.bump_request_generation(
-                failure=None,
-                cycle_action_count=0,
-                cycle_started_at=utc_now(),
-            )
-            config = self._config_for_store(store)
-            store.update(status="running", phase="agent_thinking",
-                         control_owner=store.meeting.actor_name())
-            self._ensure_worker(store, config, resume=True, fresh_conversation=False)
-
-    def _start_reviewer(self, meeting_id: str, agent_name: str) -> None:
-        """Summon a non-actor member in its own Claude Code process.
-
-        Refuses when the actor worker is busy or the human owns the
-        terminal, preserving the single-writer rule.
-        """
-        with self._meeting_lock(meeting_id):
-            store = self.load_store(meeting_id)
-
-            def trace(action: str, reason: str = "") -> None:
-                try:
-                    store.append_event(
-                        "state", "harness", store.meeting.phase,
-                        data={"reviewer_routing": {"agent_name": agent_name,
-                                                   "action": action, "reason": reason}},
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-
-            if store.meeting.status in TERMINAL_STATUSES:
-                trace("skip", "terminal_status")
-                return
-            if store.meeting.control_owner == "human":
-                trace("skip", "human_control")
-                return
-            role = store.meeting.role_of(agent_name)
-            if not role or role == "actor":
-                trace("skip", "not_a_reviewer")
-                return
-            if self._reviewer_busy(meeting_id):
-                trace("skip", "reviewer_busy")
-                return
-            # Only a turn in flight blocks a reviewer summon; the actor parked
-            # between turns is idle.
-            if self._actor_actively_running(meeting_id):
-                trace("skip", "actor_job_busy")
-                return
-            trace("start", "ok")
-            thread = threading.Thread(
-                target=self._reviewer_worker,
-                args=(meeting_id, agent_name),
-                name=f"reviewer-{agent_name}-{meeting_id}",
-                daemon=True,
-            )
-            with self.lock:
-                self.reviewer_jobs.setdefault(meeting_id, {})[agent_name] = thread
-            thread.start()
-
-    def _reviewer_worker(self, meeting_id: str, agent_name: str) -> None:
-        attempts = 0
-        while True:
-            attempts += 1
-            try:
-                store = self.load_store(meeting_id)
-                outcome = reviewer_harness.comment_once(
-                    store, agent_name, retry=attempts > 1
-                )
-            except Exception as exc:  # noqa: BLE001  worker must never die silently
-                outcome = False
-                try:
-                    self.load_store(meeting_id).append_event(
-                        "error", "harness", "reviewer_worker_error", content=f"{exc!r}"
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            if outcome or attempts >= 2:
-                break
-        with self.lock:
-            jobs = self.reviewer_jobs.get(meeting_id)
-            if jobs and jobs.get(agent_name) is threading.current_thread():
-                jobs.pop(agent_name, None)
 
     def _worker(
         self,
@@ -1349,11 +1594,15 @@ class MeetingWebService:
         meeting_lock: threading.RLock,
         resume: bool,
         fresh_conversation: bool,
+        terminal_only: bool = False,
     ) -> None:
-        pending: Optional[Tuple[MeetingStore, ModelApiConfig, bool, bool]] = None
+        pending: Optional[Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = None
         try:
             runner = self.runner_factory(store, transport, client, lock=meeting_lock)
-            if resume:
+            if terminal_only:
+                # 只看工作区：把终端开出来，不叫 agent（第一句话在聊天框里说）。
+                runner.open()
+            elif resume:
                 runner.resume(fresh_conversation=fresh_conversation)
             else:
                 runner.start()
@@ -1372,12 +1621,13 @@ class MeetingWebService:
                     self.jobs.pop(meeting_id, None)
                 pending = self.queued_jobs.pop(meeting_id, None)
             if pending:
-                next_store, next_config, next_resume, next_fresh = pending
+                next_store, next_config, next_resume, next_fresh, next_terminal = pending
                 self._ensure_worker(
                     next_store,
                     next_config,
                     resume=next_resume,
                     fresh_conversation=next_fresh,
+                    terminal_only=next_terminal,
                 )
 
     def _ensure_capture_worker(self, store: MeetingStore) -> None:
@@ -1456,15 +1706,57 @@ class MeetingWebService:
             store.update(reasoning_effort=effort)
             return store
 
+    def save_attachment(self, meeting_id: str, media_type: str, payload: bytes) -> Dict[str, Any]:
+        """人类交进来的一张图：存成这场会的一份文件，回它的名字。"""
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                raise WebError(409, "meeting is already finished")
+            try:
+                return store.save_attachment(media_type, payload)
+            except MeetingError as exc:
+                raise WebError(400, str(exc)) from exc
+
+    def attachment(self, meeting_id: str, name: str) -> Dict[str, Any]:
+        """把这场会的一张图取回来（页面里的 <img> 走这条）。"""
+        store = self.load_store(meeting_id)
+        try:
+            path = store.attachment_path(name)
+        except MeetingError as exc:
+            raise WebError(404, "attachment not found") from exc
+        if not path.is_file() or path.is_symlink():
+            raise WebError(404, "attachment not found")
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return {"path": path, "media_type": media_type, "bytes": path.read_bytes()}
+
+    def _message_attachments(self, store: MeetingStore, raw: Any) -> List[Dict[str, Any]]:
+        """消息带的那几张图：必须是这场会里已经存过的，别的一律不收。"""
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            raise WebError(400, "attachments must be an array")
+        stored = set(store.attachment_names())
+        found: List[Dict[str, Any]] = []
+        for item in raw:
+            name = item.get("name") if isinstance(item, dict) else item
+            if not isinstance(name, str) or name not in stored:
+                raise WebError(422, f"attachment is not stored in this meeting: {name!r}")
+            found.append({"name": name})
+        return found
+
     def message(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
             if not isinstance(payload, dict) or not set(payload).issubset(
-                {"message", "delivery", "reference", "references"}
+                {"message", "delivery", "reference", "references", "attachments"}
             ):
                 raise WebError(400, "message request contains unsupported fields")
             message = payload.get("message") if isinstance(payload, dict) else None
-            if not isinstance(message, str) or not message.strip():
+            if not isinstance(message, str):
+                raise WebError(400, "message must be a string")
+            message = message.strip()
+            attachments = self._message_attachments(store, payload.get("attachments"))
+            if not message and not attachments:
                 raise WebError(400, "message must be a non-empty string")
             if len(message.encode("utf-8")) > MAX_MESSAGE_BYTES:
                 raise WebError(413, "message is too large")
@@ -1486,15 +1778,17 @@ class MeetingWebService:
                 or orphaned_agent
             )
             if "references" in payload or isinstance(payload.get("reference"), list):
-                store.append_chat("human", message, "request", references=references)
+                store.append_chat("human", message, "request", references=references,
+                                  attachments=attachments)
             else:
-                # Preserve the legacy singular journal shape when an older
+                # Preserve the legacy singular journal field when an older
                 # client sends ``reference``; V6 callers use ``references``.
                 store.append_chat(
                     "human",
                     message,
                     "request",
                     reference=references[0] if references else None,
+                    attachments=attachments,
                 )
             if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
                 # A chat while the human holds the terminal is an explicit
@@ -1511,28 +1805,7 @@ class MeetingWebService:
             # Who is addressed does not depend on the delivery mode: an
             # immediate ("interrupt") @mention must still reach the reviewer
             # rather than the actor.
-            mentioned = mentioned_agent_names(message, store.meeting.effective_role_map)
-            reviewer_targets = [n for n in mentioned if store.meeting.role_of(n) != "actor"]
-            mentions_actor = any(store.meeting.role_of(n) == "actor" for n in mentioned)
-            if reviewer_targets and not mentions_actor:
-                if store.meeting.status not in TERMINAL_STATUSES and store.meeting.control_owner != "human":
-                    if self._job_alive(meeting_id) and not (
-                        store.meeting.phase == "waiting_for_user"
-                        and store.meeting.control_owner == "none"
-                        and store.meeting.pending_action_id is None
-                    ):
-                        self._interrupt_backend(meeting_id)
-                        store.bump_request_generation(
-                            failure=None,
-                            cycle_action_count=0,
-                            cycle_started_at=utc_now(),
-                        )
-                        store.update(phase="waiting_for_user", control_owner="none",
-                                     pending_action_id=None)
-                        self._summon_reviewer_after_idle(meeting_id, reviewer_targets[0])
-                    else:
-                        self._start_reviewer(meeting_id, reviewer_targets[0])
-                    return store
+            mentioned_agent_names(message, store.meeting.effective_role_map)
             if delivery == "interrupt" or wake_agent:
                 self._require_terminal(store, "run the agent")
                 store.bump_request_generation(
@@ -1668,7 +1941,7 @@ class MeetingWebService:
     def terminal_input(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
         """Deliver human input into the shared pane while the human owns it.
 
-        Two payload shapes are accepted:
+        Two payload layouts are accepted:
 
         - ``{"bytes": "<hex>"}`` -- the takeover terminal's raw keystroke
           bytes (control characters, UTF-8 text, CSI sequences), sent to the
@@ -2151,6 +2424,39 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             raise WebError(400, "request body must be a JSON object")
         return payload
 
+    def _read_bytes(self) -> bytes:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise WebError(411, "Content-Length is required")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise WebError(400, "invalid Content-Length") from exc
+        if length <= 0 or length > MAX_ATTACHMENT_BYTES:
+            raise WebError(413, "attachment is empty or too large")
+        data = self.rfile.read(length)
+        if len(data) != length:
+            raise WebError(400, "incomplete request body")
+        return data
+
+    def _raw(self, payload: bytes, content_type: str, etag: Optional[str] = None) -> None:
+        """Send bytes as they are (an image, not JSON)."""
+        try:
+            if etag and self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self._headers(content_type, cache="no-cache" if etag else "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            if etag:
+                self.send_header("ETag", etag)
+            self.end_headers()
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _read_empty_json(self) -> None:
         if self._read_json():
             raise WebError(400, "request body must be an empty JSON object")
@@ -2337,6 +2643,16 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 etag = '"' + sha256_text(payload["revision"] + str(after))[:24] + '"'
                 self._json(payload, etag=etag)
                 return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/attachments/([^/]+)", path)
+            if match:
+                found = self.service.attachment(unquote(match.group(1)), unquote(match.group(2)))
+                self._raw(found["bytes"], found["media_type"], etag='"'
+                          + hashlib.sha256(found["bytes"]).hexdigest()[:24] + '"')
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/tickets", path)
+            if match:
+                self._json(self.service.tickets(unquote(match.group(1))))
+                return
             match = re.fullmatch(r"/api/meetings/([^/]+)/terminal/stream", path)
             if match:
                 query = parse_qs(parsed.query, keep_blank_values=False)
@@ -2377,11 +2693,30 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 store = self.service.start(self._read_json())
                 self._json({"meeting_id": store.meeting.meeting_id, "meeting": _public_manifest(store)}, status=201)
                 return
+            if path == "/api/workspaces":
+                self._json(self.service.add_workspace(self._read_json()))
+                return
+            if path == "/api/workspaces/rename":
+                self._json(self.service.rename_workspace(self._read_json()))
+                return
+            if path == "/api/workspaces/delete":
+                self._json(self.service.delete_workspace(self._read_json()))
+                return
             if path == "/api/settings":
                 self._json(self.service.update_settings(self._read_json()))
                 return
+            if path == "/api/choose-directory":
+                self._json(self.service.choose_directory(self._read_json()))
+                return
             if path == "/api/credentials":
                 self._json(self.service.update_credentials(self._read_json()))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/attachments", path)
+            if match:
+                media_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+                payload = self._read_bytes()
+                self._json({"attachment": self.service.save_attachment(
+                    unquote(match.group(1)), media_type, payload)}, status=201)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/sdk/([A-Za-z_][A-Za-z0-9_]*)", path)
             if match:
@@ -2409,6 +2744,12 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             if match:
                 store = self.service.terminal_input(unquote(match.group(1)), self._read_json())
                 self._json({"meeting": _public_manifest(store)})
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/tickets/([^/]+)", path)
+            if match:
+                self._read_json()
+                self._json(self.service.issue_ticket(unquote(match.group(1)),
+                                                     unquote(match.group(2))))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/(control/acquire|control/release|agent/resume|complete|stop|cleanup)", path)
             if match:
@@ -2441,7 +2782,10 @@ def build_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, service: Op
         raise ValueError("RemoteBuddy web server only listens on loopback")
     if not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
-    return RemoteBuddyHTTPServer((host, port), service or MeetingWebService())
+    server = RemoteBuddyHTTPServer((host, port), service or MeetingWebService())
+    # The member processes talk to the meeting over this service's own HTTP face.
+    server.service.public_url = f"http://{host}:{server.server_address[1]}"
+    return server
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -2450,6 +2794,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run the RemoteBuddy v2 workspace service")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--workspace", default=None, metavar="DIR",
+                        help="工作区（一个目录）：会议的每一份数据放在 <DIR>/.meeting/ 下；"
+                             "不给就用项目根")
     parser.add_argument(
         "--harness",
         default=None,
@@ -2474,12 +2821,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             parser.error("--harness must be one of: claude, responses, codex, trae")
         default_backend, default_provider = pair
 
+    if args.workspace and not Path(args.workspace).expanduser().is_dir():
+        parser.error(f"--workspace 必须是存在的目录：{args.workspace}")
+
     service = MeetingWebService(
+        workspace=Path(args.workspace) if args.workspace else None,
         default_backend=default_backend,
         default_provider=default_provider,
     )
     server = build_server(args.host, args.port, service=service)
     print(f"RemoteBuddy workspace: http://{args.host}:{args.port}/", flush=True)
+    print(f"工作区：{service.workspace}（会议数据在 {service.workspace / MeetingStore.WORKSPACE_DIR}/）",
+          flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

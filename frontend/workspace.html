@@ -13,21 +13,11 @@
       <button id="rail-more-button" class="rail-button" type="button" title="会话列表" aria-label="会话列表"><span class="rail-icon-menu" aria-hidden="true"></span></button>
     </aside>
     <aside class="sidebar">
-      <header class="brand-row">
-        <div>
-          <p class="brand" id="sidebar-title">RemoteBuddy</p>
-          <p class="brand-subtitle" id="sidebar-subtitle">还没有打开会话</p>
-        </div>
-        <div class="brand-actions">
-          <span id="health-dot" class="health-dot" title="环境状态"></span>
-        </div>
-      </header>
-
-      <button id="new-button" class="primary-command" type="button"><span aria-hidden="true">＋</span> 新会话</button>
       <p id="health-message" class="health-message" hidden></p>
-      <div class="sidebar-section-title">
-        <span>会话</span>
-        <span id="meeting-count">0</span>
+      <div class="workspace-head">
+        <span class="workspace-head-title">工作区</span>
+        <button id="add-workspace-button" class="workspace-head-add" type="button"
+                title="添加工作区" aria-label="添加工作区">＋</button>
       </div>
       <nav id="meeting-list" class="meeting-list" aria-label="会议列表"></nav>
       <div id="list-empty" class="list-empty">还没有 v2 会话</div>
@@ -41,7 +31,8 @@
         <div class="welcome-mark" aria-hidden="true">RB</div>
         <h1>打开一个共享工作区</h1>
         <p>你的消息和终端画面会共同成为 Agent 的工作上下文。</p>
-        <button id="welcome-new-button" class="primary-command compact" type="button">开始会话</button>
+        <button id="welcome-new-button" class="primary-command compact" type="button">打开工作区</button>
+        <button id="welcome-advanced-button" class="link-button" type="button">高级设置（后端、模型、密钥）…</button>
       </section>
 
       <section id="session-view" class="session-view" hidden>
@@ -52,6 +43,7 @@
           <div class="header-actions">
             <div id="agent-states" class="agent-states" hidden></div>
             <button id="refresh-button" class="icon-button" type="button" title="刷新" aria-label="刷新">↻</button>
+            <button id="ticket-toggle" class="command-button compact" type="button" hidden>工单</button>
             <button id="resume-button" class="command-button" type="button" hidden>继续 Agent</button>
             <button id="complete-button" class="command-button" type="button">结束并保留</button>
             <button id="cleanup-button" class="command-button" type="button" hidden>清理终端</button>
@@ -98,9 +90,14 @@
             <div id="composer-shell" class="composer-shell">
               <form id="message-form" class="message-form">
                 <label class="sr-only" for="message-input">发送消息</label>
+                <div id="attachment-strip" class="attachment-strip" hidden></div>
                 <textarea id="message-input" rows="3" maxlength="1048576" placeholder="继续说明、纠正或打断 Agent…"></textarea>
                 <div id="reference-card" class="reference-card" hidden></div>
                 <div class="composer-footer">
+                  <button id="attach-image-button" class="icon-button" type="button" title="加图片（也可以直接粘贴）" aria-label="加图片">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                  </button>
+                  <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
                   <button id="send-message-button" class="primary-command compact send-button" type="submit" title="发送" aria-label="发送">↑</button>
                 </div>
               </form>
@@ -182,6 +179,22 @@
 
           </section>
         </div>
+
+        <section id="ticket-panel" class="ticket-details" hidden>
+          <header class="ticket-head">
+            <p class="pane-kicker">工单</p>
+            <h2 id="ticket-title">这场会怎么转</h2>
+            <span id="ticket-digest" class="ticket-chip" title="这份流程的内容摘要"></span>
+            <button id="ticket-issue-button" class="command-button compact" type="button" hidden>发这一张</button>
+          </header>
+          <p id="ticket-hint" class="ticket-line"></p>
+          <p id="ticket-outcome" class="ticket-outcome"></p>
+          <div id="ticket-list" class="ticket-list"></div>
+          <details id="ticket-details" class="ticket-record-shell">
+            <summary>会议记录</summary>
+            <pre id="ticket-record" class="ticket-record"></pre>
+          </details>
+        </section>
       </section>
     </main>
   </div>
@@ -190,13 +203,18 @@
     <form id="new-form" method="dialog">
       <header>
         <div>
-          <p class="pane-kicker">NEW SESSION</p>
-          <h2>开始协作</h2>
+          <p class="pane-kicker">ADVANCED</p>
+          <h2>高级设置</h2>
         </div>
         <button id="close-dialog" class="icon-button" type="button" aria-label="关闭">×</button>
       </header>
       <label for="initial-message">第一条消息</label>
-      <textarea id="initial-message" rows="9" maxlength="1048576" required placeholder="例如：请在共享工作区里用 Vim 创建一份项目说明。"></textarea>
+      <textarea id="initial-message" rows="9" maxlength="1048576" placeholder="可以先不写；开了会话在聊天框里说。"></textarea>
+      <label for="workspace-input">工作区目录</label>
+      <div class="workspace-row">
+        <input id="workspace-input" type="text" maxlength="500" autocomplete="off" spellcheck="false" placeholder="留空就用默认目录">
+        <button id="choose-directory" class="command-button" type="button">选择目录…</button>
+      </div>
       <details>
         <summary>高级设置</summary>
         <div class="backend-fields">
@@ -251,6 +269,11 @@
     </form>
   </dialog>
 
+  <div id="workspace-menu" class="workspace-menu" hidden role="menu" aria-label="工作区操作">
+    <button type="button" data-workspace-action="rename" role="menuitem">重命名</button>
+    <button type="button" data-workspace-action="delete" role="menuitem">删除工作区</button>
+  </div>
+
   <div id="selection-menu" class="selection-menu" hidden role="toolbar" aria-label="选区操作">
     <button type="button" data-selection-action="evaluate" class="score-action evaluate">评价</button>
     <button type="button" data-selection-action="add-to-conversation" class="score-action add-to-conversation">添加到对话</button>
@@ -265,6 +288,14 @@
       <button id="close-event" class="icon-button" type="button" aria-label="关闭">×</button>
     </header>
     <pre id="event-content"></pre>
+  </dialog>
+
+  <!-- 聊天里的图点开就是这一层：点图上不动，点其它任何地方关掉。 -->
+  <dialog id="image-lightbox" class="image-lightbox" aria-label="查看图片">
+    <button id="image-lightbox-close" class="image-lightbox-close" type="button" aria-label="关闭">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
+    </button>
+    <img id="image-lightbox-image" alt="">
   </dialog>
 
   <div id="toast" class="toast" hidden></div>

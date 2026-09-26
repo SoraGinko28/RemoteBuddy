@@ -606,7 +606,7 @@ class ResponsesClientTest(unittest.TestCase):
         self.assertEqual("resp_retry", response.response_id)
         self.assertEqual(3, len(calls))
 
-    def test_gateway_top_level_error_shape_is_reported(self):
+    def test_gateway_top_level_error_format_is_reported(self):
         def opener(request, timeout):
             body = io.BytesIO(
                 json.dumps({"code": "MODEL_FORBIDDEN", "message": "model is not enabled"}).encode(
@@ -637,3 +637,32 @@ class ResponsesClientTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InputWithImagesTest(unittest.TestCase):
+    """Responses 的 input：一张图进模型就是一张图（input_image + data URL）。"""
+
+    def test_a_stored_picture_becomes_an_input_image(self):
+        import base64
+        import tempfile
+        from pathlib import Path
+
+        from model_api_client import _input_with_images
+
+        with tempfile.TemporaryDirectory() as name:
+            png = Path(name) / "image-1.png"
+            png.write_bytes(b"\x89PNG\r\n\x1a\nbody")
+            built = _input_with_images("看这张", [{"path": str(png), "media_type": "image/png"}])
+        self.assertEqual("user", built[0]["role"])
+        blocks = built[0]["content"]
+        self.assertEqual({"type": "input_text", "text": "看这张"}, blocks[0])
+        self.assertEqual("input_image", blocks[1]["type"])
+        self.assertTrue(blocks[1]["image_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(b"\x89PNG\r\n\x1a\nbody",
+                         base64.b64decode(blocks[1]["image_url"].split(",", 1)[1]))
+
+    def test_no_pictures_keeps_the_plain_string_input(self):
+        from model_api_client import _input_with_images
+
+        self.assertEqual("看这个", _input_with_images("看这个"))
+        self.assertEqual("看这个", _input_with_images("看这个", [{"path": "/nowhere/x.png"}]))

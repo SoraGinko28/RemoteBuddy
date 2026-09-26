@@ -225,7 +225,7 @@ datetime =
     Object
   * $microsecond int                    # time identity inside a meeting: microseconds, unique by construction
 
-Optional[T] = T | nil                  # absence is nil; a sum shape, not a tag
+Optional[T] = T | nil                  # absence is nil; a sum, not a tag
 
 AppendOnlyList[T] = list[T]            # append-only: position is identity. A convention, not a structure
 ReadOnlyList[T] = list[T]              # read-only: written once, never changed. Same as above
@@ -336,8 +336,19 @@ VersionedFile =
 ChatMessage =
     Object
   * $message list[$raw_msg str | $at_user_name UserName | $reference ContentReference]
+  * $image_msg list[ImageAttachment]                 # 随这条消息一起交出去的图片
   * $user_name UserName
   * $time datetime
+
+# 图片是这场会存下来的一份文件：`$name` 指的是会议目录 `attachments/` 下的那个文件，
+# ADT 里只留名字与内容指纹，不留副本、也不留它从哪儿来。
+# 一条消息可以只有图、没有字：这时 $message 是空的，$image_msg 不是。
+ImageAttachment =
+    Object
+  * $name str
+  * $media_type str
+  * $sha256 str
+  * $byte_count int
 
 ScoreMessage =
     Object
@@ -457,7 +468,7 @@ TerminalControlReference =
 # record type. A rule that could see how the data is kept would stop being a
 # rule about the meeting.
 #
-# They are types whose shape is the unit (Object = nil): carrying one is what
+# They are types whose value is the unit (Object = nil): carrying one is what
 # lets a definition be judged (is_compliant).
 # ---------------------------------------------------------------- #
 
@@ -700,7 +711,7 @@ make_score_reference =
 make_terminal_control_reference =
     mc.TerminalControlReference
   <- $start_time mc.datetime
-  <- $user_name mc.UserName | nil          # absent = nobody took over after that hand-back
+  <- $user_name (mc.UserName | nil)        # absent = nobody took over after that hand-back
   <- $region mc.TextRegion
 
 make_versioned_file_reference =
@@ -715,16 +726,17 @@ make_versioned_file_content_reference =
 
 
 local_version_hint = Hint[{
-	Ctx is python object in current process
+	Ctx is a meeting_adt.MeetingData record in this process
 	usage:
-  	import meeting_local_sdk as sdk
+  	the server side of this interface: meeting_sdk_server answers these apis
+  	over the record it holds (POST /api/meetings/<meeting-uid>/sdk/<api>)
 }]
 
 remote_version_hint = Hint[{
 	Ctx is meeting uid
 	every api should be backed by REST URL
 	usage:
-  	import meeting_remote_sdk as sdk
+  	import meeting_sdk as sdk
   	
  	every api should return a valid viba script as result with definition of 'entry = ...'
  	

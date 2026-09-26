@@ -111,7 +111,7 @@ async def run() -> None:
             if action.references:
                 normalized_action["references"] = [dict(item) for item in action.references]
             else:
-                # Keep the pre-reference bridge shape for callers that did not
+                # Keep the pre-reference bridge format for callers that did not
                 # attach quotes; AgentAction treats the field as optional.
                 normalized_action.pop("references", None)
             if action.result_needed:

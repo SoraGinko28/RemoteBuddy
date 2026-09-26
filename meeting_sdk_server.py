@@ -1,38 +1,18 @@
-"""meeting_local_sdk -- the local binding of the meeting_sdk.viba contract.
+"""meeting_sdk_server -- the server side of the meeting_sdk.viba contract.
 
-Ctx is a Python object in this process: a meeting_adt.MeetingData record. Every
-getter evaluates in place; nothing goes over a wire. For the remote binding
-(Ctx is a meeting uid, every api is backed by a REST URL) see meeting_remote_sdk.
+Ctx is the record the server holds: a meeting_adt.MeetingData. The service runs
+these when a client asks for one api over the wire:
 
-The read-only interface that takes data out of a meeting.
+    POST /api/meetings/<meeting-uid>/sdk/<api>   ->   meeting_sdk_viba -> viba script
 
-The design (signatures) is the data-interface chapter of MEETING_ADT.md
-(module name meeting_sdk): every function carries the generic parameter ``Ctx``,
-takes a ``$ctx``, and returns a Result; the signature mentions only stable
-types. This layer is its implementation.
+so nothing binds a record in-process any more; this is simply where the reading
+happens. The caller side is meeting_sdk.
 
-**The public interface is exactly the 33 in meeting_sdk.viba**: names fall in
-snake_case, parameters and returns follow the design, and nothing else is
-exported -- the types in the signatures (``mc.ChatReference``,
-``mc.AgentRole``...) belong to meeting_core and are not taken from here.
-
-The bindings of this version (the interface says Ctx / Data are bound by the
-implementation):
-
-* ``Ctx`` = :class:`meeting_adt.MeetingData`: a meeting record.
-* ``Result[T]`` = viba's ``Ok`` / ``VibaProgramErr`` (meeting_core_reflect can read them as
-  Result's two branches).
-* Named stable types use the dataclass of the same name in meeting_adt:
-  ``FileId`` / ``VersionedFile`` / ``ChatMessage`` / ``ScoreMessage`` / the
-  various References (`FileKvStore` is a record-layer type).
-* The screen state (``mc.ScreenContent``) and the file state (``mc.FileState``)
-  use ``dict``, keyed by the design's tag names:
-  ``{"text", "segments", "cursor_x", "cursor_y", "width", "height",
-  "captured_at"}``, ``{"name", "meta", "content"}``.
-
-Reading only: getters always return a Result -- a miss is an ``VibaProgramErr``, not an
-exception, and no api writes (writes are the harness's job). The ``make_*`` group
-at the end takes no ``ctx``; it only builds values such as references.
+The public interface is exactly the apis of the data-interface chapter in
+MEETING_ADT.md: names in snake_case, parameters and returns as written there,
+and nothing else. Reading only: a getter always returns a Result -- a miss is a
+VibaProgramErr, not an exception -- and no api writes (writes are the harness's
+job). The make_* group builds values and lives in meeting_adt.
 """
 
 from __future__ import annotations
@@ -43,6 +23,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import meeting_adt as adt
+# The contract's other group: values a caller builds (no ctx, never served).
+# The builders themselves live in meeting_adt; the names belong to the contract.
+from meeting_adt import (make_chat_reference, make_score_reference,  # noqa: F401
+                         make_screen_reference, make_terminal_control_reference,
+                         make_text_region, make_versioned_file_content_reference,
+                         make_versioned_file_reference)
 
 # viba is a submodule, packed under its own root directory; add the submodule
 # root to sys.path so the import finds it.
@@ -324,44 +310,6 @@ def read_text(ctx: Ctx, file: "adt.FileId") -> _Result:
 # Construction: making values such as references (never touches a record)
 # ----------------------------------------------------------------------
 
-
-def make_text_region(start: int, end: int) -> "adt.TextRegion":
-    return adt.TextRegion(start=start, end=end)
-
-
-def make_screen_reference(capture_time: _dt.datetime, stream_name: str,
-                          region: "adt.TextRegion") -> "adt.ScreenReference":
-    return adt.ScreenReference(capture_time=capture_time, stream_name=stream_name,
-                               region=region)
-
-
-def make_chat_reference(msg_time: _dt.datetime, user_name: str,
-                        region: "adt.TextRegion") -> "adt.ChatReference":
-    return adt.ChatReference(msg_time=msg_time, user_name=user_name, region=region)
-
-
-def make_score_reference(judge_time: _dt.datetime, judge_name: str) -> "adt.ScoreReference":
-    return adt.ScoreReference(judge_time=judge_time, judge_name=judge_name)
-
-
-def make_terminal_control_reference(
-        start_time: _dt.datetime, user_name: Optional[str],
-        region: "adt.TextRegion") -> "adt.TerminalControlReference":
-    return adt.TerminalControlReference(start_time=start_time, user_name=user_name,
-                                        region=region)
-
-
-def make_versioned_file_reference(
-        file_id: "adt.FileId",
-        version_time: _dt.datetime) -> "adt.VersionedFileReference":
-    return adt.VersionedFileReference(file_id=file_id, version_time=version_time)
-
-
-def make_versioned_file_content_reference(
-        versioned_file_ref: "adt.VersionedFileReference",
-        region: "adt.TextRegion") -> "adt.VersionedFileContentReference":
-    return adt.VersionedFileContentReference(versioned_file_ref=versioned_file_ref,
-                                             region=region)
 
 
 # ----------------------------------------------------------------------

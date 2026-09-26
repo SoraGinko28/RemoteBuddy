@@ -229,3 +229,24 @@ class TestMapping:
         meeting, summary = loader.load_meeting_data_from_run(run_dir)
         assert meeting.sorted_stream_chunks == []
         assert summary.event_total == 0
+
+
+def test_a_chat_with_images_keeps_them_on_the_message(tmp_path):
+    """journal 里只有名字和指纹；loader 把图挂回那条消息上。"""
+    from meeting_v2 import MeetingStore
+
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
+    store = MeetingStore.create(tmp_path, "loader-attach", "看这张", skill,
+                                "remotebuddy-loader-attach", "test-model", workspace=tmp_path)
+    descriptor = store.save_attachment("image/png", b"\x89PNG\r\n\x1a\nbody")
+    store.append_chat("human", "看这张", "request", attachments=[descriptor])
+
+    data, _summary = loader.load_meeting_data_from_run(store.run_dir)
+    chats = [m for chunk in data.sorted_stream_chunks for m in chunk.chunks]
+    with_image = [m for m in chats if m.attachments]
+    assert len(with_image) == 1
+    attachment = with_image[0].attachments[0]
+    assert attachment.name == descriptor["name"]
+    assert attachment.media_type == "image/png"
+    assert attachment.byte_count == len(b"\x89PNG\r\n\x1a\nbody")

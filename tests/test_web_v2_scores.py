@@ -21,6 +21,7 @@ class WebV2ScoreTest(unittest.TestCase):
             self.skill,
             "remotebuddy-score-demo",
             "test-model",
+            workspace=self.root,
         )
         self.screen = self.store.append_screen("终端 😀通过", "bash", str(self.store.workspace_path))
         self.agent_chat = self.store.append_chat("actor", "已检查 😀通过", "progress")
@@ -74,7 +75,7 @@ class WebV2ScoreTest(unittest.TestCase):
         )
         self.assertEqual(5, second["seq"])
         self.assertEqual("Bob", second["data"]["judge_name"])
-        loaded = MeetingStore.load(self.root, "score-demo")
+        loaded = MeetingStore.load_in_workspace(self.root, "score-demo")
         self.assertEqual(2, len(loaded.score_messages()))
         self.assertEqual("Alice", loaded.score_messages()[0]["data"]["judge_name"])
         self.assertEqual("Bob", loaded.score_messages()[1]["data"]["judge_name"])
@@ -87,7 +88,7 @@ class WebV2ScoreTest(unittest.TestCase):
     def test_scores_are_allowed_for_all_terminal_states(self):
         source = self.agent_chat
         for status in ("completed", "failed", "interrupted"):
-            loaded = MeetingStore.load(self.root, "score-demo")
+            loaded = MeetingStore.load_in_workspace(self.root, "score-demo")
             loaded.update(status=status, phase=status)
             event = self.service.score(
                 "score-demo",
@@ -137,7 +138,7 @@ class WebV2ScoreTest(unittest.TestCase):
                     },
                 },
             )
-        self.assertEqual([], MeetingStore.load(self.root, "score-demo").score_messages())
+        self.assertEqual([], MeetingStore.load_in_workspace(self.root, "score-demo").score_messages())
         # The same human message is still a valid conversation reference.
         from references import reference_from_event
 

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Run the remote sdk end to end, and read its answers with viba.reflect.
+"""Run the sdk end to end, and read its answers with viba.reflect.
 
-    python3 remote_sdk_demo.py
+    python3 sdk_demo.py
 
 All in this one process, no fixtures from the test suite:
 
 1. write a small meeting journal under a temporary runs/ directory
-   (meeting.json + streams/events.jsonl, the shape meeting_loader reads);
+   (meeting.json + streams/events.jsonl, the files meeting_loader reads);
 2. start the harness web server on a free local port over that journal;
-3. point meeting_remote_sdk at it and drive the apis of the data-interface
+3. point meeting_sdk at it and drive the apis of the data-interface
    chapter -- every answer is a viba script (``entry = ...``);
 4. read those scripts with viba.reflect -- the landing's sugar:
    ``get_ok()`` / ``get_microsecond()`` / ``node["agent"]`` / ``has_err()`` /
@@ -29,7 +29,7 @@ import threading
 import time
 from pathlib import Path
 
-import meeting_remote_sdk as remote
+import meeting_sdk as remote
 import meeting_sdk_viba as viba_sdk
 from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,
                          at_key as viba_at_key, by_field_index as viba_by_field_index,
@@ -60,7 +60,8 @@ def write_journal(root: Path) -> dt.datetime:
     skill = root / "SKILL.md"
     skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
     store = MeetingStore.create(root, MEETING_ID, CHAT_ASKED, skill, "remote-demo",
-                                "test-model", agent_name2role={"agent": "actor"})
+                                "test-model", agent_name2role={"agent": "actor"},
+                                workspace=root)
     store.append_chat("agent", CHAT_DONE, "final")
     time.sleep(0.01)      # the journal stamps milliseconds: keep the two apart
     screen = store.append_screen(SCREEN_TEXT, "bash", str(store.workspace_path),
@@ -178,7 +179,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="remote-sdk-demo-") as temporary:
         root = Path(temporary)
         capture_time = write_journal(root)
-        service = MeetingWebService(project_root=root)
+        service = MeetingWebService(project_root=root, workspace=root)
         server = RemoteBuddyHTTPServer(("127.0.0.1", PORT), service)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

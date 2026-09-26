@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from interactive_runner import (
+    MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
     RunnerError,
     TypingInterrupted,
@@ -46,6 +47,7 @@ class FakeClient:
         self.calls = []
         self.conversations = []
         self.config = FakeConfig()
+        self.last_images = None
 
     def create_conversation(self, meeting_id):
         value = f"conv-{len(self.conversations) + 1}"
@@ -53,6 +55,7 @@ class FakeClient:
         return value
 
     def create_action(self, conversation_id, instructions, observation, **kwargs):
+        self.last_images = kwargs.get("images")
         self.calls.append((conversation_id, instructions, observation, kwargs))
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
@@ -1281,3 +1284,102 @@ class InteractiveRunnerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenWorkspaceTest(unittest.TestCase):
+    """`runner.open()`：开一块工作区——终端开出来、停在等人说话，agent 不动。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        skill = self.root / "SKILL.md"
+        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
+        self.store = MeetingStore.create(
+            self.root, "open-demo", "", skill, "remotebuddy-open-demo", "test-model"
+        )
+        self.transport = FakeTransport()
+        self.client = FakeClient([])
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def runner(self):
+        return InteractiveRunner(self.store, self.transport, self.client, lock=threading.RLock())
+
+    def test_it_opens_the_pane_and_stops_there(self):
+        self.runner().open()
+        meeting = MeetingStore.load(self.root, "open-demo").meeting
+        self.assertEqual("running", meeting.status)
+        self.assertEqual("waiting_for_user", meeting.phase)
+        self.assertEqual("none", meeting.control_owner)
+        self.assertTrue(meeting.pane_id)
+        self.assertEqual("running", meeting.session_state)
+        # 一帧真画面已经在 journal 里（页面不再空等），而且一个 agent 回合都没起。
+        self.assertTrue([e for e in self.store.events() if e["kind"] == "screen"])
+        self.assertEqual([], self.client.calls)
+
+    def test_starting_again_reuses_the_open_pane(self):
+        runner = self.runner()
+        runner.open()
+        pane_id = self.store.meeting.pane_id
+        # 同一个工作区不会开出第二个 tmux 会话。
+        self.assertEqual(pane_id, runner._ensure_pane())
+        self.assertEqual(pane_id, MeetingStore.load(self.root, "open-demo").meeting.pane_id)
+
+
+class AttachmentObservationTest(unittest.TestCase):
+    """带图的消息交给 agent 时，图在哪儿要写在里面（agent 读工作区的文件就能看）。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        skill = self.root / "SKILL.md"
+        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
+        self.store = MeetingStore.create(
+            self.root, "image-demo", "看这张", skill, "remotebuddy-image-demo", "test-model",
+            workspace=self.root,
+        )
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_the_observation_names_the_file(self):
+        descriptor = self.store.save_attachment("image/png", b"\x89PNG\r\n\x1a\nbody")
+        self.store.append_chat("human", "看这张", "request", attachments=[descriptor])
+        runner = InteractiveRunner(self.store, FakeTransport(), FakeClient([]),
+                                   lock=threading.RLock())
+        events = self.store.events_after(0)
+        observation = runner._observation(events, False, force_history=True)
+        self.assertIn(str(self.store.attachment_path(descriptor["name"])), observation)
+        self.assertIn('"attachments"', observation)
+        # 图片是交给模型自己看的：观察里直说一句，别去命令行里找 OCR。
+        self.assertIn("look at them directly", observation)
+        # journal 本身没有被改写：路径只是交给 agent 时补上的。
+        self.assertNotIn("file", self.store.events()[-1]["data"]["attachments"][0])
+
+    def test_the_picture_rides_along_with_the_request(self):
+        descriptor = self.store.save_attachment("image/png", b"\x89PNG\r\n\x1a\nbody")
+        self.store.append_chat("human", "看这张", "request", attachments=[descriptor])
+        client = FakeClient([make_action()])
+        runner = InteractiveRunner(self.store, FakeTransport(), client, lock=threading.RLock())
+        images = runner._images_of(self.store.events_after(0))
+        self.assertEqual([{
+            "name": descriptor["name"],
+            "media_type": "image/png",
+            "path": str(self.store.attachment_path(descriptor["name"])),
+        }], images)
+
+        runner._next_backend_action(
+            "conv-1", "instructions", "observation", images=images,
+            allowed_types=None, allowed_messages=None, timeout=5.0,
+            generation=0, input_seq=0,
+        )
+        self.assertEqual(images, client.last_images)
+
+    def test_a_picture_that_is_too_big_for_one_request_is_left_out(self):
+        descriptor = self.store.save_attachment(
+            "image/png", b"x" * (MAX_IMAGE_BYTES_PER_TURN + 1))
+        self.store.append_chat("human", "看这张", "request", attachments=[descriptor])
+        runner = InteractiveRunner(self.store, FakeTransport(), FakeClient([]),
+                                   lock=threading.RLock())
+        self.assertEqual([], runner._images_of(self.store.events_after(0)))

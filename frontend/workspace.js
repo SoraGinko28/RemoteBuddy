@@ -11,20 +11,27 @@ const MAX_LIVE_SCREEN_QUEUE = 120;
 const HUMAN_TAKEOVER_FRAME_MS = 200;
 
 const el = Object.fromEntries([
-  "health-dot", "health-message", "new-button", "welcome-new-button", "meeting-count", "meeting-list", "list-empty",
-  "welcome", "session-view", "agent-states", "status-badge", "owner-badge", "sidebar-title", "sidebar-subtitle",
+  "health-message", "welcome-new-button", "meeting-list", "list-empty",
+  "add-workspace-button",
+  "welcome", "session-view", "agent-states", "status-badge", "owner-badge",
+  "workspace-menu",
+  "welcome-advanced-button",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "member-name-label", "member-role-label", "member-state-label", "member-terminal-label",
   "member-chat-label", "member-last-label",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
-  "message-input", "send-message-button", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
+  "message-input", "send-message-button", "reference-card", "composer-shell",
+  "attach-image-button", "image-input", "attachment-strip",
+  "image-lightbox", "image-lightbox-image", "image-lightbox-close", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
-  "close-dialog", "cancel-new", "initial-message", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
+  "close-dialog", "cancel-new", "initial-message", "workspace-input", "choose-directory", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
+  "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
+  "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
 const state = {
@@ -32,8 +39,16 @@ const state = {
   csrfHeader: "X-RemoteBuddy-CSRF",
   healthy: false,
   meetings: [],
+  workspaces: [],
+  workspaceTitles: {},
+  workspaceMenuPath: "",
+  workspace: "",
+  workspaceFilled: false,
   selectedId: null,
   snapshot: null,
+  tickets: null,
+  pendingAttachments: [],
+  ticketsEtag: "",
   timeline: [],
   cursor: 0,
   playbackIndex: -1,
@@ -81,7 +96,7 @@ const labels = {
   score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
-  agentState: { thinking: "思考中", acting: "操作中", idle: "待命中", error: "异常" },
+  agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常" },
   role: { actor: "行动者", assistant: "助理", critic: "批判者" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
@@ -98,7 +113,7 @@ function withAgent(text, meeting) {
 }
 
 // Every phase outside these buckets (terminal states, human takeover,
-// waiting) renders as the muted "待命中" badge; error details stay in
+// waiting) renders as the muted "待命" badge; error details stay in
 // #failure-message.
 const AGENT_STATE_PHASES = {
   starting: "thinking",
@@ -122,8 +137,16 @@ const IDLE_PHASE_BOUNDARY = new Set([
 
 // If a terminal owner claims to be thinking/acting but authored no event for
 // this long, the worker is likely orphaned (state parked after a crash);
-// stop reporting a live turn.
+// stop reporting a live turn. The meeting's own updated_at is the other half:
+// a turn that just started has no band of its own yet, and the gap since the
+// last one can be minutes (a ticket flow waits for the agent between steps) —
+// the phase change itself keeps the meeting fresh.
 const STALE_BAND_MS = 180_000;
+
+function meetingAge(meeting) {
+  const stamp = Date.parse(meeting?.updated_at || "");
+  return Number.isFinite(stamp) ? Date.now() - stamp : Number.POSITIVE_INFINITY;
+}
 
 function latestBandTime(actor) {
   const timeline = state.timeline || [];
@@ -150,8 +173,9 @@ function memberState(actor, meeting) {
   if (meeting.control_owner === actor) {
     const stateName = agentStateForPhase(meeting.phase);
     if ((stateName === "thinking" || stateName === "acting")
-        && Date.now() - latestBandTime(actor) > STALE_BAND_MS) {
-      return "error";  // parked/orphaned: no live turn for minutes
+        && Date.now() - latestBandTime(actor) > STALE_BAND_MS
+        && meetingAge(meeting) > STALE_BAND_MS) {
+      return "error";  // parked/orphaned: nothing from it and nothing from the meeting
     }
     return stateName;
   }
@@ -204,7 +228,7 @@ function renderMemberStates(meeting) {
 }
 
 // The member list of a meeting: the recorded role map, with the legacy
-// single-agent shape as the fallback.
+// single-agent layout as the fallback.
 function memberRoles(meeting) {
   const roles = meeting?.agent_name2role;
   return (roles && Object.keys(roles).length) ? roles : { agent: "actor" };
@@ -276,10 +300,19 @@ function node(tag, className, text) {
   return value;
 }
 
+// The status travels with the error: callers that poll need to tell "this
+// meeting is gone" (404) from a transient failure.
+function httpError(response, payload) {
+  const error = new Error(payload.error || `请求失败 (${response.status})`);
+  error.status = response.status;
+  return error;
+}
+
 async function api(path, options = {}, retryCsrf = true) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers || {});
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
+  // `raw` 用于图片那种二进制 body：不要塞 JSON 的 Content-Type。
+  if (options.body !== undefined && !options.raw) headers.set("Content-Type", "application/json");
   if (method !== "GET") headers.set(state.csrfHeader, state.csrfToken);
   const response = await fetch(path, { ...options, headers, cache: "no-store" });
   const text = await response.text();
@@ -302,7 +335,7 @@ async function api(path, options = {}, retryCsrf = true) {
       }
     }
   }
-  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  if (!response.ok) throw httpError(response, payload);
   return payload;
 }
 
@@ -314,7 +347,7 @@ async function apiConditional(path, etag) {
   const text = await response.text();
   let payload = {};
   try { payload = text ? JSON.parse(text) : {}; } catch (_error) { payload = { error: text }; }
-  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  if (!response.ok) throw httpError(response, payload);
   return { notModified: false, etag: response.headers.get("ETag") || "", payload };
 }
 
@@ -448,6 +481,91 @@ function enqueueLiveScreens(events) {
   if (!state.liveScreenTimer) advanceLiveScreenQueue();
 }
 
+// A meeting lives in a workspace: its data sits in `<workspace>/.meeting/<id>/`,
+// and several meetings may share one workspace. The group's name is the
+// directory's basename — the project you typed when you opened the session.
+// The workspaces come first: one can be added before it has any meeting, so an
+// empty group is a group too.
+function meetingGroups() {
+  const groups = [];
+  const byPath = new Map();
+  const groupFor = (path) => {
+    if (!byPath.has(path)) {
+      const one = { path, title: state.workspaceTitles[path] || "", meetings: [] };
+      byPath.set(path, one);
+      groups.push(one);
+    }
+    return byPath.get(path);
+  };
+  for (const workspace of state.workspaces) groupFor(workspace);
+  for (const meeting of state.meetings) {
+    groupFor(meeting.workspace_root || state.workspace || "").meetings.push(meeting);
+  }
+  // The default workspace is the directory the service itself runs in: nobody
+  // added it, so it stays out of the list until it actually holds a session.
+  return groups.filter((group) => group.meetings.length > 0 || group.path !== state.workspace);
+}
+
+function basename(path) {
+  const parts = String(path).split("/").filter(Boolean);
+  return parts.length ? parts.at(-1) : path;
+}
+
+// "3 分钟前" reads faster than a wall clock when the question is "which one was
+// I just in"; the exact time stays in the title.
+function fmtAgo(value) {
+  const then = new Date(value).getTime();
+  if (!Number.isFinite(then)) return "—";
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return "刚刚";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.round(hours / 24)} 天前`;
+}
+
+// 兜底标题：会话还没说过话，列表里也不该出现会议号。
+const NEW_MEETING_TITLE = "新会话";
+function meetingLabel(meeting) {
+  return meeting.title || NEW_MEETING_TITLE;
+}
+
+// 一条会话就一行：标题 + 相对时间。会议号、provider、阶段都不占地方（会议号在悬停
+// 的提示里，header 也一样）。
+function meetingItem(meeting) {
+  const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
+  button.type = "button";
+  button.title = meeting.meeting_id;
+  button.append(
+    node("span", "meeting-item-title", meetingLabel(meeting)),
+    node("span", "meeting-item-time", fmtAgo(meeting.updated_at)),
+  );
+  // A drag across the title is the human selecting it to copy, not a command
+  // to open the meeting: a click that ends with a selection inside this item
+  // must not navigate, which would also rebuild the list and drop it.
+  button.addEventListener("click", () => {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
+    selectMeeting(meeting.meeting_id);
+  });
+  return button;
+}
+
+// 工作区那一行前面那个文件夹图标（内联 SVG，跟着文字颜色走）。
+function folderIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linejoin", "round");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z");
+  svg.append(path);
+  return svg;
+}
+
 function renderMeetingList() {
   // Rebuilding the items drops any selection inside them, so stand down while
   // the human is selecting something in the list (the next render, after the
@@ -455,24 +573,39 @@ function renderMeetingList() {
   const live = window.getSelection();
   if (live && !live.isCollapsed && el.meeting_list.contains(live.anchorNode)) return;
   el.meeting_list.replaceChildren();
-  el.meeting_count.textContent = String(state.meetings.length);
-  el.list_empty.hidden = state.meetings.length > 0;
-  for (const meeting of state.meetings) {
-    const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
-    button.type = "button";
-    const top = node("span", "meeting-item-top");
-    top.append(node("strong", "", meeting.meeting_id), node("span", `mini-status ${meeting.status}`, labels.status[meeting.status] || meeting.status));
-    const provider = labels.provider[meeting.agent_provider] || meeting.agent_provider || "OpenAI";
-    button.append(top, node("span", "meeting-item-meta", `${withAgent(labels.phase[meeting.phase] || meeting.phase, meeting)} · ${provider} · ${fmtTime(meeting.updated_at)}`));
-    // A drag across the id is the human selecting it to copy, not a command to
-    // open the meeting: a click that ends with a selection inside this item
-    // must not navigate, which would also rebuild the list and drop it.
-    button.addEventListener("click", () => {
-      const selection = window.getSelection();
-      if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
-      selectMeeting(meeting.meeting_id);
-    });
-    el.meeting_list.append(button);
+  const groups = meetingGroups();
+  // "No v2 session yet" is for having no workspace at all: a workspace that has
+  // no meetings says so under itself.
+  el.list_empty.hidden = groups.length > 0;
+  for (const group of groups) {
+    const section = node("section", "meeting-group");
+    const head = node("div", "meeting-group-head");
+    head.title = group.path;
+    head.append(
+      folderIcon(),
+      node("span", "meeting-group-name",
+        group.title || (group.path ? basename(group.path) : "未知目录")),
+      groupActions(group),
+    );
+    section.append(head);
+    for (const meeting of group.meetings) section.append(meetingItem(meeting));
+    if (!group.meetings.length) section.append(node("p", "meeting-group-empty", "还没有会话"));
+    el.meeting_list.append(section);
+  }
+}
+
+// The dialog's workspace field is a directory you fill in yourself: leave it
+// empty for the default one, or point it at the project this session should
+// work in. It remembers the last one so the usual case is a single click.
+function renderWorkspaceHint() {
+  if (!el.workspace_input) return;
+  el.workspace_input.placeholder = state.workspace
+    ? `留空就用 ${state.workspace}`
+    : "留空就用默认目录";
+  if (!state.workspaceFilled) {
+    const recent = state.meetings[0] && state.meetings[0].workspace_root;
+    if (recent && recent !== state.workspace) el.workspace_input.value = recent;
+    state.workspaceFilled = true;
   }
 }
 
@@ -491,11 +624,6 @@ function renderHeader() {
   if (!state.snapshot) return;
   if (state.pointerSelecting || hasLiveSelection()) return;
   const meeting = state.snapshot.meeting;
-  // The open meeting is named in the sidebar, not in the header: the terminal
-  // already says what is going on, and the sidebar lists everything anyway.
-  el.sidebar_title.textContent = meeting.meeting_id;
-  el.sidebar_subtitle.textContent = `${labels.status[meeting.status] || meeting.status} · ${
-    Object.keys(memberRoles(meeting)).length} 个成员`;
   if (el.agent_states) {
     renderMemberStates(meeting);
   }
@@ -880,12 +1008,17 @@ function renderChat() {
         timeEl,
       );
       const annotations = scoreAnnotationsForSource(event, visibleScores);
+      const images = messageImages(event);
       const body = node("p", "message-content");
       body.dataset.eventId = event.event_id || "";
       body.tabIndex = 0;
       body.setAttribute("aria-label", "聊天消息文本");
       appendAnnotatedText(body, event.content, annotations);
-      article.append(head, body);
+      article.append(head);
+      // 先字后图：图是给这句话作证的，不该把话压在下面。
+      // 只有图片没有字的消息，也不必留一个空段落。
+      if (event.content) article.append(body);
+      if (images) article.append(images);
       const summary = scoreSummary(annotations);
       if (summary) article.append(summary);
       if (replayReference?.kind === "chat" && replayReference.event_id === event.event_id) {
@@ -1990,9 +2123,108 @@ function renderAll() {
   el.session_view.hidden = false;
   renderHeader();
   renderViewportMode();
+  renderTickets();
   renderChat();
   renderTerminal();
   renderPlayback();
+}
+
+function renderTickets() {
+  const board = state.tickets;
+  // 只有跑过流程的会才有这一块：别的会议（产品原来那些）不显示。
+  const show = Boolean(board && board.ran);
+  el.ticket_toggle.hidden = !show;
+  el.ticket_panel.hidden = !show;
+  if (!show) {
+    el.session_view.classList.remove("tickets-open");
+    return;
+  }
+  const tickets = board.tickets || [];
+  const due = tickets.find((one) => one.due);
+  const running = board.running;
+  const verdicts = tickets.flatMap((one) => one.answers || [])
+    .filter((step) => step.op === "judge" && typeof step.value === "boolean");
+  const last = verdicts.length ? verdicts[verdicts.length - 1].value : null;
+  el.ticket_toggle.textContent = [
+    `工单 ${tickets.filter((one) => one.issued).length}/${tickets.length}`,
+    last === null ? "" : (last ? "合格" : "不合格"),
+    running ? "跑着" : due ? "该发" : "",
+  ].filter(Boolean).join(" · ");
+  el.ticket_digest.textContent = String(board.digest || "").slice(0, 8);
+  el.ticket_issue_button.hidden = !due || Boolean(running);
+  if (due) {
+    el.ticket_issue_button.textContent = `发 ${due.ticket}`;
+    el.ticket_issue_button.dataset.ticket = due.ticket;
+  }
+  const done = tickets.filter((one) => one.issued).length;
+  el.ticket_hint.textContent = [
+    `${done}/${tickets.length} 张发过了`,
+    board.case ? `案子 ${lastSegment(board.case)}` : "还没有案子",
+    board.target ? `要交 ${board.target}` : "",
+    running ? `${running} 正在跑` : "",
+  ].filter(Boolean).join("｜");
+  el.ticket_outcome.textContent = outcomeText(tickets);
+  el.ticket_list.replaceChildren(...tickets.map(ticketRow));
+  el.ticket_record.textContent = (board.record || []).join("\n");
+}
+
+function outcomeText(tickets) {
+  const answers = tickets.flatMap((one) => one.answers || []);
+  const verdicts = answers.filter((step) => step.op === "judge" && typeof step.value === "boolean");
+  const objection = answers.find((step) => step.op === "objection" && step.value);
+  const closing = answers.find((step) => step.op === "closing_note" && step.value);
+  const parts = [];
+  if (verdicts.length) {
+    parts.push(verdicts.map((step, index) => `第 ${index + 1} 判 ${step.value ? "合格" : "不合格"}`).join("、"));
+  }
+  if (objection) parts.push(`判语：${objection.value}`);
+  if (closing) parts.push(`收尾：${closing.value}`);
+  return parts.join("｜");
+}
+
+function ticketRow(one) {
+  const row = node("div", `ticket-row${one.due ? " due" : ""}`);
+  row.append(node("span", "ticket-name", one.ticket));
+  row.append(node("span", `ticket-chip ${one.due ? "state-due" : one.issued ? "state-issued" : ""}`,
+    one.due ? "该发" : one.issued ? "发过了" : "还没轮到"));
+  const answers = one.answers || [];
+  const answered = answers.filter((step) => step.answered);
+  const roles = [...new Set(answered.map((step) => step.role).filter(Boolean))];
+  row.append(node("span", "ticket-meta",
+    `${roles.join("、") || "—"} 答了 ${answered.length}/${answers.length} 步`));
+  const verdict = answers.find((step) => step.op === "judge" && typeof step.value === "boolean");
+  const note = answers.find((step) => step.op === "closing_note" && step.value);
+  if (verdict) row.append(node("span", `ticket-chip ${verdict.value ? "state-issued" : "state-bad"}`,
+    verdict.value ? "合格" : "不合格"));
+  if (note) row.append(node("span", "ticket-meta", note.value));
+  // 水表（每条数据路径、谁答的）藏在悬停里：页面上看的是流程和结果，不是路径。
+  row.title = [
+    one.why,
+    ...answers.map((step) => `${step.answered ? "答" : "缺"} ${step.path} + ${step.op}`
+      + (step.role ? `（${step.role}）` : "")),
+  ].join("\n");
+  return row;
+}
+
+function lastSegment(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  return parts[parts.length - 1] || String(path || "");
+}
+
+function lastSegments(path, count) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  return parts.slice(-count).join("/") || String(path || "");
+}
+
+async function postTicket(ticket) {
+  if (!state.selectedId || !ticket) return;
+  try {
+    await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/tickets/${encodeURIComponent(ticket)}`,
+      { method: "POST", body: JSON.stringify({}) });
+    await refreshSelected();
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 function referenceKey(reference) {
@@ -2504,9 +2736,7 @@ async function loadHealth() {
   state.health = health;
   const backendEntries = Object.values(health.backends || {});
   state.healthy = Boolean(health.core_ok && backendEntries.some(usableBackendEntry));
-  el.health_dot.classList.toggle("ok", Boolean(health.ok));
   const failedChecks = (health.checks || []).filter((item) => !item.ok);
-  const failed = failedChecks.map((item) => item.detail);
   const visibleFailures = failedChecks.map((item) => {
     if (item.name === "model-api") return "请配置 model_api/config.toml 与 auth.json";
     if (item.name === "tmux") return "未找到 tmux";
@@ -2516,10 +2746,9 @@ async function loadHealth() {
     if (item.name === "claude-code") return `Claude Code 后端不可用：${item.detail}`;
     return "当前 Python 版本不受支持";
   });
-  el.health_dot.title = health.ok ? "默认运行环境就绪" : failed.join("\n");
+  // 环境出问题时文字就写在下面那行里；一盏灯说不出是哪儿不对，所以不要了。
   el.health_message.textContent = visibleFailures.join("；");
   el.health_message.hidden = state.healthy;
-  el.new_button.disabled = !state.healthy;
   el.welcome_new_button.disabled = !state.healthy;
   syncBackendSelectors();
 }
@@ -2616,7 +2845,11 @@ function updateCredentialFields() {
 async function loadMeetings() {
   const payload = await api("/api/meetings");
   state.meetings = payload.meetings || [];
+  state.workspace = payload.workspace || "";
+  state.workspaces = payload.workspaces || [];
+  state.workspaceTitles = payload.workspace_titles || {};
   state.meetingsRefreshedAt = Date.now();
+  renderWorkspaceHint();
   renderMeetingList();
 }
 
@@ -2639,6 +2872,8 @@ async function selectMeeting(meetingId) {
   clearBrowserSelection();
   closeEvaluationPanel();
   setReferences([]);
+  // 待发的图属于上一场会：换会议就丢掉，否则会混进另一场。
+  setAttachments([]);
   state.scoreOverlayIds.clear();
   state.selectedId = meetingId;
   state.snapshotEtag = "";
@@ -2671,9 +2906,12 @@ async function refreshSelected() {
   if (!meetingId) return;
   const cursor = state.cursor;
   const eventsEtag = cursor === state.eventsEtagCursor ? state.eventsEtag : "";
-  const [snapshotResult, eventsResult] = await Promise.all([
+  const [snapshotResult, eventsResult, ticketsResult] = await Promise.all([
     apiConditional(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`, state.snapshotEtag),
     apiConditional(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=${cursor}`, eventsEtag),
+    // 工单那一侧（这场会跑了流程才有）
+    apiConditional(`/api/meetings/${encodeURIComponent(meetingId)}/tickets`, state.ticketsEtag)
+      .catch(() => null),
   ]);
   if (meetingId !== state.selectedId) return;
   let changed = false;
@@ -2681,6 +2919,11 @@ async function refreshSelected() {
   if (!snapshotResult.notModified) {
     state.snapshot = snapshotResult.payload;
     state.snapshotEtag = snapshotResult.etag;
+    changed = true;
+  }
+  if (ticketsResult && !ticketsResult.notModified) {
+    state.tickets = ticketsResult.payload.tickets || null;
+    state.ticketsEtag = ticketsResult.etag;
     changed = true;
   }
   if (!eventsResult.notModified) {
@@ -2726,9 +2969,106 @@ function schedulePoll() {
       if (active && Date.now() - (state.meetingsRefreshedAt || 0) >= 10000) {
         await loadMeetings();
       }
-    } catch (error) { toast(error.message); }
+    } catch (error) {
+      if (error.status === 404) {
+        // The open meeting was deleted on disk: stop polling it instead of
+        // toasting the same failure once a second, and let the sidebar stand.
+        state.selectedId = null;
+        state.snapshot = null;
+        state.tickets = null;
+        renderAll();
+        return;
+      }
+      toast(error.message);
+    }
     schedulePoll();
   }, active ? 500 : 1000);
+}
+
+// 交一张图：原始字节 POST 过去，服务把它存成这场会的一份文件，回名字和指纹。
+async function uploadImage(file) {
+  if (!state.selectedId) return;
+  const answer = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/attachments`, {
+    method: "POST",
+    raw: true,
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  state.pendingAttachments.push(answer.attachment);
+  renderAttachments();
+}
+
+async function uploadImages(files) {
+  for (const file of files) {
+    if (!file || !String(file.type || "").startsWith("image/")) continue;
+    try {
+      await uploadImage(file);
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+}
+
+// 待发的图：缩略图 + 一个去掉它的按钮。
+function renderAttachments() {
+  if (!el.attachment_strip) return;
+  el.attachment_strip.replaceChildren();
+  el.attachment_strip.hidden = state.pendingAttachments.length === 0;
+  state.pendingAttachments.forEach((attachment, index) => {
+    const item = node("div", "attachment-chip");
+    const image = node("img", "attachment-thumb");
+    image.src = attachmentUrl(attachment.name);
+    image.alt = attachment.name;
+    const remove = node("button", "attachment-remove", "×");
+    remove.type = "button";
+    remove.title = "去掉这张图";
+    remove.addEventListener("click", () => {
+      state.pendingAttachments.splice(index, 1);
+      renderAttachments();
+    });
+    item.append(image, remove);
+    el.attachment_strip.append(item);
+  });
+}
+
+function setAttachments(list) {
+  state.pendingAttachments = Array.isArray(list) ? list.slice() : [];
+  renderAttachments();
+}
+
+// 点开一张图：弹一层盖住页面，点图以外的任何地方（或按 Esc）关掉。
+function openImageLightbox(src, alt) {
+  if (!el.image_lightbox || !el.image_lightbox_image) return;
+  el.image_lightbox_image.src = src;
+  el.image_lightbox_image.alt = alt || "";
+  if (!el.image_lightbox.open) el.image_lightbox.showModal();
+}
+
+// 消息里的图：journal 只记名字，图本身按那条数据路径取。
+function messageImages(event) {
+  const data = event && event.data;
+  const attachments = data && Array.isArray(data.attachments) ? data.attachments : [];
+  const usable = attachments.filter((item) => item && typeof item.name === "string");
+  if (!usable.length) return null;
+  const holder = node("div", "message-images");
+  for (const attachment of usable) {
+    const src = attachmentUrl(attachment.name);
+    const button = node("button", "message-image-button");
+    button.type = "button";
+    button.title = "点开看原图";
+    const image = node("img", "message-image");
+    image.src = src;
+    image.alt = attachment.name;
+    image.loading = "lazy";
+    button.append(image);
+    button.addEventListener("click", () => openImageLightbox(src, attachment.name));
+    holder.append(button);
+  }
+  return holder;
+}
+
+function attachmentUrl(name) {
+  return `/api/meetings/${encodeURIComponent(state.selectedId)}/attachments/${encodeURIComponent(name)}`;
 }
 
 async function postMeetingAction(suffix, body = {}) {
@@ -2736,6 +3076,185 @@ async function postMeetingAction(suffix, body = {}) {
   await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/${suffix}`, { method: "POST", body: JSON.stringify(body) });
   await refreshSelected();
   await loadMeetings();
+}
+
+// 系统（Finder）的选目录框：浏览器自己的 showDirectoryPicker 拿不到绝对路径，
+// 所以让服务端去问系统。取消就什么都不改。
+async function chooseDirectory() {
+  if (!el.choose_directory) return;
+  el.choose_directory.disabled = true;
+  try {
+    const answer = await api("/api/choose-directory", {
+      method: "POST",
+      body: JSON.stringify({ directory: el.workspace_input.value.trim() }),
+    });
+    if (answer.directory) {
+      el.workspace_input.value = answer.directory;
+      state.workspaceFilled = true;
+    }
+  } catch (error) { toast(error.message); }
+  finally { el.choose_directory.disabled = false; }
+}
+
+// 开始会话 = 打开一个工作区：选一个目录（系统选目录框），这场会就开在它里面，
+// 第一句话在聊天框里说。取消就什么都不做。
+async function openWorkspace() {
+  const buttons = [el.welcome_new_button].filter(Boolean);
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    let directory = "";
+    try {
+      const answer = await api("/api/choose-directory", {
+        method: "POST",
+        body: JSON.stringify({ directory: state.workspace || "" }),
+      });
+      directory = answer.directory || "";
+    } catch (error) {
+      // 没有系统选目录框（不是 macOS）：退一步，让人打一条路径。
+      toast(error.message);
+      directory = (window.prompt("工作区目录", state.workspace || "") || "").trim();
+    }
+    if (!directory) return;                     // 取消了
+    const created = await api("/api/meetings", {
+      method: "POST",
+      body: JSON.stringify({ workspace: directory }),
+    });
+    await loadMeetings();
+    await selectMeeting(created.meeting_id);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
+// One workspace row's own two actions: a session in it, and the menu that
+// renames or forgets it. The name shown is the one it was given, else the
+// directory's basename.
+function groupActions(group) {
+  const actions = node("div", "meeting-group-actions");
+  const add = node("button", "meeting-group-action", "＋");
+  add.type = "button";
+  add.title = "在这个工作区里开一个新会话";
+  add.setAttribute("aria-label", "新建会话");
+  add.addEventListener("click", () => {
+    newSessionInWorkspace(group.path).catch((error) => toast(error.message));
+  });
+  const more = node("button", "meeting-group-action", "···");
+  more.type = "button";
+  more.title = "重命名、删除工作区";
+  more.setAttribute("aria-label", "工作区操作");
+  more.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleWorkspaceMenu(group.path, more);
+  });
+  // 跟 DeepSeek 侧边栏一个次序：菜单在前，新建在后。
+  actions.append(more, add);
+  return actions;
+}
+
+// The "＋" on a workspace row: open a session in that directory, skipping the
+// picker — the workspace is already chosen.
+async function newSessionInWorkspace(path) {
+  if (!path) return;
+  const created = await api("/api/meetings", {
+    method: "POST",
+    body: JSON.stringify({ workspace: path }),
+  });
+  await loadMeetings();
+  await selectMeeting(created.meeting_id);
+}
+
+function hideWorkspaceMenu() {
+  if (!el.workspace_menu) return;
+  el.workspace_menu.hidden = true;
+  state.workspaceMenuPath = "";
+}
+
+function toggleWorkspaceMenu(path, anchor) {
+  if (!el.workspace_menu || !path) return;
+  if (!el.workspace_menu.hidden && state.workspaceMenuPath === path) {
+    hideWorkspaceMenu();
+    return;
+  }
+  state.workspaceMenuPath = path;
+  const remove = el.workspace_menu.querySelector('[data-workspace-action="delete"]');
+  if (remove) {
+    // The default workspace is the project root: it is not on the list, so
+    // taking it off is nothing, and it would be back on the next load. The
+    // item is not shown rather than shown greyed out.
+    remove.hidden = path === state.workspace;
+  }
+  el.workspace_menu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const box = el.workspace_menu.getBoundingClientRect();
+  const gutter = 8;
+  const left = Math.max(gutter,
+    Math.min(window.innerWidth - box.width - gutter, rect.right - box.width));
+  const top = Math.max(gutter,
+    Math.min(window.innerHeight - box.height - gutter, rect.bottom + 6));
+  el.workspace_menu.style.left = `${left}px`;
+  el.workspace_menu.style.top = `${top}px`;
+}
+
+// 重命名改的是列表里怎么叫它：目录名不动，会议一条也不挪。留空就用目录名。
+async function renameWorkspace(path) {
+  hideWorkspaceMenu();
+  if (!path) return;
+  const current = state.workspaceTitles[path] || basename(path);
+  const answer = window.prompt("这个工作区叫什么（留空就用目录名）", current);
+  if (answer === null) return;
+  await api("/api/workspaces/rename", {
+    method: "POST",
+    body: JSON.stringify({ directory: path, title: answer.trim() }),
+  });
+  await loadMeetings();
+}
+
+// 删除只把它从名单上拿掉：目录和里面的会议都不动，再加一次就回来了。
+async function deleteWorkspace(path) {
+  hideWorkspaceMenu();
+  if (!path) return;
+  const name = state.workspaceTitles[path] || basename(path);
+  if (!window.confirm(`把「${name}」从工作区列表里去掉？目录和里面的会议都不动。`)) return;
+  await api("/api/workspaces/delete", {
+    method: "POST",
+    body: JSON.stringify({ directory: path }),
+  });
+  await loadMeetings();
+}
+
+// The "＋" beside 工作区 in the sidebar: remember a directory as a workspace
+// without opening a meeting — a workspace can be there before its first
+// session. The directory comes from the same system picker; cancel changes
+// nothing, and no meeting means no backend or key setup.
+async function addWorkspace() {
+  if (!el.add_workspace_button) return;
+  el.add_workspace_button.disabled = true;
+  try {
+    let directory = "";
+    try {
+      const answer = await api("/api/choose-directory", {
+        method: "POST",
+        body: JSON.stringify({ directory: state.workspace || "" }),
+      });
+      directory = answer.directory || "";
+    } catch (error) {
+      // No system picker (not macOS): fall back to typing a path.
+      toast(error.message);
+      directory = (window.prompt("工作区目录", state.workspace || "") || "").trim();
+    }
+    if (!directory) return;                     // the picker was cancelled
+    await api("/api/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ directory }),
+    });
+    await loadMeetings();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    el.add_workspace_button.disabled = false;
+  }
 }
 
 function openNewDialog() {
@@ -2757,8 +3276,15 @@ async function loadSettings() {
 }
 
 function bind() {
-  el.new_button.addEventListener("click", openNewDialog);
-  el.welcome_new_button.addEventListener("click", openNewDialog);
+  el.add_workspace_button?.addEventListener("click", addWorkspace);
+  el.workspace_menu?.querySelector('[data-workspace-action="rename"]')?.addEventListener("click", () => {
+    renameWorkspace(state.workspaceMenuPath).catch((error) => toast(error.message));
+  });
+  el.workspace_menu?.querySelector('[data-workspace-action="delete"]')?.addEventListener("click", () => {
+    deleteWorkspace(state.workspaceMenuPath).catch((error) => toast(error.message));
+  });
+  el.welcome_new_button.addEventListener("click", openWorkspace);
+  el.welcome_advanced_button?.addEventListener("click", openNewDialog);
   const railMore = document.getElementById("rail-more-button");
   const appShell = document.querySelector(".app-shell");
   if (railMore && appShell) {
@@ -2769,6 +3295,7 @@ function bind() {
   });
   el.close_dialog.addEventListener("click", () => el.new_dialog.close());
   el.cancel_new.addEventListener("click", () => el.new_dialog.close());
+  el.choose_directory?.addEventListener("click", () => chooseDirectory());
   el.backend_select.addEventListener("change", () => syncBackendSelectors(true));
   el.provider_select.addEventListener("change", () => syncBackendSelectors(true));
   el.cli_default_model?.addEventListener("change", () => syncCliDefaultModel());
@@ -2803,6 +3330,7 @@ function bind() {
           agent_provider: el.provider_select.value,
           model: cliDefault ? "" : (el.model_input.value.trim() || null),
           typing_profile: typingProfile,
+          ...(el.workspace_input?.value.trim() ? { workspace: el.workspace_input.value.trim() } : {}),
           ...(el.effort_select.value ? { reasoning_effort: el.effort_select.value } : {}),
         }),
       });
@@ -2815,10 +3343,33 @@ function bind() {
       el.new_error.hidden = false;
     } finally { el.start_button.disabled = false; }
   });
+  el.attach_image_button?.addEventListener("click", () => el.image_input?.click());
+  // 只有点在图上才留着；点图以外的任何地方（包括那层黑底）都关掉。
+  el.image_lightbox?.addEventListener("click", (event) => {
+    if (event.target === el.image_lightbox) el.image_lightbox.close();
+  });
+  // 也可以直接点右上角那个圆圈：不知道"点外围"的人也有个去处。
+  el.image_lightbox_close?.addEventListener("click", () => el.image_lightbox.close());
+  el.image_input?.addEventListener("change", async () => {
+    const files = Array.from(el.image_input.files || []);
+    el.image_input.value = "";                       // 同一张图可以再选一次
+    await uploadImages(files);
+  });
+  // 粘贴图片：截图之后直接按 ⌘V 就进来了。
+  el.message_input.addEventListener("paste", (event) => {
+    const items = Array.from((event.clipboardData && event.clipboardData.items) || []);
+    const files = items.filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    uploadImages(files);
+  });
   el.message_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const message = el.message_input.value.trim();
-    if (!message) return;
+    const attachments = state.pendingAttachments.slice();
+    if (!message && !attachments.length) return;
     el.send_message_button.disabled = true;
     // Sending a message is a live action: leave playback/free-scroll mode
     // so the user's own text and the agent's next response are visible.
@@ -2831,19 +3382,23 @@ function bind() {
     const payload = { message, delivery: "interrupt" };
     const references = state.references;
     if (references.length) payload.references = references;
+    if (attachments.length) payload.attachments = attachments.map((one) => ({ name: one.name }));
     // Empty the box the moment the human sends, not when the server answers:
     // the request can take a while and the text already left the composer.
     el.message_input.value = "";
     growMessageInput();
     setReferences([]);
+    setAttachments([]);
     try {
       await postMeetingAction("messages", payload);
     }
     catch (error) {
-      // The message never made it, so give the text back instead of losing it.
+      // The message never made it, so give the text and the pictures back
+      // instead of losing them.
       el.message_input.value = message;
       growMessageInput();
       setReferences(references);
+      setAttachments(attachments);
       toast(error.message);
     }
     finally { el.send_message_button.disabled = false; }
@@ -2882,6 +3437,10 @@ function bind() {
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
   el.cleanup_button.addEventListener("click", () => postMeetingAction("cleanup").catch((error) => toast(error.message)));
+  el.ticket_issue_button.addEventListener("click", () => postTicket(el.ticket_issue_button.dataset.ticket));
+  el.ticket_toggle.addEventListener("click", () => {
+    el.session_view.classList.toggle("tickets-open");
+  });
   document.querySelectorAll("[data-chat-filter]").forEach((button) => button.addEventListener("click", () => {
     state.chatFilter = button.dataset.chatFilter;
     document.querySelectorAll("[data-chat-filter]").forEach((item) => item.classList.toggle("active", item === button));
@@ -2915,6 +3474,10 @@ function bind() {
       && !event.target.closest?.("#session-details")
     ) {
       closeMemberDetails();
+    }
+    if (el.workspace_menu && !el.workspace_menu.hidden
+        && !el.workspace_menu.contains(event.target)) {
+      hideWorkspaceMenu();
     }
     if (el.selection_menu.contains(event.target)) return;
     hideSelectionMenu();
@@ -2953,6 +3516,7 @@ function bind() {
       }
       closeMemberDetails();
       hideSelectionMenu();
+      hideWorkspaceMenu();
       clearBrowserSelection();
       state.keyboardSelection = null;
     }
@@ -3122,16 +3686,6 @@ function stopPlayback() {
   el.play_button.textContent = "▶";
 }
 
-// Nothing to reopen yet: rather than parking the human on the welcome card,
-// open a meeting with no first message. It owns a fresh workspace directory
-// (the temporary directory that acts as the meeting) and the agent starts as
-// soon as they say something.
-async function openScratchMeeting() {
-  const created = await api("/api/meetings", { method: "POST", body: JSON.stringify({}) });
-  await loadMeetings();
-  await selectMeeting(created.meeting_id);
-}
-
 async function boot() {
   bind();
   try {
@@ -3144,9 +3698,11 @@ async function boot() {
     loadHealth().catch((error) => toast(error.message));
     await Promise.all([loadMeetings(), loadSettings()]);
     // The list is ordered by last activity, so its first entry is the meeting
-    // the human was most recently in. A reload always lands there.
+    // the human was most recently in. A reload always lands there; with nothing
+    // to reopen the welcome card stands, and the human picks a workspace when
+    // they open a session (no more phantom meeting in a `runs/` pile).
     if (state.meetings.length) await selectMeeting(state.meetings[0].meeting_id);
-    else await openScratchMeeting();
+    else renderAll();
   } catch (error) {
     // Only a genuine failure (service down, meeting unreadable) leaves the
     // welcome card on screen.

@@ -33,7 +33,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 56px minmax(0, 1fr); }
 .rail { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: var(--rail-top-padding, 9px) 10px 16px; border-right: 1px solid var(--line); background: var(--surface); z-index: 20; }
-.rail-button { width: 38px; min-height: 38px; padding: 0; display: flex; align-items: center; justify-content: center; line-height: 1; border: 1px solid var(--line-strong); background: var(--surface-2); color: var(--ink); border-radius: 8px; font-size: 18px; text-align: center; }
+/* 导轨上这个按钮不描边：悬停或键盘走到它时才有一层底色（连焦点那圈蓝框也不要）。 */
+.rail-button { width: 38px; min-height: 38px; padding: 0; display: flex; align-items: center; justify-content: center; line-height: 1; border: 0; background: transparent; color: var(--muted); border-radius: 8px; font-size: 18px; text-align: center; outline: none; }
+.rail-button:hover, .rail-button:focus-visible { background: var(--surface-2); color: var(--ink); }
 /* Three bars drawn in CSS: the ☰ glyph sits off-centre in its line box. */
 .rail-icon-menu { position: relative; width: 18px; height: 2px; border-radius: 1px; background: currentColor; }
 .rail-icon-menu::before, .rail-icon-menu::after { content: ""; position: absolute; left: 0; width: 18px; height: 2px; border-radius: 1px; background: currentColor; }
@@ -41,14 +43,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .rail-icon-menu::after { top: 6px; }
 .sidebar { position: fixed; top: 0; left: 56px; bottom: 0; width: 252px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface); padding: 20px 16px 14px; transform: translateX(calc(-100% - 56px)); transition: transform .18s ease; z-index: 30; box-shadow: 8px 0 24px rgb(0 0 0 / .45); }
 .app-shell.sidebar-open .sidebar { transform: translateX(0); }
-.brand-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 22px; }
-.brand, .brand-subtitle, .pane-kicker { margin: 0; }
-.brand-actions { display: flex; align-items: flex-start; gap: 10px; }
-.brand { font: 700 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.brand-subtitle { margin-top: 5px; color: var(--muted); font-size: 12px; }
-.health-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 4px var(--red-soft); margin-top: 5px; }
-.health-dot.ok { background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); }
-
+/* 当前这场会叫什么、几个成员，列表那一行和会话自己的头部都写着，不用在这里再说一遍。 */
+.pane-kicker { margin: 0; }
 .primary-command, .command-button, .danger-button, .icon-button, .key-row button, .segment { min-height: 36px; border: 1px solid var(--line-strong); background: var(--surface-2); color: var(--ink); padding: 0 13px; border-radius: 6px; font-weight: 650; }
 .primary-command { border-color: var(--green-solid); background: var(--green-solid); color: #ffffff; }
 .primary-command.compact { min-height: 34px; padding: 0 12px; }
@@ -56,21 +52,48 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .icon-button { width: 36px; padding: 0; font-size: 18px; }
 .primary-command:hover:not(:disabled) { background: var(--green-solid-hover); border-color: var(--green-solid-hover); }
 .command-button:hover:not(:disabled), .icon-button:hover:not(:disabled), .key-row button:hover:not(:disabled) { border-color: var(--ink); }
-.sidebar > .primary-command { width: 100%; justify-content: center; margin-bottom: 24px; }
 .health-message { margin: -14px 3px 16px; padding: 8px; border: 1px solid #5c3733; border-radius: 5px; background: var(--red-soft); color: var(--red); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
-.sidebar-section-title { display: flex; justify-content: space-between; padding: 0 4px 9px; color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
 .meeting-list { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; }
-/* Buttons are not text-selectable in Chrome by default, so the meeting ids and
-   their meta lines could not be drag-selected or copied. */
-.meeting-item { width: 100%; border: 1px solid transparent; background: transparent; padding: 10px; text-align: left; border-radius: 6px; color: var(--ink); user-select: text; -webkit-user-select: text; }
+/* Meetings are grouped by the workspace they live in (`<workspace>/.meeting/`);
+   one workspace can hold several. */
+.meeting-group { display: flex; flex-direction: column; gap: 4px; }
+.meeting-group + .meeting-group { margin-top: 6px; }
+/* The group's name is the workspace directory's basename, with a folder icon —
+   the shape the DeepSeek sidebar uses for a project. */
+.meeting-group-head { display: flex; gap: 6px; align-items: center; padding: 5px 4px; border-radius: 6px; color: var(--muted); font-size: 11px; font-weight: 750; }
+.meeting-group-head:hover, .meeting-group-head:focus-within { background: var(--surface-2); }
+.meeting-group-head svg { width: 13px; height: 13px; flex: 0 0 13px; opacity: .85; }
+/* The name gives way to the row's two actions (a session here, and the menu). */
+.meeting-group-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The row's two actions show up when that row is pointed at (or reached by
+   keyboard): they are not part of what the row says. `visibility` rather than
+   opacity, so an invisible button cannot be clicked by accident. */
+.meeting-group-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; margin-left: auto; visibility: hidden; }
+.meeting-group-head:hover .meeting-group-actions, .meeting-group-head:focus-within .meeting-group-actions { visibility: visible; }
+.meeting-group-action, .workspace-head-add { padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-weight: 700; line-height: 1; }
+.meeting-group-action { width: 22px; min-height: 22px; font-size: 13px; }
+.meeting-group-action:hover:not(:disabled), .workspace-head-add:hover:not(:disabled) { color: var(--ink); background: var(--surface-2); }
+/* Buttons are not text-selectable in Chrome by default, so the titles could not
+   be drag-selected or copied. */
+/* The session's title lines up under the workspace's name: that name sits
+   after the folder icon (13px) and its gap (6px), so the row starts there. */
+.meeting-item { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; background: transparent; padding: 8px 10px 8px 23px; text-align: left; border-radius: 6px; color: var(--ink); user-select: text; -webkit-user-select: text; }
 .meeting-item:hover { background: var(--surface-2); }
-.meeting-item.selected { background: var(--surface-2); border-color: var(--line-strong); }
-.meeting-item-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
-.meeting-item-top strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
-.meeting-item-meta { display: block; color: var(--muted); margin-top: 7px; font-size: 11px; }
-.mini-status { font-size: 9px; padding: 2px 5px; border-radius: 3px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
-.mini-status.running { color: var(--green); background: var(--green-soft); }
-.mini-status.failed, .mini-status.interrupted { color: var(--red); background: var(--red-soft); }
+/* 当前这一场只换底色，不描边：底色比悬浮那层再亮一档，一眼能分出"开着的是它"。 */
+.meeting-item.selected { background: var(--line); }
+/* One line per session: the title, then how long ago it moved. The meeting id
+   lives in the item's tooltip. */
+.meeting-item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.meeting-item-time { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+/* The workspace layer's own head: the word 工作区 and its "＋". The groups are
+   the meeting groups above; the head only adds the one action. */
+/* 第一组工作区和右边那条会话头的下边框平齐：侧边栏上内边距 20 + 这一行 22 + 这里 14
+   = 会话头的 56。改任何一边的高度，这个数要跟着变。 */
+.workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 4px; margin-bottom: 14px; }
+.workspace-head-title { color: var(--muted); font-size: 11px; font-weight: 750; }
+.workspace-head-add { width: 22px; min-height: 22px; font-size: 13px; }
+/* A workspace with no meeting yet: the note sits under that workspace. */
+.meeting-group-empty { margin: 0; padding: 0 4px 4px 23px; color: var(--muted); font-size: 11px; }
 .list-empty { color: var(--muted); font-size: 12px; padding: 20px 8px; text-align: center; }
 .sidebar-footer { margin-top: auto; border-top: 1px solid var(--line); padding: 13px 4px 0; color: var(--muted); font-size: 10px; }
 
@@ -88,10 +111,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .session-identity .failure-message { margin-top: 4px; max-width: min(680px, 70vw); color: var(--red); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 .status-line { display: flex; gap: 6px; }
  /* Each member chip opens that member's own details, so it is a button. */
-.agent-state { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-2); color: var(--muted); font: inherit; font-size: 11px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+/* 固定高度 + line-height:1 + flex 居中：字的上下不再由行高和基线决定。 */
+.agent-state { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 22px; padding: 0 9px; line-height: 1; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-2); color: var(--muted); font: inherit; font-size: 11px; font-weight: 700; white-space: nowrap; cursor: pointer; }
 .agent-state:hover { border-color: var(--ink); }
 .agent-state[aria-expanded="true"] { border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
-.agent-state-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+/* 圆点比拉丁小写字母的墨迹中心高约 1px（小写没有下伸部），压半像素取中：
+   对 "actor" 和 "待命" 都只差半像素。 */
+.agent-state-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; top: .5px; }
 .agent-state.thinking { color: var(--blue); border-color: #33506b; background: #16232f; }
 .agent-state.acting { color: var(--amber); border-color: #574526; background: var(--amber-soft); }
 .agent-state.error { color: var(--red); border-color: #5c3733; background: var(--red-soft); }
@@ -178,6 +204,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .message-form { min-width: 0; max-height: 300px; overflow-y: auto; padding: 10px 10px 8px; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 10px; }
 .message-form:focus-within { border-color: var(--green); }
 .new-dialog textarea { width: 100%; max-height: 112px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 5px; padding: 9px; color: var(--ink); background: var(--surface-2); }
+/* 主动作只有一个：打开工作区。后端/模型/密钥那些是次要入口。 */
+.link-button { margin-top: 6px; border: 0; background: transparent; color: var(--muted); font-size: 11px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 4px; }
+.link-button:hover { color: var(--ink); }
+/* 工作区目录是"选"出来的（系统选目录框），所以输入框旁边就是那个按钮。 */
+.workspace-row { display: flex; align-items: stretch; gap: 8px; }
+.workspace-row input { flex: 1 1 auto; min-width: 0; }
+.workspace-row button { flex: 0 0 auto; white-space: nowrap; }
 .message-form textarea { width: 100%; min-height: 66px; max-height: 160px; resize: none; overflow-y: auto; border: 0; padding: 0; color: var(--ink); background: transparent; }
 .message-form textarea:focus, input:focus, select:focus, textarea:focus { outline: 2px solid var(--green); outline-offset: 1px; }
 .message-form textarea:focus { outline: none; }
@@ -191,6 +224,29 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .evaluation-choice input:checked + .square-control::after { transform: rotate(-45deg) scale(1); }
 .evaluation-choice input:focus-visible + .square-control { outline: 2px solid var(--green); outline-offset: 2px; }
 .composer-footer button { flex: 0 0 auto; }
+/* 待发的图：缩略图排在输入框上面，可以一张张去掉。 */
+.attachment-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.attachment-chip { position: relative; width: 56px; height: 56px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+.attachment-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attachment-remove { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; min-height: 0; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: rgb(0 0 0 / .65); color: var(--ink); font-size: 11px; line-height: 1; cursor: pointer; }
+/* 回形针是一个入口，不是一颗按钮：不要边框和底色，悬停时才有一点反应。 */
+.composer-footer #attach-image-button { margin-right: auto; border-color: transparent; background: transparent; display: inline-flex; align-items: center; justify-content: center; }
+.composer-footer #attach-image-button svg { width: 17px; height: 17px; }
+.composer-footer #attach-image-button:hover:not(:disabled) { border-color: transparent; background: var(--surface-2); }
+/* 消息里的图：点开弹一层看原图（不开新网页）。 */
+.message-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.message-image-button { display: block; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
+.message-image { max-width: 220px; max-height: 220px; border: 1px solid var(--line-strong); border-radius: 6px; display: block; }
+/* 居中靠 `fit-content` + dialog 自己的 `inset: 0; margin: auto`；写成 auto 会撑满整屏。 */
+.image-lightbox { width: fit-content; height: fit-content; max-width: 96vw; max-height: 96vh; border: 0; padding: 0; background: transparent; box-shadow: none; overflow: visible; }
+/* 深色主题里，外围用浅色：图是暗的，浅底把它托起来。 */
+.image-lightbox::backdrop { background: rgb(244 244 244 / .92); }
+.image-lightbox img { display: block; max-width: 72vw; max-height: 72vh; border-radius: 6px; box-shadow: 0 14px 44px rgb(0 0 0 / .38); cursor: default; }
+/* 右上角一个圆圈叉：不看说明也知道怎么关。 */
+/* 叉用 svg 而不是 × 字符：字符的基线让它看着偏上，svg 由 flex 居中，不会再歪。 */
+.image-lightbox-close { position: absolute; top: -15px; right: -15px; width: 32px; height: 32px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgb(255 255 255 / .5); border-radius: 50%; background: rgb(30 30 30 / .88); color: #fff; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .35); }
+.image-lightbox-close svg { display: block; width: 14px; height: 14px; }
+.image-lightbox-close:hover { background: rgb(30 30 30 / 1); }
 .reference-card { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 5px; margin-top: 7px; padding: 6px; border: 1px solid #2f4a3c; border-radius: 5px; background: var(--surface-2); color: var(--muted); font-size: 10px; overflow: hidden; }
 .reference-item { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) 24px; align-items: start; gap: 7px; padding: 4px 3px; border-bottom: 1px solid var(--line); }
 .reference-item:last-child { border-bottom: 0; }
@@ -267,6 +323,12 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .selection-menu .evaluate:hover:not(:disabled), .selection-menu .evaluate:focus-visible { color: var(--green); background: var(--green-soft); }
 .selection-menu .add-to-conversation:hover:not(:disabled), .selection-menu .add-to-conversation:focus-visible { color: var(--blue); background: #17273a; }
 
+/* 工作区那一行的菜单：跟选区菜单一套长相，竖着排（重命名 / 删除工作区）。 */
+.workspace-menu { position: fixed; z-index: 45; display: flex; flex-direction: column; gap: 3px; min-width: 132px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-2); box-shadow: 0 10px 32px rgb(0 0 0 / .55); }
+.workspace-menu button { min-height: 31px; border: 0; border-radius: 4px; padding: 0 10px; color: var(--ink); background: transparent; font-size: 11px; font-weight: 700; text-align: left; }
+.workspace-menu button:hover:not(:disabled), .workspace-menu button:focus-visible { outline: 2px solid var(--line-strong); outline-offset: -2px; }
+.workspace-menu [data-workspace-action="delete"]:hover:not(:disabled), .workspace-menu [data-workspace-action="delete"]:focus-visible { color: var(--red); background: var(--red-soft); }
+
 .evaluation-panel { min-width: 0; padding: 13px 11px 12px; background: var(--surface); }
 .evaluation-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .evaluation-header h3 { margin: 4px 0 0; font-size: 15px; }
@@ -340,10 +402,13 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
   .app-shell { display: block; }
   .sidebar { position: static; width: 100%; height: auto; max-height: 210px; border-right: 0; border-bottom: 1px solid var(--line); padding: 12px; }
   .brand-row { margin-bottom: 10px; }
-  .sidebar > .primary-command { position: static; align-self: flex-start; width: auto; margin: 0 0 10px; }
   .meeting-list { flex-direction: row; overflow-x: auto; }
-  .meeting-item { min-width: 190px; }
-  .sidebar-footer, .sidebar-section-title { display: none; }
+  .meeting-group { flex-direction: row; }
+  .meeting-group + .meeting-group { margin-top: 0; }
+  .meeting-group-head { display: none; }
+  /* 横着排的时候上面那一行头是藏起来的，没有要对齐的东西。 */
+  .meeting-item { min-width: 190px; padding-left: 10px; }
+  .sidebar-footer { display: none; }
   .workspace-main { height: auto; min-height: calc(100vh - 160px); overflow: visible; }
   .session-view { height: auto; min-height: calc(100vh - 160px); display: block; }
   .session-header { display: block; padding: 13px; }
@@ -365,3 +430,27 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
 /* Per-member status chips in the session header (multi-agent). */
 .agent-states { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; justify-content: flex-end; }
 .header-actions { flex-wrap: wrap; }
+
+
+.ticket-details { position: absolute; top: 56px; right: 12px; left: auto; width: min(720px, calc(100vw - 24px)); z-index: 41; display: none; padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 16px 40px rgb(0 0 0 / .55); }
+.session-view.tickets-open .ticket-details { display: block; }
+.ticket-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.ticket-head h2 { margin: 0; font-size: 14px; }
+.ticket-head .pane-kicker { margin: 0; }
+.ticket-head #ticket-issue-button { margin-left: auto; }
+.ticket-chip { padding: 2px 6px; border-radius: 3px; background: var(--surface-2); color: var(--muted); font: 10px/1.4 ui-monospace, monospace; }
+.ticket-line { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
+.ticket-outcome { margin: 5px 0 0; color: var(--ink); font-size: 12px; line-height: 1.5; }
+.ticket-details > summary, .ticket-record-shell > summary { color: var(--muted); font-size: 11px; cursor: pointer; }
+.ticket-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.ticket-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); }
+.ticket-row.due { border-color: var(--accent); }
+.ticket-row-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ticket-chip.state-bad { color: var(--red); }
+.ticket-name { color: var(--ink); font-size: 12px; font-weight: 700; }
+.ticket-chip.state-due { color: var(--accent); }
+.ticket-chip.state-issued { color: var(--green); }
+.ticket-meta { color: var(--muted); font-size: 11px; }
+.ticket-steps { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font: 10px/1.5 ui-monospace, monospace; }
+.ticket-step.answered { color: var(--green); }
+.ticket-record { max-height: 150px; overflow: auto; margin: 6px 0 0; color: var(--muted); white-space: pre-wrap; font: 10px/1.5 ui-monospace, monospace; }

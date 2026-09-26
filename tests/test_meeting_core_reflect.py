@@ -73,8 +73,9 @@ class TestDesign:
 
     def test_pool_carries_the_stable_definitions(self) -> None:
         names = [d.def_name for d in reflect._design_pool().files[0].definitions]
-        assert len(names) == 30
+        assert len(names) == 31
         assert "FileId" in names and "ContentReference" in names and "Result" in names
+        assert "ImageAttachment" in names                  # 随消息交出去的图片（ChatMessage 的一部分）
         assert "ScreenContent" in names and "FileState" in names
         assert "FileKvStore" not in names                 # the record layer types are not in the stable chapter
         assert {"Assert", "Appendix", "Hint"} <= set(names)   # Assert / Appendix / Hint are definitions too (units)
@@ -263,7 +264,7 @@ class TestPythonLanding:
         styles = _open(adt.TerminalTextSegment(text="x", styles={"bold"}), "TerminalTextSegment").get_styles()
         assert [style.value for style in styles] == ["bold"]
 
-    def test_set_shapes_are_recognised(self) -> None:
+    def test_set_types_are_recognised(self) -> None:
         segment = adt.TerminalTextSegment(text="x", styles={"bold"})
         assert _open(segment, "TerminalTextSegment").get_styles().is_set is True
 

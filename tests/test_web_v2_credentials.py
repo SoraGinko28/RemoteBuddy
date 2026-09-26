@@ -129,7 +129,7 @@ class WebV2CredentialsTest(unittest.TestCase):
         trae = health["backends"]["trae-agent/openai"]
         self.assertFalse(trae["needs_api_key"])
 
-    def test_credentials_status_endpoint_shape(self):
+    def test_credentials_status_endpoint_format(self):
         status = self.service.credentials_status()
         self.assertEqual({"openai", "deepseek"}, set(status["providers"]))
         self.assertTrue(status["providers"]["openai"]["has_api_key"])

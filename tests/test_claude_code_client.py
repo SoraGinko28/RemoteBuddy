@@ -172,6 +172,40 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         env = self.backend()._child_environment("deepseek-v4-pro[1m]")
         self.assertEqual("max", env["CLAUDE_CODE_EFFORT_LEVEL"])
 
+    def test_a_picture_rides_along_as_an_image_block(self):
+        import base64
+        import io
+        import types
+
+        png = self.root / "image-1.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\nbody")
+        backend = self.backend()
+        backend._session_id = "session-1"
+        backend._process = types.SimpleNamespace(stdin=io.StringIO())
+        backend._send_user_message("看这张", [{"path": str(png), "media_type": "image/png"}])
+
+        payload = json.loads(backend._process.stdin.getvalue())
+        content = payload["message"]["content"]
+        self.assertEqual("text", content[0]["type"])
+        self.assertEqual("image", content[1]["type"])
+        self.assertEqual("image/png", content[1]["source"]["media_type"])
+        self.assertEqual(b"\x89PNG\r\n\x1a\nbody",
+                         base64.b64decode(content[1]["source"]["data"]))
+
+    def test_a_picture_that_does_not_fit_is_left_to_its_path(self):
+        import io
+        import types
+
+        huge = self.root / "huge.png"
+        huge.write_bytes(b"x" * (2 * 1024 * 1024))
+        backend = self.backend()
+        backend._session_id = "session-1"
+        backend._process = types.SimpleNamespace(stdin=io.StringIO())
+        backend._send_user_message("看这张", [{"path": str(huge), "media_type": "image/png"}])
+
+        payload = json.loads(backend._process.stdin.getvalue())
+        self.assertEqual([{"type": "text", "text": "看这张"}], payload["message"]["content"])
+
     def test_isolated_command_environment_and_single_executed_action(self):
         backend = self.backend()
         actions = []

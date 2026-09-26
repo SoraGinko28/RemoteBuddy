@@ -21,7 +21,7 @@ against real end-user impact, no self-delusion):
 
 Usage:
   python e2e_user_path.py            # run one real meeting and assert; exit code non-zero on failure
-  python e2e_user_path.py --keep     # keep the runs dir afterwards for review
+  python e2e_user_path.py --keep     # keep the meeting dir afterwards for review
 Output: a JSON summary on stdout; can be retold as MEETING_E2E.md.
 
 Real-cost warning: it spends model API quota and a few minutes; this is deliberate.
@@ -167,7 +167,7 @@ def _kind_actor(events: list[dict], kind: str, actor: str) -> list[dict]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="RemoteBuddy real user-path E2E")
-    parser.add_argument("--keep", action="store_true", help="keep the temp runs dir")
+    parser.add_argument("--keep", action="store_true", help="keep the temp meeting dir")
     args = parser.parse_args(argv)
 
     tmp_root = Path(tempfile.mkdtemp(prefix="rb-e2e-"))
@@ -187,8 +187,10 @@ def main(argv: list[str] | None = None) -> int:
             def agent_working() -> dict:
                 events = live.events()["events"]
                 kinds = {e.get("kind") for e in events}
+                # 会议里的 actor 就叫 "actor"（`meeting_v2.DEFAULT_AGENT_ROLE_MAP`），
+                # 不是 "agent"；这一条原来等的是 "agent"，所以真跑也等不到。
                 agent_chat = any(
-                    e.get("kind") == "chat" and e.get("actor") == "agent"
+                    e.get("kind") == "chat" and e.get("actor") == "actor"
                     for e in events
                 )
                 if agent_chat and {"screen", "action"} <= kinds:
@@ -268,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
             # -- wrap up: stop the service; freeze the journal, then run static assertions --
             live.stop()
             time.sleep(1.0)
-            journal_dir = next((tmp_root / "runs").glob(f"{meeting_id}"), None)
+            journal_dir = next((tmp_root / ".meeting").glob(f"{meeting_id}"), None)
             if journal_dir is None:
                 raise E2EFailure("journal dir missing after stop")
 
@@ -329,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
             live.shutdown()
     finally:
         if args.keep and journal_dir is not None:
-            kept = REPO_ROOT / "runs" / journal_dir.name
+            kept = REPO_ROOT / ".meeting" / journal_dir.name
             shutil.copytree(journal_dir, kept)
             results["kept_journal"] = str(kept)
             journal_dir = kept

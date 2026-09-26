@@ -123,6 +123,7 @@ class CodexAppServerBackend:
         self._thread_id: Optional[str] = None
         self._turn_id: Optional[str] = None
         self._initial_context = ""
+        self._initial_images: List[Dict[str, Any]] = []
         self._first_turn = True
         self._interrupted = False
         self._closed = False
@@ -159,6 +160,7 @@ class CodexAppServerBackend:
         initial_context: str,
         *,
         model: Optional[str] = None,
+        images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Optional[BackendEventCallback] = None,
     ) -> str:
         if self._process is not None:
@@ -167,6 +169,7 @@ class CodexAppServerBackend:
             raise CodexAppServerError("Codex App Server requires meeting instructions")
         self._callback = event_callback
         self._initial_context = initial_context
+        self._initial_images = list(images or [])
         self._temporary = tempfile.TemporaryDirectory(prefix="remotebuddy-codex-")
         private_cwd = Path(self._temporary.name).resolve()
         try:
@@ -257,6 +260,7 @@ class CodexAppServerBackend:
         observation: str,
         *,
         model: Optional[str] = None,
+        images: Optional[Sequence[Dict[str, Any]]] = None,
         allowed_types: Optional[Sequence[str]] = None,
         allowed_message_types: Optional[Sequence[str]] = None,
         request_timeout_seconds: Optional[float] = None,
@@ -267,11 +271,16 @@ class CodexAppServerBackend:
         if self._turn_id:
             raise CodexAppServerError("Codex App Server already has an active turn")
         timeout = float(request_timeout_seconds or self.config.request_timeout_seconds)
-        turn_input = self._initial_context if self._first_turn and self._initial_context else observation
+        first_turn = bool(self._first_turn and self._initial_context)
+        turn_input = self._initial_context if first_turn else observation
         self._first_turn = False
         params: Dict[str, Any] = {
             "threadId": self._thread_id,
-            "input": [{"type": "text", "text": turn_input}],
+            # The picture goes in as `localImage`: the CLI reads the file and
+            # hands the model the image itself, so understanding it stays the
+            # model's own ability instead of a shell command.
+            "input": [{"type": "text", "text": turn_input},
+                      *_local_image_inputs(self._initial_images if first_turn else images)],
             "approvalPolicy": "never",
             "personality": "friendly",
             "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
@@ -817,6 +826,16 @@ class TraeAgentBackend(CodexAppServerBackend):
     backend_name = "trae-agent"
     app_server_command = ("app-server",)
     default_binary = "traecli"
+
+
+def _local_image_inputs(images: Optional[Sequence[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """UserInput items for the pictures the human sent (Codex `localImage`)."""
+    items: List[Dict[str, Any]] = []
+    for image in images or []:
+        path = str(image.get("path") or "")
+        if path and Path(path).is_file():
+            items.append({"type": "localImage", "path": path})
+    return items
 
 
 def _trae_binary(config: ModelApiConfig) -> Optional[str]:

@@ -107,21 +107,45 @@ python3 demo_v2.py cleanup <meeting-id>
 
 ## Session Model
 
-Each v2 session is stored under `runs/<meeting-id>/`:
+A session lives in a **workspace** — one directory, the project being worked on. Every byte of
+meeting data goes under `<workspace>/.meeting/<meeting-id>/` and the Agent's terminal opens in the
+workspace root itself, so several sessions can share one project:
 
 ```text
-meeting.json
-conversation.md
-workspace/
-streams/events.jsonl
-.agents/skills/workspace-collaborator/SKILL.md
+<workspace>/.meeting/<meeting-id>/
+  meeting.json
+  conversation.md
+  streams/events.jsonl
+  .agents/skills/workspace-collaborator/SKILL.md
 ```
+
+The workspace is the project root by default, or whatever `--workspace DIR` names. The new-session
+dialog takes a directory — type it, or press 选择目录… for the macOS folder dialog (Finder), because
+a browser cannot hand back an absolute path from its own directory picker:
+
+```text
+POST /api/choose-directory {"directory": "<current value>"}   the system picker; an empty
+                                                              `directory` back means cancelled
+```
+
+The directories used so far are recorded in `<workspace>/.meeting/workspaces`, so a session opened
+in another project stays on the list across restarts. The page groups the list by workspace and
+names each group by that directory's basename.
+
+`MeetingStore` still reads the older `runs/<meeting-id>/` layout (with a fresh `workspace/` inside
+the meeting directory); the Web service no longer writes it.
+
+Chat takes images: paste into the composer or use the paperclip. The bytes are stored as a file of
+the meeting (`attachments/image-<n>.<ext>`) and the message records only the name and the content
+hash, so the journal stays text. A picture goes to the model as a picture — `input_image` on the
+Responses API, an image block for Claude Code, `localImage` for Codex / Trae — so understanding it is
+the model's own ability rather than something the Agent has to approximate with a command-line tool.
 
 `events.jsonl` is the replay source of truth. It contains globally ordered `chat`, `screen`, `action`, `control`, `state`, and `error` events. `conversation.md` is rebuilt only from chat events.
 
 The default model client uses only `POST /responses`. It does not require a `/conversations` endpoint: the local event log is sent as bounded chat and action history with each request, together with the latest shared terminal screen. This works with Responses-only gateways such as a proxy whose configured base URL is `https://rust.cat`. Stateful Codex and Claude Code backends receive one fresh ephemeral session per active work cycle. The first turn receives reconstructed local history and later turns receive only new events plus the latest screen; vendor transcripts are never used for recovery.
 
-The Agent works only through the shared terminal. Structured `pwd`, `cd`, `vim`, and `python` commands keep workspace path resolution; beyond those, the Agent may run general bash command lines with two restricted classes. Deletion-class commands (`rm`, `rmdir`, `unlink`, `shred`, `truncate`, `dd`, `mkfs`, `find -delete`, `rsync --delete`, `git clean`/`git rm`) are rejected wherever they appear in a chained or piped line, and so is anything that would leave the shared pane's visible foreground (background `&` jobs, `nohup`, `setsid`, `disown`, `tmux`, `screen`, `open`, `osascript`, `exec`). Approved Vim keys, typing into a foreground program, observation, and visible chat messages complete the action set. A `chat` or `done` action may also attach content references that quote earlier `chat` or `screen` events by sequence number and character region — the same immutable reference shape (excerpt plus source hash) that human messages use. Structured command paths are resolved inside the session workspace; general bash commands are not path-confined, so this remains an application policy, not an operating-system sandbox; a person attaching directly to tmux is outside that boundary.
+The Agent works only through the shared terminal. Structured `pwd`, `cd`, `vim`, and `python` commands keep workspace path resolution; beyond those, the Agent may run general bash command lines with two restricted classes. Deletion-class commands (`rm`, `rmdir`, `unlink`, `shred`, `truncate`, `dd`, `mkfs`, `find -delete`, `rsync --delete`, `git clean`/`git rm`) are rejected wherever they appear in a chained or piped line, and so is anything that would leave the shared pane's visible foreground (background `&` jobs, `nohup`, `setsid`, `disown`, `tmux`, `screen`, `open`, `osascript`, `exec`). Approved Vim keys, typing into a foreground program, observation, and visible chat messages complete the action set. A `chat` or `done` action may also attach content references that quote earlier `chat` or `screen` events by sequence number and character region — the same immutable reference fields (excerpt plus source hash) that human messages use. Structured command paths are resolved inside the session workspace; general bash commands are not path-confined, so this remains an application policy, not an operating-system sandbox; a person attaching directly to tmux is outside that boundary.
 
 Agent `done` means "wait for the human." Only the human can complete a session. Completion retains tmux for inspection; stop interrupts the session and removes tmux.
 
@@ -129,8 +153,32 @@ Scores are human-only annotations. The Agent has no score action, score events a
 
 Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CLI interfaces intentionally hide them.
 
+## Tickets
+
+A meeting may also run on tickets. The workflow itself is viba: `workflow/` holds the three role
+apis (actor / assistant / critic), the ticket programs designed before the meeting, and the rules
+the critic judges by. `ticket_centered/` is the harness around it — one shared store (answers at
+data paths), the capability table of each role, and one process per role, which takes the bundle
+handed to it and answers in its own copy.
+
+The page shows and drives it for a meeting that has a ticket side:
+
+```text
+GET  /api/meetings/<meeting-id>/tickets           the board: which ticket is due, what each one
+                                                  reads, who answered, the verdicts, the record
+POST /api/meetings/<meeting-id>/tickets/<ticket>  issue that ticket: publish it to every member,
+                                                  one process each
+```
+
+`e2e_ticket_meeting.py` runs a real meeting (real agent, tmux, HTTP) through exactly those routes.
+`ticket_centered/README.md` maps every part, and `ticket_centered_design/ticket_centered.md` is the
+design.
+
 ## Test
 
 ```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python -m pytest tests -q
 ```
+
+Two tmux tests (`test_creates_one_fixed_size_workspace_pane`, `test_creates_two_horizontal_codex_panes`)
+expect the `remotebuddy` conda environment (`CONDA_DEFAULT_ENV`) and fail without it.

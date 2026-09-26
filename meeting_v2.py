@@ -90,7 +90,7 @@ DEFAULT_AGENT_NAME = "actor"
 DEFAULT_REVIEWER_NAME = "critic"
 # The assistant is the human's delegate: it never acts on the terminal and never
 # judges the work, it looks while the actor works and decides whether the critic
-# should be woken (reviewer_harness.watch). One assistant per meeting.
+# should be woken. One assistant per meeting.
 DEFAULT_ASSISTANT_NAME = "assistant"
 DEFAULT_AGENT_ROLE_MAP = {
     DEFAULT_AGENT_NAME: "actor",
@@ -108,6 +108,19 @@ VALID_AGENT_PROVIDERS = {"openai", "deepseek"}
 # means "follow the config.toml default".
 VALID_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 MAX_CHAT_REFERENCES = 32
+# 人类可以随一条消息交几张图片；图是这场会存下来的一份文件，放在会议目录的
+# `attachments/` 下（名字 + 内容指纹记在消息上，图不进 journal）。
+ATTACHMENTS_DIR = "attachments"
+MAX_MESSAGE_ATTACHMENTS = 8
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+ATTACHMENT_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+}
+ATTACHMENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 
 
 class MeetingError(RuntimeError):
@@ -208,6 +221,21 @@ def _atomic_write_text(path: Path, text: str) -> None:
             temporary_path.unlink()
 
 
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(temporary_path), str(path))
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
     _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
@@ -278,6 +306,10 @@ class Meeting:
     # at creation, and pre-identity manifests stay on the legacy single agent.
     agent_name2role: Dict[str, str] = field(default_factory=dict)
     reasoning_effort: Optional[str] = None
+    # The directory this meeting works in: a workspace's root, when the meeting
+    # was opened inside one (then all of its data lives in `<workspace>/.meeting/`).
+    # None keeps the older layout: a fresh `workspace/` directory inside the run dir.
+    workspace_root: Optional[str] = None
     schema_version: int = SCHEMA_VERSION
     mode: str = MEETING_MODE
 
@@ -351,6 +383,29 @@ class MeetingStore:
         self._events_cache_signature: Optional[tuple] = None
         self._events_cache_offset = 0
 
+    # Where a workspace keeps the meetings opened inside it.
+    WORKSPACE_DIR = ".meeting"
+
+    @staticmethod
+    def _safe_workspace_run_dir(workspace: Path, meeting_id: str) -> Path:
+        """`<workspace>/.meeting/<meeting_id>` — a workspace's meetings live with it."""
+        if not MEETING_ID_RE.fullmatch(meeting_id):
+            raise MeetingError("invalid meeting id")
+        root = workspace.expanduser().resolve()
+        if not root.is_dir():
+            raise MeetingError(f"workspace not found: {workspace}")
+        meetings = root / MeetingStore.WORKSPACE_DIR
+        if meetings.exists() and meetings.is_symlink():
+            raise MeetingError(f"{MeetingStore.WORKSPACE_DIR} must not be a symlink")
+        meetings.mkdir(parents=True, exist_ok=True)
+        candidate = meetings / meeting_id
+        if candidate.is_symlink():
+            raise MeetingError("meeting directory must not be a symlink")
+        run_dir = candidate.resolve()
+        if root not in run_dir.parents:
+            raise MeetingError("meeting directory escapes the workspace")
+        return run_dir
+
     @staticmethod
     def _safe_run_dir(project_root: Path, meeting_id: str, create_runs: bool = True) -> Path:
         if not MEETING_ID_RE.fullmatch(meeting_id):
@@ -384,6 +439,7 @@ class MeetingStore:
         agent_ordinal: int = 0,
         reasoning_effort: Optional[str] = None,
         agent_name2role: Optional[Mapping[str, str]] = None,
+        workspace: Optional[Path] = None,
     ) -> "MeetingStore":
         if initial_message is not None and not isinstance(initial_message, str):
             raise MeetingError("initial message must be a string")
@@ -412,11 +468,16 @@ class MeetingStore:
         if not skill_source.is_file() or skill_source.is_symlink():
             raise MeetingError(f"workspace skill not found: {skill_source}")
         skill_text = skill_source.read_text(encoding="utf-8")
-        run_dir = cls._safe_run_dir(project_root, meeting_id)
-        if run_dir.exists():
+        if workspace is None:
+            run_dir = cls._safe_run_dir(project_root, meeting_id)
+        else:
+            run_dir = cls._safe_workspace_run_dir(Path(workspace), meeting_id)
+        if run_dir.exists() and any(run_dir.iterdir()):
             raise MeetingError(f"meeting already exists: {meeting_id}")
 
-        (run_dir / "workspace").mkdir(parents=True)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if workspace is None:
+            (run_dir / "workspace").mkdir(parents=True)
         (run_dir / "streams").mkdir()
         runtime_skill = run_dir / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
         runtime_skill.parent.mkdir(parents=True)
@@ -435,6 +496,7 @@ class MeetingStore:
             session_state="not-started",
             pane_id=None,
             workspace="workspace",
+            workspace_root=str(Path(workspace).expanduser().resolve()) if workspace is not None else None,
             streams={"events": "streams/events.jsonl"},
             model=model,
             agent_backend=agent_backend,
@@ -459,7 +521,15 @@ class MeetingStore:
 
     @classmethod
     def load(cls, project_root: Path, meeting_id: str) -> "MeetingStore":
-        run_dir = cls._safe_run_dir(project_root, meeting_id)
+        return cls.load_at(cls._safe_run_dir(project_root, meeting_id), meeting_id)
+
+    @classmethod
+    def load_in_workspace(cls, workspace: Path, meeting_id: str) -> "MeetingStore":
+        return cls.load_at(cls._safe_workspace_run_dir(Path(workspace), meeting_id), meeting_id)
+
+    @classmethod
+    def load_at(cls, run_dir: Path, meeting_id: str) -> "MeetingStore":
+        run_dir = Path(run_dir)
         manifest_path = run_dir / "meeting.json"
         if not manifest_path.is_file() or manifest_path.is_symlink():
             raise MeetingError(f"meeting not found: {meeting_id}")
@@ -479,7 +549,12 @@ class MeetingStore:
         else:
             meeting.agent_name2role = normalize_agent_role_map(meeting.agent_name2role)
         store = cls(run_dir, meeting)
-        store._contained_path(meeting.workspace)
+        if meeting.workspace_root:
+            # A workspace meeting works in that workspace; if it is gone the
+            # meeting cannot be served, and saying so beats an empty terminal.
+            store.workspace_path
+        else:
+            store._contained_path(meeting.workspace)
         for relative in meeting.streams.values():
             store._contained_path(relative)
         return store
@@ -530,7 +605,60 @@ class MeetingStore:
 
     @property
     def workspace_path(self) -> Path:
+        """The directory the meeting works in.
+
+        Inside a workspace that is the workspace's own root (the project); the
+        older layout has a fresh `workspace/` directory inside the run dir.
+        """
+        if self.meeting.workspace_root:
+            root = Path(self.meeting.workspace_root).expanduser().resolve()
+            if not root.is_dir():
+                raise MeetingError(f"workspace not found: {root}")
+            return root
         return self._contained_path(self.meeting.workspace)
+
+    def attachment_path(self, name: str) -> Path:
+        """这场会的一张图：`<会议目录>/attachments/<名字>`。
+
+        名字是这场会给的（`image-1.png`），不是外面来的路径——所以它既不能跳出会议
+        目录，也不用担心和别的文件重名。
+        """
+        if not isinstance(name, str) or not ATTACHMENT_NAME_RE.fullmatch(name):
+            raise MeetingError("invalid attachment name")
+        return self._contained_path(f"{ATTACHMENTS_DIR}/{name}")
+
+    def attachment_names(self) -> List[str]:
+        folder = self.run_dir / ATTACHMENTS_DIR
+        if not folder.is_dir():
+            return []
+        return sorted(child.name for child in folder.iterdir()
+                      if child.is_file() and ATTACHMENT_NAME_RE.fullmatch(child.name))
+
+    def save_attachment(self, media_type: str, payload: bytes) -> Dict[str, Any]:
+        """把一张图存成这场会的一份文件，回它的名字与指纹（图本身不进 journal）。"""
+        if not isinstance(media_type, str):
+            raise MeetingError("attachment media type must be text")
+        extension = ATTACHMENT_TYPES.get(media_type.split(";")[0].strip().lower())
+        if extension is None:
+            raise MeetingError("attachment must be a png/jpeg/gif/webp/heic image")
+        if not isinstance(payload, bytes) or not payload:
+            raise MeetingError("attachment is empty")
+        if len(payload) > MAX_ATTACHMENT_BYTES:
+            raise MeetingError(f"attachment exceeds {MAX_ATTACHMENT_BYTES} bytes")
+        existing = self.attachment_names()
+        for index in range(1, MAX_MESSAGE_ATTACHMENTS * 1000):
+            name = f"image-{index}{extension}"
+            if name not in existing:
+                break
+        else:
+            raise MeetingError("too many attachments in this meeting")
+        _atomic_write_bytes(self.attachment_path(name), payload)
+        return {
+            "name": name,
+            "media_type": media_type.split(";")[0].strip().lower(),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "byte_count": len(payload),
+        }
 
     @property
     def events_path(self) -> Path:
@@ -748,17 +876,37 @@ class MeetingStore:
         message_type: str,
         reference: Optional[Dict[str, Any]] = None,
         references: Optional[Sequence[Mapping[str, Any]]] = None,
+        attachments: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if not (actor == HUMAN_USER or actor in self.meeting.agent_names()):
             raise MeetingError("chat actor must be human or a meeting agent")
         if message_type not in {"request", "ack", "progress", "question", "final"}:
             raise MeetingError("invalid chat message type")
-        if not isinstance(content, str) or not content.strip():
+        if not isinstance(content, str):
+            raise MeetingError("chat content must be text")
+        # 一条消息要么有字，要么有图（图是这场会存下来的文件，名字得先存过）。
+        normalized_attachments: List[Dict[str, Any]] = []
+        if attachments is not None:
+            if isinstance(attachments, (str, bytes)):
+                raise MeetingError("chat attachments must be an array")
+            for item in attachments:
+                if not isinstance(item, Mapping):
+                    raise MeetingError("chat attachments must contain objects")
+                name = item.get("name")
+                if not isinstance(name, str) or not self.attachment_path(name).is_file():
+                    raise MeetingError(f"chat attachment is not stored in this meeting: {name!r}")
+                stored = {key: item[key] for key in ("name", "media_type", "sha256", "byte_count")
+                          if key in item}
+                stored.setdefault("name", name)
+                normalized_attachments.append(stored)
+            if len(normalized_attachments) > MAX_MESSAGE_ATTACHMENTS:
+                raise MeetingError(f"a message may carry at most {MAX_MESSAGE_ATTACHMENTS} images")
+        if not content.strip() and not normalized_attachments:
             raise MeetingError("chat content must be non-empty")
-        # ``reference`` is the v2 single-reference shape.  V6 messages may
+        # ``reference`` is the v2 single-reference field.  V6 messages may
         # carry any number of immutable content references, so persist the
         # normalized list while retaining the singular alias for readers that
-        # still consume the older journal shape.
+        # still consume the older journal field.
         normalized: List[Dict[str, Any]] = []
         legacy_single = references is None and reference is not None
         if reference is not None:
@@ -790,10 +938,13 @@ class MeetingStore:
             unique.append(item)
         data: Optional[Dict[str, Any]] = None
         if unique:
-            # Keep the exact legacy shape for callers that still pass the
-            # singular argument.  The V6 list shape is emitted only when the
+            # Keep the exact legacy field for callers that still pass the
+            # singular argument.  The V6 list form is emitted only when the
             # caller explicitly supplies ``references``.
             data = {"reference": unique[0]} if legacy_single and len(unique) == 1 else {"references": unique}
+        if normalized_attachments:
+            data = dict(data or {})
+            data["attachments"] = normalized_attachments
         return self.append_event(
             "chat", actor, self.meeting.phase, content=content.strip(), message_type=message_type, data=data
         )
@@ -807,7 +958,7 @@ class MeetingStore:
         comment: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Append an immutable human score without entering the chat flow."""
-        # The public shape is ``(tag, reference, judge_name)``.  Keep accepting
+        # The public signature is ``(tag, reference, judge_name)``.  Keep accepting
         # the earlier ``(tag, judge_name, reference)`` positional order so
         # existing callers can upgrade without rewriting their call sites.
         if isinstance(reference, str) and isinstance(judge_name, Mapping):
@@ -864,7 +1015,7 @@ class MeetingStore:
         start_time marks the boundary, so every takeover and every hand-back
         writes one. ``user_name`` None means nobody holds it: the human handed
         the pane back and no agent picked it up. Stored as a ``control`` event
-        so the Agent-visible journal shape does not grow new kinds.
+        so the Agent-visible journal does not grow new kinds.
         """
         # ADT terminal_capable: only the human or the actor agent may own
         # the shared pane; reviewers never hold the terminal.
