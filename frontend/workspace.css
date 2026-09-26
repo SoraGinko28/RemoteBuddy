@@ -104,8 +104,16 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .welcome p { color: var(--muted); margin: 0 0 22px; }
 .session-view { height: 100%; position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .session-header { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
-.session-view .session-details { position: absolute; top: 56px; left: 12px; right: 12px; z-index: 40; display: none; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden; box-shadow: 0 16px 40px rgb(0 0 0 / .55); }
-.session-view.details-open .session-details { display: grid; }
+/* 成员详情是一个居中的 modal：那一串字段是竖着念的清单，要够高；
+   横着铺成一排窄格子会把 Skill 那两个按钮挤出面板边缘。
+   右上角那个圆圈叉跟图片灯箱是同一个做法。 */
+.member-dialog { width: min(420px, calc(100vw - 28px)); overflow: visible; }
+.member-dialog-header { display: flex; align-items: baseline; gap: 9px; padding: 14px 16px 11px; border-bottom: 1px solid var(--line); }
+.member-dialog-header strong { font-size: 15px; }
+.member-dialog-header span { color: var(--muted); font-size: 11px; }
+.member-dialog-close { position: absolute; top: -15px; right: -15px; width: 32px; height: 32px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgb(255 255 255 / .5); border-radius: 50%; background: rgb(30 30 30 / .88); color: #fff; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .35); }
+.member-dialog-close svg { display: block; width: 14px; height: 14px; }
+.member-dialog-close:hover { background: rgb(30 30 30 / 1); }
 .session-identity { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .session-header .status-line { display: none; }
 .session-identity .failure-message { margin-top: 4px; max-width: min(680px, 70vw); color: var(--red); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
@@ -134,16 +142,19 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .status-badge[data-status="failed"], .status-badge[data-status="interrupted"] { background: var(--red-soft); color: var(--red); }
 .header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
 .header-actions > button { display: none !important; }
-.presence-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); border-bottom: 1px solid var(--line); background: var(--surface); }
-.presence-strip > div { min-width: 0; padding: 9px 12px; border-right: 1px solid var(--line); }
-.presence-strip > div:last-child { border-right: 0; }
-.presence-strip span, .presence-strip strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.presence-strip span { color: var(--muted); font-size: 9px; text-transform: uppercase; }
-.presence-strip strong { margin-top: 3px; font-size: 12px; }
-.effort-live-select { display: block; margin-top: 1px; width: 100%; border: 0; padding: 0; background: transparent; font-size: 12px; font-weight: 700; color: var(--ink); cursor: pointer; }
+/* 成员详情竖着念：一行一个字段，左边名字、右边值。
+   横着铺是一排窄格子，Skill 那两个按钮正好被挤出面板边缘。 */
+.presence-strip { display: block; max-height: calc(100vh - 210px); overflow-y: auto; border-bottom: 0; background: var(--surface); }
+.presence-strip > div { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 12px; border-right: 0; border-bottom: 1px solid var(--line); }
+.presence-strip > div:last-child { border-bottom: 0; }
+.presence-strip > div[hidden] { display: none; }
+.presence-strip span, .presence-strip strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presence-strip span { flex: 0 0 auto; color: var(--muted); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.presence-strip strong { flex: 1 1 auto; font-size: 12px; text-align: right; }
+.effort-live-select { flex: 0 0 auto; width: auto; max-width: 150px; border: 0; padding: 0; background: transparent; font-size: 12px; font-weight: 700; color: var(--ink); text-align: right; cursor: pointer; }
 .effort-live-select:disabled { color: var(--muted); cursor: not-allowed; }
-/* Skill 那一格：两个小按钮，别把这一行撑得比别的格子高。 */
-.skill-actions { display: inline-flex; gap: 6px; margin-top: 3px; }
+/* Skill 那一行：两个小按钮，跟其它行的值一样靠右。 */
+.skill-actions { flex: 0 0 auto; display: inline-flex; gap: 6px; }
 #skill-cell .command-button { min-height: 24px; padding: 0 9px; font-size: 11px; font-weight: 650; }
 
 .work-grid { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 38%); }
@@ -400,8 +411,6 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
 
 @media (max-width: 980px) {
   .app-shell { grid-template-columns: 56px minmax(0, 1fr); }
-  .presence-strip { grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
-  .presence-strip > div { border-top: 1px solid var(--line); }
   .work-grid { grid-template-columns: minmax(290px, 42%) minmax(0, 1fr); }
   .session-header { align-items: flex-start; }
 }
@@ -421,8 +430,6 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
   .session-view { height: auto; min-height: calc(100vh - 160px); display: block; }
   .session-header { display: block; padding: 13px; }
   .header-actions { justify-content: flex-start; margin-top: 11px; }
-  .presence-strip { grid-template-columns: repeat(auto-fit, minmax(82px, 1fr)); }
-  .presence-strip > div { border-top: 1px solid var(--line); border-right: 1px solid var(--line); }
   .work-grid { display: block; }
   .chat-pane { border-right: 0; border-bottom: 1px solid var(--line); }
   .chat-list { height: 330px; }

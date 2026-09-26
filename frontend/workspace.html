@@ -51,37 +51,44 @@
           </div>
         </header>
 
-        <div class="presence-strip session-details" id="session-details">
-          <div><span>成员</span><strong id="member-name-label">—</strong></div>
-          <div><span>角色</span><strong id="member-role-label">—</strong></div>
-          <div><span>状态</span><strong id="member-state-label">—</strong></div>
-          <div><span>终端</span><strong id="member-terminal-label">—</strong></div>
-          <div><span>发言</span><strong id="member-chat-label">0</strong></div>
-          <div><span>最近</span><strong id="member-last-label">—</strong></div>
-          <div><span>阶段</span><strong id="phase-label">—</strong></div>
-          <div><span>后端</span><strong id="backend-label">—</strong></div>
-          <div><span>Provider</span><strong id="provider-label">—</strong></div>
-          <div><span>模型</span><strong id="model-label">—</strong></div>
-          <div><span>输入</span><strong id="typing-profile-label">平衡</strong></div>
-          <div><span>推理</span>
-            <select id="effort-live-select" class="effort-live-select" title="修改后在下一个工作周期生效">
-              <option value="">默认</option>
-              <option value="none">无</option>
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
-            </select>
+        <dialog id="member-dialog" class="member-dialog" aria-label="成员详情">
+          <button id="member-dialog-close" class="member-dialog-close" type="button" aria-label="关闭">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
+          </button>
+          <header class="member-dialog-header">
+            <strong id="member-name-label">—</strong>
+            <span id="member-role-label">—</span>
+          </header>
+          <div class="presence-strip">
+            <div><span>状态</span><strong id="member-state-label">—</strong></div>
+            <div><span>终端</span><strong id="member-terminal-label">—</strong></div>
+            <div><span>发言</span><strong id="member-chat-label">0</strong></div>
+            <div><span>最近</span><strong id="member-last-label">—</strong></div>
+            <div><span>阶段</span><strong id="phase-label">—</strong></div>
+            <div><span>后端</span><strong id="backend-label">—</strong></div>
+            <div><span>Provider</span><strong id="provider-label">—</strong></div>
+            <div><span>模型</span><strong id="model-label">—</strong></div>
+            <div><span>输入</span><strong id="typing-profile-label">平衡</strong></div>
+            <div><span>推理</span>
+              <select id="effort-live-select" class="effort-live-select" title="修改后在下一个工作周期生效">
+                <option value="">默认</option>
+                <option value="none">无</option>
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+            </div>
+            <div id="skill-cell" hidden><span>Skill</span>
+              <span class="skill-actions">
+                <button id="reload-skill-button" class="command-button compact" type="button" title="不重启进程，让它在下一个请求用新的 Skill">更新</button>
+                <button id="restart-agent-button" class="command-button compact" type="button" title="杀掉当前 agent 进程，用新的 Skill 重开一个">重启</button>
+              </span>
+            </div>
+            <div><span>动作</span><strong id="action-label">0 / 60</strong></div>
+            <div><span>运行</span><strong id="runtime-label">00:00</strong></div>
+            <div><span>事件</span><strong id="event-count">0</strong></div>
           </div>
-          <div id="skill-cell" hidden><span>Skill</span>
-            <span class="skill-actions">
-              <button id="reload-skill-button" class="command-button compact" type="button" title="不重启进程，让它在下一个请求用新的 Skill">更新</button>
-              <button id="restart-agent-button" class="command-button compact" type="button" title="杀掉当前 agent 进程，用新的 Skill 重开一个">重启</button>
-            </span>
-          </div>
-          <div><span>动作</span><strong id="action-label">0 / 60</strong></div>
-          <div><span>运行</span><strong id="runtime-label">00:00</strong></div>
-          <div><span>事件</span><strong id="event-count">0</strong></div>
-        </div>
+        </dialog>
 
         <div class="work-grid">
           <section class="chat-pane" aria-label="对话">
