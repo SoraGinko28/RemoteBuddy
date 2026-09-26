@@ -54,13 +54,13 @@
           </div>
         </header>
 
-        <dialog id="member-dialog" class="member-dialog" aria-label="成员详情">
-          <button id="member-dialog-close" class="member-dialog-close" type="button" aria-label="关闭">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
-          </button>
-          <header class="member-dialog-header">
+        <div id="member-panel" class="member-panel" role="dialog" aria-label="成员详情">
+          <header class="member-panel-header">
             <strong id="member-name-label">—</strong>
             <span id="member-role-label">—</span>
+            <button id="member-panel-close" class="member-panel-close" type="button" aria-label="关闭">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
+            </button>
           </header>
           <div class="presence-strip">
             <div><span>状态</span><strong id="member-state-label">—</strong></div>
@@ -91,7 +91,7 @@
             <div><span>运行</span><strong id="runtime-label">00:00</strong></div>
             <div><span>事件</span><strong id="event-count">0</strong></div>
           </div>
-        </dialog>
+        </div>
 
         <div class="work-grid">
           <section class="chat-pane" aria-label="对话">

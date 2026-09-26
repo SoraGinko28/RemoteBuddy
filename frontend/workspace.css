@@ -104,19 +104,21 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .welcome p { color: var(--muted); margin: 0 0 22px; }
 .session-view { height: 100%; position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .session-header { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
-/* 成员详情是一个居中的 modal：那一串字段是竖着念的清单，要够高；
-   横着铺成一排窄格子会把 Skill 那两个按钮挤出面板边缘。
-   右上角那个圆圈叉跟图片灯箱是同一个做法。 */
-.member-dialog { width: min(420px, calc(100vw - 28px)); overflow: visible; }
-/* 外围是浅色，但不是一块白纸：半透明的浅灰压上来，终端还看得见一点，
-   深色面板的边和角上的圆圈叉也立得住。 */
-.member-dialog::backdrop { background: rgb(226 226 226 / .5); }
-.member-dialog-header { display: flex; align-items: baseline; gap: 9px; padding: 14px 16px 11px; border-bottom: 1px solid var(--line); }
-.member-dialog-header strong { font-size: 15px; }
-.member-dialog-header span { color: var(--muted); font-size: 11px; }
-.member-dialog-close { position: absolute; top: -15px; right: -15px; width: 32px; height: 32px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgb(255 255 255 / .5); border-radius: 50%; background: rgb(30 30 30 / .88); color: #fff; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .35); }
-.member-dialog-close svg { display: block; width: 14px; height: 14px; }
-.member-dialog-close:hover { background: rgb(30 30 30 / 1); }
+/* 成员详情是从上边栏右侧滑下来的浮层，跟侧边栏同一套做法（transform + .18s ease）：
+   居中的 modal 会整屏压暗、抢焦点，终端跟着重排，画面跳得厉害。
+   字段是竖着念的清单，要够高；横着铺成一排窄格子会把 Skill 那两个按钮挤出边缘。 */
+.member-panel { position: absolute; top: 56px; right: 12px; z-index: 40; width: min(400px, calc(100vw - 24px));
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden;
+  box-shadow: 0 18px 44px rgb(0 0 0 / .55);
+  visibility: hidden; opacity: 0; transform: translateY(-10px); pointer-events: none;
+  transition: transform .18s ease, opacity .18s ease, visibility .18s; }
+.member-panel.open { visibility: visible; opacity: 1; transform: translateY(0); pointer-events: auto; }
+.member-panel-header { display: flex; align-items: baseline; gap: 9px; padding: 12px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+.member-panel-header strong { font-size: 15px; }
+.member-panel-header > span { color: var(--muted); font-size: 11px; }
+.member-panel-close { margin-left: auto; width: 26px; height: 26px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface-2); color: var(--muted); cursor: pointer; }
+.member-panel-close svg { display: block; width: 12px; height: 12px; }
+.member-panel-close:hover { border-color: var(--ink); color: var(--ink); }
 .session-identity { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .session-header .status-line { display: none; }
 .session-identity .failure-message { margin-top: 4px; max-width: min(680px, 70vw); color: var(--red); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
@@ -147,7 +149,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .header-actions > button { display: none !important; }
 /* 成员详情竖着念：一行一个字段，左边名字、右边值。
    横着铺是一排窄格子，Skill 那两个按钮正好被挤出面板边缘。 */
-.presence-strip { display: block; max-height: calc(100vh - 210px); overflow-y: auto; border-bottom: 0; background: var(--surface); }
+.presence-strip { display: block; max-height: calc(100vh - 150px); overflow-y: auto; border-bottom: 0; background: var(--surface); }
 .presence-strip > div { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 12px; border-right: 0; border-bottom: 1px solid var(--line); }
 .presence-strip > div:last-child { border-bottom: 0; }
 .presence-strip > div[hidden] { display: none; }

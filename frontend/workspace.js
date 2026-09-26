@@ -17,7 +17,7 @@ const el = Object.fromEntries([
   "workspace-menu",
   "welcome-advanced-button",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
-  "member-dialog", "member-dialog-close",
+  "member-panel", "member-panel-close",
   "member-name-label", "member-role-label", "member-state-label", "member-terminal-label",
   "member-chat-label", "member-last-label",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
@@ -245,10 +245,10 @@ function memberRoles(meeting) {
   return (roles && Object.keys(roles).length) ? roles : { agent: "actor" };
 }
 
-// 成员详情是一个 modal：点外面的黑底、按 Esc、点右上角那个叉都关得掉，
-// 浏览器自己管这些（<dialog>），这里只负责把状态和 chip 上的展开标记对齐。
+// 成员详情是从上边栏右侧滑下来的浮层：点别处、按 Esc、点那个叉都关得掉，
+// 它不夺焦点、不压暗画面，终端也不会因此重排。
 function closeMemberDetails() {
-  if (el.member_dialog?.open) el.member_dialog.close();
+  el.member_panel?.classList.remove("open");
   if (!state.detailsAgent) return;
   state.detailsAgent = null;
   document.querySelectorAll(".agent-state").forEach((chip) => {
@@ -275,7 +275,7 @@ function renderMemberDetails(meeting) {
   const actor = state.detailsAgent;
   if (!actor || !memberRoles(meeting)[actor]) {
     state.detailsAgent = null;
-    if (el.member_dialog?.open) el.member_dialog.close();
+    el.member_panel?.classList.remove("open");
     return;
   }
   const role = memberRoles(meeting)[actor];
@@ -290,7 +290,7 @@ function renderMemberDetails(meeting) {
   // Skill 那两个按钮只对 actor 有意义：这场会的那份 Skill 是它的说明书，
   // 助理和批判者跑在各自的过程里，不读它。
   if (el.skill_cell) el.skill_cell.hidden = role !== "actor";
-  if (el.member_dialog && !el.member_dialog.open) el.member_dialog.showModal();
+  el.member_panel?.classList.add("open");
 }
 
 function eventDelay(event, queueLength = 0) {
@@ -2897,7 +2897,7 @@ async function selectMeeting(meetingId) {
   // The member panel belongs to the meeting that was open: another meeting
   // opens with it closed.
   state.detailsAgent = null;
-  if (el.member_dialog?.open) el.member_dialog.close();
+  el.member_panel?.classList.remove("open");
   const [snapshot, eventPayload] = await Promise.all([
     api(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`),
     api(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=0`),
@@ -3387,18 +3387,7 @@ function bind() {
   });
   // 也可以直接点右上角那个圆圈：不知道"点外围"的人也有个去处。
   el.image_lightbox_close?.addEventListener("click", () => el.image_lightbox.close());
-  // 成员详情这个 modal：叉、黑底、Esc 三条路都关得掉，关掉之后 chip 上的
-  // aria-expanded 跟 state 一起归位（Esc 和黑底是浏览器自己关的，只能从 close 事件收尾）。
-  el.member_dialog_close?.addEventListener("click", () => closeMemberDetails());
-  el.member_dialog?.addEventListener("click", (event) => {
-    if (event.target === el.member_dialog) el.member_dialog.close();
-  });
-  el.member_dialog?.addEventListener("close", () => {
-    state.detailsAgent = null;
-    document.querySelectorAll(".agent-state").forEach((chip) => {
-      chip.setAttribute("aria-expanded", "false");
-    });
-  });
+  el.member_panel_close?.addEventListener("click", () => closeMemberDetails());
   el.image_input?.addEventListener("change", async () => {
     const files = Array.from(el.image_input.files || []);
     el.image_input.value = "";                       // 同一张图可以再选一次
@@ -3547,6 +3536,14 @@ function bind() {
   document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
   document.addEventListener("pointerdown", (event) => {
+    // 浮层是 chip 弹出来的：点别处（chip 和浮层本身以外）就收回去。
+    if (
+      state.detailsAgent
+      && !event.target.closest?.(".agent-state")
+      && !event.target.closest?.("#member-panel")
+    ) {
+      closeMemberDetails();
+    }
     if (el.workspace_menu && !el.workspace_menu.hidden
         && !el.workspace_menu.contains(event.target)) {
       hideWorkspaceMenu();
