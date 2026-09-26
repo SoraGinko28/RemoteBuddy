@@ -95,6 +95,8 @@ class RecordingRunner:
         self.client = client
         self.lock = lock
         self.resume_modes = []
+        self.skill_reloads = 0
+        self.backend_restarts = 0
         RecordingRunner.instances.append(self)
 
     def start(self):
@@ -112,6 +114,12 @@ class RecordingRunner:
     def open(self):
         """打开工作区：终端开出来，不叫 agent（第一句话在聊天框里说）。"""
         self.start()
+
+    def request_skill_reload(self):
+        self.skill_reloads += 1
+
+    def request_backend_restart(self):
+        self.backend_restarts += 1
 
     def resume(self, fresh_conversation=False):
         self.resume_modes.append(fresh_conversation)
@@ -876,6 +884,39 @@ class HTTPBoundaryTest(unittest.TestCase):
             "/api/meetings", method="POST", body=huge, csrf=True
         )
         self.assertEqual(413, status)
+
+    def test_skill_reload_and_agent_restart_routes(self):
+        # 页面上那两个按钮：更新只换文本，重启要真有一个在跑的进程
+        self.request(
+            "/api/meetings",
+            method="POST",
+            body=json.dumps({"message": "写个冒泡排序", "meeting_id": "skill-demo"}),
+            csrf=True,
+        )
+        self.wait_for_workers()
+        runtime_skill = self.service.load_store("skill-demo").runtime_skill_path
+        self.skill.write_text("---\nname: workspace-collaborator\n---\n新的一句。\n", encoding="utf-8")
+
+        # 没有在跑的进程：更新照样换文本，但不假装它进了某个进程
+        response = self.request("/api/meetings/skill-demo/skill/reload", method="POST",
+                                body="{}", csrf=True)
+        payload = json.load(response)
+        self.assertTrue(payload["changed"])
+        self.assertEqual(False, payload["agent_running"])
+        self.assertEqual("新的一句。\n", runtime_skill.read_text(encoding="utf-8").split("---\n")[-1])
+        self.assertFalse(json.load(
+            self.request("/api/meetings/skill-demo/skill/reload", method="POST", body="{}",
+                         csrf=True))["changed"], "同一份文本不该说变过")
+
+        # 重启：没有活着的 agent 就明说没有可重启的东西
+        status, payload = self.error_status("/api/meetings/skill-demo/agent/restart",
+                                            method="POST", body="{}", csrf=True)
+        self.assertEqual(409, status)
+        self.assertIn("没有在跑", payload["error"])
+
+        reloaded = MeetingStore.load_in_workspace(self.root, "skill-demo")
+        events = [e for e in reloaded.events() if e.get("phase") == "skill_reload"]
+        self.assertTrue(events, "更新要在 journal 里留一条")
 
     def test_add_workspace_route(self):
         # 页面侧边栏那个「＋」：记下一个目录，不开会

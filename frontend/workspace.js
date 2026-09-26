@@ -29,6 +29,7 @@ const el = Object.fromEntries([
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
   "close-dialog", "cancel-new", "initial-message", "workspace-input", "choose-directory", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
+  "skill-cell", "reload-skill-button", "restart-agent-button",
   "event-dialog", "event-title", "event-content", "close-event", "toast",
   "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
   "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
@@ -91,13 +92,13 @@ const state = {
 
 const labels = {
   status: { created: "已创建", starting: "启动中", running: "协作中", completed: "已完成", failed: "失败", interrupted: "已中止" },
-  phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "{agent} 思考中", agent_acting: "{agent} 操作中", waiting_for_user: "等待你的消息", completion_proposed: "{agent} 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
+  phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "{agent} 思考中", agent_acting: "{agent} 操作中", waiting_for_user: "等待你的消息", completion_proposed: "{agent} 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", skill_reload: "正在更新 Skill", agent_restart: "正在重启 {agent} 进程", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
   owner: { agent: "{agent} 控制", human: "你在控制", none: "无人控制" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
   score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
-  agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常" },
+  agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常", updating: "更新", restarting: "重启" },
   role: { actor: "行动者", assistant: "助理", critic: "批判者" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
@@ -120,6 +121,8 @@ const AGENT_STATE_PHASES = {
   starting: "thinking",
   agent_thinking: "thinking",
   agent_acting: "acting",
+  skill_reload: "updating",
+  agent_restart: "restarting",
   api_error: "error",
   cycle_timeout: "error",
   failed: "error",
@@ -171,6 +174,12 @@ function latestBandTime(actor) {
 function memberState(actor, meeting) {
   const terminal = ["completed", "failed", "interrupted"].includes(meeting.status);
   if (terminal) return "idle";
+  // 更新 / 重启 是页面上那两个按钮的状态：agent 进程此刻正在被换掉，
+  // 所以它不属于"谁占着终端"那套判断，任何时候都直接显示。
+  if (meeting.phase === "skill_reload" || meeting.phase === "agent_restart") {
+    if (memberRoles(meeting)[actor] === "actor") return agentStateForPhase(meeting.phase);
+    return "idle";
+  }
   if (meeting.control_owner === actor) {
     const stateName = agentStateForPhase(meeting.phase);
     if ((stateName === "thinking" || stateName === "acting")
@@ -278,6 +287,9 @@ function renderMemberDetails(meeting) {
   el.member_terminal_label.textContent = role === "actor" ? "可写" : "只读";
   el.member_chat_label.textContent = `${stats.count} 条`;
   el.member_last_label.textContent = stats.last ? fmtTime(stats.last) : "—";
+  // Skill 那两个按钮只对 actor 有意义：这场会的那份 Skill 是它的说明书，
+  // 助理和批判者跑在各自的过程里，不读它。
+  if (el.skill_cell) el.skill_cell.hidden = role !== "actor";
   if (view) view.classList.add("details-open");
 }
 
@@ -3444,6 +3456,39 @@ function bind() {
       await postMeetingAction("effort", { reasoning_effort: el.effort_live_select.value || null });
       toast("推理力度已更新，下一个工作周期生效");
     } catch (error) { toast(error.message); }
+  });
+  // 更新：只换 Skill 文本，进程不动。指令按请求传的 harness 下一句就用上；
+  // 把指令写在自己进程里的（Claude Code / Codex）要等下一次开工。
+  el.reload_skill_button?.addEventListener("click", async () => {
+    if (!state.selectedId) return;
+    el.reload_skill_button.disabled = true;
+    try {
+      const answer = await api(
+        `/api/meetings/${encodeURIComponent(state.selectedId)}/skill/reload`,
+        { method: "POST", body: "{}" });
+      const short = String(answer.sha256 || "").slice(0, 8);
+      if (!answer.changed) toast(`Skill 没变（${short}）`);
+      else if (!answer.agent_running) toast(`Skill 已更新（${short}）：没有在跑的进程，下一轮开工就用新的`);
+      else if (answer.applies_to_next_request) toast(`Skill 已更新（${short}）：下一句就用新的`);
+      else toast(`Skill 已更新（${short}）：这个后端把指令写在进程里，下次开工生效；要立刻生效就点"重启"`);
+      await refreshSelected();
+      await loadMeetings();
+    } catch (error) { toast(error.message); }
+    finally { el.reload_skill_button.disabled = false; }
+  });
+  // 重启：把 agent 进程杀掉，用现在的 Skill 重开一个；同一轮继续，历史照给。
+  el.restart_agent_button?.addEventListener("click", async () => {
+    if (!state.selectedId) return;
+    if (!confirm("杀掉当前 agent 进程，用最新的 Skill 重开一个？这一轮会从进程启动重新开始。")) return;
+    el.restart_agent_button.disabled = true;
+    try {
+      await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/agent/restart`,
+                { method: "POST", body: "{}" });
+      toast("已请求重启，进程马上换一个");
+      await refreshSelected();
+      await loadMeetings();
+    } catch (error) { toast(error.message); }
+    finally { el.restart_agent_button.disabled = false; }
   });
   el.acquire_button.addEventListener("click", () => postMeetingAction("control/acquire").catch((error) => toast(error.message)));
   el.release_button.addEventListener("click", () => postMeetingAction("control/release").catch((error) => toast(error.message)));

@@ -142,6 +142,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .presence-strip strong { margin-top: 3px; font-size: 12px; }
 .effort-live-select { display: block; margin-top: 1px; width: 100%; border: 0; padding: 0; background: transparent; font-size: 12px; font-weight: 700; color: var(--ink); cursor: pointer; }
 .effort-live-select:disabled { color: var(--muted); cursor: not-allowed; }
+/* Skill 那一格：两个小按钮，别把这一行撑得比别的格子高。 */
+.skill-actions { display: inline-flex; gap: 6px; margin-top: 3px; }
+#skill-cell .command-button { min-height: 24px; padding: 0 9px; font-size: 11px; font-weight: 650; }
 
 .work-grid { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 38%); }
 .chat-pane { order: 2; border-left: 1px solid var(--line); border-right: 0; }

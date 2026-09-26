@@ -784,6 +784,16 @@ class OpenAIResponsesClient:
             )
         return session_id
 
+    def update_instructions(self, instructions: str) -> bool:
+        """这个 backend 的指令是随每个请求发出去的：换掉就算数，下一句就用新的。
+
+        页面上那个"更新"按钮（`/skill/reload`）走这里；把指令写在自己进程里的
+        backend（Claude Code、Codex App Server）没有这个方法，那个按钮对它们
+        只换文件、下一次开工才生效。
+        """
+        self._cycle_instructions = instructions
+        return True
+
     def next_action(
         self,
         session_id: str,

@@ -278,6 +278,29 @@ class CodexAppServerBackendTest(unittest.TestCase):
         self.assertIn("outputSchema", turn["params"])
         self.assertFalse(any("text" in item for item in self.telemetry))
 
+    def test_a_closed_backend_can_start_another_cycle(self):
+        """页面上那个"重启"就是在同一个对象上 close 完再 start_cycle 一次。
+
+        close() 会把进程失败标记钉成 "closed"；不清掉它，新 cycle 的第一个
+        请求就会立刻报 "Codex App Server process exited"。
+        """
+        backend = self.backend()
+        try:
+            first = backend.start_cycle("meeting-one", "Skill", "context")
+            backend.close()
+            second = backend.start_cycle("meeting-one", "Skill v2", "context again")
+            response = backend.next_action(
+                second,
+                "later delta",
+                allowed_types=("chat",),
+                allowed_message_types=("ack",),
+            )
+        finally:
+            backend.close()
+        self.assertEqual("thread-test", first)
+        self.assertEqual("thread-test", second)
+        self.assertEqual("ack", response.action.message_type)
+
     def test_empty_model_defers_to_cli_default(self):
         from dataclasses import replace
 

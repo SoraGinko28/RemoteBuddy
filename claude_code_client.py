@@ -290,6 +290,19 @@ class ClaudeCodeBackend:
     ) -> str:
         if self._process is not None:
             raise ClaudeCodeError("Claude Code cycle is already active")
+        # 一个 cycle 跑完（或者页面上按了"重启"）会 close 一次；再开一个就是活的，
+        # 读进程输出的那两个线程看的就是这几个开关，粘住的失败标记也要清掉。
+        self._closed = False
+        self._interrupted = False
+        self._process_error = None
+        self._first_turn = True
+        self._turn_id = None
+        self._turn_action = None
+        self._turn_claimed_action = None
+        self._turn_response_id = None
+        self._turn_result_seen = False
+        self._turn_protocol_error = None
+        self._events = []
         if not meeting_id or not instructions.strip():
             raise ClaudeCodeError("Claude Code requires meeting instructions")
         if self.config.agent_provider != "deepseek" or not self.config.api_key:

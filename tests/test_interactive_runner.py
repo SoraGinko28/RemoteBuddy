@@ -47,6 +47,15 @@ class FakeClient:
         self.conversations = []
         self.config = FakeConfig()
         self.last_images = None
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+    def update_instructions(self, instructions):
+        """指令是按请求传的那一类后端：换掉就算数。"""
+        self.instructions = instructions
+        return True
 
     def create_conversation(self, meeting_id):
         value = f"conv-{len(self.conversations) + 1}"
@@ -221,6 +230,86 @@ class FakeTransport:
                     self.command = "bash"
                 self.pending_input = ""
         self.screen_revision += 1
+
+
+class BackendRequestTest(unittest.TestCase):
+    """页面上那两个按钮：更新（不动进程）与重启（换一个进程）。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.skill = self.root / "SKILL.md"
+        self.skill.write_text(
+            "---\nname: workspace-collaborator\ndescription: Test.\n---\n旧的一句。",
+            encoding="utf-8",
+        )
+        self.store = MeetingStore.create(
+            self.root, "backend-demo", "Create notes.md.", self.skill,
+            "remotebuddy-backend-demo", "test-model",
+        )
+        self.transport = FakeTransport()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_skill_reload_swaps_the_text_without_touching_the_process(self):
+        client = PauseOnThirdClient([
+            make_action("command", command="pwd"),
+        ])
+        runner = InteractiveRunner(self.store, self.transport, client,
+                                   action_settle_seconds=0, typing_interval_seconds=0)
+
+        def mark():
+            # 在第一个请求还在飞的时候按"更新"：下一句就该用新文本。
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if client.calls:
+                    self.store.runtime_skill_path.write_text(
+                        "---\nname: workspace-collaborator\n---\n新的一句。", encoding="utf-8")
+                    runner.request_skill_reload()
+                    return
+                time.sleep(0.01)
+
+        thread = threading.Thread(target=mark, daemon=True)
+        thread.start()
+        runner.start()
+        thread.join(timeout=5)
+
+        self.assertEqual(0, client.closed, "更新不该关掉进程")
+        self.assertEqual(1, len(client.conversations), "更新不该重开会话")
+        self.assertTrue(client.calls[1][1].endswith("新的一句。"), client.calls[1][1][-40:])
+        events = [e for e in MeetingStore.load(self.root, "backend-demo").events()
+                  if e.get("phase") == "skill_reload"]
+        self.assertTrue(events)
+        self.assertEqual("completed", events[0]["data"]["status"])
+
+    def test_backend_restart_closes_the_process_and_starts_a_new_cycle(self):
+        client = PauseOnThirdClient([
+            make_action("command", command="pwd"),
+        ])
+        runner = InteractiveRunner(self.store, self.transport, client,
+                                   action_settle_seconds=0, typing_interval_seconds=0)
+
+        def mark():
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if client.calls:
+                    runner.request_backend_restart()
+                    return
+                time.sleep(0.01)
+
+        thread = threading.Thread(target=mark, daemon=True)
+        thread.start()
+        runner.start()
+        thread.join(timeout=5)
+
+        self.assertEqual(1, client.closed, "重启要关掉旧进程")
+        self.assertEqual(2, len(client.conversations), "重启要重开一个新会话")
+        loaded = MeetingStore.load(self.root, "backend-demo")
+        restarts = [e for e in loaded.events() if e.get("phase") == "agent_restart"]
+        self.assertEqual(["started", "completed"], [e["data"]["status"] for e in restarts])
+        session_ids = [e["data"]["session_id"] for e in restarts if e["data"].get("session_id")]
+        self.assertEqual(1, len(session_ids))
 
 
 class DelayedVimTransport(FakeTransport):

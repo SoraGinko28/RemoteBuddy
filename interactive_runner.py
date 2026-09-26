@@ -92,6 +92,10 @@ class InteractiveRunner:
         self._current_input_seq = self.store.last_event_sequence()
         self._stall_fingerprint: Optional[tuple] = None
         self._stall_streak = 0
+        # 页面上那两个按钮留下的请求，在下一个请求边界处理（见 _apply_backend_requests）：
+        # 换 Skill 文本不动进程，或者把进程杀掉重开。
+        self._skill_reload_requested = False
+        self._backend_restart_requested = False
 
     @property
     def agent_name(self) -> str:
@@ -406,8 +410,109 @@ class InteractiveRunner:
             # not kill the backend callback thread, but it must leave a trace.
             print(f"[runner] backend event was not recorded: {exc}", file=sys.stderr, flush=True)
 
+    def request_skill_reload(self) -> None:
+        """页面上按"更新"：下一个请求边界用新的 Skill 文本，进程不动。
+
+        Skill 本来就是每次请求现从盘上读的，所以这一步只是把这一刻记下来、
+        在 journal 和状态里留个痕；进程里的指令（Claude Code / Codex 把指令写在
+        自己的进程或线程里）要等下一次开工才换。
+        """
+        with self.lock:
+            self._skill_reload_requested = True
+
+    def request_backend_restart(self) -> None:
+        """页面上按"重启"：把 backend 进程杀掉、用现在的 Skill 重开一个。
+
+        同一场会、同一轮继续：新进程拿到的是完整的历史观察，不是从零开始。
+        """
+        with self.lock:
+            self._backend_restart_requested = True
+
+    def _apply_backend_requests(self) -> bool:
+        """在请求边界处理页面上按下的那两件事。返回 False 表示这轮该结束。"""
+        with self.lock:
+            reload_requested = self._skill_reload_requested
+            restart_requested = self._backend_restart_requested
+            if not reload_requested and not restart_requested:
+                return True
+            self._skill_reload_requested = False
+            self._backend_restart_requested = False
+            self.store.refresh()
+            self._check_stop()
+            if self.store.meeting.control_owner != self.agent_name or self.store.meeting.status != "running":
+                return False
+            if restart_requested:
+                return self._restart_backend()
+            instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
+            self.store.update(phase="skill_reload")
+            live = False
+            update = getattr(self.client, "update_instructions", None)
+            if callable(update):
+                try:
+                    live = bool(update(instructions))
+                except Exception as exc:  # noqa: BLE001
+                    # 进程里的指令换不了不是这轮该失败的事：文本已经换过了。
+                    print(f"[runner] backend refused new instructions: {exc}", file=sys.stderr, flush=True)
+            self.store.append_event(
+                "state",
+                "harness",
+                "skill_reload",
+                data={
+                    "status": "completed",
+                    "bytes": len(instructions.encode("utf-8")),
+                    "live_in_process": live,
+                },
+            )
+            # 旧的阶段可能正是服务刚标的 skill_reload；这一轮的下一步本来就是请求模型。
+            self.store.update(phase="agent_thinking")
+        return True
+
+    def _restart_backend(self) -> bool:
+        """杀掉当前 backend 进程，用现在的 Skill 重开一个，继续这一轮。"""
+        with self.lock:
+            instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
+            context = self._observation(self.store.events_after(0), False, force_history=True)
+            images = self._images_of(self.store.events_after(0))
+            self.store.update(phase="agent_restart", pending_action_id=None)
+            self.store.append_event(
+                "state",
+                "harness",
+                "agent_restart",
+                data={"status": "started", "backend": str(getattr(self.client, "backend_name", ""))},
+            )
+        self._close_backend()
+        session_id = self._start_backend_cycle(instructions, context, images=images)
+        with self.lock:
+            self.store.refresh()
+            self._check_stop()
+            if self.store.meeting.control_owner != self.agent_name or self.store.meeting.status != "running":
+                return False
+            self._cycle_started_monotonic = time.monotonic()
+            self.store.update(
+                phase="agent_thinking",
+                conversation_id=session_id,
+                agent_session_id=session_id,
+                agent_turn_id=None,
+                agent_backend=str(getattr(self.client, "backend_name", "responses")),
+                agent_protocol_version=getattr(self.client, "protocol_version", None),
+                agent_cursor=0,
+                last_response_id=None,
+                pending_action_id=None,
+                control_requested=None,
+                recovery_required=False,
+            )
+            self.store.append_event(
+                "state",
+                "harness",
+                "agent_restart",
+                data={"status": "completed", "session_id": session_id},
+            )
+        return True
+
     def _agent_loop(self) -> None:
         while True:
+            if not self._apply_backend_requests():
+                return
             with self.lock:
                 self.store.refresh()
                 self._check_stop()

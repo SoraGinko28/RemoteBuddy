@@ -165,6 +165,18 @@ class CodexAppServerBackend:
     ) -> str:
         if self._process is not None:
             raise CodexAppServerError("Codex App Server cycle is already active")
+        # 同一个 backend 对象可以再开一个 cycle（页面上那个"重启"就是这么干的）：
+        # close() 会把 `_process_error` 钉成 "closed"、把线程/回合号清掉，这些
+        # 粘住的状态不清，新进程的第一个请求就会立刻报"process exited"。
+        self._closed = False
+        self._interrupted = False
+        self._process_error = None
+        self._first_turn = True
+        self._thread_id = None
+        self._turn_id = None
+        self._pending = {}
+        self._notifications = []
+        self._server_requests = []
         if not meeting_id or not instructions.strip():
             raise CodexAppServerError("Codex App Server requires meeting instructions")
         self._callback = event_callback

@@ -29,6 +29,10 @@ VALID_PHASES = {
     "starting",
     "agent_thinking",
     "agent_acting",
+    # 页面上那两个按钮在干活的时刻：`skill_reload` 是换掉 Skill 文本但不动进程，
+    # `agent_restart` 是把 backend 进程杀掉重开。两个都只在一轮中间出现。
+    "skill_reload",
+    "agent_restart",
     "waiting_for_user",
     "completion_proposed",
     "human_control",

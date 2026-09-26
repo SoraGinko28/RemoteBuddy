@@ -72,6 +72,12 @@
               <option value="high">高</option>
             </select>
           </div>
+          <div id="skill-cell" hidden><span>Skill</span>
+            <span class="skill-actions">
+              <button id="reload-skill-button" class="command-button compact" type="button" title="不重启进程，让它在下一个请求用新的 Skill">更新</button>
+              <button id="restart-agent-button" class="command-button compact" type="button" title="杀掉当前 agent 进程，用新的 Skill 重开一个">重启</button>
+            </span>
+          </div>
           <div><span>动作</span><strong id="action-label">0 / 60</strong></div>
           <div><span>运行</span><strong id="runtime-label">00:00</strong></div>
           <div><span>事件</span><strong id="event-count">0</strong></div>

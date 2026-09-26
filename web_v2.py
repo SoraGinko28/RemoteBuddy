@@ -449,6 +449,9 @@ class MeetingWebService:
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
+        # 正在跑的 runner（一场会同时最多一个）：页面上"更新 / 重启"两个按钮
+        # 要能戳到它，见 reload_skill / restart_agent。
+        self.active_runners: Dict[str, Any] = {}
         self.human_pipes: Dict[str, bool] = {}
         self.human_geometry: Dict[str, Dict[str, int]] = {}
         # Whether the Agent was mid-work when the human took over; only then
@@ -1623,8 +1626,11 @@ class MeetingWebService:
         terminal_only: bool = False,
     ) -> None:
         pending: Optional[Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = None
+        runner: Optional[Any] = None
         try:
             runner = self.runner_factory(store, transport, client, lock=meeting_lock)
+            with self.lock:
+                self.active_runners[store.meeting.meeting_id] = runner
             if terminal_only:
                 # 只看工作区：把终端开出来，不叫 agent（第一句话在聊天框里说）。
                 runner.open()
@@ -1643,6 +1649,8 @@ class MeetingWebService:
                 meeting_id = store.meeting.meeting_id
                 if self.active_backends.get(meeting_id) is client:
                     self.active_backends.pop(meeting_id, None)
+                if self.active_runners.get(meeting_id) is runner:
+                    self.active_runners.pop(meeting_id, None)
                 if self.jobs.get(meeting_id) is threading.current_thread():
                     self.jobs.pop(meeting_id, None)
                 pending = self.queued_jobs.pop(meeting_id, None)
@@ -2198,6 +2206,90 @@ class MeetingWebService:
             store.append_event("control", "human", store.meeting.phase, data={"status": "cleaned"})
         return store
 
+    # ------------------------------------------------------------------
+    # Skill 那一侧：更新（不动进程）与重启（换一个进程）
+    # ------------------------------------------------------------------
+
+    def _install_project_skill(self, store: MeetingStore) -> Tuple[str, int, bool]:
+        """把仓库里那份 Skill 覆盖到这场会，返回（摘要, 字节数, 有没有变）。"""
+        source = self.skill_path
+        if not source.is_file():
+            raise WebError(500, f"project skill is missing: {source}")
+        text = source.read_text(encoding="utf-8")
+        target = store.runtime_skill_path
+        previous = target.read_text(encoding="utf-8") if target.is_file() else ""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        payload = text.encode("utf-8")
+        return hashlib.sha256(payload).hexdigest(), len(payload), previous != text
+
+    def _live_agent(self, meeting_id: str) -> Tuple[Optional[Any], Optional[AgentBackend]]:
+        """正在跑的 runner 和它的 backend；没有就是 (None, None)。"""
+        with self.lock:
+            job = self.jobs.get(meeting_id)
+            if job is None or not job.is_alive():
+                return None, None
+            return self.active_runners.get(meeting_id), self.active_backends.get(meeting_id)
+
+    def reload_skill(self, meeting_id: str) -> Dict[str, Any]:
+        """页面上的"更新"：换掉 Skill 文本，进程不动。
+
+        指令按请求传的 harness（responses / DeepSeek）下一句就用上；把指令写在
+        自己进程里的（Claude Code、Codex App Server）要等下一次开工才换 —— 想
+        立刻换，用 restart_agent。
+        """
+        store = self.load_store(meeting_id)
+        if store.meeting.status in TERMINAL_STATUSES:
+            raise WebError(409, "meeting is already finished")
+        digest, size, changed = self._install_project_skill(store)
+        runner, client = self._live_agent(meeting_id)
+        per_request = callable(getattr(client, "update_instructions", None))
+        if runner is None:
+            store.append_event(
+                "state",
+                "harness",
+                "skill_reload",
+                data={"status": "completed", "sha256": digest, "bytes": size,
+                      "changed": changed, "agent_running": False},
+            )
+        else:
+            # 从这一刻起到 agent 真的读到新文本，状态就是"更新"。
+            # 没有在跑的进程时不该这么标：那没有人会把它摘下来。
+            with self._meeting_lock(meeting_id):
+                store.update(phase="skill_reload")
+            runner.request_skill_reload()
+        return {
+            "meeting_id": meeting_id,
+            "sha256": digest,
+            "bytes": size,
+            "changed": changed,
+            "agent_running": runner is not None,
+            "applies_to_next_request": per_request,
+        }
+
+    def restart_agent(self, meeting_id: str) -> Dict[str, Any]:
+        """页面上的"重启"：杀掉当前 agent 进程，用现在的 Skill 重开一个。
+
+        没有在跑的进程就没有可重启的东西 —— 下一次开工本来就是一个新进程。
+        """
+        store = self.load_store(meeting_id)
+        if store.meeting.status in TERMINAL_STATUSES:
+            raise WebError(409, "meeting is already finished")
+        runner, _client = self._live_agent(meeting_id)
+        if runner is None:
+            raise WebError(409, "agent 现在没有在跑：下一次开工本来就会起一个新进程")
+        digest, size, changed = self._install_project_skill(store)
+        with self._meeting_lock(meeting_id):
+            store.update(phase="agent_restart")
+        runner.request_backend_restart()
+        return {
+            "meeting_id": meeting_id,
+            "sha256": digest,
+            "bytes": size,
+            "changed": changed,
+            "restarting": True,
+        }
+
     def resume(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
@@ -2743,6 +2835,14 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 payload = self._read_bytes()
                 self._json({"attachment": self.service.save_attachment(
                     unquote(match.group(1)), media_type, payload)}, status=201)
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/skill/reload", path)
+            if match:
+                self._json(self.service.reload_skill(unquote(match.group(1))))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/agent/restart", path)
+            if match:
+                self._json(self.service.restart_agent(unquote(match.group(1))))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/sdk/([A-Za-z_][A-Za-z0-9_]*)", path)
             if match:
