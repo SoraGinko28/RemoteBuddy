@@ -364,12 +364,15 @@ async function apiConditional(path, etag) {
   return { notModified: false, etag: response.headers.get("ETag") || "", payload };
 }
 
-function toast(message) {
+// `kind` 决定颜色：报错是红的，办成了是绿的，其余（"没变"、"已复制"这种）
+// 是中性色——把"Skill 没变"画成红色会让人以为出事了。
+function toast(message, kind = "error") {
   clearTimeout(state.toastTimer);
   // 两个位置同一句话：会话里那个在上边栏靠左，欢迎卡片上那个没有上边栏，贴左上角。
   const visible = [el.toast, el.welcome_toast].filter(Boolean);
   for (const node of visible) {
     node.textContent = message;
+    node.dataset.kind = kind;
     node.hidden = false;
   }
   state.toastTimer = setTimeout(() => {
@@ -1175,7 +1178,7 @@ function legacyCopy(text) {
 
 function copyTextToClipboard(text) {
   if (!text) {
-    toast("没有可复制的内容");
+    toast("没有可复制的内容", "info");
     return false;
   }
   if (navigator.clipboard && window.isSecureContext) {
@@ -1226,7 +1229,7 @@ function installTerminalClipboard() {
       const position = typeof term.getSelectionPosition === "function" ? term.getSelectionPosition() : null;
       const selected = term.getSelection();
       if (position && selected) {
-        toast(`已选中 ${selected.length} 字符 · ⌘/Ctrl+C 复制`);
+        toast(`已选中 ${selected.length} 字符 · ⌘/Ctrl+C 复制`, "info");
       }
     }, 30);
   });
@@ -2701,7 +2704,7 @@ async function submitEvaluation(event) {
     renderAll();
     try {
       await refreshSelected();
-      toast(`已记录${labels.score[tag]}评价`);
+      toast(`已记录${labels.score[tag]}评价`, "success");
     } catch (refreshError) {
       toast(`评价已保存，页面刷新失败：${refreshError.message}`);
     }
@@ -2721,7 +2724,7 @@ async function handleSelectionAction(action) {
   if (!selected || state.selectionBusy || state.evaluationSelection) return;
   if (action === "evaluate") {
     if (selectionIsHumanChat(selected)) {
-      toast("人类消息不能被评价");
+      toast("人类消息不能被评价", "info");
       return;
     }
     openEvaluationPanel(selected);
@@ -2740,7 +2743,7 @@ async function handleSelectionAction(action) {
     el.message_input.focus();
     // The reference card above the composer already shows the quote; a toast
     // on top of it only covers the controls the user is about to use.
-    if (!added) toast("这个引用已经添加");
+    if (!added) toast("这个引用已经添加", "info");
     return;
   }
 }
@@ -3285,7 +3288,7 @@ async function addWorkspace() {
       body: JSON.stringify({ directory }),
     });
     // 已经在名单上（或者就是默认那一个）时说一句：不然"点了没反应"看着像坏了。
-    if (answer.added === false) toast(`${basename(directory)} 已经在工作区列表里`);
+    if (answer.added === false) toast(`${basename(directory)} 已经在工作区列表里`, "info");
     await loadMeetings();
   } catch (error) {
     toast(error.message);
@@ -3461,7 +3464,7 @@ function bind() {
   el.effort_live_select?.addEventListener("change", async () => {
     try {
       await postMeetingAction("effort", { reasoning_effort: el.effort_live_select.value || null });
-      toast("推理力度已更新，下一个工作周期生效");
+      toast("推理力度已更新，下一个工作周期生效", "success");
     } catch (error) { toast(error.message); }
   });
   // 更新：只换 Skill 文本，进程不动。指令按请求传的 harness 下一句就用上；
@@ -3473,10 +3476,10 @@ function bind() {
       const answer = await api(
         `/api/meetings/${encodeURIComponent(state.selectedId)}/skill/reload`,
         { method: "POST", body: "{}" });
-      if (!answer.changed) toast("Skill 没变");
-      else if (!answer.agent_running) toast("Skill 已更新：没有在跑的进程，下一轮开工就用新的");
-      else if (answer.applies_to_next_request) toast("Skill 已更新：下一句就用新的");
-      else toast("Skill 已更新：这个后端把指令写在进程里，下次开工生效；要立刻生效就点\"重启\"");
+      if (!answer.changed) toast("Skill 没变", "info");
+      else if (!answer.agent_running) toast("Skill 已更新：没有在跑的进程，下一轮开工就用新的", "success");
+      else if (answer.applies_to_next_request) toast("Skill 已更新：下一句就用新的", "success");
+      else toast("Skill 已更新：这个后端把指令写在进程里，下次开工生效；要立刻生效就点\"重启\"", "success");
       await refreshSelected();
       await loadMeetings();
     } catch (error) { toast(error.message); }
@@ -3490,7 +3493,7 @@ function bind() {
     try {
       await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/agent/restart`,
                 { method: "POST", body: "{}" });
-      toast("已请求重启，进程马上换一个");
+      toast("已请求重启，进程马上换一个", "info");
       await refreshSelected();
       await loadMeetings();
     } catch (error) { toast(error.message); }

@@ -413,7 +413,9 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
 .event-dialog pre { max-height: 65vh; overflow: auto; margin: 0; padding: 13px; background: var(--terminal); color: var(--terminal-ink); border-radius: 5px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 ui-monospace, monospace; }
 /* 提示是上边栏左边那一块（会议标题那一侧），不是浮在内容上的方块：
    悬在下边会压住对话和终端，压在右下角会挡住输入框，挤在 chip 旁边也不对。 */
-.toast { max-width: min(420px, 46vw); min-width: 0; flex: 0 1 auto; padding: 5px 9px; border: 1px solid #5c3733; border-radius: 6px; background: #2a1c1a; color: var(--red); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast { max-width: min(420px, 46vw); min-width: 0; flex: 0 1 auto; padding: 5px 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-2); color: var(--ink); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast[data-kind="error"] { border-color: #5c3733; background: #2a1c1a; color: var(--red); }
+.toast[data-kind="success"] { border-color: var(--green); background: var(--green-soft); color: var(--green); }
 /* 欢迎卡片那一版：没有上边栏，就贴在右上角。 */
 .welcome-toast { position: absolute; top: 14px; left: 16px; z-index: 20; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
