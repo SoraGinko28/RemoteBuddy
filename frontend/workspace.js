@@ -1157,21 +1157,13 @@ function copyTextToClipboard(text) {
     toast("没有可复制的内容");
     return false;
   }
-  const notify = () => toast(`已复制 ${codePointLength(text)} 字符`);
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(
-      notify,
-      () => {
-        if (legacyCopy(text)) notify();
-        else copyFallbackDialog(text);
-      },
-    );
+    navigator.clipboard.writeText(text).catch(() => {
+      if (!legacyCopy(text)) copyFallbackDialog(text);
+    });
     return true;
   }
-  if (legacyCopy(text)) {
-    notify();
-    return true;
-  }
+  if (legacyCopy(text)) return true;
   copyFallbackDialog(text);
   return false;
 }
