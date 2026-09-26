@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Sequence, Tuple
 
 
@@ -29,6 +29,9 @@ PROFILE_SPECS: Dict[str, ProfileSpec] = {
 
 STRONG_BOUNDARIES = set(":;)]}")
 MEDIUM_BOUNDARIES = set(",=+-*/%<>|&^")
+# 一行打完到按下回车之间固定停这么久：前摇要让人来得及读那一行。
+# actor 自己用 `$rest` 点的拍子不动 —— 那是它要求的停顿。
+ENTER_WIND_UP_MS = 800
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,23 @@ def _key_step(
     return TypingStep("key", key, delay, "typing", key_context, 0)
 
 
+def _with_enter_wind_up(steps: Sequence[TypingStep]) -> List[TypingStep]:
+    """一行打完到按下回车之间固定停 ``ENTER_WIND_UP_MS``。
+
+    暂停挂在按键前面那一步上：计划是"发一步、停它的 delay、再发下一步"，
+    所以回车的前摇就是它前一个 literal 的停顿。``$rest`` 是 actor 点的拍子，
+    留着它自己的毫秒数。
+    """
+    held = list(steps)
+    for index, step in enumerate(held):
+        if index == 0 or step.kind != "key" or step.value != "Enter":
+            continue
+        previous = held[index - 1]
+        if previous.kind == "literal":
+            held[index - 1] = replace(previous, delay_after_ms=ENTER_WIND_UP_MS)
+    return held
+
+
 def _renumber(steps: Sequence[TypingStep]) -> Tuple[TypingStep, ...]:
     return tuple(
         TypingStep(
@@ -235,6 +255,7 @@ def plan_input(
             flush_paste()
             steps = converted
 
+    steps = _with_enter_wind_up(steps)
     numbered = _renumber(steps)
     return TypingPlan(
         numbered,

@@ -1,6 +1,6 @@
 import unittest
 
-from typing_policy import PROFILE_SPECS, TYPING_PROFILES, plan_input
+from typing_policy import ENTER_WIND_UP_MS, PROFILE_SPECS, TYPING_PROFILES, plan_input
 
 
 class TypingPolicyTest(unittest.TestCase):
@@ -97,6 +97,32 @@ class TypingPolicyTest(unittest.TestCase):
         self.assertFalse(plan.uses_paste)
         self.assertEqual(text, "".join(step.value for step in plan.steps))
         self.assertTrue(all(step.change_kind == "typing" for step in plan.steps))
+
+    def test_the_line_holds_before_enter(self):
+        """回车有前摇：一行打完先停 ENTER_WIND_UP_MS，再按回车。
+
+        前摇挂在回车前那一步上（计划是"发一步、停它的 delay、再发下一步"），
+        回车自己后面那口气仍是 profile 的。
+        """
+        plan = plan_input(
+            [
+                {"kind": "literal", "value": "def bubble_sort(items):"},
+                {"kind": "key", "value": "Enter"},
+                {"kind": "literal", "value": "    return items"},
+            ],
+            "fast",
+            "meeting",
+            "action",
+            "keystrokes",
+            allow_paste=False,
+        )
+        self.assertEqual(ENTER_WIND_UP_MS, plan.steps[0].delay_after_ms)
+        self.assertEqual("key", plan.steps[1].kind)
+        spec = PROFILE_SPECS["fast"]
+        self.assertGreaterEqual(plan.steps[1].delay_after_ms, spec.semantic_min_ms)
+        self.assertLessEqual(plan.steps[1].delay_after_ms, spec.semantic_max_ms)
+        # 最后那行后面没有回车，就还是 profile 的短停顿。
+        self.assertLess(plan.steps[2].delay_after_ms, ENTER_WIND_UP_MS)
 
     def test_rest_pauses_before_enter_without_sending_keys(self):
         plan = plan_input(
