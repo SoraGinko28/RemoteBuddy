@@ -22,7 +22,7 @@ const el = Object.fromEntries([
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "reference-card", "composer-shell",
   "attach-image-button", "image-input", "attachment-strip",
-  "image-lightbox", "image-lightbox-image", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
+  "image-lightbox", "image-lightbox-image", "image-lightbox-close", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
@@ -3348,6 +3348,8 @@ function bind() {
   el.image_lightbox?.addEventListener("click", (event) => {
     if (event.target === el.image_lightbox) el.image_lightbox.close();
   });
+  // 也可以直接点右上角那个圆圈：不知道"点外围"的人也有个去处。
+  el.image_lightbox_close?.addEventListener("click", () => el.image_lightbox.close());
   el.image_input?.addEventListener("change", async () => {
     const files = Array.from(el.image_input.files || []);
     el.image_input.value = "";                       // 同一张图可以再选一次

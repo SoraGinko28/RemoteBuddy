@@ -238,7 +238,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .image-lightbox { width: fit-content; height: fit-content; max-width: 96vw; max-height: 96vh; border: 0; padding: 0; background: transparent; box-shadow: none; overflow: visible; }
 /* 深色主题里，外围用浅色：图是暗的，浅底把它托起来。 */
 .image-lightbox::backdrop { background: rgb(244 244 244 / .92); }
-.image-lightbox img { display: block; max-width: 60vw; max-height: 60vh; border-radius: 6px; box-shadow: 0 14px 44px rgb(0 0 0 / .38); cursor: default; }
+.image-lightbox img { display: block; max-width: 72vw; max-height: 72vh; border-radius: 6px; box-shadow: 0 14px 44px rgb(0 0 0 / .38); cursor: default; }
+/* 右上角一个圆圈叉：不看说明也知道怎么关。 */
+.image-lightbox-close { position: absolute; top: -15px; right: -15px; width: 32px; height: 32px; min-height: 0; padding: 0; border: 1px solid rgb(255 255 255 / .5); border-radius: 50%; background: rgb(30 30 30 / .88); color: #fff; font-size: 17px; line-height: 1; cursor: pointer; box-shadow: 0 4px 14px rgb(0 0 0 / .35); }
+.image-lightbox-close:hover { background: rgb(30 30 30 / 1); }
 .reference-card { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 5px; margin-top: 7px; padding: 6px; border: 1px solid #2f4a3c; border-radius: 5px; background: var(--surface-2); color: var(--muted); font-size: 10px; overflow: hidden; }
 .reference-item { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) 24px; align-items: start; gap: 7px; padding: 4px 3px; border-bottom: 1px solid var(--line); }
 .reference-item:last-child { border-bottom: 0; }
