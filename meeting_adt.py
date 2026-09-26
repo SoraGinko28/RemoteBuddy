@@ -302,6 +302,9 @@ class TerminalTextSegment:
 
 
 __all__ += [
+    "ImageAttachment",
+    "image_attachment_to_dict",
+    "image_attachment_from_dict",
     "STYLE_BOLD",
     "STYLE_UNDERLINE",
     "STYLE_ITALIC",
@@ -332,8 +335,11 @@ __all__ += [
 #   - phase/message_type is runtime noise, not part of the ADT, and is not persisted on ChatMessage.
 #
 # ChatMessage persisted JSON:
-#   {"user_name": <str>, "time": <ISO8601>, "message": [part_json, ...]}
+#   {"user_name": <str>, "time": <ISO8601>, "message": [part_json, ...],
+#    "attachments": [ImageAttachment_json, ...]}   (attachments omitted when empty)
 #   part_json = {"raw": str} | {"at_user_name": str} | {"ref": {...G8}}
+#   ImageAttachment_json = {"name": str, "media_type": str, "sha256": str, "byte_count": int}
+#   The picture itself is a material of the meeting (attachments/<name>), not a copy in the journal.
 # ChatStreamChunk persisted JSON:
 #   {"stream_name": "chat", "chunks": [ChatMessage_json, ...]}
 
@@ -359,11 +365,46 @@ class AtUserMessage:
     user_name: str
 
 
+@dataclass(frozen=True)
+class ImageAttachment:
+    """$image_msg ImageAttachment — 随消息一起交出去的图片。
+
+    图本身是这场会的一份材料，落在会议目录 `attachments/<name>` 下；这里只记它的
+    名字和内容指纹，不记它从哪儿来。
+    """
+    name: str
+    media_type: str
+    sha256: str = ""
+    byte_count: int = 0
+
+
 @dataclass
 class ChatMessage:
     user_name: str
     time: _dt.datetime
     message: list[ChatMessagePart] = field(default_factory=list)
+    attachments: list[ImageAttachment] = field(default_factory=list)
+
+
+def image_attachment_to_dict(attachment: ImageAttachment) -> dict:
+    return {
+        "name": attachment.name,
+        "media_type": attachment.media_type,
+        "sha256": attachment.sha256,
+        "byte_count": attachment.byte_count,
+    }
+
+
+def image_attachment_from_dict(payload: dict) -> ImageAttachment:
+    try:
+        return ImageAttachment(
+            name=payload["name"],
+            media_type=payload["media_type"],
+            sha256=payload.get("sha256", ""),
+            byte_count=int(payload.get("byte_count", 0) or 0),
+        )
+    except KeyError as exc:
+        raise ValueError(f"image attachment missing key {exc.args[0]}: {payload!r}") from exc
 
 
 @dataclass
@@ -393,11 +434,14 @@ def chat_part_from_dict(payload: dict) -> ChatMessagePart:
 
 
 def chat_message_to_dict(message: ChatMessage) -> dict:
-    return {
+    payload = {
         "user_name": message.user_name,
         "time": _iso_format(message.time),
         "message": [chat_part_to_dict(p) for p in message.message],
     }
+    if message.attachments:
+        payload["attachments"] = [image_attachment_to_dict(a) for a in message.attachments]
+    return payload
 
 
 def chat_message_from_dict(payload: dict) -> ChatMessage:
@@ -407,7 +451,9 @@ def chat_message_from_dict(payload: dict) -> ChatMessage:
         parts = [chat_part_from_dict(p) for p in payload["message"]]
     except KeyError as exc:
         raise ValueError(f"chat message missing key {exc.args[0]}: {payload!r}") from exc
-    return ChatMessage(user_name=user_name, time=time, message=parts)
+    attachments = [image_attachment_from_dict(item)
+                   for item in payload.get("attachments") or []]
+    return ChatMessage(user_name=user_name, time=time, message=parts, attachments=attachments)
 
 
 def chat_stream_chunk_to_dict(chunk: ChatStreamChunk) -> dict:

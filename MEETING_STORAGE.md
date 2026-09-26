@@ -12,6 +12,7 @@
 <workspace>/.meeting/<meeting_uid>/
   meeting.json            # 会议清单：uid/name/role map/workspace_root（见 §4）
   streams/events.jsonl    # 原始事件 journal（append-only，写入源）
+  attachments/            # 人类交进来的图片（材料，不进 journal）
 ```
 
 一个工作区可以有多个 `<meeting_uid>`；这时的 `workspace/` 就是工作区根目录本身，不在会议目录下。
@@ -20,6 +21,8 @@
 老布局（`runs/<meeting_uid>/` + 会议目录里的一个 `workspace/`）还能读：`workspace_root` 为 null
 就是这个布局。Web 服务不再写它。
 
+- 图片是**材料**不是事件：`attachments/image-<n>.<ext>` 存字节，chat 事件的 `data.attachments`
+  里只有名字、media type、sha256、字节数；一条消息可以只有图没有字。
 - 冻结后 `meeting.json` 固化只读；新事件只 **append** 到 `events.jsonl`，绝不原地改。
 - loader（`meeting_loader.py`）把 events.jsonl 投影成 MeetingData，**只读不改 journal**。
 

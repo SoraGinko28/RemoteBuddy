@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from meeting_v2 import MeetingStore
+from meeting_v2 import MAX_ATTACHMENT_BYTES, MeetingStore
 from web_v2 import CSRF_HEADER, MeetingWebService, RemoteBuddyHTTPServer, WebError
 
 
@@ -916,3 +916,69 @@ class HTTPBoundaryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AttachmentTest(MeetingWebServiceTest):
+    """聊天里的图片：交一张图、把它随消息发出去、再取回来。"""
+
+    PNG = bytes.fromhex("89504e470d0a1a0a") + b"fake png body"
+
+    def upload(self, meeting_id="attach-demo", payload=None, media_type="image/png"):
+        return self.service.save_attachment(meeting_id, media_type,
+                                            self.PNG if payload is None else payload)
+
+    def test_an_image_becomes_a_material_of_the_meeting(self):
+        self.start_meeting("attach-demo")
+        descriptor = self.upload()
+        self.assertEqual("image/png", descriptor["media_type"])
+        self.assertEqual(len(self.PNG), descriptor["byte_count"])
+        self.assertTrue(descriptor["name"].startswith("image-"))
+        found = self.service.attachment("attach-demo", descriptor["name"])
+        self.assertEqual(self.PNG, found["bytes"])
+        self.assertEqual("image/png", found["media_type"])
+
+    def test_the_message_carries_the_image_into_the_journal(self):
+        self.start_meeting("attach-demo")
+        descriptor = self.upload()
+        store = self.service.message("attach-demo", {
+            "message": "看这张", "attachments": [{"name": descriptor["name"]}],
+        })
+        chats = [e for e in store.events() if e["kind"] == "chat" and e["actor"] == "human"]
+        self.assertEqual([descriptor["name"]],
+                         [item["name"] for item in chats[-1]["data"]["attachments"]])
+        # 图本身是一场会的材料，不在 journal 里。
+        self.assertNotIn("fake png body", json.dumps(chats[-1]))
+
+    def test_a_message_may_be_nothing_but_pictures(self):
+        self.start_meeting("attach-demo")
+        descriptor = self.upload()
+        store = self.service.message("attach-demo", {"message": "", "attachments": [descriptor["name"]]})
+        chats = [e for e in store.events() if e["kind"] == "chat" and e["actor"] == "human"]
+        self.assertEqual("", chats[-1]["content"])
+
+    def test_only_images_stored_in_this_meeting_are_accepted(self):
+        self.start_meeting("attach-demo")
+        with self.assertRaisesRegex(WebError, "not stored"):
+            self.service.message("attach-demo", {"message": "hi", "attachments": ["image-9.png"]})
+        with self.assertRaisesRegex(WebError, "must be an array"):
+            self.service.message("attach-demo", {"message": "hi", "attachments": "image-1.png"})
+        # 一场会的图不能借给另一场。
+        other = self.service.start({"message": "另一场", "meeting_id": "attach-other"})
+        self.wait_for_workers()
+        descriptor = self.upload()
+        with self.assertRaisesRegex(WebError, "not stored"):
+            self.service.message(other.meeting.meeting_id,
+                                 {"message": "hi", "attachments": [descriptor["name"]]})
+
+    def test_what_may_not_be_stored(self):
+        self.start_meeting("attach-demo")
+        with self.assertRaisesRegex(WebError, "png/jpeg"):
+            self.upload(media_type="text/plain")
+        with self.assertRaisesRegex(WebError, "empty"):
+            self.upload(payload=b"")
+        with self.assertRaisesRegex(WebError, "exceeds"):
+            self.upload(payload=b"x" * (MAX_ATTACHMENT_BYTES + 1))
+        with self.assertRaises(WebError):
+            self.service.attachment("attach-demo", "../escape.png")
+        with self.assertRaises(WebError):
+            self.service.attachment("attach-demo", "image-404.png")

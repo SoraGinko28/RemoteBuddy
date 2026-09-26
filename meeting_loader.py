@@ -114,10 +114,20 @@ def _chat_message(event: dict) -> Optional[adt.ChatMessage]:
     user_name = adt.HUMAN_USER_NAME if event.get("actor") == "human" else event.get("actor", "")
     if not user_name:
         return None
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    attachments = []
+    for item in data.get("attachments") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            attachments.append(adt.image_attachment_from_dict(item))
+        except (ValueError, TypeError):
+            continue
     return adt.ChatMessage(
         user_name=user_name,
         time=time,
-        message=[adt.RawMessage(text=content)],
+        message=[adt.RawMessage(text=content)] if content else [],
+        attachments=attachments,
     )
 
 

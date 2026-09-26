@@ -20,7 +20,8 @@ const el = Object.fromEntries([
   "member-name-label", "member-role-label", "member-state-label", "member-terminal-label",
   "member-chat-label", "member-last-label",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
-  "message-input", "send-message-button", "reference-card", "composer-shell", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
+  "message-input", "send-message-button", "reference-card", "composer-shell",
+  "attach-image-button", "image-input", "attachment-strip", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
@@ -45,6 +46,7 @@ const state = {
   selectedId: null,
   snapshot: null,
   tickets: null,
+  pendingAttachments: [],
   ticketsEtag: "",
   timeline: [],
   cursor: 0,
@@ -308,7 +310,8 @@ function httpError(response, payload) {
 async function api(path, options = {}, retryCsrf = true) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers || {});
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
+  // `raw` 用于图片那种二进制 body：不要塞 JSON 的 Content-Type。
+  if (options.body !== undefined && !options.raw) headers.set("Content-Type", "application/json");
   if (method !== "GET") headers.set(state.csrfHeader, state.csrfToken);
   const response = await fetch(path, { ...options, headers, cache: "no-store" });
   const text = await response.text();
@@ -1004,12 +1007,16 @@ function renderChat() {
         timeEl,
       );
       const annotations = scoreAnnotationsForSource(event, visibleScores);
+      const images = messageImages(event);
       const body = node("p", "message-content");
       body.dataset.eventId = event.event_id || "";
       body.tabIndex = 0;
       body.setAttribute("aria-label", "聊天消息文本");
       appendAnnotatedText(body, event.content, annotations);
-      article.append(head, body);
+      article.append(head);
+      if (images) article.append(images);
+      // 只有图片没有字的消息，不必留一个空段落。
+      if (event.content) article.append(body);
       const summary = scoreSummary(annotations);
       if (summary) article.append(summary);
       if (replayReference?.kind === "chat" && replayReference.event_id === event.event_id) {
@@ -2863,6 +2870,8 @@ async function selectMeeting(meetingId) {
   clearBrowserSelection();
   closeEvaluationPanel();
   setReferences([]);
+  // 待发的图属于上一场会：换会议就丢掉，否则会混进另一场。
+  setAttachments([]);
   state.scoreOverlayIds.clear();
   state.selectedId = meetingId;
   state.snapshotEtag = "";
@@ -2972,6 +2981,83 @@ function schedulePoll() {
     }
     schedulePoll();
   }, active ? 500 : 1000);
+}
+
+// 交一张图：原始字节 POST 过去，服务把它存成这场会的材料，回名字和指纹。
+async function uploadImage(file) {
+  if (!state.selectedId) return;
+  const answer = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/attachments`, {
+    method: "POST",
+    raw: true,
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  state.pendingAttachments.push(answer.attachment);
+  renderAttachments();
+}
+
+async function uploadImages(files) {
+  for (const file of files) {
+    if (!file || !String(file.type || "").startsWith("image/")) continue;
+    try {
+      await uploadImage(file);
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+}
+
+// 待发的图：缩略图 + 一个去掉它的按钮。
+function renderAttachments() {
+  if (!el.attachment_strip) return;
+  el.attachment_strip.replaceChildren();
+  el.attachment_strip.hidden = state.pendingAttachments.length === 0;
+  state.pendingAttachments.forEach((attachment, index) => {
+    const item = node("div", "attachment-chip");
+    const image = node("img", "attachment-thumb");
+    image.src = attachmentUrl(attachment.name);
+    image.alt = attachment.name;
+    const remove = node("button", "attachment-remove", "×");
+    remove.type = "button";
+    remove.title = "去掉这张图";
+    remove.addEventListener("click", () => {
+      state.pendingAttachments.splice(index, 1);
+      renderAttachments();
+    });
+    item.append(image, remove);
+    el.attachment_strip.append(item);
+  });
+}
+
+function setAttachments(list) {
+  state.pendingAttachments = Array.isArray(list) ? list.slice() : [];
+  renderAttachments();
+}
+
+// 消息里的图：journal 只记名字，图本身按那条数据路径取。
+function messageImages(event) {
+  const data = event && event.data;
+  const attachments = data && Array.isArray(data.attachments) ? data.attachments : [];
+  const usable = attachments.filter((item) => item && typeof item.name === "string");
+  if (!usable.length) return null;
+  const holder = node("div", "message-images");
+  for (const attachment of usable) {
+    const link = node("a", "message-image-link");
+    link.href = attachmentUrl(attachment.name);
+    link.target = "_blank";
+    link.rel = "noopener";
+    const image = node("img", "message-image");
+    image.src = attachmentUrl(attachment.name);
+    image.alt = attachment.name;
+    image.loading = "lazy";
+    link.append(image);
+    holder.append(link);
+  }
+  return holder;
+}
+
+function attachmentUrl(name) {
+  return `/api/meetings/${encodeURIComponent(state.selectedId)}/attachments/${encodeURIComponent(name)}`;
 }
 
 async function postMeetingAction(suffix, body = {}) {
@@ -3246,10 +3332,27 @@ function bind() {
       el.new_error.hidden = false;
     } finally { el.start_button.disabled = false; }
   });
+  el.attach_image_button?.addEventListener("click", () => el.image_input?.click());
+  el.image_input?.addEventListener("change", async () => {
+    const files = Array.from(el.image_input.files || []);
+    el.image_input.value = "";                       // 同一张图可以再选一次
+    await uploadImages(files);
+  });
+  // 粘贴图片：截图之后直接按 ⌘V 就进来了。
+  el.message_input.addEventListener("paste", (event) => {
+    const items = Array.from((event.clipboardData && event.clipboardData.items) || []);
+    const files = items.filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    uploadImages(files);
+  });
   el.message_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const message = el.message_input.value.trim();
-    if (!message) return;
+    const attachments = state.pendingAttachments.slice();
+    if (!message && !attachments.length) return;
     el.send_message_button.disabled = true;
     // Sending a message is a live action: leave playback/free-scroll mode
     // so the user's own text and the agent's next response are visible.
@@ -3262,19 +3365,23 @@ function bind() {
     const payload = { message, delivery: "interrupt" };
     const references = state.references;
     if (references.length) payload.references = references;
+    if (attachments.length) payload.attachments = attachments.map((one) => ({ name: one.name }));
     // Empty the box the moment the human sends, not when the server answers:
     // the request can take a while and the text already left the composer.
     el.message_input.value = "";
     growMessageInput();
     setReferences([]);
+    setAttachments([]);
     try {
       await postMeetingAction("messages", payload);
     }
     catch (error) {
-      // The message never made it, so give the text back instead of losing it.
+      // The message never made it, so give the text and the pictures back
+      // instead of losing them.
       el.message_input.value = message;
       growMessageInput();
       setReferences(references);
+      setAttachments(attachments);
       toast(error.message);
     }
     finally { el.send_message_button.disabled = false; }

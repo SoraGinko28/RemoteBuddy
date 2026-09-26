@@ -336,8 +336,19 @@ VersionedFile =
 ChatMessage =
     Object
   * $message list[$raw_msg str | $at_user_name UserName | $reference ContentReference]
+  * $image_msg list[ImageAttachment]                 # 随这条消息一起交出去的图片
   * $user_name UserName
   * $time datetime
+
+# 图片是这场会的一份材料：`$name` 指的是会议目录 `attachments/` 下的那个文件，
+# ADT 里只留名字与内容指纹，不留副本、也不留它从哪儿来。
+# 一条消息可以只有图、没有字：这时 $message 是空的，$image_msg 不是。
+ImageAttachment =
+    Object
+  * $name str
+  * $media_type str
+  * $sha256 str
+  * $byte_count int
 
 ScoreMessage =
     Object

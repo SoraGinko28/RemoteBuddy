@@ -88,6 +88,9 @@ class TestStreamNames:
             "TerminalTextSegment",
             "RawMessage",
             "AtUserMessage",
+            "ImageAttachment",
+            "image_attachment_to_dict",
+            "image_attachment_from_dict",
             "ChatMessage",
             "ChatStreamChunk",
             "chat_part_to_dict",
@@ -1738,3 +1741,39 @@ class TestMeetingDataFileLayer:
         data = adt.meeting_data_from_dict(payload)
         assert data.file_kv_store.file_id2file == {}
         assert data.file_desktop.workspaces == []
+
+
+class TestImageAttachment:
+    """随消息交出去的图片：ADT 上有位置，journal 里只有名字和指纹。"""
+
+    def test_a_chat_message_carries_its_images(self) -> None:
+        moment = adt._iso_parse("2026-09-26T10:00:00Z")
+        message = adt.ChatMessage(
+            user_name=adt.HUMAN_USER_NAME,
+            time=moment,
+            message=[adt.RawMessage(text="看这张")],
+            attachments=[adt.ImageAttachment(name="image-1.png", media_type="image/png",
+                                             sha256="ab" * 32, byte_count=21)],
+        )
+        payload = adt.chat_message_to_dict(message)
+        assert payload["attachments"] == [
+            {"name": "image-1.png", "media_type": "image/png", "sha256": "ab" * 32, "byte_count": 21}
+        ]
+        assert adt.chat_message_from_dict(payload) == message
+
+    def test_a_message_without_images_keeps_the_old_json(self) -> None:
+        moment = adt._iso_parse("2026-09-26T10:00:00Z")
+        payload = adt.chat_message_to_dict(
+            adt.ChatMessage(user_name=adt.HUMAN_USER_NAME, time=moment,
+                            message=[adt.RawMessage(text="没有图")])
+        )
+        assert "attachments" not in payload
+        assert adt.chat_message_from_dict(payload).attachments == []
+
+    def test_a_message_may_have_no_text_at_all(self) -> None:
+        moment = adt._iso_parse("2026-09-26T10:00:00Z")
+        message = adt.ChatMessage(
+            user_name=adt.HUMAN_USER_NAME, time=moment, message=[],
+            attachments=[adt.ImageAttachment(name="image-2.jpg", media_type="image/jpeg")],
+        )
+        assert adt.chat_message_from_dict(adt.chat_message_to_dict(message)) == message

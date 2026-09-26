@@ -46,6 +46,7 @@ from interactive_runner import (
     capture_workspace,
 )
 from meeting_v2 import (
+    MAX_ATTACHMENT_BYTES,
     MAX_CHAT_REFERENCES,
     MAX_MESSAGE_BYTES,
     MEETING_ID_RE,
@@ -1705,15 +1706,57 @@ class MeetingWebService:
             store.update(reasoning_effort=effort)
             return store
 
+    def save_attachment(self, meeting_id: str, media_type: str, payload: bytes) -> Dict[str, Any]:
+        """人类交进来的一张图：存成这场会的材料，回它的名字。"""
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                raise WebError(409, "meeting is already finished")
+            try:
+                return store.save_attachment(media_type, payload)
+            except MeetingError as exc:
+                raise WebError(400, str(exc)) from exc
+
+    def attachment(self, meeting_id: str, name: str) -> Dict[str, Any]:
+        """把这场会的一张图取回来（页面里的 <img> 走这条）。"""
+        store = self.load_store(meeting_id)
+        try:
+            path = store.attachment_path(name)
+        except MeetingError as exc:
+            raise WebError(404, "attachment not found") from exc
+        if not path.is_file() or path.is_symlink():
+            raise WebError(404, "attachment not found")
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return {"path": path, "media_type": media_type, "bytes": path.read_bytes()}
+
+    def _message_attachments(self, store: MeetingStore, raw: Any) -> List[Dict[str, Any]]:
+        """消息带的那几张图：必须是这场会里已经存过的，别的一律不收。"""
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            raise WebError(400, "attachments must be an array")
+        stored = set(store.attachment_names())
+        found: List[Dict[str, Any]] = []
+        for item in raw:
+            name = item.get("name") if isinstance(item, dict) else item
+            if not isinstance(name, str) or name not in stored:
+                raise WebError(422, f"attachment is not stored in this meeting: {name!r}")
+            found.append({"name": name})
+        return found
+
     def message(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
             if not isinstance(payload, dict) or not set(payload).issubset(
-                {"message", "delivery", "reference", "references"}
+                {"message", "delivery", "reference", "references", "attachments"}
             ):
                 raise WebError(400, "message request contains unsupported fields")
             message = payload.get("message") if isinstance(payload, dict) else None
-            if not isinstance(message, str) or not message.strip():
+            if not isinstance(message, str):
+                raise WebError(400, "message must be a string")
+            message = message.strip()
+            attachments = self._message_attachments(store, payload.get("attachments"))
+            if not message and not attachments:
                 raise WebError(400, "message must be a non-empty string")
             if len(message.encode("utf-8")) > MAX_MESSAGE_BYTES:
                 raise WebError(413, "message is too large")
@@ -1735,7 +1778,8 @@ class MeetingWebService:
                 or orphaned_agent
             )
             if "references" in payload or isinstance(payload.get("reference"), list):
-                store.append_chat("human", message, "request", references=references)
+                store.append_chat("human", message, "request", references=references,
+                                  attachments=attachments)
             else:
                 # Preserve the legacy singular journal shape when an older
                 # client sends ``reference``; V6 callers use ``references``.
@@ -1744,6 +1788,7 @@ class MeetingWebService:
                     message,
                     "request",
                     reference=references[0] if references else None,
+                    attachments=attachments,
                 )
             if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
                 # A chat while the human holds the terminal is an explicit
@@ -2379,6 +2424,39 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             raise WebError(400, "request body must be a JSON object")
         return payload
 
+    def _read_bytes(self) -> bytes:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise WebError(411, "Content-Length is required")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise WebError(400, "invalid Content-Length") from exc
+        if length <= 0 or length > MAX_ATTACHMENT_BYTES:
+            raise WebError(413, "attachment is empty or too large")
+        data = self.rfile.read(length)
+        if len(data) != length:
+            raise WebError(400, "incomplete request body")
+        return data
+
+    def _raw(self, payload: bytes, content_type: str, etag: Optional[str] = None) -> None:
+        """Send bytes as they are (an image, not JSON)."""
+        try:
+            if etag and self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self._headers(content_type, cache="no-cache" if etag else "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            if etag:
+                self.send_header("ETag", etag)
+            self.end_headers()
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _read_empty_json(self) -> None:
         if self._read_json():
             raise WebError(400, "request body must be an empty JSON object")
@@ -2565,6 +2643,12 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 etag = '"' + sha256_text(payload["revision"] + str(after))[:24] + '"'
                 self._json(payload, etag=etag)
                 return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/attachments/([^/]+)", path)
+            if match:
+                found = self.service.attachment(unquote(match.group(1)), unquote(match.group(2)))
+                self._raw(found["bytes"], found["media_type"], etag='"'
+                          + hashlib.sha256(found["bytes"]).hexdigest()[:24] + '"')
+                return
             match = re.fullmatch(r"/api/meetings/([^/]+)/tickets", path)
             if match:
                 self._json(self.service.tickets(unquote(match.group(1))))
@@ -2626,6 +2710,13 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/credentials":
                 self._json(self.service.update_credentials(self._read_json()))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/attachments", path)
+            if match:
+                media_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+                payload = self._read_bytes()
+                self._json({"attachment": self.service.save_attachment(
+                    unquote(match.group(1)), media_type, payload)}, status=201)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/sdk/([A-Za-z_][A-Za-z0-9_]*)", path)
             if match:

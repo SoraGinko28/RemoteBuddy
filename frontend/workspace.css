@@ -221,6 +221,16 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .evaluation-choice input:checked + .square-control::after { transform: rotate(-45deg) scale(1); }
 .evaluation-choice input:focus-visible + .square-control { outline: 2px solid var(--green); outline-offset: 2px; }
 .composer-footer button { flex: 0 0 auto; }
+/* 待发的图：缩略图排队在输入框下面，可以一张张去掉。 */
+.attachment-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.attachment-chip { position: relative; width: 56px; height: 56px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+.attachment-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attachment-remove { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; min-height: 0; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: rgb(0 0 0 / .65); color: var(--ink); font-size: 11px; line-height: 1; cursor: pointer; }
+.composer-footer #attach-image-button { margin-right: auto; }
+/* 消息里的图：点开看原图。 */
+.message-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.message-image-link { display: block; }
+.message-image { max-width: 220px; max-height: 220px; border: 1px solid var(--line-strong); border-radius: 6px; display: block; }
 .reference-card { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 5px; margin-top: 7px; padding: 6px; border: 1px solid #2f4a3c; border-radius: 5px; background: var(--surface-2); color: var(--muted); font-size: 10px; overflow: hidden; }
 .reference-item { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) 24px; align-items: start; gap: 7px; padding: 4px 3px; border-bottom: 1px solid var(--line); }
 .reference-item:last-child { border-bottom: 0; }

@@ -108,6 +108,19 @@ VALID_AGENT_PROVIDERS = {"openai", "deepseek"}
 # means "follow the config.toml default".
 VALID_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 MAX_CHAT_REFERENCES = 32
+# 人类可以随一条消息交几张图片；图本身是这场会的一份材料，放在会议目录的
+# `attachments/` 下（名字 + 内容指纹记在消息上，图不进 journal）。
+ATTACHMENTS_DIR = "attachments"
+MAX_MESSAGE_ATTACHMENTS = 8
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+ATTACHMENT_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+}
+ATTACHMENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 
 
 class MeetingError(RuntimeError):
@@ -200,6 +213,21 @@ def _atomic_write_text(path: Path, text: str) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(temporary_path), str(path))
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(str(temporary_path), str(path))
@@ -589,6 +617,49 @@ class MeetingStore:
             return root
         return self._contained_path(self.meeting.workspace)
 
+    def attachment_path(self, name: str) -> Path:
+        """这场会的一张图：`<会议目录>/attachments/<名字>`。
+
+        名字是这场会给的（`image-1.png`），不是外面来的路径——所以它既不能跳出会议
+        目录，也不用担心和别的材料重名。
+        """
+        if not isinstance(name, str) or not ATTACHMENT_NAME_RE.fullmatch(name):
+            raise MeetingError("invalid attachment name")
+        return self._contained_path(f"{ATTACHMENTS_DIR}/{name}")
+
+    def attachment_names(self) -> List[str]:
+        folder = self.run_dir / ATTACHMENTS_DIR
+        if not folder.is_dir():
+            return []
+        return sorted(child.name for child in folder.iterdir()
+                      if child.is_file() and ATTACHMENT_NAME_RE.fullmatch(child.name))
+
+    def save_attachment(self, media_type: str, payload: bytes) -> Dict[str, Any]:
+        """把一张图存成这场会的材料，回它的名字与指纹（图本身不进 journal）。"""
+        if not isinstance(media_type, str):
+            raise MeetingError("attachment media type must be text")
+        extension = ATTACHMENT_TYPES.get(media_type.split(";")[0].strip().lower())
+        if extension is None:
+            raise MeetingError("attachment must be a png/jpeg/gif/webp/heic image")
+        if not isinstance(payload, bytes) or not payload:
+            raise MeetingError("attachment is empty")
+        if len(payload) > MAX_ATTACHMENT_BYTES:
+            raise MeetingError(f"attachment exceeds {MAX_ATTACHMENT_BYTES} bytes")
+        existing = self.attachment_names()
+        for index in range(1, MAX_MESSAGE_ATTACHMENTS * 1000):
+            name = f"image-{index}{extension}"
+            if name not in existing:
+                break
+        else:
+            raise MeetingError("too many attachments in this meeting")
+        _atomic_write_bytes(self.attachment_path(name), payload)
+        return {
+            "name": name,
+            "media_type": media_type.split(";")[0].strip().lower(),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "byte_count": len(payload),
+        }
+
     @property
     def events_path(self) -> Path:
         return self._contained_path(self.meeting.streams["events"])
@@ -805,12 +876,32 @@ class MeetingStore:
         message_type: str,
         reference: Optional[Dict[str, Any]] = None,
         references: Optional[Sequence[Mapping[str, Any]]] = None,
+        attachments: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if not (actor == HUMAN_USER or actor in self.meeting.agent_names()):
             raise MeetingError("chat actor must be human or a meeting agent")
         if message_type not in {"request", "ack", "progress", "question", "final"}:
             raise MeetingError("invalid chat message type")
-        if not isinstance(content, str) or not content.strip():
+        if not isinstance(content, str):
+            raise MeetingError("chat content must be text")
+        # 一条消息要么有字，要么有图（图是这场会的材料，名字得先存过）。
+        normalized_attachments: List[Dict[str, Any]] = []
+        if attachments is not None:
+            if isinstance(attachments, (str, bytes)):
+                raise MeetingError("chat attachments must be an array")
+            for item in attachments:
+                if not isinstance(item, Mapping):
+                    raise MeetingError("chat attachments must contain objects")
+                name = item.get("name")
+                if not isinstance(name, str) or not self.attachment_path(name).is_file():
+                    raise MeetingError(f"chat attachment is not stored in this meeting: {name!r}")
+                stored = {key: item[key] for key in ("name", "media_type", "sha256", "byte_count")
+                          if key in item}
+                stored.setdefault("name", name)
+                normalized_attachments.append(stored)
+            if len(normalized_attachments) > MAX_MESSAGE_ATTACHMENTS:
+                raise MeetingError(f"a message may carry at most {MAX_MESSAGE_ATTACHMENTS} images")
+        if not content.strip() and not normalized_attachments:
             raise MeetingError("chat content must be non-empty")
         # ``reference`` is the v2 single-reference shape.  V6 messages may
         # carry any number of immutable content references, so persist the
@@ -851,6 +942,9 @@ class MeetingStore:
             # singular argument.  The V6 list shape is emitted only when the
             # caller explicitly supplies ``references``.
             data = {"reference": unique[0]} if legacy_single and len(unique) == 1 else {"references": unique}
+        if normalized_attachments:
+            data = dict(data or {})
+            data["attachments"] = normalized_attachments
         return self.append_event(
             "chat", actor, self.meeting.phase, content=content.strip(), message_type=message_type, data=data
         )

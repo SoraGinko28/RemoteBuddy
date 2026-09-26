@@ -1322,3 +1322,31 @@ class OpenWorkspaceTest(unittest.TestCase):
         # 同一个工作区不会开出第二个 tmux 会话。
         self.assertEqual(pane_id, runner._ensure_pane())
         self.assertEqual(pane_id, MeetingStore.load(self.root, "open-demo").meeting.pane_id)
+
+
+class AttachmentObservationTest(unittest.TestCase):
+    """带图的消息交给 agent 时，图在哪儿要写在里面（agent 读工作区的文件就能看）。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        skill = self.root / "SKILL.md"
+        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
+        self.store = MeetingStore.create(
+            self.root, "image-demo", "看这张", skill, "remotebuddy-image-demo", "test-model",
+            workspace=self.root,
+        )
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_the_observation_names_the_file(self):
+        descriptor = self.store.save_attachment("image/png", b"\x89PNG\r\n\x1a\nbody")
+        self.store.append_chat("human", "看这张", "request", attachments=[descriptor])
+        runner = InteractiveRunner(self.store, FakeTransport(), FakeClient([]),
+                                   lock=threading.RLock())
+        observation = runner._observation(self.store.events_after(0), False, force_history=True)
+        self.assertIn(str(self.store.attachment_path(descriptor["name"])), observation)
+        self.assertIn('"attachments"', observation)
+        # journal 本身没有被改写：路径只是交给 agent 时补上的。
+        self.assertNotIn("file", self.store.events()[-1]["data"]["attachments"][0])

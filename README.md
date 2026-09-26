@@ -135,6 +135,11 @@ names each group by that directory's basename.
 `MeetingStore` still reads the older `runs/<meeting-id>/` layout (with a fresh `workspace/` inside
 the meeting directory); the Web service no longer writes it.
 
+Chat takes images: paste into the composer or use the paperclip. The bytes are stored as a material
+of the meeting (`attachments/image-<n>.<ext>`) and the message records only the name and the content
+hash, so the journal stays text; the Agent is handed the file's path in its workspace, which is how it
+reads the picture.
+
 `events.jsonl` is the replay source of truth. It contains globally ordered `chat`, `screen`, `action`, `control`, `state`, and `error` events. `conversation.md` is rebuilt only from chat events.
 
 The default model client uses only `POST /responses`. It does not require a `/conversations` endpoint: the local event log is sent as bounded chat and action history with each request, together with the latest shared terminal screen. This works with Responses-only gateways such as a proxy whose configured base URL is `https://rust.cat`. Stateful Codex and Claude Code backends receive one fresh ephemeral session per active work cycle. The first turn receives reconstructed local history and later turns receive only new events plus the latest screen; vendor transcripts are never used for recovery.

@@ -1022,7 +1022,7 @@ class InteractiveRunner:
         force_history: bool = False,
     ) -> str:
         relevant = []
-        for event in unread:
+        for event in self._with_attachment_files(unread):
             if event.get("kind") in {"screen", "score"}:
                 continue
             if (
@@ -1047,7 +1047,9 @@ class InteractiveRunner:
             or not bool(getattr(self.client, "stateful", False))
             or self.store.meeting.agent_cursor == 0
         )
-        chat_history = self._bounded_history(self.store.chat_messages()) if include_history else []
+        chat_history = (self._bounded_history(self.store.chat_messages(),
+                                              attachment_files=self._attachment_files)
+                        if include_history else [])
         action_history = (
             self._bounded_history(
                 [
@@ -1089,8 +1091,46 @@ class InteractiveRunner:
         )
 
     @staticmethod
+    def _attachment_records(items: Sequence[Any], files: Optional[Any] = None) -> list[Dict[str, Any]]:
+        """带图的消息：补上图在这场会里的文件路径（agent 读工作区里的文件就能看）。
+
+        The journal keeps the picture as a material of the meeting, named but not
+        copied; the runtime is what knows where that name currently lives.
+        """
+        records: list[Dict[str, Any]] = []
+        for item in items:
+            if files is not None and isinstance(item, dict) and isinstance(item.get("name"), str):
+                try:
+                    records.append({**item, "file": str(files(item["name"]))})
+                    continue
+                except MeetingError:
+                    pass
+            records.append(item)
+        return records
+
+    def _attachment_files(self, name: str) -> str:
+        return str(self.store.attachment_path(name))
+
+    def _with_attachment_files(
+        self, events: Sequence[Dict[str, Any]]
+    ) -> Sequence[Dict[str, Any]]:
+        enriched: list[Dict[str, Any]] = []
+        for event in events:
+            data = event.get("data")
+            if event.get("kind") != "chat" or not isinstance(data, dict) or not data.get("attachments"):
+                enriched.append(event)
+                continue
+            copied = dict(event)
+            copied["data"] = {**data, "attachments": self._attachment_records(
+                data["attachments"], self._attachment_files)}
+            enriched.append(copied)
+        return enriched
+
+    @staticmethod
     def _bounded_history(
-        events: Sequence[Dict[str, Any]], include_action_details: bool = False
+        events: Sequence[Dict[str, Any]],
+        include_action_details: bool = False,
+        attachment_files: Optional[Any] = None,
     ) -> Sequence[Dict[str, Any]]:
         """Keep stateless Responses prompts useful without unbounded growth."""
         records = []
@@ -1110,6 +1150,10 @@ class InteractiveRunner:
             }
             if event.get("kind") == "chat":
                 data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                raw_attachments = data.get("attachments")
+                if isinstance(raw_attachments, list):
+                    record["attachments"] = InteractiveRunner._attachment_records(
+                        raw_attachments, attachment_files)
                 raw_references = data.get("references")
                 if isinstance(raw_references, list):
                     record["references"] = [
