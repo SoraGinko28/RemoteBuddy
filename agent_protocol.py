@@ -858,6 +858,11 @@ def action_json_schema(
                         "type": "string",
                         "minLength": 1,
                         "pattern": r"^[^\r\n\u0000]+$",
+                        "description": (
+                            "Text to type. `Enter`, `Escape`, `Tab` and `C-c` are key "
+                            "names, not text: the literal value \"Enter\" types the six "
+                            "letters E-n-t-e-r."
+                        ),
                     },
                 },
             },
@@ -867,7 +872,11 @@ def action_json_schema(
                 "required": ["kind", "value"],
                 "properties": {
                     "kind": {"type": "string", "enum": ["key"]},
-                    "value": {"type": "string", "enum": sorted(SPECIAL_KEYS)},
+                    "value": {
+                        "type": "string",
+                        "enum": sorted(SPECIAL_KEYS),
+                        "description": "The named key to press. This is how Enter and Escape are sent.",
+                    },
                 },
             },
             {
@@ -880,6 +889,7 @@ def action_json_schema(
                         "type": "integer",
                         "minimum": REST_MIN_MS,
                         "maximum": REST_MAX_MS,
+                        "description": "A pause in milliseconds; nothing is sent.",
                     },
                 },
             },
@@ -892,7 +902,8 @@ def action_json_schema(
                 ),
                 "description": (
                     "Keystroke DSL: $text sends literal text, $ctrl sends a named key, "
-                    "$rest pauses N milliseconds without typing."
+                    "$rest pauses N milliseconds without typing. A bare string is text, "
+                    "so \"Enter\" on its own types the letters."
                 ),
             },
         ]
@@ -965,6 +976,18 @@ def action_json_schema(
                     "type": "array",
                     "items": key_item,
                     **({"minItems": 1, "maxItems": 128} if keys else {"maxItems": 0}),
+                    **(
+                        {
+                            "description": (
+                                "Keystrokes for the foreground program, in order. Each "
+                                "token is either text to type ($text / kind=literal) or a "
+                                "key to press ($ctrl / kind=key); a key name sent as text "
+                                "types its letters."
+                            )
+                        }
+                        if keys
+                        else {}
+                    ),
                 },
                 "delay_ms": delay or {"type": "integer", "enum": [0]},
                 "references": {
