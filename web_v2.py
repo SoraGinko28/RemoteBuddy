@@ -1052,14 +1052,37 @@ class MeetingWebService:
                 found.append(path.resolve())
         return found
 
-    def _remember_workspace(self, workspace: Path) -> None:
-        """用过一次的目录记下来：不然重启之后它的会议就从列表里消失了。"""
-        if workspace == self.workspace or workspace in self._known_workspaces():
-            return
+    def _listed_workspaces(self) -> List[Path]:
+        """名单上明着记着的目录：索引里的一行行，目录还在的那些。
+
+        默认那一个（项目根）默认不在名单上——它有没有会议都在服务里；只有人自己按「＋」
+        加过它，它才进这份名单。
+        """
+        found: List[Path] = []
+        try:
+            lines = self._workspace_index().read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return found
+        for line in lines:
+            if not line.strip():
+                continue
+            path = Path(line.strip()).expanduser()
+            if path.is_dir() and path.resolve() not in found:
+                found.append(path.resolve())
+        return found
+
+    def _remember_workspace(self, workspace: Path) -> bool:
+        """把一个目录记进名单；已经在名单上就不重复记。
+
+        开会时开在一个新目录里也走这里：不然重启之后它的会议就从列表里消失了。
+        """
+        if workspace in self._listed_workspaces():
+            return False
         index = self._workspace_index()
         index.parent.mkdir(parents=True, exist_ok=True)
         with index.open("a", encoding="utf-8") as handle:
             handle.write(f"{workspace}\n")
+        return True
 
     def _forget_workspace(self, workspace: Path) -> None:
         """索引里那一行去掉，别的行原样留着；名字也一起擦掉。"""
@@ -1137,9 +1160,7 @@ class MeetingWebService:
                 warnings.append(f"{directory.name}: {exc}")
         summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
         return {"meetings": summaries, "warnings": warnings,
-                "workspace": str(self.workspace),
-                "workspaces": [str(workspace) for workspace in self._known_workspaces()],
-                "workspace_titles": self._workspace_names()}
+                **self._workspaces_payload(self.workspace)}
 
     def add_workspace(self, payload: Any = None) -> Dict[str, Any]:
         """把一个目录记成工作区，不开会。
@@ -1149,9 +1170,11 @@ class MeetingWebService:
         `.meeting/workspaces` 里，所以重启之后它还在列表上。留空就是默认那一个，等于没改。
         """
         payload = payload if isinstance(payload, dict) else {}
-        workspace = _as_workspace(payload.get("directory"), self.workspace)
-        self._remember_workspace(workspace)
-        return self._workspaces_payload(workspace)
+        asked = payload.get("directory")
+        workspace = _as_workspace(asked, self.workspace)
+        # 留空是"没改"，不是"把默认那个加进名单"；给出具体目录才算加。
+        added = self._remember_workspace(workspace) if str(asked or "").strip() else False
+        return {"added": added, **self._workspaces_payload(workspace)}
 
     def rename_workspace(self, payload: Any = None) -> Dict[str, Any]:
         """给一个工作区换个显示名。
@@ -1173,8 +1196,6 @@ class MeetingWebService:
         """
         payload = payload if isinstance(payload, dict) else {}
         workspace = self._asked_workspace(payload)
-        if workspace == self.workspace:
-            raise WebError(400, "默认工作区去不掉：它就是项目根")
         for summary in self.list_meetings()["meetings"]:
             if summary.get("workspace_root") == str(workspace) and \
                     summary.get("status") not in TERMINAL_STATUSES:
@@ -1190,9 +1211,14 @@ class MeetingWebService:
         return workspace
 
     def _workspaces_payload(self, workspace: Path) -> Dict[str, Any]:
-        """改名、添加、删除都回同一份名单，页面只认这一份。"""
+        """改名、添加、删除都回同一份名单，页面只认这一份。
+
+        `workspaces` 是服务会去找会议的那些目录（默认那个永远在最前）；`listed` 是人自己
+        加进名单的那些——默认那个只有在名单上时才算"要显示"。
+        """
         return {"workspace": str(workspace),
                 "workspaces": [str(one) for one in self._known_workspaces()],
+                "listed": [str(one) for one in self._listed_workspaces()],
                 "workspace_titles": self._workspace_names()}
 
     def _open_terminal_if_needed(self, store: MeetingStore) -> None:

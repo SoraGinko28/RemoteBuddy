@@ -180,7 +180,23 @@ class WorkspaceWebServiceTest(unittest.TestCase):
         answer = self.service.add_workspace({})
         self.assertEqual(str(self.root.resolve()), answer["workspace"])
         self.assertEqual([str(self.root.resolve())], answer["workspaces"])
+        # 留空是"没改"：默认那个不进名单，索引文件也不生出来
+        self.assertEqual([], answer["listed"])
+        self.assertFalse(answer["added"])
         self.assertFalse((self.root / ".meeting" / WORKSPACE_INDEX).exists())
+
+    def test_adding_the_default_workspace_by_hand_puts_it_on_the_list(self):
+        # 侧边栏那个「＋」选中的就是服务自己那个目录时，它该出现在列表里——否则
+        # 点完什么也不变，看着像坏了。
+        answer = self.service.add_workspace({"directory": str(self.root)})
+        self.assertTrue(answer["added"])
+        self.assertEqual([str(self.root.resolve())], answer["listed"])
+        listing = self.service.list_meetings()
+        self.assertEqual([str(self.root.resolve())], listing["listed"])
+
+    def test_adding_the_same_directory_twice_says_it_was_already_there(self):
+        self.assertTrue(self.service.add_workspace({"directory": str(self.other)})["added"])
+        self.assertFalse(self.service.add_workspace({"directory": str(self.other)})["added"])
 
     def test_adding_a_directory_that_is_not_there_is_refused(self):
         with self.assertRaisesRegex(WebError, "目录不存在"):
@@ -214,9 +230,12 @@ class WorkspaceWebServiceTest(unittest.TestCase):
         self.assertNotIn(str(self.other.resolve()),
                          (self.root / ".meeting" / WORKSPACE_INDEX).read_text(encoding="utf-8").splitlines())
 
-    def test_the_default_workspace_cannot_be_deleted(self):
-        with self.assertRaisesRegex(WebError, "默认工作区去不掉"):
-            self.service.delete_workspace({"directory": str(self.root)})
+    def test_the_default_workspace_comes_off_the_list_but_stays_the_default(self):
+        self.service.add_workspace({"directory": str(self.root)})
+        answer = self.service.delete_workspace({"directory": str(self.root)})
+        self.assertEqual([], answer["listed"])
+        # 服务照旧拿它当默认那个：它还在 workspaces 的第一位。
+        self.assertEqual(str(self.root.resolve()), answer["workspaces"][0])
 
     def test_a_workspace_with_a_live_meeting_is_not_deleted(self):
         # 开完一场会它还在跑（等人类说话）：这时候把一个工作区从名单上拿掉，那一场就从
