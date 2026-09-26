@@ -1433,3 +1433,63 @@ class ShellKeystrokeFramingTest(unittest.TestCase):
                   {"kind": "key", "value": "Enter"}],
         ))
         self.assertEqual([], rejections)
+
+
+class EditingLoopHintTest(unittest.TestCase):
+    """反复开关同一个文件、以及"以为存了其实没存"，都要在观察里说出来。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        skill = self.root / "SKILL.md"
+        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
+        self.store = MeetingStore.create(
+            self.root, "editing-loop", "改一下样式。", skill, "remotebuddy-editing-loop",
+            "test-model", workspace=self.root,
+        )
+        self.transport = FakeTransport()
+        self.runner = InteractiveRunner(self.store, self.transport, FakeClient([]),
+                                        lock=threading.RLock())
+        (self.root / "page.css").write_text("a { color: red }\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def observe(self):
+        return self.runner._observation(self.store.events_after(0), False, force_history=True)
+
+    def test_opening_the_same_file_again_is_counted_and_said(self):
+        for _ in range(3):
+            self.runner._note_editing(make_action("command", command="vim", path="page.css"))
+        observation = self.observe()
+        self.assertIn("opened page.css at least 3 times", observation)
+        self.assertIn('"open_in_this_meeting"', observation)
+
+    def test_a_save_that_never_reached_the_file_is_said(self):
+        self.runner._note_editing(make_action("command", command="vim", path="page.css"))
+        # 盘上什么都没发生（按键其实打到了 shell 上），所以这次 :wq 没落地
+        self.runner._note_write_attempt(make_action(
+            "vim_keys", keys=[{"kind": "literal", "value": ":wq"},
+                              {"kind": "key", "value": "Enter"}]))
+        observation = self.observe()
+        self.assertIn("did not change after your last save", observation)
+        # 说过一次就不再重复
+        self.assertNotIn("did not change after your last save", self.observe())
+
+    def test_a_save_that_landed_says_nothing(self):
+        self.runner._note_editing(make_action("command", command="vim", path="page.css"))
+        (self.root / "page.css").write_text("a { color: blue }\n", encoding="utf-8")
+        self.runner._note_write_attempt(make_action(
+            "vim_keys", keys=[{"kind": "literal", "value": ":wq"},
+                              {"kind": "key", "value": "Enter"}]))
+        self.assertNotIn("did not change after your last save", self.observe())
+
+    def test_a_vim_line_typed_into_the_shell_counts_as_opening(self):
+        self.runner._note_editing(make_action("command", command="vim page.css"))
+        self.runner._note_editing(make_action("command", command="vim page.css"))
+        self.runner._note_editing(make_action("command", command="vim page.css"))
+        self.assertIn("opened page.css at least 3 times", self.observe())
+
+    def test_a_path_outside_the_workspace_is_ignored(self):
+        self.runner._note_editing(make_action("command", command="vim", path="../../etc/hosts"))
+        self.assertEqual({}, self.runner._edit_rounds)
