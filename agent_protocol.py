@@ -23,7 +23,10 @@ SPECIAL_KEYS = {
 # rest; the bounds keep a model from stalling the shared pane indefinitely.
 REST_MIN_MS = 20
 REST_MAX_MS = 2000
-ACTION_TYPES = {"chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done"}
+# The vocabulary one action may use. Kept as an ordered tuple as well: a
+# rejection has to name the choices, and that text goes back to the model.
+ACTION_TYPE_ORDER = ("chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done")
+ACTION_TYPES = set(ACTION_TYPE_ORDER)
 REFERENCE_KINDS = {"chat", "screen"}
 # Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
 MAX_ACTION_REFERENCES = 32
@@ -121,7 +124,32 @@ class AgentActionError(AgentProtocolError):
 
     Unlike a hard protocol violation, this is correctable: the runner may
     feed the error text back to the model and retry within the same cycle.
+    The text the model wrote is kept on the error (``source``), so a rejection
+    can be diagnosed from the journal alone.
     """
+
+    def __init__(self, message: str, source: str = "") -> None:
+        super().__init__(message)
+        self.source = _snippet(source)
+
+
+MESSAGE_TYPE_ORDER = ("none", "ack", "progress", "question", "final")
+
+
+def _name_list(names: Sequence[str]) -> str:
+    """The choices, written the way a person lists them: a, b, or c."""
+    items = [str(name) for name in names]
+    if not items:
+        return "nothing"
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + ", or " + items[-1]
+
+
+def _snippet(text: str, limit: int = 600) -> str:
+    """One line of what the model wrote, for a journal entry that has to stay small."""
+    flat = " ".join(str(text or "").split())
+    return flat[:limit]
 
 
 @dataclass(frozen=True)
@@ -192,7 +220,13 @@ class AgentAction:
         }
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
-            raise AgentProtocolError("model action type is invalid")
+            raise AgentProtocolError(
+                "model action type is invalid: expected "
+                + _name_list(allowed_types or ACTION_TYPE_ORDER))
+        if allowed_types is not None and action_type not in set(allowed_types):
+            raise AgentProtocolError(
+                "model action is not allowed in the current phase: expected "
+                + _name_list(allowed_types))
         # Models say "final" in the two ways the schema separates: `done` with a
         # final message, or `chat` with message_type "final" (some also write
         # "done" there, swapping the two). That means one thing and nothing
@@ -202,16 +236,14 @@ class AgentAction:
                 and str(payload.get("content") or "").strip():
             action_type = "done"
             payload = {**payload, "type": "done", "message_type": "final"}
-        if allowed_types is not None and action_type not in set(allowed_types):
-            raise AgentProtocolError("model action is not allowed in the current phase")
         message_type = payload["message_type"]
-        if message_type not in {"none", "ack", "progress", "question", "final"}:
+        if message_type not in MESSAGE_TYPE_ORDER:
             raise AgentProtocolError(
-                "model message type is invalid: expected none, ack, progress, "
-                "question, or final"
-            )
+                "model message type is invalid: expected " + _name_list(MESSAGE_TYPE_ORDER))
         if allowed_message_types is not None and message_type not in set(allowed_message_types):
-            raise AgentProtocolError("model message type is not allowed in the current phase")
+            raise AgentProtocolError(
+                "model message type is not allowed in the current phase: expected "
+                + _name_list(allowed_message_types))
         content = payload["content"]
         command = payload["command"]
         path = payload["path"]
@@ -708,10 +740,12 @@ def decode_action_text(
     """Decode exactly one schema action, allowing identical gateway duplication."""
     try:
         return _decode_action_text(text, allowed_types, allowed_message_types)
-    except AgentActionError:
+    except AgentActionError as exc:
+        if not exc.source:
+            exc.source = _snippet(text)
         raise
     except AgentProtocolError as exc:
-        raise AgentActionError(str(exc)) from exc
+        raise AgentActionError(str(exc), source=text) from exc
 
 
 def unwrap_action_envelope(payload: Any) -> Any:

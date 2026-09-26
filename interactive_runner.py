@@ -542,6 +542,8 @@ class InteractiveRunner:
                                 "action_id": request_id,
                                 "status": "rejected",
                                 "reason": "invalid_action",
+                                # 模型写的那一句留着：光看拒绝理由，下次还得去猜它写了什么。
+                                "source": getattr(exc, "source", ""),
                             },
                         )
                         self.store.update(

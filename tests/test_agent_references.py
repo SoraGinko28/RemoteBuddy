@@ -301,3 +301,26 @@ class AgentActionToleranceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentActionRejectionHintTest(unittest.TestCase):
+    """拒绝理由就是模型改错用的提示：要说清楚它该写哪几种。"""
+
+    def test_an_unknown_type_is_told_which_types_exist(self):
+        with self.assertRaisesRegex(
+                AgentActionError,
+                "model action type is invalid: expected chat, command, vim_keys, "
+                "terminal_keys, keystrokes, observe, or done"):
+            decode_action_text(json.dumps({"type": "write", "message_type": "none"}))
+
+    def test_a_type_the_phase_forbids_is_told_what_the_phase_allows(self):
+        with self.assertRaisesRegex(
+                AgentActionError, "not allowed in the current phase: expected chat, or done"):
+            AgentAction.from_dict({"type": "command", "message_type": "none", "command": "ls"},
+                                  allowed_types=["chat", "done"])
+
+    def test_the_rejection_carries_what_the_model_wrote(self):
+        text = json.dumps({"type": "write", "path": "a.py", "message_type": "none"})
+        with self.assertRaises(AgentActionError) as caught:
+            decode_action_text(text)
+        self.assertEqual(text, caught.exception.source)
