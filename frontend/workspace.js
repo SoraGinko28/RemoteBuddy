@@ -96,7 +96,7 @@ const labels = {
   score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
-  agentState: { thinking: "思考中", acting: "操作中", idle: "待命中", error: "异常" },
+  agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常" },
   role: { actor: "行动者", assistant: "助理", critic: "批判者" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
@@ -113,7 +113,7 @@ function withAgent(text, meeting) {
 }
 
 // Every phase outside these buckets (terminal states, human takeover,
-// waiting) renders as the muted "待命中" badge; error details stay in
+// waiting) renders as the muted "待命" badge; error details stay in
 // #failure-message.
 const AGENT_STATE_PHASES = {
   starting: "thinking",
