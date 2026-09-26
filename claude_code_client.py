@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import importlib.util
+import base64
 import json
 import os
 import re
@@ -248,6 +249,7 @@ class ClaudeCodeBackend:
         self._session_id: Optional[str] = None
         self._turn_id: Optional[str] = None
         self._initial_context = ""
+        self._initial_images: List[Dict[str, Any]] = []
         self._first_turn = True
         self._interrupted = False
         self._closed = False
@@ -283,6 +285,7 @@ class ClaudeCodeBackend:
         initial_context: str,
         *,
         model: Optional[str] = None,
+        images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Optional[BackendEventCallback] = None,
     ) -> str:
         if self._process is not None:
@@ -300,6 +303,7 @@ class ClaudeCodeBackend:
             self.protocol_version = check_claude_protocol(binary)
         self._callback = event_callback
         self._initial_context = initial_context
+        self._initial_images = list(images or [])
         self._session_id = str(uuid.uuid4())
         self._temporary = tempfile.TemporaryDirectory(prefix="remotebuddy-claude-")
         private_cwd = Path(self._temporary.name).resolve()
@@ -389,6 +393,7 @@ class ClaudeCodeBackend:
         observation: str,
         *,
         model: Optional[str] = None,
+        images: Optional[Sequence[Dict[str, Any]]] = None,
         allowed_types: Optional[Sequence[str]] = None,
         allowed_message_types: Optional[Sequence[str]] = None,
         request_timeout_seconds: Optional[float] = None,
@@ -422,11 +427,12 @@ class ClaudeCodeBackend:
             self._turn_nudges = 0
             self._interrupted = False
             turn_id = self._turn_id
-        text = self._initial_context if self._first_turn and self._initial_context else observation
+        first_turn = bool(self._first_turn and self._initial_context)
+        text = self._initial_context if first_turn else observation
         self._first_turn = False
         deadline = time.monotonic() + timeout
         try:
-            self._send_user_message(text)
+            self._send_user_message(text, self._initial_images if first_turn else images)
             self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
             with self._condition:
                 while True:
@@ -716,10 +722,39 @@ class ClaudeCodeBackend:
         )
         return {"request_id": request_id, "success": success, "content": content, "pause": pause}
 
-    def _send_user_message(self, text: str) -> None:
+    def _send_user_message(self, text: str,
+                           images: Optional[Sequence[Dict[str, Any]]] = None) -> None:
+        """One user message: the text, plus any picture as an image block.
+
+        Claude Code takes the same content blocks as the API, so a picture the
+        human sent rides along as an image and the model looks at it itself.
+        """
+        content: List[Dict[str, Any]] = [{"type": "text", "text": text}]
+        # The whole message has to fit the stream's own size limit, so pictures
+        # ride along while there is room; one that does not fit is left to the
+        # path already named in the observation.
+        budget = MAX_WIRE_BYTES - len(text.encode("utf-8")) - 4096
+        for image in images or []:
+            path = Path(str(image.get("path") or ""))
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            encoded = base64.b64encode(data).decode("ascii")
+            if len(encoded) > budget:
+                continue
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": str(image.get("media_type") or "image/png"),
+                    "data": encoded,
+                },
+            })
+            budget -= len(encoded)
         payload = {
             "type": "user",
-            "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+            "message": {"role": "user", "content": content},
             "session_id": self._session_id,
             "parent_tool_use_id": None,
         }

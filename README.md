@@ -137,8 +137,9 @@ the meeting directory); the Web service no longer writes it.
 
 Chat takes images: paste into the composer or use the paperclip. The bytes are stored as a file of
 the meeting (`attachments/image-<n>.<ext>`) and the message records only the name and the content
-hash, so the journal stays text; the Agent is handed the file's path in its workspace, which is how it
-reads the picture.
+hash, so the journal stays text. A picture goes to the model as a picture — `input_image` on the
+Responses API, an image block for Claude Code, `localImage` for Codex / Trae — so understanding it is
+the model's own ability rather than something the Agent has to approximate with a command-line tool.
 
 `events.jsonl` is the replay source of truth. It contains globally ordered `chat`, `screen`, `action`, `control`, `state`, and `error` events. `conversation.md` is rebuilt only from chat events.
 

@@ -419,3 +419,26 @@ class CodexAppServerBackendTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalImageInputTest(unittest.TestCase):
+    """人类发来的图交给模型自己看：Codex/Trae 的 `localImage`，不是命令行 OCR。"""
+
+    def test_a_stored_picture_becomes_a_local_image_item(self):
+        from codex_app_server_client import _local_image_inputs
+
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            png = root / "image-1.png"
+            png.write_bytes(b"\x89PNG\r\n\x1a\nbody")
+            self.assertEqual(
+                [{"type": "localImage", "path": str(png)}],
+                _local_image_inputs([{"name": "image-1.png", "media_type": "image/png",
+                                      "path": str(png)}]),
+            )
+
+    def test_a_picture_that_is_not_there_is_not_attached(self):
+        from codex_app_server_client import _local_image_inputs
+
+        self.assertEqual([], _local_image_inputs([{"path": "/nowhere/image-9.png"}]))
+        self.assertEqual([], _local_image_inputs(None))

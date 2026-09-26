@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from interactive_runner import (
+    MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
     RunnerError,
     TypingInterrupted,
@@ -46,6 +47,7 @@ class FakeClient:
         self.calls = []
         self.conversations = []
         self.config = FakeConfig()
+        self.last_images = None
 
     def create_conversation(self, meeting_id):
         value = f"conv-{len(self.conversations) + 1}"
@@ -53,6 +55,7 @@ class FakeClient:
         return value
 
     def create_action(self, conversation_id, instructions, observation, **kwargs):
+        self.last_images = kwargs.get("images")
         self.calls.append((conversation_id, instructions, observation, kwargs))
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
@@ -1345,8 +1348,38 @@ class AttachmentObservationTest(unittest.TestCase):
         self.store.append_chat("human", "看这张", "request", attachments=[descriptor])
         runner = InteractiveRunner(self.store, FakeTransport(), FakeClient([]),
                                    lock=threading.RLock())
-        observation = runner._observation(self.store.events_after(0), False, force_history=True)
+        events = self.store.events_after(0)
+        observation = runner._observation(events, False, force_history=True)
         self.assertIn(str(self.store.attachment_path(descriptor["name"])), observation)
         self.assertIn('"attachments"', observation)
+        # 图片是交给模型自己看的：观察里直说一句，别去命令行里找 OCR。
+        self.assertIn("look at them directly", observation)
         # journal 本身没有被改写：路径只是交给 agent 时补上的。
         self.assertNotIn("file", self.store.events()[-1]["data"]["attachments"][0])
+
+    def test_the_picture_rides_along_with_the_request(self):
+        descriptor = self.store.save_attachment("image/png", b"\x89PNG\r\n\x1a\nbody")
+        self.store.append_chat("human", "看这张", "request", attachments=[descriptor])
+        client = FakeClient([make_action()])
+        runner = InteractiveRunner(self.store, FakeTransport(), client, lock=threading.RLock())
+        images = runner._images_of(self.store.events_after(0))
+        self.assertEqual([{
+            "name": descriptor["name"],
+            "media_type": "image/png",
+            "path": str(self.store.attachment_path(descriptor["name"])),
+        }], images)
+
+        runner._next_backend_action(
+            "conv-1", "instructions", "observation", images=images,
+            allowed_types=None, allowed_messages=None, timeout=5.0,
+            generation=0, input_seq=0,
+        )
+        self.assertEqual(images, client.last_images)
+
+    def test_a_picture_that_is_too_big_for_one_request_is_left_out(self):
+        descriptor = self.store.save_attachment(
+            "image/png", b"x" * (MAX_IMAGE_BYTES_PER_TURN + 1))
+        self.store.append_chat("human", "看这张", "request", attachments=[descriptor])
+        runner = InteractiveRunner(self.store, FakeTransport(), FakeClient([]),
+                                   lock=threading.RLock())
+        self.assertEqual([], runner._images_of(self.store.events_after(0)))
