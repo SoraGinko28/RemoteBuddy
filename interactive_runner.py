@@ -871,9 +871,10 @@ class InteractiveRunner:
                     # Multi-line typing at a shell prompt executes every line
                     # as a command — the classic failure is a model typing a
                     # whole document (with Vim `i`/`:wq` framing) into bash.
+                    tokens = normalize_model_key_tokens(action.keys)
                     enters = sum(
                         1
-                        for token in normalize_model_key_tokens(action.keys)
+                        for token in tokens
                         if token.get("kind") == "key" and token.get("value") == "Enter"
                     )
                     if enters > 1:
@@ -883,6 +884,26 @@ class InteractiveRunner:
                             "command lines with the command action, and to type "
                             "document text open the editor first with the structured "
                             "vim command and wait until Vim is visible on screen"
+                        )
+                    # Vim framing is the same mistake with one line: `Escape`
+                    # then `:wq` at a shell is a model that still believes it is
+                    # in the editor, and the text leaks in as a command. The
+                    # named keys are the shell's; everything else belongs to a
+                    # foreground program and has to go through `vim_keys` or
+                    # `terminal_keys`, which check what is actually running.
+                    framing = [
+                        token for token in tokens
+                        if (token.get("kind") == "key"
+                            and token.get("value") not in {"Enter", "Tab", "C-c"})
+                        or (token.get("kind") == "literal"
+                            and str(token.get("value", "")).lstrip().startswith(":"))
+                    ]
+                    if framing:
+                        raise AgentProtocolError(
+                            "the foreground program is the shell, so a keystrokes action "
+                            "may not use Vim keys (Escape, `:wq`, and the like): open the "
+                            "file with the structured vim command first and wait until Vim "
+                            "is visible on screen, then send the keys as a vim_keys action"
                         )
             if action.type == "chat" and action.message_type == "progress":
                 if self._last_terminal_evidence is None:

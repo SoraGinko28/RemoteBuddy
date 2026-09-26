@@ -1383,3 +1383,53 @@ class AttachmentObservationTest(unittest.TestCase):
         runner = InteractiveRunner(self.store, FakeTransport(), FakeClient([]),
                                    lock=threading.RLock())
         self.assertEqual([], runner._images_of(self.store.events_after(0)))
+
+
+class ShellKeystrokeFramingTest(unittest.TestCase):
+    """bash 在前台时，keystrokes 不许带 Vim 的那套写法（Escape、`:wq`）。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        skill = self.root / "SKILL.md"
+        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
+        self.store = MeetingStore.create(
+            self.root, "shell-framing", "改一下 CSS。", skill, "remotebuddy-shell-framing",
+            "test-model", workspace=self.root,
+        )
+        self.transport = FakeTransport()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def run_client(self, action):
+        client = FakeClient([action, make_action("chat", message_type="question",
+                                                 content="先看看现在是什么状态")])
+        InteractiveRunner(self.store, self.transport, client, action_settle_seconds=0,
+                          typing_interval_seconds=0).start()
+        loaded = MeetingStore.load_in_workspace(self.root, "shell-framing")
+        rejections = [event for event in loaded.events()
+                      if event["kind"] == "action" and event["data"].get("status") == "rejected"]
+        return rejections
+
+    def test_escape_then_wq_at_the_shell_is_refused(self):
+        rejections = self.run_client(make_action(
+            "keystrokes",
+            keys=[{"kind": "key", "value": "Escape"},
+                  {"kind": "literal", "value": ":wq"},
+                  {"kind": "key", "value": "Enter"}],
+        ))
+        self.assertEqual(1, len(rejections))
+        self.assertIn("may not use Vim keys", rejections[0]["content"])
+        # 一个字都没落到 shell 里
+        typed = [token.get("value") for _pane, tokens in self.transport.tokens
+                 for token in tokens if token.get("kind") == "literal"]
+        self.assertEqual([], typed)
+
+    def test_one_plain_command_line_at_the_shell_is_still_allowed(self):
+        rejections = self.run_client(make_action(
+            "keystrokes",
+            keys=[{"kind": "literal", "value": "ls -la"},
+                  {"kind": "key", "value": "Enter"}],
+        ))
+        self.assertEqual([], rejections)
