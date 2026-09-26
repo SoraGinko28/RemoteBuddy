@@ -3016,9 +3016,11 @@ function renderAttachments() {
     const image = node("img", "attachment-thumb");
     image.src = attachmentUrl(attachment.name);
     image.alt = attachment.name;
-    const remove = node("button", "attachment-remove", "×");
+    const remove = node("button", "attachment-remove");
     remove.type = "button";
     remove.title = "去掉这张图";
+    remove.setAttribute("aria-label", remove.title);
+    remove.append(closeCrossIcon());
     remove.addEventListener("click", () => {
       state.pendingAttachments.splice(index, 1);
       renderAttachments();

@@ -225,10 +225,12 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .evaluation-choice input:focus-visible + .square-control { outline: 2px solid var(--green); outline-offset: 2px; }
 .composer-footer button { flex: 0 0 auto; }
 /* 待发的图：和引用一样排在输入框下面，字在上面，图一张张可以去掉。 */
-.attachment-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.attachment-chip { position: relative; width: 56px; height: 56px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: var(--surface-2); }
-.attachment-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
-.attachment-remove { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; min-height: 0; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: rgb(0 0 0 / .65); color: var(--ink); font-size: 11px; line-height: 1; cursor: pointer; }
+.attachment-strip { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; padding: 0 2px; }
+/* overflow 要看得见：去掉的圈挂在缩略图的角上；圆角改由图片自己带。 */
+.attachment-chip { position: relative; width: 56px; height: 56px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: visible; background: var(--surface-2); }
+.attachment-thumb { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 5px; }
+.attachment-remove { position: absolute; top: -9px; right: -9px; width: 18px; height: 18px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 50%; background: rgb(20 20 20 / .9); color: var(--ink); cursor: pointer; }
+.attachment-remove svg { display: block; width: 9px; height: 9px; }
 /* 回形针是一个入口，不是一颗按钮：不要边框和底色，悬停时才有一点反应。 */
 .composer-footer #attach-image-button { margin-right: auto; border-color: transparent; background: transparent; display: inline-flex; align-items: center; justify-content: center; }
 .composer-footer #attach-image-button svg { width: 17px; height: 17px; }
