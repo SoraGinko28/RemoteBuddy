@@ -107,13 +107,17 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 /* 成员详情是从上边栏右侧滑下来的浮层，跟侧边栏同一套做法（transform + .18s ease）：
    居中的 modal 会整屏压暗、抢焦点，终端跟着重排，画面跳得厉害。
    字段是竖着念的清单，要够高；横着铺成一排窄格子会把 Skill 那两个按钮挤出边缘。 */
-.member-panel { position: absolute; top: 56px; right: 12px; z-index: 40; width: min(400px, calc(100vw - 24px));
+.member-panel { position: fixed; top: 56px; right: 12px; z-index: 40; width: min(400px, calc(100vw - 24px));
+  max-height: calc(100vh - 68px); display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden;
   box-shadow: 0 18px 44px rgb(0 0 0 / .55);
   visibility: hidden; opacity: 0; transform: translateY(-10px); pointer-events: none;
   transition: transform .18s ease, opacity .18s ease, visibility .18s; }
+/* 挂在视口上而不是会话容器上：Safari 的 100vh 比可见窗口高，页面能滚一点，
+   absolute 的面板会跟着滚到窗口上面去，只剩底下半截。 */
+@supports (height: 100dvh) { .member-panel { max-height: calc(100dvh - 68px); } }
 .member-panel.open { visibility: visible; opacity: 1; transform: translateY(0); pointer-events: auto; }
-.member-panel-header { display: flex; align-items: baseline; gap: 9px; padding: 12px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+.member-panel-header { flex: 0 0 auto; display: flex; align-items: baseline; gap: 9px; padding: 12px 12px 10px 16px; border-bottom: 1px solid var(--line); }
 .member-panel-header strong { font-size: 15px; }
 .member-panel-header > span { color: var(--muted); font-size: 11px; }
 .member-panel-close { margin-left: auto; width: 26px; height: 26px; min-height: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface-2); color: var(--muted); cursor: pointer; }
@@ -149,7 +153,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .header-actions > button { display: none !important; }
 /* 成员详情竖着念：一行一个字段，左边名字、右边值。
    横着铺是一排窄格子，Skill 那两个按钮正好被挤出面板边缘。 */
-.presence-strip { display: block; max-height: calc(100vh - 150px); overflow-y: auto; border-bottom: 0; background: var(--surface); }
+.presence-strip { display: block; flex: 1 1 auto; min-height: 0; overflow-y: auto; border-bottom: 0; background: var(--surface); }
 .presence-strip > div { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 12px; border-right: 0; border-bottom: 1px solid var(--line); }
 .presence-strip > div:last-child { border-bottom: 0; }
 .presence-strip > div[hidden] { display: none; }
