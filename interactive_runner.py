@@ -25,16 +25,6 @@ from references import reference_from_event
 from tmux_transport import TmuxError, TmuxTransport, workspace_command_text
 from typing_policy import TypingPlan, plan_input
 
-from vim_policy import (  # noqa: F401  (re-exported for existing importers)
-    VIM_INSERT_COMMANDS,
-    VIM_INSERT_MARKERS,
-    VIM_SAFE_EX_COMMAND,
-    VIM_SAFE_NORMAL_COMMANDS,
-    VIM_SAFE_NORMAL_COMPOSITES,
-    VIM_SAFE_SEARCH,
-    VIM_SAFE_SUBSTITUTE,
-    validate_agent_vim_keys,
-)
 from typing_executor import (  # noqa: F401
     send_command_with_captures,
     send_tokens_with_captures,
@@ -1445,10 +1435,6 @@ class InteractiveRunner:
             elif action.type == "vim_keys":
                 if info["command"] not in {"vim", "vi"}:
                     raise RunnerError("vim keys are allowed only while Vim is active")
-                validate_agent_vim_keys(
-                    action.keys,
-                    self.transport.capture_visible(pane_id),
-                )
                 send_tokens_with_captures(
                     self.store,
                     self.transport,
