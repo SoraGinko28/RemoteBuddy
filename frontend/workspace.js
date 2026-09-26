@@ -3478,11 +3478,10 @@ function bind() {
       const answer = await api(
         `/api/meetings/${encodeURIComponent(state.selectedId)}/skill/reload`,
         { method: "POST", body: "{}" });
-      const short = String(answer.sha256 || "").slice(0, 8);
-      if (!answer.changed) toast(`Skill 没变（${short}）`);
-      else if (!answer.agent_running) toast(`Skill 已更新（${short}）：没有在跑的进程，下一轮开工就用新的`);
-      else if (answer.applies_to_next_request) toast(`Skill 已更新（${short}）：下一句就用新的`);
-      else toast(`Skill 已更新（${short}）：这个后端把指令写在进程里，下次开工生效；要立刻生效就点"重启"`);
+      if (!answer.changed) toast("Skill 没变");
+      else if (!answer.agent_running) toast("Skill 已更新：没有在跑的进程，下一轮开工就用新的");
+      else if (answer.applies_to_next_request) toast("Skill 已更新：下一句就用新的");
+      else toast("Skill 已更新：这个后端把指令写在进程里，下次开工生效；要立刻生效就点\"重启\"");
       await refreshSelected();
       await loadMeetings();
     } catch (error) { toast(error.message); }
