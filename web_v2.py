@@ -2275,22 +2275,29 @@ class MeetingWebService:
         store = self.load_store(meeting_id)
         if store.meeting.status in TERMINAL_STATUSES:
             raise WebError(409, "meeting is already finished")
-        runner, _client = self._live_agent(meeting_id)
-        if runner is None:
-            raise WebError(409, "agent 现在没有在跑：下一次开工本来就会起一个新进程")
         digest, size, changed = self._install_project_skill(store)
-        with self._meeting_lock(meeting_id):
-            store.update(phase="agent_restart")
-        runner.request_backend_restart()
-        return {
-            "meeting_id": meeting_id,
-            "sha256": digest,
-            "bytes": size,
-            "changed": changed,
-            "restarting": True,
-        }
+        runner, _client = self._live_agent(meeting_id)
+        answer = {"meeting_id": meeting_id, "sha256": digest, "bytes": size,
+                  "changed": changed, "restarting": True}
+        if runner is not None:
+            # 有进程：杀掉、用新 Skill 重开一个，同一轮继续。
+            with self._meeting_lock(meeting_id):
+                store.update(phase="agent_restart")
+            runner.request_backend_restart()
+            return {**answer, "started": False}
+        # 没有进程：那就现在起一个 —— 按"重启"的人要的就是一个换过 Skill 的新进程，
+        # 而不是一句"没有在跑的进程"。由人握着终端的时候不许抢。
+        if store.meeting.control_owner == "human" or store.meeting.phase in {"created", "starting", "human_control"}:
+            raise WebError(409, "agent 没在跑，而且这会儿不该起：先交回控制（或说一句话）再重启")
+        self.resume(meeting_id, starting_phase="agent_restart")
+        return {**answer, "started": True}
 
-    def resume(self, meeting_id: str) -> MeetingStore:
+    def resume(self, meeting_id: str, starting_phase: Optional[str] = None) -> MeetingStore:
+        """叫醒 agent 干这一轮。
+
+        `starting_phase` 是进程起来之前那段的状态：页面上按"重启"时给 `agent_restart`，
+        这样换进程的这段时间 chip 上看得见；默认还是 `agent_thinking`。
+        """
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
             if store.meeting.status in TERMINAL_STATUSES:
@@ -2307,7 +2314,7 @@ class MeetingWebService:
             )
             store.bump_request_generation(
                 status="running",
-                phase="agent_thinking",
+                phase=starting_phase or "agent_thinking",
                 control_owner=store.meeting.actor_name(),
                 failure=None,
                 cycle_action_count=0,

@@ -3491,9 +3491,10 @@ function bind() {
     if (!confirm("杀掉当前 agent 进程，用最新的 Skill 重开一个？这一轮会从进程启动重新开始。")) return;
     el.restart_agent_button.disabled = true;
     try {
-      await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/agent/restart`,
-                { method: "POST", body: "{}" });
-      toast("已请求重启，进程马上换一个", "info");
+      const answer = await api(
+        `/api/meetings/${encodeURIComponent(state.selectedId)}/agent/restart`,
+        { method: "POST", body: "{}" });
+      toast(answer.started ? "没有在跑的进程，已经用新 Skill 起了一个" : "已重启，进程马上换一个", "info");
       await refreshSelected();
       await loadMeetings();
     } catch (error) { toast(error.message); }

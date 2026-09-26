@@ -908,11 +908,26 @@ class HTTPBoundaryTest(unittest.TestCase):
             self.request("/api/meetings/skill-demo/skill/reload", method="POST", body="{}",
                          csrf=True))["changed"], "同一份文本不该说变过")
 
-        # 重启：没有活着的 agent 就明说没有可重启的东西
+        # 人握着终端的时候不许抢：重启先被挡回来
+        self.request("/api/meetings/skill-demo/control/acquire", method="POST",
+                     body="{}", csrf=True)
         status, payload = self.error_status("/api/meetings/skill-demo/agent/restart",
                                             method="POST", body="{}", csrf=True)
         self.assertEqual(409, status)
-        self.assertIn("没有在跑", payload["error"])
+        self.assertIn("交回控制", payload["error"])
+        self.request("/api/meetings/skill-demo/control/release", method="POST",
+                     body="{}", csrf=True)
+
+        # 没有在跑的进程：按"重启"就现在起一个，用新的 Skill
+        response = self.request("/api/meetings/skill-demo/agent/restart", method="POST",
+                                body="{}", csrf=True)
+        payload = json.load(response)
+        self.assertTrue(payload["restarting"])
+        self.assertTrue(payload["started"], "空闲时按重启要真的起一个进程")
+        self.wait_for_workers()
+        self.assertIn("新的一句。",
+                      MeetingStore.load_in_workspace(self.root, "skill-demo")
+                      .runtime_skill_path.read_text(encoding="utf-8"))
 
         reloaded = MeetingStore.load_in_workspace(self.root, "skill-demo")
         events = [e for e in reloaded.events() if e.get("phase") == "skill_reload"]
