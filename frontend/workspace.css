@@ -224,8 +224,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .evaluation-choice input:checked + .square-control::after { transform: rotate(-45deg) scale(1); }
 .evaluation-choice input:focus-visible + .square-control { outline: 2px solid var(--green); outline-offset: 2px; }
 .composer-footer button { flex: 0 0 auto; }
-/* 待发的图：缩略图排在输入框上面，可以一张张去掉。 */
-.attachment-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+/* 待发的图：和引用一样排在输入框下面，字在上面，图一张张可以去掉。 */
+.attachment-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .attachment-chip { position: relative; width: 56px; height: 56px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: var(--surface-2); }
 .attachment-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
 .attachment-remove { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; min-height: 0; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: rgb(0 0 0 / .65); color: var(--ink); font-size: 11px; line-height: 1; cursor: pointer; }
