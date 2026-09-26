@@ -982,7 +982,10 @@ def action_json_schema(
                                 "Keystrokes for the foreground program, in order. Each "
                                 "token is either text to type ($text / kind=literal) or a "
                                 "key to press ($ctrl / kind=key); a key name sent as text "
-                                "types its letters."
+                                "types its letters. Keys go to whatever holds the "
+                                "foreground, so check `terminal.current_command` first: "
+                                "editor keys sent while a shell is in front run as shell "
+                                "commands."
                             )
                         }
                         if keys
