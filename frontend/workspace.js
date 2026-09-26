@@ -3501,6 +3501,7 @@ function bind() {
       else if (answer.applies_to_next_request) toast("Skill 已更新：下一句就用新的", "success");
       else toast("Skill 已更新：这个后端把指令写在进程里，下次开工生效；要立刻生效就点\"重启\"", "success");
       if (answer.changed) holdMemberState("updating");
+      closeMemberDetails();          // 按完就收起来，跟重启一样：面板挡着终端
       await refreshSelected();
       await loadMeetings();
     } catch (error) { toast(error.message); }
