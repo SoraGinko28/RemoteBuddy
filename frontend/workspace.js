@@ -3517,6 +3517,7 @@ function bind() {
         { method: "POST", body: "{}" });
       toast(answer.started ? "没有在跑的进程，已经用新 Skill 起了一个" : "已重启，进程马上换一个", "info");
       holdMemberState("restarting");
+      closeMemberDetails();          // 按完就收起来：面板挡着终端，没别的用处了
       await refreshSelected();
       await loadMeetings();
     } catch (error) { toast(error.message); }
@@ -3561,15 +3562,14 @@ function bind() {
   });
   document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
+  // 浮层是 chip 弹出来的：点别处（chip 和浮层本身以外）就收回去。走捕获阶段，
+  // 终端和别处那些 pointerdown 处理吞不掉它，不然面板会关不上。
   document.addEventListener("pointerdown", (event) => {
-    // 浮层是 chip 弹出来的：点别处（chip 和浮层本身以外）就收回去。
-    if (
-      state.detailsAgent
-      && !event.target.closest?.(".agent-state")
-      && !event.target.closest?.("#member-panel")
-    ) {
-      closeMemberDetails();
-    }
+    if (!state.detailsAgent) return;
+    if (event.target.closest?.(".agent-state") || event.target.closest?.("#member-panel")) return;
+    closeMemberDetails();
+  }, true);
+  document.addEventListener("pointerdown", (event) => {
     if (el.workspace_menu && !el.workspace_menu.hidden
         && !el.workspace_menu.contains(event.target)) {
       hideWorkspaceMenu();
