@@ -193,6 +193,15 @@ class AgentAction:
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
             raise AgentProtocolError("model action type is invalid")
+        # Models say "final" in the two ways the schema separates: `done` with a
+        # final message, or `chat` with message_type "final" (some also write
+        # "done" there, swapping the two). That means one thing and nothing
+        # else, so it is read as `done` instead of being rejected and retried
+        # until the cycle gives up.
+        if action_type == "chat" and payload.get("message_type") in {"final", "done"} \
+                and str(payload.get("content") or "").strip():
+            action_type = "done"
+            payload = {**payload, "type": "done", "message_type": "final"}
         if allowed_types is not None and action_type not in set(allowed_types):
             raise AgentProtocolError("model action is not allowed in the current phase")
         message_type = payload["message_type"]

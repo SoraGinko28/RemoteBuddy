@@ -6,6 +6,7 @@ from pathlib import Path
 
 from agent_protocol import (
     AgentAction,
+    AgentActionError,
     AgentProtocolError,
     action_json_schema,
     decode_action_text,
@@ -281,6 +282,21 @@ class AgentActionToleranceTest(unittest.TestCase):
             {"type": "keystrokes", "keys": [{"kind": "literal", "value": "ls -la"}]}
         )
         self.assertEqual("none", action.message_type)
+
+    def test_a_model_that_says_chat_final_means_done(self):
+        # Ground truth from the Trae backend with a picture attached: the model
+        # sent everything `done` carries, but named the type `chat`.
+        for message_type in ("final", "done"):
+            action = decode_action_text(json.dumps({
+                "type": "chat", "message_type": message_type,
+                "content": "图片里没有文字，只有一个红色圆形。",
+            }))
+            self.assertEqual("done", action.type)
+            self.assertEqual("final", action.message_type)
+
+    def test_chat_final_without_content_is_still_wrong(self):
+        with self.assertRaisesRegex(AgentActionError, "chat requires"):
+            decode_action_text(json.dumps({"type": "chat", "message_type": "final", "content": ""}))
 
 
 if __name__ == "__main__":
