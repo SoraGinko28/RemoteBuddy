@@ -339,7 +339,7 @@ __all__ += [
 #    "attachments": [ImageAttachment_json, ...]}   (attachments omitted when empty)
 #   part_json = {"raw": str} | {"at_user_name": str} | {"ref": {...G8}}
 #   ImageAttachment_json = {"name": str, "media_type": str, "sha256": str, "byte_count": int}
-#   The picture itself is a material of the meeting (attachments/<name>), not a copy in the journal.
+#   The picture itself is a file of the meeting (attachments/<name>), not a copy in the journal.
 # ChatStreamChunk persisted JSON:
 #   {"stream_name": "chat", "chunks": [ChatMessage_json, ...]}
 
@@ -369,7 +369,7 @@ class AtUserMessage:
 class ImageAttachment:
     """$image_msg ImageAttachment — 随消息一起交出去的图片。
 
-    图本身是这场会的一份材料，落在会议目录 `attachments/<name>` 下；这里只记它的
+    图本身是这场会存下来的一份文件，落在会议目录 `attachments/<name>` 下；这里只记它的
     名字和内容指纹，不记它从哪儿来。
     """
     name: str

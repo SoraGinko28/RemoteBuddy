@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from . import _viba  # noqa: F401
 
-from .host import read_material, text_of
+from .host import read_stored, text_of
 from .member import bundle_main
 
 WORKING_PHASES = ("agent_thinking", "agent_acting")
@@ -272,7 +272,7 @@ def _said(say, words: str, about) -> str:
 
 def _read_or(env, address):
     try:
-        return read_material(env, address)
+        return read_stored(env, address)
     except RuntimeError:
         return address
 

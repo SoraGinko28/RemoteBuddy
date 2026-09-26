@@ -606,7 +606,7 @@ class ResponsesClientTest(unittest.TestCase):
         self.assertEqual("resp_retry", response.response_id)
         self.assertEqual(3, len(calls))
 
-    def test_gateway_top_level_error_shape_is_reported(self):
+    def test_gateway_top_level_error_format_is_reported(self):
         def opener(request, timeout):
             body = io.BytesIO(
                 json.dumps({"code": "MODEL_FORBIDDEN", "message": "model is not enabled"}).encode(

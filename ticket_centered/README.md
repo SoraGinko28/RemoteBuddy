@@ -2,7 +2,7 @@
 
 一场会跑在一叠**事先设计好**的工单上。harness 只有三件事，别处不许再做决定：
 
-1. 一个 store（数据路径下面挂材料，会议记录也在里头）；
+1. 一个 store（数据路径下面挂值，会议记录也在里头）；
 2. 一个"该发哪一张"的判据（读 store 算，不是写死的顺序）；
 3. 几张能力表（每个成员一张：它会哪些算子）。
 
@@ -47,17 +47,17 @@ python -m ticket_centered.workflow --where    # 看这一趟读的是哪份、�
 
 **工单就是 viba 代码**，没有另一种东西叫"工单"。一张工单里的数据路径都**相对案子**：`""` 是案子自己，
 `"drafted"` 是这一步；案子名在工单里不出现，由发出去的那一侧给。一步的实参是地址
-（`$module_path … * $func_name …`）：材料不在实参里，在 store 里。
+（`$module_path … * $func_name …`）：值不在实参里，在 store 里。
 
 ## 谁接哪一头
 
 | 谁 | 调什么 |
 |---|---|
-| 会议的数据（store 服务端） | `Store`：`read` / `write` / `answered` / `materials` / `record`；材料按数据路径放，会议记录在旁边 |
+| 会议的数据（store 服务端） | `Store`：`read` / `write` / `answered` / `stored` / `record`；值按数据路径放，会议记录在旁边 |
 | 每个成员的进程 | `python -m ticket_centered.{actor,critic,assistant} --meeting … --case … --bundle …`：`member.run_bundle` 在发给它的那一份里跑一遍，`Member.at(...)` → `Runner` 做"自己算 / 回放 / 递延" |
 | assistant 的派单那一侧（唯一的派单者） | `Meeting.due(ticket, case)` / `next_ticket(case)` 决定该发哪一张；`Meeting.publish(ticket, case)` 把一张发给会上的每个成员 |
 | 自进化的负责人 | `Workflow.load(dir)` / `workflow.digest()` / `workflow.tickets()` / `workflow.rules()` / `workflow.ops_of(api)` / `workflow.role_of_op(op)`；一场会记着它跑的是哪份流程的摘要 |
-| 工单系统（界面、对账、审计） | `Meeting.store.materials()` / `Meeting.backups` / `Meeting.reconcile`；成员包里那份 `store/` 是备份 |
+| 工单系统（界面、对账、审计） | `Meeting.store.stored()` / `Meeting.backups` / `Meeting.reconcile`；成员包里那份 `store/` 是备份 |
 | 页面（`web_v2.py` + `frontend/workspace.js`） | `GET /api/meetings/<id>/tickets` 是工单板（该发哪一张、每张要读什么/谁答的、判语与收尾、会议记录）；`POST /api/meetings/<id>/tickets/<工单>` 发这一张：服务侧 `Meeting.publish` + 给每个成员起一个进程。会话头部那个「工单 n/5」按钮就是它 |
 | 真实的会（`web_v2` 服务 + tmux 里的 agent） | `ticket_centered.actor.AgentChannel`：`say` 说一句、等那个 agent 干完、从它的工作区读回文件 |
 
@@ -76,7 +76,7 @@ python -m ticket_centered.assistant --meeting <会议目录> --case case/quickso
 ```
 
 一个成员的进程拿到"发给我的那一包"（`tickets/<工单>/<成员>/`：`program/` 是程序，`store/` 是这一步要
-读的数据），在自己的副本里跑一遍：自己会的算子算、store 里已有答案的回放、其余递延；**答下的材料抄回
+读的数据），在自己的副本里跑一遍：自己会的算子算、store 里已有答案的回放、其余递延；**答下的值抄回
 会议**。包的路径里就有工单名和成员名，不用另外带一封信。
 
 `assistant` 的 `stated_task` 不在任何工单里（那是"把人类说的话放进 store"这一步），所以给
@@ -93,7 +93,7 @@ python -m ticket_centered.assistant --meeting <会议目录> --case case/quickso
 
 `write_a_draft`（actor：回一句知道了 → 写一版 → 回一句做好了）→ `judge_the_draft`（critic）→
 `revise_the_draft`（actor：照判语改一版）→ `judge_the_revision`（critic）→ `close_the_meeting`
-（assistant 收尾）。每一次由 store 里的材料算出来：要读的都在、它自己那几步还没答，就该发。
+（assistant 收尾）。每一次由 store 里的值算出来：要读的都在、它自己那几步还没答，就该发。
 
 ## 还没做的
 

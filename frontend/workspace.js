@@ -227,7 +227,7 @@ function renderMemberStates(meeting) {
 }
 
 // The member list of a meeting: the recorded role map, with the legacy
-// single-agent shape as the fallback.
+// single-agent layout as the fallback.
 function memberRoles(meeting) {
   const roles = meeting?.agent_name2role;
   return (roles && Object.keys(roles).length) ? roles : { agent: "actor" };
@@ -2983,7 +2983,7 @@ function schedulePoll() {
   }, active ? 500 : 1000);
 }
 
-// 交一张图：原始字节 POST 过去，服务把它存成这场会的材料，回名字和指纹。
+// 交一张图：原始字节 POST 过去，服务把它存成这场会的一份文件，回名字和指纹。
 async function uploadImage(file) {
   if (!state.selectedId) return;
   const answer = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/attachments`, {

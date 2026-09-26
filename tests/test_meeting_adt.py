@@ -743,7 +743,7 @@ class TestChatMessageCodec:
         msg = self._message()
         assert adt.chat_message_from_dict(adt.chat_message_to_dict(msg)) == msg
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.chat_message_to_dict(self._message())
         assert payload["user_name"] == "alice"
         assert payload["time"].startswith("2026-09-02T07:35:41.328")
@@ -790,7 +790,7 @@ class TestChatStreamChunkCodec:
         chunk = self._chunk()
         assert adt.chat_stream_chunk_from_dict(adt.chat_stream_chunk_to_dict(chunk)) == chunk
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.chat_stream_chunk_to_dict(self._chunk())
         assert payload["stream_name"] == "chat"
         assert len(payload["chunks"]) == 2
@@ -1003,7 +1003,7 @@ class TestScoreMessageCodec:
         msg = adt.ScoreMessage(tag="style")
         assert adt.score_message_from_dict(adt.score_message_to_dict(msg)) == msg
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         moment = _datetime(2026, 9, 2, 8, 0, 0, tzinfo=_dt_timezone.utc)
         payload = adt.score_message_to_dict(_score(judge="bob", moment=moment))
         assert payload["tag"] == "correctness"
@@ -1141,7 +1141,7 @@ class TestKeystrokeCodec:
     def test_roundtrip(self) -> None:
         assert adt.keystroke_from_dict(adt.keystroke_to_dict(self._key())) == self._key()
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.keystroke_to_dict(self._key())
         assert payload == {
             "data": {"text": "h"},
@@ -1168,7 +1168,7 @@ class TestTerminalControlCodec:
         ctl = self._control()
         assert adt.terminal_control_from_dict(adt.terminal_control_to_dict(ctl)) == ctl
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.terminal_control_to_dict(self._control())
         assert payload["tmux_window_name"] == "w0"
         assert payload["tmux_pane"] == 0
@@ -1302,7 +1302,7 @@ class TestScreenCaptureCodec:
         cap = self._capture()
         assert adt.screen_capture_from_dict(adt.screen_capture_to_dict(cap)) == cap
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.screen_capture_to_dict(self._capture())
         assert payload["screen_data"] == "ab"
         assert payload["terminal_text_content"][0]["fg"] == {"palette": 7}
@@ -1425,7 +1425,7 @@ class TestMeetingData:
         data = self._sample()
         assert adt.meeting_data_from_dict(adt.meeting_data_to_dict(data)) == data
 
-    def test_json_shape(self) -> None:
+    def test_json_format(self) -> None:
         payload = adt.meeting_data_to_dict(self._sample())
         assert payload["meeting_uid"] == "m-1"
         assert payload["agent_name2role"] == {

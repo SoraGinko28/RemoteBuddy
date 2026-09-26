@@ -293,7 +293,7 @@ def apis_used_in(source: str) -> List[str]:
 def addresses_of_call(call) -> List[Tuple[str, str]]:
     """The steps one Prepare's `$call` names: what that step itself read.
 
-    One material argument makes the `$call` the step itself (no tag to look
+    One address argument makes the `$call` the step itself (no tag to look
     under); several are a product, each member carrying its own tag.
     """
     if call is None:
@@ -371,7 +371,7 @@ def _env_name(node) -> str:
 
 
 def _address(piece) -> Optional[Tuple[str, str]]:
-    """A step written as material: `($module_path "…" * $func_name "…")`."""
+    """A step written as an address: `($module_path "…" * $func_name "…")`."""
     if not isinstance(piece, (viba_ast.Product, viba_ast.ProductChain, viba_ast.Tuple)):
         return None
     fields = {}

@@ -296,9 +296,9 @@ def _ticket_record(root: Path) -> List[str]:
 
 
 def _ticket_case(meeting: Meeting) -> str:
-    """工单跑在哪个案子下：材料都在案子自己的数据路径下，看 store 里的头两段。"""
+    """工单跑在哪个案子下：值都在案子自己的数据路径下，看 store 里的头两段。"""
     cases: List[str] = []
-    for data_path, _name in meeting.store.materials():
+    for data_path, _name in meeting.store.stored():
         parts = data_path.split("/")
         if len(parts) >= 2 and parts[0] == "case":
             case = "/".join(parts[:2])
@@ -320,7 +320,7 @@ def _ticket_issued(meeting: Meeting) -> List[str]:
 def _ticket_step(meeting: Meeting, case: str, path: str, op: str) -> Dict[str, Any]:
     """一步：哪条数据路径、哪个算子、答了没有、归哪个角色答、答的是什么（叶子是标量时）。"""
     absolute = meeting.absolute(case, path)
-    # `read` 交回的是材料本身：叶子就是那个标量。扳手那种长材料（一版代码）不往页面上搬，
+    # `read` 交回的就是存下来的那个值：叶子是标量。一版代码那种长值不往页面上搬，
     # 只有判语、收尾这类短的话才带上——这一块是给页面看的。
     value, answered = meeting.store.read(absolute, op)
     if isinstance(value, bool) or isinstance(value, (int, float)):
@@ -1252,7 +1252,7 @@ class MeetingWebService:
     def issue_ticket(self, meeting_id: str, ticket: str) -> Dict[str, Any]:
         """发一张工单：`Meeting.publish` 发给会上的每个成员，然后每个成员起一个进程跑。
 
-        页面按一下按钮就是这一下。跑在后台，页面照旧轮询工单板：答下的材料成员自己抄回会议。
+        页面按一下按钮就是这一下。跑在后台，页面照旧轮询工单板：答下的值成员自己抄回会议。
         """
         store = self.load_store(meeting_id)
         board = _ticket_board(store, self.project_root)
@@ -1425,7 +1425,7 @@ class MeetingWebService:
         if sequence < 0:
             raise WebError(400, "after must be at least zero")
         # The idle poll asks for events after the head; answer it from the
-        # tail sequence without materializing the journal.
+        # tail sequence without building the whole journal in memory.
         head = store.last_event_sequence()
         if head <= sequence:
             return {
@@ -1707,7 +1707,7 @@ class MeetingWebService:
             return store
 
     def save_attachment(self, meeting_id: str, media_type: str, payload: bytes) -> Dict[str, Any]:
-        """人类交进来的一张图：存成这场会的材料，回它的名字。"""
+        """人类交进来的一张图：存成这场会的一份文件，回它的名字。"""
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
             if store.meeting.status in TERMINAL_STATUSES:
@@ -1781,7 +1781,7 @@ class MeetingWebService:
                 store.append_chat("human", message, "request", references=references,
                                   attachments=attachments)
             else:
-                # Preserve the legacy singular journal shape when an older
+                # Preserve the legacy singular journal field when an older
                 # client sends ``reference``; V6 callers use ``references``.
                 store.append_chat(
                     "human",
@@ -1941,7 +1941,7 @@ class MeetingWebService:
     def terminal_input(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
         """Deliver human input into the shared pane while the human owns it.
 
-        Two payload shapes are accepted:
+        Two payload layouts are accepted:
 
         - ``{"bytes": "<hex>"}`` -- the takeover terminal's raw keystroke
           bytes (control characters, UTF-8 text, CSI sequences), sent to the

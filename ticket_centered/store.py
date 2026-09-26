@@ -1,10 +1,10 @@
-"""一场会的 store：数据路径下面挂材料。
+"""一场会的 store：数据路径下面挂值。
 
-一条**数据路径**就是 store 里的一条路（`case/quicksort/drafted`）。**材料**是那条路下面的一条
-Prepare：`$call` 是这一步读了什么，`$measured` 是它答了什么（没答是 `nil`）。材料不随工单走——
+一条**数据路径**就是 store 里的一条路（`case/quicksort/drafted`）。**值**就是那条路径下的那份
+Prepare：`$call` 是这一步读了什么，`$measured` 是它答了什么（没答是 `nil`）。它不随工单走——
 工单里只有数据路径，要用的人照路径来读。会议记录也在这份 store 旁边。
 
-这个模块只管两件事：按数据路径读写材料（含打包时抄一份），和记这场会的记录。
+这个模块只管两件事：按数据路径读写值（含打包时抄一份），和记这场会的记录。
 """
 
 from __future__ import annotations
@@ -83,21 +83,21 @@ class Store:
         return read_prepare(self.env(module_path), name)
 
     def read(self, module_path: str, name: str) -> Tuple[Any, bool]:
-        """(the material, answered)."""
+        """(the stored value, answered)."""
         return measured_of(self.prepared(module_path, name))
 
     def answered(self, module_path: str, name: str) -> bool:
         return self.read(module_path, name)[1]
 
     def write(self, module_path: str, name: str, value, call=None) -> None:
-        """Answer one step: the material lands at that step's own data path."""
+        """Answer one step: the value lands at that step's own data path."""
         record_prepare(self.env(module_path), name, call, value)
 
     # ------------------------------------------------------------------
     # Which data paths carry something
     # ------------------------------------------------------------------
 
-    def materials(self) -> List[Tuple[str, str]]:
+    def stored(self) -> List[Tuple[str, str]]:
         """Every (data path, definition) this store carries, in path order."""
         found: List[Tuple[str, str]] = []
         if not self.root.is_dir():
@@ -110,17 +110,17 @@ class Store:
             found.append(("/".join(parts[:index]), parts[-1][: -len(VIBA_SUFFIX)]))
         return found
 
-    def copy_materials(self, into, wanted: Iterable[Tuple[str, str]]) -> List[Tuple[str, str]]:
-        """Copy those (data path, definition) materials into another store.
+    def copy_stored(self, into, wanted: Iterable[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        """Copy those (data path, definition) stored values into another store.
 
         This is what a ticket's bundle carries: the program plus the data it
-        reads. Answers to steps are materials too, so the same call copies a
+        reads. Answers to steps are stored values too, so the same call copies a
         finished step along.
         """
         into = Path(into)
         copied: List[Tuple[str, str]] = []
         for module_path, name in wanted:
-            source = self._material_file(module_path, name)
+            source = self._stored_file(module_path, name)
             if source is None:
                 continue
             target = into / self._relative(module_path, name)
@@ -129,7 +129,7 @@ class Store:
             copied.append((module_path, name))
         return copied
 
-    def _material_file(self, module_path: str, name: str):
+    def _stored_file(self, module_path: str, name: str):
         path = self.root / self._relative(module_path, name)
         return path if path.is_file() else None
 

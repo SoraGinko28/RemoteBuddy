@@ -225,7 +225,7 @@ datetime =
     Object
   * $microsecond int                    # time identity inside a meeting: microseconds, unique by construction
 
-Optional[T] = T | nil                  # absence is nil; a sum shape, not a tag
+Optional[T] = T | nil                  # absence is nil; a sum, not a tag
 
 AppendOnlyList[T] = list[T]            # append-only: position is identity. A convention, not a structure
 ReadOnlyList[T] = list[T]              # read-only: written once, never changed. Same as above
@@ -340,7 +340,7 @@ ChatMessage =
   * $user_name UserName
   * $time datetime
 
-# 图片是这场会的一份材料：`$name` 指的是会议目录 `attachments/` 下的那个文件，
+# 图片是这场会存下来的一份文件：`$name` 指的是会议目录 `attachments/` 下的那个文件，
 # ADT 里只留名字与内容指纹，不留副本、也不留它从哪儿来。
 # 一条消息可以只有图、没有字：这时 $message 是空的，$image_msg 不是。
 ImageAttachment =
@@ -468,7 +468,7 @@ TerminalControlReference =
 # record type. A rule that could see how the data is kept would stop being a
 # rule about the meeting.
 #
-# They are types whose shape is the unit (Object = nil): carrying one is what
+# They are types whose value is the unit (Object = nil): carrying one is what
 # lets a definition be judged (is_compliant).
 # ---------------------------------------------------------------- #
 

@@ -5,7 +5,7 @@
 
 一个成员在一份 store 上跑一段程序（`Runner`）：自己会的算子就按实现了算；store 里已经有答案的就
 **回放**（同一个副作用不做第二遍）；都不会就**递延**——那一步交给别人。每一步答完，交出去的是这条
-数据路径（`$module_path … * $func_name …`），材料留在 store 里。
+数据路径（`$module_path … * $func_name …`），值留在 store 里。
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ class Runner:
         _value, answered = self.store.read(module_path, func_name)
         if answered:
             self.did.append((module_path, func_name, "replayed"))
-            return lambda *args: address_material(module_path, func_name)
+            return lambda *args: step_address(module_path, func_name)
         impl = self.member.caps.get(func_name)
         if impl is None:
             self.deferred.append((module_path, func_name))
@@ -101,7 +101,7 @@ class Runner:
             module_path = env.storage.cur_storage_path
             record_prepare(env, func_name, call_of(read_prepare(env, func_name)), value)
             self.did.append((module_path, func_name, value))
-            return address_material(module_path, func_name)
+            return step_address(module_path, func_name)
 
         return leaf
 
@@ -125,8 +125,8 @@ def environment_at(env, module_path: str) -> Environment:
 
 
 def text_of(env, piece) -> str:
-    """A material as text: an address is read (the store has it), a literal is itself."""
-    return str(value_of(material_of(env, piece)))
+    """A stored value as text: an address is read (the store has it), a literal is itself."""
+    return str(value_of(stored_of(env, piece)))
 
 
 def value_of(piece) -> Any:
@@ -134,19 +134,19 @@ def value_of(piece) -> Any:
     return getattr(piece, "value", piece)
 
 
-def material_of(env, piece):
-    """The material a step address points at; a piece that is no address is itself."""
+def stored_of(env, piece):
+    """The value a step address points at; a piece that is no address is itself."""
     try:
         step_of(piece)
     except RuntimeError:
         return piece
-    return read_material(env, piece)
+    return read_stored(env, piece)
 
 
-def read_material(env, address) -> Any:
-    """Read the material one step answered: `($module_path "…" * $func_name "…")`.
+def read_stored(env, address) -> Any:
+    """Read the value one step answered: `($module_path "…" * $func_name "…")`.
 
-    The address is what a step hands over; the material stays in the store, so
+    The address is what a step hands over; the value stays in the store, so
     this is how an operator gets at it.
     """
     module_path, name = step_of(address)
@@ -157,8 +157,8 @@ def read_material(env, address) -> Any:
     return value
 
 
-def address_material(module_path: str, func_name: str):
-    """A step as material: `($module_path "…" * $func_name "…")`."""
+def step_address(module_path: str, func_name: str):
+    """A step written as an address: `($module_path "…" * $func_name "…")`."""
     return material(viba_ast.ProductChain([
         viba_ast.Tagged("$module_path", viba_ast.Constant(module_path)),
         viba_ast.Tagged("$func_name", viba_ast.Constant(func_name)),

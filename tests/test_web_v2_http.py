@@ -927,7 +927,7 @@ class AttachmentTest(MeetingWebServiceTest):
         return self.service.save_attachment(meeting_id, media_type,
                                             self.PNG if payload is None else payload)
 
-    def test_an_image_becomes_a_material_of_the_meeting(self):
+    def test_an_image_becomes_a_file_of_the_meeting(self):
         self.start_meeting("attach-demo")
         descriptor = self.upload()
         self.assertEqual("image/png", descriptor["media_type"])
@@ -946,7 +946,7 @@ class AttachmentTest(MeetingWebServiceTest):
         chats = [e for e in store.events() if e["kind"] == "chat" and e["actor"] == "human"]
         self.assertEqual([descriptor["name"]],
                          [item["name"] for item in chats[-1]["data"]["attachments"]])
-        # 图本身是一场会的材料，不在 journal 里。
+        # 图本身是这场会存下来的一份文件，不在 journal 里。
         self.assertNotIn("fake png body", json.dumps(chats[-1]))
 
     def test_a_message_may_be_nothing_but_pictures(self):

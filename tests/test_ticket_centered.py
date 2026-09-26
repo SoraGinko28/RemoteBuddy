@@ -2,7 +2,7 @@
 
 `ticket_centered_design/ticket_centered.md` 说了几件事，这里一条条验：五类文件、工单里的路径都相对
 案子、一张工单至少 import 它要调的那些 api、每一步只写调用、一张工单发给会上的每个成员、各人拿一份
-自己的副本跑同一个程序（自己会的算、有答案的回放、其余递延）、答下的材料抄回会议、对账靠成员包里
+自己的副本跑同一个程序（自己会的算、有答案的回放、其余递延）、答下的值抄回会议、对账靠成员包里
 那份副本、"该发哪一张"是读 store 算出来的。
 
 写代码那一步是脚本化的（`write(prompt) -> code`）——别的都是真的：真解释器、真 store、真规则程序、
@@ -231,7 +231,7 @@ def test_a_member_is_a_process_that_runs_the_bundle_handed_to_it(tmp_path):
                               cwd=REPO_ROOT, env=environment, capture_output=True, text=True,
                               timeout=180)
     assert finished.returncode == 0, finished.stderr
-    # 答下的材料抄回会议：三个数据路径下都有东西了
+    # 答下的值抄回会议：三个数据路径下都有东西了
     for path, name in (("greeted", "acknowledge"), ("drafted", "write_code"),
                        ("report_done", "report_done")):
         assert meeting.store.answered(meeting.absolute(case, path), name), f"{path} + {name}"

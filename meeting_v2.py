@@ -108,7 +108,7 @@ VALID_AGENT_PROVIDERS = {"openai", "deepseek"}
 # means "follow the config.toml default".
 VALID_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 MAX_CHAT_REFERENCES = 32
-# 人类可以随一条消息交几张图片；图本身是这场会的一份材料，放在会议目录的
+# 人类可以随一条消息交几张图片；图是这场会存下来的一份文件，放在会议目录的
 # `attachments/` 下（名字 + 内容指纹记在消息上，图不进 journal）。
 ATTACHMENTS_DIR = "attachments"
 MAX_MESSAGE_ATTACHMENTS = 8
@@ -308,7 +308,7 @@ class Meeting:
     reasoning_effort: Optional[str] = None
     # The directory this meeting works in: a workspace's root, when the meeting
     # was opened inside one (then all of its data lives in `<workspace>/.meeting/`).
-    # None keeps the older shape: a fresh `workspace/` directory inside the run dir.
+    # None keeps the older layout: a fresh `workspace/` directory inside the run dir.
     workspace_root: Optional[str] = None
     schema_version: int = SCHEMA_VERSION
     mode: str = MEETING_MODE
@@ -608,7 +608,7 @@ class MeetingStore:
         """The directory the meeting works in.
 
         Inside a workspace that is the workspace's own root (the project); the
-        older shape has a fresh `workspace/` directory inside the run dir.
+        older layout has a fresh `workspace/` directory inside the run dir.
         """
         if self.meeting.workspace_root:
             root = Path(self.meeting.workspace_root).expanduser().resolve()
@@ -621,7 +621,7 @@ class MeetingStore:
         """这场会的一张图：`<会议目录>/attachments/<名字>`。
 
         名字是这场会给的（`image-1.png`），不是外面来的路径——所以它既不能跳出会议
-        目录，也不用担心和别的材料重名。
+        目录，也不用担心和别的文件重名。
         """
         if not isinstance(name, str) or not ATTACHMENT_NAME_RE.fullmatch(name):
             raise MeetingError("invalid attachment name")
@@ -635,7 +635,7 @@ class MeetingStore:
                       if child.is_file() and ATTACHMENT_NAME_RE.fullmatch(child.name))
 
     def save_attachment(self, media_type: str, payload: bytes) -> Dict[str, Any]:
-        """把一张图存成这场会的材料，回它的名字与指纹（图本身不进 journal）。"""
+        """把一张图存成这场会的一份文件，回它的名字与指纹（图本身不进 journal）。"""
         if not isinstance(media_type, str):
             raise MeetingError("attachment media type must be text")
         extension = ATTACHMENT_TYPES.get(media_type.split(";")[0].strip().lower())
@@ -884,7 +884,7 @@ class MeetingStore:
             raise MeetingError("invalid chat message type")
         if not isinstance(content, str):
             raise MeetingError("chat content must be text")
-        # 一条消息要么有字，要么有图（图是这场会的材料，名字得先存过）。
+        # 一条消息要么有字，要么有图（图是这场会存下来的文件，名字得先存过）。
         normalized_attachments: List[Dict[str, Any]] = []
         if attachments is not None:
             if isinstance(attachments, (str, bytes)):
@@ -903,10 +903,10 @@ class MeetingStore:
                 raise MeetingError(f"a message may carry at most {MAX_MESSAGE_ATTACHMENTS} images")
         if not content.strip() and not normalized_attachments:
             raise MeetingError("chat content must be non-empty")
-        # ``reference`` is the v2 single-reference shape.  V6 messages may
+        # ``reference`` is the v2 single-reference field.  V6 messages may
         # carry any number of immutable content references, so persist the
         # normalized list while retaining the singular alias for readers that
-        # still consume the older journal shape.
+        # still consume the older journal field.
         normalized: List[Dict[str, Any]] = []
         legacy_single = references is None and reference is not None
         if reference is not None:
@@ -938,8 +938,8 @@ class MeetingStore:
             unique.append(item)
         data: Optional[Dict[str, Any]] = None
         if unique:
-            # Keep the exact legacy shape for callers that still pass the
-            # singular argument.  The V6 list shape is emitted only when the
+            # Keep the exact legacy field for callers that still pass the
+            # singular argument.  The V6 list form is emitted only when the
             # caller explicitly supplies ``references``.
             data = {"reference": unique[0]} if legacy_single and len(unique) == 1 else {"references": unique}
         if normalized_attachments:
@@ -958,7 +958,7 @@ class MeetingStore:
         comment: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Append an immutable human score without entering the chat flow."""
-        # The public shape is ``(tag, reference, judge_name)``.  Keep accepting
+        # The public signature is ``(tag, reference, judge_name)``.  Keep accepting
         # the earlier ``(tag, judge_name, reference)`` positional order so
         # existing callers can upgrade without rewriting their call sites.
         if isinstance(reference, str) and isinstance(judge_name, Mapping):
@@ -1015,7 +1015,7 @@ class MeetingStore:
         start_time marks the boundary, so every takeover and every hand-back
         writes one. ``user_name`` None means nobody holds it: the human handed
         the pane back and no agent picked it up. Stored as a ``control`` event
-        so the Agent-visible journal shape does not grow new kinds.
+        so the Agent-visible journal does not grow new kinds.
         """
         # ADT terminal_capable: only the human or the actor agent may own
         # the shared pane; reviewers never hold the terminal.

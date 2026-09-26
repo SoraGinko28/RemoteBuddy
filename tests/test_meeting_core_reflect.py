@@ -264,7 +264,7 @@ class TestPythonLanding:
         styles = _open(adt.TerminalTextSegment(text="x", styles={"bold"}), "TerminalTextSegment").get_styles()
         assert [style.value for style in styles] == ["bold"]
 
-    def test_set_shapes_are_recognised(self) -> None:
+    def test_set_types_are_recognised(self) -> None:
         segment = adt.TerminalTextSegment(text="x", styles={"bold"})
         assert _open(segment, "TerminalTextSegment").get_styles().is_set is True
 

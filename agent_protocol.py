@@ -485,7 +485,7 @@ def _require_unused(command: str, path: str, keys: Sequence[Any], delay_ms: int)
 
 
 def normalize_reference_tokens(raw: Any) -> list:
-    """Validate the wire shape of content references on chat/done actions.
+    """Validate the wire format of content references on chat/done actions.
 
     Each reference points at one earlier journal event, mirroring the human
     reference schema: ``kind`` is ``chat`` or ``screen``, the source event is
@@ -709,7 +709,7 @@ def unwrap_action_envelope(payload: Any) -> Any:
     """Flatten the ``action`` wrapper some models put around their action.
 
     A gateway may hand the action over inside a one-key envelope, and a model
-    copying that shape from its own tool schema can either wrap it twice or
+    copying that layout from its own tool schema can either wrap it twice or
     split its fields between the envelope and the wrapped object. No valid
     action uses ``action`` as a key, so merging is unambiguous.
     """

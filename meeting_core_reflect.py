@@ -6,7 +6,7 @@ This is the access side of viba-reflect.md, landing on the stable ADT:
   name meeting_core), compiled into a descriptor pool by the descriptor side
   (viba.viba_type_descriptor). The map only concerns the document, not the
   implementation.
-- **Material** (Data): the Python record in meeting_adt.py — dataclass
+- **Data**: the Python record in meeting_adt.py — dataclass
   instances, list / tuple / set / dict, and scalars. The protocol does not
   specify what Data looks like; this layer binds it to Python objects.
 
@@ -30,7 +30,7 @@ Only what the protocol leaves unnamed is this layer's own:
 Two rules from the protocol:
 
 * ``root`` only pairs (descriptor, data). The version protocol does not care:
-  which version of the design a piece of material was made against is the upper
+  which version of the design a piece of data was made against is the upper
   layer's own business.
 * ``has`` only answers true or false — no such coordinate in the design and no
   such piece in the data are both ``False``.
@@ -500,11 +500,11 @@ class VibaAccess:
         if data is _NIL:
             return Ok(None)
         if data is None or isinstance(data, SCALAR_KINDS):
-            shape = self.unfold(node.descriptor)
-            if (shape.kind in (PRODUCT, TUPLE)
-                    or self.container_kind(shape) is not None):
+            unfolded = self.unfold(node.descriptor)
+            if (unfolded.kind in (PRODUCT, TUPLE)
+                    or self.container_kind(unfolded) is not None):
                 return VibaProgramErr(f"this piece is not a leaf: {node!r}")
-            if shape.kind == SUM and not self._branch_is_a_leaf(node):
+            if unfolded.kind == SUM and not self._branch_is_a_leaf(node):
                 # A sum has to be walked one step further in: the $agent_name
                 # branch is the leaf; only the literal kind of sum (Style) and
                 # Optional[float] are "the value is itself that branch"
@@ -586,11 +586,11 @@ class VibaAccess:
             raise VibaReflectError("this piece has no value")
         return given.ok_value
 
-    # ---- Private: the map (descriptors read into an addressable shape) ----
+    # ---- Private: the map (descriptors unfolded into a type you can walk) ----
 
     def unfold(self, descriptor: VibaTypeDescriptor,
                 seen: Optional[set] = None) -> VibaTypeDescriptor:
-        """Unfold the piece written as a name into an addressable shape.
+        """Unfold the piece written as a name into a type you can walk.
 
         Two things, both by the definitions in the pool: a name unfolds into its
         definition body; a generic application substitutes its arguments and
@@ -722,11 +722,11 @@ class VibaAccess:
     def _is_product_unit(self, descriptor) -> bool:
         """The product's unit: nil by kind, or a name the config calls nil.
         never is the sum's unit and is no product unit."""
-        shape = self.unfold(descriptor)
-        if shape.kind == NIL:
+        unfolded = self.unfold(descriptor)
+        if unfolded.kind == NIL:
             return True
-        return (shape.kind == TYPE_REF
-                and shape.payload.type_name in self.config.nil_eqv)
+        return (unfolded.kind == TYPE_REF
+                and unfolded.payload.type_name in self.config.nil_eqv)
 
     def inline_cycle(self, descriptor) -> Optional[str]:
         """The name a product's inline chain comes back to, or None.
@@ -743,11 +743,11 @@ class VibaAccess:
         Unfolded, that is a sum with a branch that is the product unit: a writer
         asking whether a slot with no value may be written ``nil``.
         """
-        shape = self.unfold(descriptor)
-        if shape.kind != SUM:
+        unfolded = self.unfold(descriptor)
+        if unfolded.kind != SUM:
             return False
         return any(_is_unit_descriptor(element, self.config)
-                   for element in shape.payload.elements)
+                   for element in unfolded.payload.elements)
 
     def _is_unit_descriptor(self, descriptor) -> bool:
         """A unit chain head: nil / never by kind, the empty tuple, or a name
@@ -765,7 +765,7 @@ class VibaAccess:
         """[(tag or None, that step, descriptor)]: the members of this piece,
         each with the step that takes you there; a None tag goes by position.
 
-        The step is what VibaGet takes, so a writer walks a material the same
+        The step is what VibaGet takes, so a writer walks a record the same
         way a reader does.
         """
         out = []
@@ -779,37 +779,37 @@ class VibaAccess:
         return out
 
     def _bare_sum(self, descriptor: VibaTypeDescriptor) -> Optional[List[tuple]]:
-        """The positional branches of an untagged sum a material may write
-        without the sum's own layer: [(index, shape, descriptor), ...], else None.
+        """The positional branches of an untagged sum a record may write
+        without the sum's own layer: [(index, branch, descriptor), ...], else None.
 
         A sum with at most one inner node can be written without that layer: the
-        material carries the branch's content straight, and leaf branches are
+        the record carries the branch's content straight, and leaf branches are
         told apart by the value itself. Two inner nodes cannot be told apart, and
         a tagged sum is addressed by tag, so neither qualifies.
         """
-        shape = self.unfold(descriptor)
-        if shape.kind != SUM:
+        unfolded = self.unfold(descriptor)
+        if unfolded.kind != SUM:
             return None
-        elements = list(shape.payload.elements)
+        elements = list(unfolded.payload.elements)
         if elements and _is_unit_descriptor(elements[0], self.config):
             elements = elements[1:]
         members, inner = [], 0
         for index, element in enumerate(elements):
             if element.kind == TAGGED:
                 return None
-            branch = self._branch_shape(element)
+            branch = self._branch_kind(element)
             inner += 1 if branch == "inner" else 0
             members.append((index, branch, element))
         return members if inner <= 1 else None
 
-    def _branch_shape(self, descriptor: VibaTypeDescriptor) -> str:
+    def _branch_kind(self, descriptor: VibaTypeDescriptor) -> str:
         """How one branch of a sum reads: "unit", "leaf" or "inner"."""
-        shape = self.unfold(descriptor)
-        if shape.kind in (NIL, NEVER):
+        unfolded = self.unfold(descriptor)
+        if unfolded.kind in (NIL, NEVER):
             return "unit"
-        if shape.kind == LITERAL:
+        if unfolded.kind == LITERAL:
             return "leaf"
-        if shape.kind == TYPE_REF and shape.payload.type_name in LEAF_NAMES:
+        if unfolded.kind == TYPE_REF and unfolded.payload.type_name in LEAF_NAMES:
             return "leaf"
         return "inner"
 
@@ -818,8 +818,8 @@ class VibaAccess:
         members = self._bare_sum(descriptor)
         if members is None:
             return None
-        for _, branch_shape, branch in members:
-            if branch_shape != "inner":
+        for _, branch_kind, branch in members:
+            if branch_kind != "inner":
                 continue
             for branch_tag, branch_type in self._design_members(branch) or []:
                 if _tag_name(branch_tag) == _tag_name(tag):
@@ -852,19 +852,19 @@ class VibaAccess:
                 return positional[step.value]
             return None
         if step.kind == "at_index":
-            shape = self.unfold(node.descriptor)
-            if not self._has_elements_by_index(shape):
+            unfolded = self.unfold(node.descriptor)
+            if not self._has_elements_by_index(unfolded):
                 return None
-            if shape.kind == TUPLE:
-                if 0 <= step.value < len(shape.payload.elements):
-                    return shape.payload.elements[step.value]
+            if unfolded.kind == TUPLE:
+                if 0 <= step.value < len(unfolded.payload.elements):
+                    return unfolded.payload.elements[step.value]
                 return None
-            return shape.payload.args[0]
+            return unfolded.payload.args[0]
         if step.kind == "at_key":
-            shape = self.unfold(node.descriptor)
-            if self.container_kind(shape) != "dict":
+            unfolded = self.unfold(node.descriptor)
+            if self.container_kind(unfolded) != "dict":
                 return None
-            return shape.payload.args[1]
+            return unfolded.payload.args[1]
         return None
 
     # ---- Private: the data side (the Python record) ----
@@ -889,13 +889,13 @@ class VibaAccess:
                 found = _attribute(data, tag_name)
                 if found is not _MISSING:
                     return _present(found)      # field present; nil counts too
-            if target is not None and self._shape_matches(target, data, tag_name):
+            if target is not None and self._descriptor_matches(target, data, tag_name):
                 return _payload(target, data)
             return None
         if step.kind == "by_field_index":
             if isinstance(data, (tuple, list)) and 0 <= step.value < len(data):
                 return _present(data[step.value])
-            if target is not None and self._shape_matches(target, data, None):
+            if target is not None and self._descriptor_matches(target, data, None):
                 return _payload(target, data)
             return None
         if step.kind == "at_index":
@@ -913,21 +913,21 @@ class VibaAccess:
         return None
 
     def _branch_is_a_leaf(self, node: VibaNode) -> bool:
-        """Whether the sum branch that matched is itself a leaf shape (literal /
+        """Whether the sum branch that matched is itself a leaf type (literal /
         built-in leaf / unit)."""
         for tag, step, member in self.member_steps(node):
             if self._pick(node, step, member) is None:
                 continue
             if tag:
                 return False        # tagged branch: value hangs under that tag
-            shape = self.unfold(member)
-            if shape.kind in (LITERAL, NIL, NEVER):
+            unfolded = self.unfold(member)
+            if unfolded.kind in (LITERAL, NIL, NEVER):
                 return True
-            return (shape.kind == TYPE_REF
-                    and shape.payload.type_name in LEAF_NAMES)
+            return (unfolded.kind == TYPE_REF
+                    and unfolded.payload.type_name in LEAF_NAMES)
         return False
 
-    def _shape_matches(self, descriptor: VibaTypeDescriptor, data,
+    def _descriptor_matches(self, descriptor: VibaTypeDescriptor, data,
                        tag_name: Optional[str]) -> bool:
         """Whether this piece of data is this piece of descriptor.
 
@@ -954,22 +954,22 @@ class VibaAccess:
                 return True
             unfolded = self.unfold(descriptor)
             if unfolded is not descriptor:
-                return self._shape_matches(unfolded, data, tag_name)
+                return self._descriptor_matches(unfolded, data, tag_name)
             return _leaf_matches(written, data)
         if descriptor.kind == TYPE_APP:
             if descriptor.payload.constructor_name.lower() == type(data).__name__.lower():
                 return True
             unfolded = self.unfold(descriptor)
-            return unfolded is not descriptor and self._shape_matches(unfolded, data, tag_name)
+            return unfolded is not descriptor and self._descriptor_matches(unfolded, data, tag_name)
         if descriptor.kind == TAGGED:
             tag = _tag_name(descriptor.payload.tag)
             if isinstance(data, Enum) and _enum_matches(data, tag):
                 return True
             if _is_unit_descriptor(self.unfold(descriptor.payload.tagged_type), self.config):
                 return False        # unit branch: only tag / enum value match
-            return self._shape_matches(descriptor.payload.tagged_type, data, tag)
+            return self._descriptor_matches(descriptor.payload.tagged_type, data, tag)
         if descriptor.kind == SUM:
-            return any(self._shape_matches(element, data, _element_tag(element))
+            return any(self._descriptor_matches(element, data, _element_tag(element))
                        for element in descriptor.payload.elements)
         if descriptor.kind == LITERAL:
             return _literal_matches(descriptor.payload.value, data)
@@ -1003,15 +1003,15 @@ class VibaAccess:
             given = self.get(node, step)
             if isinstance(given, Ok) and given.ok_value is not None:
                 out += self._walk(given.ok_value)
-        shape = self.unfold(node.descriptor)
-        if self.container_kind(shape) == "dict":
+        unfolded = self.unfold(node.descriptor)
+        if self.container_kind(unfolded) == "dict":
             given_keys = self.keys(node)
             if isinstance(given_keys, Ok):
                 for key in given_keys.ok_value:
                     given = self.get(node, at_key(key))
                     if isinstance(given, Ok) and given.ok_value is not None:
                         out += self._walk(given.ok_value)
-        elif self._has_elements_by_index(shape):
+        elif self._has_elements_by_index(unfolded):
             given_length = self.length(node)
             if isinstance(given_length, Ok):
                 for index in range(given_length.ok_value):

@@ -1,7 +1,7 @@
 """一个成员的进程：有人把一张工单的一份副本交到它手上，它在自己那份副本里跑一遍。
 
 设计里是这么说的：**这一包发给会上的每个成员；各人拿一份自己的副本，在包里跑一遍**——自己会的算子
-算、store 里有答案的回放、其余递延；**答下的材料抄回会议**。
+算、store 里有答案的回放、其余递延；**答下的值抄回会议**。
 
 一个成员的进程拿到三样：
 
@@ -10,7 +10,7 @@
   `program/` 是程序（三个 api 的声明、几张工单、规则），`store/` 是这一步要读的数据；
 * `--case <案子>`：这一包的数据路径跑在哪个案子下——**案子名由发出去的那一侧给**，工单里只有相对路径。
 
-然后：跑一遍、答下的材料抄回会议、退出。工单名和成员名都在包的路径里，不用另外带一封信。
+然后：跑一遍、答下的值抄回会议、退出。工单名和成员名都在包的路径里，不用另外带一封信。
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ VIBA_SUFFIX = ".viba"
 
 def run_bundle(bundle, *, meeting, case: str, caps: Dict[str, Callable],
                out: Callable[[str], None] = print) -> List[Tuple[str, str]]:
-    """在"发给我的"那份副本里跑一遍工单程序，答下的材料抄回会议。
+    """在"发给我的"那份副本里跑一遍工单程序，答下的值抄回会议。
 
     返回这一次**真答了**哪几步：store 里已经有答案的是回放，不是这个成员干的活。
     """
@@ -59,7 +59,7 @@ def run_bundle(bundle, *, meeting, case: str, caps: Dict[str, Callable],
 
 
 def _hand_back(bundle: Path, store_root: Path) -> None:
-    """答下的材料抄回会议（每个角色只写自己名下那条数据路径）。"""
+    """答下的值抄回会议（每个角色只写自己名下那条数据路径）。"""
     source = bundle / STORE_DIR
     if source.is_dir():
         shutil.copytree(source, store_root, dirs_exist_ok=True)

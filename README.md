@@ -135,8 +135,8 @@ names each group by that directory's basename.
 `MeetingStore` still reads the older `runs/<meeting-id>/` layout (with a fresh `workspace/` inside
 the meeting directory); the Web service no longer writes it.
 
-Chat takes images: paste into the composer or use the paperclip. The bytes are stored as a material
-of the meeting (`attachments/image-<n>.<ext>`) and the message records only the name and the content
+Chat takes images: paste into the composer or use the paperclip. The bytes are stored as a file of
+the meeting (`attachments/image-<n>.<ext>`) and the message records only the name and the content
 hash, so the journal stays text; the Agent is handed the file's path in its workspace, which is how it
 reads the picture.
 
@@ -144,7 +144,7 @@ reads the picture.
 
 The default model client uses only `POST /responses`. It does not require a `/conversations` endpoint: the local event log is sent as bounded chat and action history with each request, together with the latest shared terminal screen. This works with Responses-only gateways such as a proxy whose configured base URL is `https://rust.cat`. Stateful Codex and Claude Code backends receive one fresh ephemeral session per active work cycle. The first turn receives reconstructed local history and later turns receive only new events plus the latest screen; vendor transcripts are never used for recovery.
 
-The Agent works only through the shared terminal. Structured `pwd`, `cd`, `vim`, and `python` commands keep workspace path resolution; beyond those, the Agent may run general bash command lines with two restricted classes. Deletion-class commands (`rm`, `rmdir`, `unlink`, `shred`, `truncate`, `dd`, `mkfs`, `find -delete`, `rsync --delete`, `git clean`/`git rm`) are rejected wherever they appear in a chained or piped line, and so is anything that would leave the shared pane's visible foreground (background `&` jobs, `nohup`, `setsid`, `disown`, `tmux`, `screen`, `open`, `osascript`, `exec`). Approved Vim keys, typing into a foreground program, observation, and visible chat messages complete the action set. A `chat` or `done` action may also attach content references that quote earlier `chat` or `screen` events by sequence number and character region — the same immutable reference shape (excerpt plus source hash) that human messages use. Structured command paths are resolved inside the session workspace; general bash commands are not path-confined, so this remains an application policy, not an operating-system sandbox; a person attaching directly to tmux is outside that boundary.
+The Agent works only through the shared terminal. Structured `pwd`, `cd`, `vim`, and `python` commands keep workspace path resolution; beyond those, the Agent may run general bash command lines with two restricted classes. Deletion-class commands (`rm`, `rmdir`, `unlink`, `shred`, `truncate`, `dd`, `mkfs`, `find -delete`, `rsync --delete`, `git clean`/`git rm`) are rejected wherever they appear in a chained or piped line, and so is anything that would leave the shared pane's visible foreground (background `&` jobs, `nohup`, `setsid`, `disown`, `tmux`, `screen`, `open`, `osascript`, `exec`). Approved Vim keys, typing into a foreground program, observation, and visible chat messages complete the action set. A `chat` or `done` action may also attach content references that quote earlier `chat` or `screen` events by sequence number and character region — the same immutable reference fields (excerpt plus source hash) that human messages use. Structured command paths are resolved inside the session workspace; general bash commands are not path-confined, so this remains an application policy, not an operating-system sandbox; a person attaching directly to tmux is outside that boundary.
 
 Agent `done` means "wait for the human." Only the human can complete a session. Completion retains tmux for inspection; stop interrupts the session and removes tmux.
 
@@ -156,7 +156,7 @@ Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CL
 
 A meeting may also run on tickets. The workflow itself is viba: `workflow/` holds the three role
 apis (actor / assistant / critic), the ticket programs designed before the meeting, and the rules
-the critic judges by. `ticket_centered/` is the harness around it — one shared store (materials at
+the critic judges by. `ticket_centered/` is the harness around it — one shared store (answers at
 data paths), the capability table of each role, and one process per role, which takes the bundle
 handed to it and answers in its own copy.
 

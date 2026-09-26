@@ -17,7 +17,7 @@ RemoteBuddy 那份程序按 "`--workflow` → `$REMOTEBUDDY_WORKFLOW` → 项目
 
 ## 1. 你在系统里的位置
 
-* **你的材料**是这套系统本身：你那份流程、会议记录、store、每个成员包里那份原件、journal。
+* **你要维护的就是这套系统本身**：你那份流程、会议记录、store、每个成员包里那份原件、journal。
 * **你的产出**是一份候选设计（一个目录）：三份 api + 工单 + 规则。它的名字是
   `Workflow.load(dir).digest()`。
 * **你不改正在跑的会**：一张工单发出去，包里带着 `program/`，就钉在发单那一刻的版本上。你改的是
@@ -122,7 +122,7 @@ Claude Code"的意思：**能改的是配置，改不了的是能力**。
 
 ```
 <会议目录>/ticket_centered/meeting_record.md     流程摘要 + 能力面摘要、每张工单、每个人自己的账
-<会议目录>/ticket_centered/store/                材料：每条数据路径下一条 Prepare（$call / $measured）
+<会议目录>/ticket_centered/store/                值：每条数据路径下一条 Prepare（$call / $measured）
 <会议目录>/ticket_centered/tickets/<工单>/<成员>/ 每个成员那份原件（program/ + store/）——对账靠它们
 <会议目录>/streams/events.jsonl                  journal：state/ticket_issued、state/ticket_ran
 GET /api/meetings/<会议号>/tickets               页面那块板子（该发哪一张、谁答的、判语、记录）

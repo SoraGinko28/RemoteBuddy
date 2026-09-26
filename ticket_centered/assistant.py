@@ -8,7 +8,7 @@
 能力表（`assistant_caps`）就是 api 里那两件事。**要它发言的工单，就在它的名下写一步**——这一趟的
 五张工单里只有收尾那张有它的步骤；发工单是它在程序外头的事（唯一的派单者），不在这里。
 
-`stated_task` 的实参是人类刚说的话：话**不是材料**，不随工单走，由听消息的那一侧交进来（这里就是
+`stated_task` 的实参是人类刚说的话：话**不落 store**，不随工单走，由听消息的那一侧交进来（这里就是
 `--words`；接消息的服务也一样）。那一步不在任何工单里，所以 `--words` 给的时候不带 `--bundle`。
 """
 
@@ -22,7 +22,7 @@ from . import _viba  # noqa: F401
 
 from viba.compliance import record_prepare
 
-from .host import read_material, text_of, value_of
+from .host import read_stored, text_of, value_of
 from .member import bundle_main
 from .store import Store
 
@@ -33,14 +33,14 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
     """assistant 的两件事。`say(line)` 是它回话的地方（没说就只落进 store）。"""
 
     def stated_task(env, words: str = ""):
-        """人类说了什么：材料落在案子自己的数据路径下。"""
+        """人类说了什么：落在案子自己的数据路径下。"""
         record_prepare(env, "stated_task", None, words)
         return words
 
     def closing_note(env, code, verdict):
         """这场会的结果：最后那版有多少行，判语是什么。"""
         written = text_of(env, code)
-        judged = value_of(read_material(env, verdict))
+        judged = value_of(read_stored(env, verdict))
         note = (f"这一版 {len(written.splitlines())} 行；"
                 f"判语：{'合格' if judged else '不合格'}")
         if say is not None:

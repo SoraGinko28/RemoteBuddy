@@ -871,7 +871,7 @@ class OpenAIResponsesClient:
 
 
 def _http_error_detail(body: Any, api_key: str) -> str:
-    """Extract common gateway error shapes without exposing credentials."""
+    """Extract common gateway error formats without exposing credentials."""
     if not isinstance(body, dict):
         return ""
     nested = body.get("error")

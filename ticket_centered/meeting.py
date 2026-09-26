@@ -2,14 +2,14 @@
 
 harness 只有三件事，这里都摆着：
 
-1. **一个 store**（`Store`）：共享的那一份数据，材料按数据路径放，会议记录也在里头；
+1. **一个 store**（`Store`）：共享的那一份数据，值按数据路径放，会议记录也在里头；
 2. **一个"该发哪一张"的判据**（`Meeting.due` / `Meeting.next_ticket`）：读 store 算出来的——要读的
    都在了、它自己那几步还没答，就该发；
 3. **几张能力表**（每个 `Member` 一张）：谁会不会哪个算子——表在成员自己的进程里（`member.py`）。
 
-发一张工单（`Meeting.publish`）：把它做成一个包（`program/` 是程序，`store/` 是这一步要读的材料），
+发一张工单（`Meeting.publish`）：把它做成一个包（`program/` 是程序，`store/` 是这一步要读的值），
 发给会上的**每个**成员，各人一份自己的副本。跑是成员那一侧的事：`--bundle` 指到哪一份，就是发给谁的。
-答下的材料由成员抄回会议；每个成员包里那份副本留着：**对账靠它们**。
+答下的值由成员抄回会议；每个成员包里那份副本留着：**对账靠它们**。
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ class Meeting:
         self._slice(bundle / STORE_DIR, ticket, case, seen)
 
     def _slice(self, store_root: Path, ticket: str, case: str, seen: set) -> None:
-        """Copy what the ticket reads, what it answers, and what those materials read."""
+        """Copy what the ticket reads, what it answers, and what those steps read."""
         wanted = list(self.workflow.addresses_in(ticket)) + list(self.workflow.answers_of(ticket))
         for module_path, name in wanted:
             absolute = self.absolute(case, module_path)
@@ -147,7 +147,7 @@ class Meeting:
             prepared = self.store.prepared(absolute, name)
             if prepared is None:
                 continue
-            self.store.copy_materials(store_root, [(absolute, name)])
+            self.store.copy_stored(store_root, [(absolute, name)])
             self._slice_calls(store_root, call_of(prepared), case, seen)
 
     def _slice_calls(self, store_root: Path, call, case: str, seen: set) -> None:
@@ -159,7 +159,7 @@ class Meeting:
             prepared = self.store.prepared(absolute, name)
             if prepared is None:
                 continue
-            self.store.copy_materials(store_root, [(absolute, name)])
+            self.store.copy_stored(store_root, [(absolute, name)])
             self._slice_calls(store_root, call_of(prepared), case, seen)
 
     # ------------------------------------------------------------------
@@ -167,7 +167,7 @@ class Meeting:
     # ------------------------------------------------------------------
 
     def backups(self, data_path: str, name: str) -> List[Tuple[str, str, Any]]:
-        """Every bundle copy of one material: (ticket, member, what it says)."""
+        """Every bundle copy of one stored value: (ticket, member, what it says)."""
         out: List[Tuple[str, str, Any]] = []
         for member_dir in sorted(self.tickets_dir.glob(f"*/*")):
             if member_dir.name == TEMPLATE:
@@ -202,7 +202,7 @@ class Meeting:
     def reconcile(self) -> List[Tuple[str, str, Dict[str, Any]]]:
         """Where the copies disagree with the store — an empty list is a clean meeting."""
         problems: List[Tuple[str, str, Dict[str, Any]]] = []
-        for data_path, name in self.store.materials():
+        for data_path, name in self.store.stored():
             value, answered = self.store.read(data_path, name)
             if not answered:
                 continue
@@ -215,7 +215,7 @@ class Meeting:
 
 
 def _text(value) -> str:
-    """A material written as one line, for comparing copies."""
+    """A stored value written as one line, for comparing copies."""
     piece = getattr(value, "data", None)
     if piece is None:
         return repr(value)

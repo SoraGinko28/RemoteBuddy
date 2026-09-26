@@ -1,4 +1,4 @@
-"""critic 的进程：判案。判哪份材料由工单给，**哪些规则可能被违反由它自己找**。
+"""critic 的进程：判案。判的是哪一份，由工单给；**哪些规则可能被违反，由它自己找**。
 
     python -m ticket_centered.critic --meeting <会议目录> --case case/quicksort \\
         --bundle <发给我的那一包>
@@ -7,7 +7,7 @@
 （`rules/*.viba`），用仓库自己的 `viba.compliance.is_compliant` 跑——规则自己给门槛、自己答 bool，
 这里不替它判。
 
-判的是哪份材料由工单给；critic 把那份材料放在案子自己的数据路径下（这一步的 `<数据路径>/judgment`），
+判的是哪一份，由工单给；critic 把那一份放在案子自己的数据路径下（这一步的 `<数据路径>/judgment`），
 规则从那儿读。结论落在这一步的数据路径下：`judge` 是那个 bool，`objection` 是说不合格的那句话。
 """
 
@@ -38,7 +38,7 @@ RULE_WORDINGS = {
 
 
 def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR) -> Dict[str, Callable]:
-    """critic 的能力表：`judge`（拿材料、自己找规则、逐条判）加上规则那几个算子。"""
+    """critic 的能力表：`judge`（拿那一份、自己找规则、逐条判）加上规则那几个算子。"""
 
     def judge(env, code):
         written = text_of(env, code)
@@ -143,7 +143,7 @@ def main(argv=None) -> int:
         return critic_caps(workflow)
 
     return bundle_main("critic", caps_for, argv,
-                       description="critic 的进程：拿工单给的材料，自己找规则判")
+                       description="critic 的进程：拿工单给的那一份，自己找规则判")
 
 
 if __name__ == "__main__":

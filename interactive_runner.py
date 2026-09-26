@@ -786,7 +786,7 @@ class InteractiveRunner:
                 print(f"[runner] backend close failed: {exc}", file=sys.stderr, flush=True)
 
     def _resolved_action_references(self, action: AgentAction) -> list:
-        """Resolve model-provided references into stored human-identical shapes.
+        """Resolve model-provided references into stored human-identical forms.
 
         The Agent quotes earlier journal events exactly like a person does:
         each wire reference selects one prior ``chat`` or ``screen`` event by
@@ -1094,7 +1094,7 @@ class InteractiveRunner:
     def _attachment_records(items: Sequence[Any], files: Optional[Any] = None) -> list[Dict[str, Any]]:
         """带图的消息：补上图在这场会里的文件路径（agent 读工作区里的文件就能看）。
 
-        The journal keeps the picture as a material of the meeting, named but not
+        The journal keeps the picture as a file of the meeting, named but not
         copied; the runtime is what knows where that name currently lives.
         """
         records: list[Dict[str, Any]] = []
@@ -1161,7 +1161,7 @@ class InteractiveRunner:
                     ]
                 if isinstance(data.get("reference"), dict):
                     # Keep the old singular field available to clients that
-                    # have not migrated to the V6 list shape yet.
+                    # have not migrated to the V6 list form yet.
                     record["reference"] = data["reference"]
             if include_action_details and event.get("kind") == "action":
                 data = event.get("data") if isinstance(event.get("data"), dict) else {}

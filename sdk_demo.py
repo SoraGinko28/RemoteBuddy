@@ -6,7 +6,7 @@
 All in this one process, no fixtures from the test suite:
 
 1. write a small meeting journal under a temporary runs/ directory
-   (meeting.json + streams/events.jsonl, the shape meeting_loader reads);
+   (meeting.json + streams/events.jsonl, the files meeting_loader reads);
 2. start the harness web server on a free local port over that journal;
 3. point meeting_sdk at it and drive the apis of the data-interface
    chapter -- every answer is a viba script (``entry = ...``);

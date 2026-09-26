@@ -1,6 +1,6 @@
 """ticket_centered —— 一场会跑在一叠事先设计好的工单上。
 
-一套只有三件事：一个 store（数据路径下面挂材料）、一个"该发哪一张"的判据、几张能力表。顺序、
+一套只有三件事：一个 store（数据路径下面挂值）、一个"该发哪一张"的判据、几张能力表。顺序、
 回话、判什么、改什么，全在流程里（`workflow/` 那五类 viba 文件）；进程只做：自己会的算子算、
 store 里已有答案的回放、其余递延——那一步交给别人。
 
@@ -23,7 +23,7 @@ _EXPORTS = {
     "Meeting": "meeting",
     "Member": "host",
     "Runner": "host",
-    "read_material": "host",
+    "read_stored": "host",
     "capability_digest": "host",
     "Store": "store",
     "Workflow": "workflow",
