@@ -218,6 +218,19 @@ class AgentAction:
             "delay_ms": 0,
             **payload,
         }
+        # `""` 和 `null` 是"这个字段没用"的另一种写法，不是"我想用这个字段"。结构化输出
+        # 常把没用到的字段填成空值；在这里先归一，后面按类型的检查才不会把它当成多余的
+        # 字段拒掉 —— 那种拒绝说不清是哪一项，模型只能猜，猜不中就在同一个错上转到整轮
+        # 以 api_error 收场（20260926-213214-3dbedc 的三次 `keystrokes has unrelated
+        # fields` 就是这么死的）。
+        for field, neutral in (("message_type", "none"), ("command", "none"),
+                               ("content", ""), ("path", ""), ("delay_ms", 0)):
+            if payload.get(field) is None:
+                payload[field] = neutral
+        if payload.get("message_type") == "":
+            payload["message_type"] = "none"
+        if payload.get("command") == "":
+            payload["command"] = "none"
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
             raise AgentProtocolError(
@@ -279,9 +292,19 @@ class AgentAction:
             _require_unused(command, path, keys, delay_ms)
         elif references:
             raise AgentProtocolError("only chat and done actions may carry references")
+        def stray_fields(*candidates: tuple) -> str:
+            """多余字段点名：这条文本是模型改错用的提示，说不清它只能瞎猜。"""
+            names = [name for name, present in candidates if present]
+            return ", ".join(names)
+
         if action_type == "command":
             if message_type != "none" or content:
-                raise AgentProtocolError("command action is invalid")
+                raise AgentProtocolError(
+                    "command action is invalid: "
+                    + stray_fields(("message_type", message_type != "none"),
+                                   ("content", bool(content)))
+                    + " is not used by a shell command line; leave it at none/empty"
+                )
             if command in STRUCTURED_COMMANDS:
                 if command == "pwd" and path:
                     raise AgentProtocolError("pwd does not accept a path")
@@ -299,14 +322,32 @@ class AgentAction:
                 if path:
                     raise AgentProtocolError("a bash command line does not accept a separate path")
             if keys or delay_ms:
-                raise AgentProtocolError("command has unrelated fields")
+                raise AgentProtocolError(
+                    "command has unrelated fields: "
+                    + stray_fields(("keys", bool(keys)), ("delay_ms", bool(delay_ms)))
+                )
         elif action_type == "keystrokes":
-            if message_type != "none" or content or command != "none" or path or delay_ms:
-                raise AgentProtocolError(f"{action_type} has unrelated fields")
+            stray = stray_fields(("message_type", message_type != "none"),
+                                 ("content", bool(content)),
+                                 ("command", command != "none"),
+                                 ("path", bool(path)),
+                                 ("delay_ms", bool(delay_ms)))
+            if stray:
+                raise AgentProtocolError(
+                    "keystrokes has unrelated fields: " + stray
+                    + "; a keystroke action carries only `keys`"
+                )
             validate_key_tokens(keys)
         elif action_type == "observe":
             if message_type != "none" or content or command != "none" or path or keys:
-                raise AgentProtocolError("observe has unrelated fields")
+                raise AgentProtocolError(
+                    "observe has unrelated fields: "
+                    + stray_fields(("message_type", message_type != "none"),
+                                   ("content", bool(content)),
+                                   ("command", command != "none"),
+                                   ("path", bool(path)),
+                                   ("keys", bool(keys)))
+                )
             if delay_ms < 100 or delay_ms > 2000:
                 raise AgentProtocolError("observe delay must be between 100 and 2000 ms")
         return cls(
@@ -583,15 +624,15 @@ def validate_key_tokens(tokens: Sequence[Any]) -> None:
         if not isinstance(token, dict) or set(token) != {"kind", "value"}:
             raise AgentProtocolError("invalid key token")
         kind, value = token["kind"], token["value"]
-        if kind == "literal":
+        if kind == "text":
             if not isinstance(value, str) or not value or any(
                 ord(character) < 32 or ord(character) == 127 for character in value
             ):
                 raise AgentProtocolError(
-                    "literal key text must be one non-empty line without control characters"
+                    "a text keystroke must be one non-empty line without control characters"
                 )
             total += len(value.encode("utf-8"))
-        elif kind == "key":
+        elif kind == "ctrl":
             if not isinstance(value, str) or value not in SPECIAL_KEYS:
                 raise AgentProtocolError(f"special key is not allowed: {value}")
         elif kind == "rest":
@@ -604,7 +645,7 @@ def validate_key_tokens(tokens: Sequence[Any]) -> None:
         else:
             raise AgentProtocolError("key token kind is invalid")
     if total > 8192:
-        raise AgentProtocolError("literal key input exceeds 8192 bytes")
+        raise AgentProtocolError("text keystroke input exceeds 8192 bytes")
 
 
 def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
@@ -624,11 +665,11 @@ def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
             if token.startswith("$text "):
                 text = token[len("$text "):]
                 if text:
-                    normalized.append({"kind": "literal", "value": text})
+                    normalized.append({"kind": "text", "value": text})
                 continue
             if token.startswith("$ctrl "):
                 key = token[len("$ctrl "):]
-                normalized.append({"kind": "key", "value": key})
+                normalized.append({"kind": "ctrl", "value": key})
                 continue
             if token.startswith("$rest "):
                 rest_text = token[len("$rest "):]
@@ -640,23 +681,28 @@ def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
                 continue
             # A bare string is still convenient for plain text.
             if token:
-                normalized.append({"kind": "literal", "value": token})
+                normalized.append({"kind": "text", "value": token})
             continue
         if not isinstance(token, dict):
             normalized.append(token)
             continue
         candidate = dict(token)
+        # ADT 里这两个 kind 叫 text / ctrl；模型在历史里看到自己以前发的
+        # `literal` / `key` 会照抄，所以旧名照样收，只是统一成 ADT 的名字。
+        legacy = {"literal": "text", "key": "ctrl"}
+        if candidate.get("kind") in legacy:
+            candidate["kind"] = legacy[candidate["kind"]]
         value = candidate.get("value")
         if (
-            candidate.get("kind") == "key"
+            candidate.get("kind") == "ctrl"
             and isinstance(value, str)
             and value not in SPECIAL_KEYS
             and len(value) == 1
             and value.isprintable()
             and value not in {"\n", "\r", "\x00"}
         ):
-            candidate["kind"] = "literal"
-        if candidate.get("kind") == "literal" and isinstance(candidate.get("value"), str):
+            candidate["kind"] = "text"
+        if candidate.get("kind") == "text" and isinstance(candidate.get("value"), str):
             normalized.extend(_expand_escaped_newlines(candidate))
         else:
             normalized.append(candidate)
@@ -674,9 +720,9 @@ def _expand_escaped_newlines(token: Dict[str, Any]) -> list:
 
     def line_break() -> None:
         if buffer:
-            expanded.append({"kind": "literal", "value": "".join(buffer)})
+            expanded.append({"kind": "text", "value": "".join(buffer)})
             buffer.clear()
-        expanded.append({"kind": "key", "value": "Enter"})
+        expanded.append({"kind": "ctrl", "value": "Enter"})
 
     while index < len(value):
         if value.startswith("\r\n", index):
@@ -719,7 +765,7 @@ def _expand_escaped_newlines(token: Dict[str, Any]) -> list:
         index += 1
 
     if buffer:
-        expanded.append({"kind": "literal", "value": "".join(buffer)})
+        expanded.append({"kind": "text", "value": "".join(buffer)})
     return expanded or [token]
 
 
@@ -853,7 +899,7 @@ def action_json_schema(
                 "additionalProperties": False,
                 "required": ["kind", "value"],
                 "properties": {
-                    "kind": {"type": "string", "enum": ["literal"]},
+                    "kind": {"type": "string", "enum": ["text"]},
                     "value": {
                         "type": "string",
                         "minLength": 1,
@@ -871,7 +917,7 @@ def action_json_schema(
                 "additionalProperties": False,
                 "required": ["kind", "value"],
                 "properties": {
-                    "kind": {"type": "string", "enum": ["key"]},
+                    "kind": {"type": "string", "enum": ["ctrl"]},
                     "value": {
                         "type": "string",
                         "enum": sorted(SPECIAL_KEYS),
@@ -980,8 +1026,8 @@ def action_json_schema(
                         {
                             "description": (
                                 "Keystrokes for the foreground program, in order. Each "
-                                "token is either text to type ($text / kind=literal) or a "
-                                "key to press ($ctrl / kind=key); a key name sent as text "
+                                "token is either text to type ($text / kind=text) or a "
+                                "key to press ($ctrl / kind=ctrl); a key name sent as text "
                                 "types its letters. Keys go to whatever holds the "
                                 "foreground, so check `terminal.current_command` first: "
                                 "editor keys sent while a shell is in front run as shell "

@@ -289,7 +289,7 @@ class AgentActionTest(unittest.TestCase):
                     type="keystrokes",
                     message_type="none",
                     content="",
-                    keys=[{"kind": "key", "value": "F12"}],
+                    keys=[{"kind": "ctrl", "value": "F12"}],
                 )
             )
         with self.assertRaisesRegex(ModelResponseError, "control characters"):
@@ -298,7 +298,7 @@ class AgentActionTest(unittest.TestCase):
                     type="keystrokes",
                     message_type="none",
                     content="",
-                    keys=[{"kind": "literal", "value": "\x1b"}],
+                    keys=[{"kind": "text", "value": "\x1b"}],
                 )
             )
         insert = AgentAction.from_dict(
@@ -306,12 +306,33 @@ class AgentActionTest(unittest.TestCase):
                 type="keystrokes",
                 message_type="none",
                 content="",
-                keys=[{"kind": "key", "value": "i"}],
+                keys=[{"kind": "ctrl", "value": "i"}],
             )
         )
-        self.assertEqual(({"kind": "literal", "value": "i"},), insert.keys)
+        self.assertEqual(({"kind": "text", "value": "i"},), insert.keys)
         with self.assertRaises(ModelResponseError):
             AgentAction.from_dict(action_payload(), allowed_types=("command",))
+
+    def test_empty_fields_mean_unused_and_stray_fields_are_named(self):
+        """`""`/`null` 是"这个字段没用"，不是"我想用它"；真多带的字段要指名。"""
+        action = AgentAction.from_dict(action_payload(
+            type="keystrokes",
+            message_type=None,
+            content=None,
+            command="",
+            path=None,
+            delay_ms=None,
+            keys=[{"kind": "ctrl", "value": "Enter"}],
+        ))
+        self.assertEqual(({"kind": "ctrl", "value": "Enter"},), action.keys)
+        with self.assertRaisesRegex(ModelResponseError, "unrelated fields: content"):
+            AgentAction.from_dict(action_payload(
+                type="keystrokes",
+                message_type="none",
+                content="我不该在这里",
+                command="none",
+                keys=[{"kind": "text", "value": "x"}],
+            ))
 
     def test_visible_newlines_become_enter_without_corrupting_string_escapes(self):
         action = AgentAction.from_dict(
@@ -320,9 +341,9 @@ class AgentActionTest(unittest.TestCase):
                 message_type="none",
                 content="",
                 keys=[
-                    {"kind": "literal", "value": "i"},
+                    {"kind": "text", "value": "i"},
                     {
-                        "kind": "literal",
+                        "kind": "text",
                         "value": 'print("\\n")\\nvalue = 1\\nprint(value)',
                     },
                 ],
@@ -330,12 +351,12 @@ class AgentActionTest(unittest.TestCase):
         )
         self.assertEqual(
             (
-                {"kind": "literal", "value": "i"},
-                {"kind": "literal", "value": 'print("\\n")'},
-                {"kind": "key", "value": "Enter"},
-                {"kind": "literal", "value": "value = 1"},
-                {"kind": "key", "value": "Enter"},
-                {"kind": "literal", "value": "print(value)"},
+                {"kind": "text", "value": "i"},
+                {"kind": "text", "value": 'print("\\n")'},
+                {"kind": "ctrl", "value": "Enter"},
+                {"kind": "text", "value": "value = 1"},
+                {"kind": "ctrl", "value": "Enter"},
+                {"kind": "text", "value": "print(value)"},
             ),
             action.keys,
         )
@@ -345,14 +366,14 @@ class AgentActionTest(unittest.TestCase):
                 type="keystrokes",
                 message_type="none",
                 content="",
-                keys=[{"kind": "literal", "value": "first\nsecond"}],
+                keys=[{"kind": "text", "value": "first\nsecond"}],
             )
         )
         self.assertEqual(
             (
-                {"kind": "literal", "value": "first"},
-                {"kind": "key", "value": "Enter"},
-                {"kind": "literal", "value": "second"},
+                {"kind": "text", "value": "first"},
+                {"kind": "ctrl", "value": "Enter"},
+                {"kind": "text", "value": "second"},
             ),
             actual_newline.keys,
         )
@@ -376,13 +397,13 @@ class AgentActionTest(unittest.TestCase):
         )
         self.assertEqual(
             (
-                {"kind": "literal", "value": "echo "},
-                {"kind": "literal", "value": "'"},
-                {"kind": "literal", "value": "1"},
-                {"kind": "literal", "value": "'"},
-                {"kind": "key", "value": "Left"},
-                {"kind": "literal", "value": " "},
-                {"kind": "key", "value": "Enter"},
+                {"kind": "text", "value": "echo "},
+                {"kind": "text", "value": "'"},
+                {"kind": "text", "value": "1"},
+                {"kind": "text", "value": "'"},
+                {"kind": "ctrl", "value": "Left"},
+                {"kind": "text", "value": " "},
+                {"kind": "ctrl", "value": "Enter"},
             ),
             action.keys,
         )
@@ -403,10 +424,10 @@ class AgentActionTest(unittest.TestCase):
         )
         self.assertEqual(
             [
-                {"kind": "literal", "value": "echo hi"},
+                {"kind": "text", "value": "echo hi"},
                 {"kind": "rest", "value": 200},
                 {"kind": "rest", "value": 350},
-                {"kind": "key", "value": "Enter"},
+                {"kind": "ctrl", "value": "Enter"},
             ],
             list(action.keys),
         )
@@ -454,7 +475,7 @@ class AgentActionTest(unittest.TestCase):
             for variant in full_schema["properties"]["action"]["anyOf"]
             if variant["properties"]["type"]["enum"] == ["keystrokes"]
         ][0]["properties"]["keys"]["items"]["anyOf"]
-        self.assertEqual(["literal"], key_variants[0]["properties"]["kind"]["enum"])
+        self.assertEqual(["text"], key_variants[0]["properties"]["kind"]["enum"])
         self.assertIn("pattern", key_variants[0]["properties"]["value"])
         self.assertIn("Escape", key_variants[1]["properties"]["value"]["enum"])
         rest_variant = [
