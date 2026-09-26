@@ -21,7 +21,8 @@ const el = Object.fromEntries([
   "member-chat-label", "member-last-label",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "reference-card", "composer-shell",
-  "attach-image-button", "image-input", "attachment-strip", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
+  "attach-image-button", "image-input", "attachment-strip",
+  "image-lightbox", "image-lightbox-image", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
@@ -3035,6 +3036,14 @@ function setAttachments(list) {
   renderAttachments();
 }
 
+// 点开一张图：弹一层盖住页面，点图以外的任何地方（或按 Esc）关掉。
+function openImageLightbox(src, alt) {
+  if (!el.image_lightbox || !el.image_lightbox_image) return;
+  el.image_lightbox_image.src = src;
+  el.image_lightbox_image.alt = alt || "";
+  if (!el.image_lightbox.open) el.image_lightbox.showModal();
+}
+
 // 消息里的图：journal 只记名字，图本身按那条数据路径取。
 function messageImages(event) {
   const data = event && event.data;
@@ -3043,16 +3052,17 @@ function messageImages(event) {
   if (!usable.length) return null;
   const holder = node("div", "message-images");
   for (const attachment of usable) {
-    const link = node("a", "message-image-link");
-    link.href = attachmentUrl(attachment.name);
-    link.target = "_blank";
-    link.rel = "noopener";
+    const src = attachmentUrl(attachment.name);
+    const button = node("button", "message-image-button");
+    button.type = "button";
+    button.title = "点开看原图";
     const image = node("img", "message-image");
-    image.src = attachmentUrl(attachment.name);
+    image.src = src;
     image.alt = attachment.name;
     image.loading = "lazy";
-    link.append(image);
-    holder.append(link);
+    button.append(image);
+    button.addEventListener("click", () => openImageLightbox(src, attachment.name));
+    holder.append(button);
   }
   return holder;
 }
@@ -3334,6 +3344,10 @@ function bind() {
     } finally { el.start_button.disabled = false; }
   });
   el.attach_image_button?.addEventListener("click", () => el.image_input?.click());
+  // 只有点在图上才留着；点图以外的任何地方（包括那层黑底）都关掉。
+  el.image_lightbox?.addEventListener("click", (event) => {
+    if (event.target === el.image_lightbox) el.image_lightbox.close();
+  });
   el.image_input?.addEventListener("change", async () => {
     const files = Array.from(el.image_input.files || []);
     el.image_input.value = "";                       // 同一张图可以再选一次

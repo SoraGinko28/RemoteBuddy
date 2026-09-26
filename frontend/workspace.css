@@ -230,10 +230,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .composer-footer #attach-image-button { margin-right: auto; border-color: transparent; background: transparent; display: inline-flex; align-items: center; justify-content: center; }
 .composer-footer #attach-image-button svg { width: 17px; height: 17px; }
 .composer-footer #attach-image-button:hover:not(:disabled) { border-color: transparent; background: var(--surface-2); }
-/* 消息里的图：点开看原图。 */
+/* 消息里的图：点开弹一层看原图（不开新网页）。 */
 .message-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
-.message-image-link { display: block; }
+.message-image-button { display: block; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
 .message-image { max-width: 220px; max-height: 220px; border: 1px solid var(--line-strong); border-radius: 6px; display: block; }
+.image-lightbox { border: 0; padding: 0; background: transparent; width: auto; height: auto; max-width: none; max-height: none; overflow: visible; }
+.image-lightbox::backdrop { background: rgb(0 0 0 / .82); }
+.image-lightbox img { display: block; max-width: 92vw; max-height: 92vh; border-radius: 6px; cursor: default; }
 .reference-card { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 5px; margin-top: 7px; padding: 6px; border: 1px solid #2f4a3c; border-radius: 5px; background: var(--surface-2); color: var(--muted); font-size: 10px; overflow: hidden; }
 .reference-item { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) 24px; align-items: start; gap: 7px; padding: 4px 3px; border-bottom: 1px solid var(--line); }
 .reference-item:last-child { border-bottom: 0; }
