@@ -6,6 +6,6 @@
 import assistant_api as assistant
 
 __ret__ = assistant.closing_note
-  << $env (environ.sub_env << "closing")
+  << $env ($sub_env << environ << "closing")
   << $code ($module_path "revised" * $func_name "revise_code")
   << $verdict ($module_path "judged_revision" * $func_name "judge")

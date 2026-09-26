@@ -5,5 +5,5 @@
 import critic_api as critic
 
 __ret__ = critic.judge
-  << $env (environ.sub_env << "judged_revision")
+  << $env ($sub_env << environ << "judged_revision")
   << $code ($module_path "revised" * $func_name "revise_code")
