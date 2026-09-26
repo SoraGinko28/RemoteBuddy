@@ -138,7 +138,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .agent-state.thinking { color: var(--blue); border-color: #33506b; background: #16232f; }
 .agent-state.acting { color: var(--amber); border-color: #574526; background: var(--amber-soft); }
 .agent-state.error { color: var(--red); border-color: #5c3733; background: var(--red-soft); }
-.agent-state.thinking .agent-state-dot, .agent-state.acting .agent-state-dot { animation: agent-pulse 1.2s ease-in-out infinite; }
+.agent-state.updating { color: var(--green); border-color: var(--green-solid); background: var(--green-soft); }
+.agent-state.restarting { color: var(--amber); border-color: #574526; background: var(--amber-soft); }
+.agent-state.thinking .agent-state-dot, .agent-state.acting .agent-state-dot, .agent-state.updating .agent-state-dot, .agent-state.restarting .agent-state-dot { animation: agent-pulse 1.2s ease-in-out infinite; }
 @keyframes agent-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .35; transform: scale(.72); }

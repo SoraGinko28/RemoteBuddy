@@ -89,6 +89,9 @@ const state = {
   pointerSelecting: false,
   // Which member's details the header strip is showing; null = closed.
   detailsAgent: null,
+  // 页面上"更新/重启"按下去之后，chip 上按住这个状态几秒：服务端那一段
+  // （换文本、换进程）常常短过一次轮询，看不到就等于没有反馈。
+  agentOpHold: null,
 };
 
 const labels = {
@@ -175,6 +178,8 @@ function latestBandTime(actor) {
 function memberState(actor, meeting) {
   const terminal = ["completed", "failed", "interrupted"].includes(meeting.status);
   if (terminal) return "idle";
+  const hold = state.agentOpHold;
+  if (hold && hold.member === actor && Date.now() < hold.until) return hold.state;
   // 更新 / 重启 是页面上那两个按钮的状态：agent 进程此刻正在被换掉，
   // 所以它不属于"谁占着终端"那套判断，任何时候都直接显示。
   if (meeting.phase === "skill_reload" || meeting.phase === "agent_restart") {
@@ -212,6 +217,20 @@ function memberState(actor, meeting) {
     if (event?.actor === "harness" || !phase) continue;
   }
   return "idle";
+}
+
+// 这场会里扮演 actor 的那个成员（多成员会议上就是名字叫 actor 的那个）。
+function actorMemberName(meeting) {
+  const roles = memberRoles(meeting);
+  return Object.keys(roles).find((name) => roles[name] === "actor") || null;
+}
+
+// 按住一个状态给 chip 看：按下去的人要立刻看到它落地，服务端的阶段随后会接上。
+function holdMemberState(stateName, ms = 3000) {
+  const member = actorMemberName(state.snapshot?.meeting);
+  if (!member) return;
+  state.agentOpHold = { member, state: stateName, until: Date.now() + ms };
+  renderMemberStates(state.snapshot.meeting);
 }
 
 function renderMemberStates(meeting) {
@@ -2900,6 +2919,7 @@ async function selectMeeting(meetingId) {
   // The member panel belongs to the meeting that was open: another meeting
   // opens with it closed.
   state.detailsAgent = null;
+  state.agentOpHold = null;
   el.member_panel?.classList.remove("open");
   const [snapshot, eventPayload] = await Promise.all([
     api(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`),
@@ -3480,6 +3500,7 @@ function bind() {
       else if (!answer.agent_running) toast("Skill 已更新：没有在跑的进程，下一轮开工就用新的", "success");
       else if (answer.applies_to_next_request) toast("Skill 已更新：下一句就用新的", "success");
       else toast("Skill 已更新：这个后端把指令写在进程里，下次开工生效；要立刻生效就点\"重启\"", "success");
+      if (answer.changed) holdMemberState("updating");
       await refreshSelected();
       await loadMeetings();
     } catch (error) { toast(error.message); }
@@ -3495,6 +3516,7 @@ function bind() {
         `/api/meetings/${encodeURIComponent(state.selectedId)}/agent/restart`,
         { method: "POST", body: "{}" });
       toast(answer.started ? "没有在跑的进程，已经用新 Skill 起了一个" : "已重启，进程马上换一个", "info");
+      holdMemberState("restarting");
       await refreshSelected();
       await loadMeetings();
     } catch (error) { toast(error.message); }
