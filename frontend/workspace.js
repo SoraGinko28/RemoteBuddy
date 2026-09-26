@@ -2878,6 +2878,29 @@ function updateCredentialFields() {
   }
 }
 
+// 上次打开的是哪一场：刷新之后要回到它，而不是按"最近活动"跳到别的会上去。
+// 私密模式下 localStorage 会抛，读不到就当没记过。
+const SELECTED_MEETING_KEY = "remotebuddy.selected-meeting";
+
+function rememberMeeting(meetingId) {
+  try {
+    window.localStorage.setItem(SELECTED_MEETING_KEY, String(meetingId || ""));
+  } catch (_error) { /* 记不住也不影响用 */ }
+}
+
+function rememberedMeeting() {
+  try {
+    return window.localStorage.getItem(SELECTED_MEETING_KEY) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+// 列表按工作区分组，上次那场可能在屏幕外：刷新之后要能一眼看见它。
+function revealSelectedMeeting() {
+  el.meeting_list?.querySelector(".meeting-item.selected")?.scrollIntoView({ block: "nearest" });
+}
+
 async function loadMeetings() {
   const payload = await api("/api/meetings");
   state.meetings = payload.meetings || [];
@@ -2926,6 +2949,7 @@ async function selectMeeting(meetingId) {
     api(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=0`),
   ]);
   if (meetingId !== state.selectedId) return;
+  rememberMeeting(meetingId);
   state.snapshot = snapshot;
   state.timeline = eventPayload.events || [];
   state.cursor = eventPayload.cursor || 0;
@@ -3793,12 +3817,19 @@ async function boot() {
     // up opening a meeting: start it and let it land whenever it lands.
     loadHealth().catch((error) => toast(error.message));
     await Promise.all([loadMeetings(), loadSettings()]);
-    // The list is ordered by last activity, so its first entry is the meeting
-    // the human was most recently in. A reload always lands there; with nothing
-    // to reopen the welcome card stands, and the human picks a workspace when
-    // they open a session (no more phantom meeting in a `runs/` pile).
-    if (state.meetings.length) await selectMeeting(state.meetings[0].meeting_id);
-    else renderAll();
+    // 刷新回到上次打开的那一场（存在浏览器里）；它要是没了，才退回"最近活动的第一场"。
+    // 一场都没有的时候欢迎卡片留着，人来选工作区。
+    const known = new Set(state.meetings.map((one) => one.meeting_id));
+    const remembered = rememberedMeeting();
+    const target = known.has(remembered)
+      ? remembered
+      : (state.meetings.length ? state.meetings[0].meeting_id : "");
+    if (target) {
+      await selectMeeting(target);
+      revealSelectedMeeting();
+    } else {
+      renderAll();
+    }
   } catch (error) {
     // Only a genuine failure (service down, meeting unreadable) leaves the
     // welcome card on screen.
