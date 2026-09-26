@@ -366,7 +366,7 @@ async function apiConditional(path, etag) {
 
 function toast(message) {
   clearTimeout(state.toastTimer);
-  // 两个位置同一句话：会话里那个在上边栏靠右，欢迎卡片上那个没有上边栏，贴右上角。
+  // 两个位置同一句话：会话里那个在上边栏靠左，欢迎卡片上那个没有上边栏，贴左上角。
   const visible = [el.toast, el.welcome_toast].filter(Boolean);
   for (const node of visible) {
     node.textContent = message;
