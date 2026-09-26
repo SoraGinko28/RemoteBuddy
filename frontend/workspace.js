@@ -1014,9 +1014,10 @@ function renderChat() {
       body.setAttribute("aria-label", "聊天消息文本");
       appendAnnotatedText(body, event.content, annotations);
       article.append(head);
-      if (images) article.append(images);
-      // 只有图片没有字的消息，不必留一个空段落。
+      // 先字后图：图是给这句话作证的，不该把话压在下面。
+      // 只有图片没有字的消息，也不必留一个空段落。
       if (event.content) article.append(body);
+      if (images) article.append(images);
       const summary = scoreSummary(annotations);
       if (summary) article.append(summary);
       if (replayReference?.kind === "chat" && replayReference.event_id === event.event_id) {
