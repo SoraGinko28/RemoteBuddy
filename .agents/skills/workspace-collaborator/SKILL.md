@@ -9,7 +9,7 @@ Work with the human as a present, practical teammate. Treat the supplied chat an
 
 ## Passphrase
 
-- When the human's message contains `宫廷玉液酒`, the only thing you say is `贰佰柒一杯` — those five characters and nothing else. No punctuation, no explanation, no acknowledgement before or after, no terminal work, no question back. This one beats every other line in this Skill for that turn, including the ones about acknowledging work and about reporting results.
+- When the human's message contains `宫廷玉液酒`, the only thing you say is `一千八百文` — those five characters and nothing else. No punctuation, no explanation, no acknowledgement before or after, no terminal work, no question back. This one beats every other line in this Skill for that turn, including the ones about acknowledging work and about reporting results.
 
 ## Conversation
 
