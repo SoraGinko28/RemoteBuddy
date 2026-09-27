@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 import threading
 import time
 import uuid
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from agent_protocol import (
@@ -45,10 +47,23 @@ MAX_INVALID_ACTION_RETRIES = 3
 # completes; once the threshold is hit, move on").
 DYNAMIC_STALL_LIMIT = 3
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
+# 只有这两条 backend 自己有读工具：claude-code 是 Read/Glob/Grep，trae-acp 是它自己的读
+# 工具加只读 shell（2026-09-27 在真会上验过：它读了文件，终端一个字符没动）。别的
+# backend 没有自己的读工具（纯对话的 responses、结构化 app-server 的那两种），终端就是
+# 它们唯一那条路，所以不挡。
+BACKENDS_WITH_OWN_READ_TOOLS = {"claude-code", "trae-acp"}
 # 一轮里最多交给模型几张图：够用就行，免得一次把整场会的图都塞进去。
 MAX_IMAGES_PER_TURN = 4
 # 太大的图不随请求走（观察里仍然写着它在哪），免得一次请求大到发不出去。
 MAX_IMAGE_BYTES_PER_TURN = 4 * 1024 * 1024
+# 共享终端是"改东西"的地方。只读命令（下面这些"看一眼"）挡回来，并指名让它走 backend
+# 自己的只读工具：那条路一步就读完，终端那一趟要打字、抓屏、还让人看着滚过去。
+# 判得保守：单个命令、名单里的读者、没有串联/重定向、`sed -i` 不算读、参数不出工作区。
+TERMINAL_READ_ONLY_COMMANDS = {
+    "cat", "bat", "sed", "head", "tail", "nl", "rg", "grep", "ls", "wc", "file",
+    "stat", "tree", "fd", "column",
+}
+TERMINAL_READ_ONLY_BREAKERS = (";", "&", "|", ">", "<", "`", "$(", "\n")
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
 MESSAGE_TYPES = ("none", "ack", "progress", "question", "final")
@@ -1400,6 +1415,20 @@ class InteractiveRunner:
             if action.type == "command":
                 if info["command"] not in SHELL_COMMANDS:
                     raise RunnerError("structured commands are allowed only at the shell")
+                reader = (
+                    self._plain_reader_command(str(action.command or ""))
+                    if self.store.meeting.agent_backend in BACKENDS_WITH_OWN_READ_TOOLS
+                    else None
+                )
+                if reader is not None:
+                    raise RunnerError(
+                        f"the shared terminal is for changes, not for reading: `{action.command}` "
+                        f"is a plain reader. Read it with your own read-only tools instead -- one "
+                        f"step, nothing typed, nothing scrolled: Claude Code has Read/Glob/Grep, "
+                        f"Codex and Trae have their own read-only shell (`{action.command}` runs "
+                        f"there). If the human asked to see this file, say so and show it with "
+                        f"`git diff` or by pasting it into chat."
+                    )
                 typed_path = ""
                 if action.command in {"cd", "python"}:
                     resolve_workspace_path(
@@ -1538,6 +1567,45 @@ class InteractiveRunner:
                 or self.store.meeting.control_owner != self.agent_name
                 or self.store.meeting.status != "running"
             )
+
+    def _plain_reader_command(self, line: str) -> Optional[str]:
+        """这条命令行是不是"单纯看一眼"？是就返回程序名，不是就 None（照旧交给终端）。"""
+        text = line.strip()
+        if not text or any(mark in text for mark in TERMINAL_READ_ONLY_BREAKERS):
+            return None
+        try:
+            argv = shlex.split(text)
+        except ValueError:
+            return None
+        if not argv:
+            return None
+        program = Path(argv[0]).name
+        if program in {"python", "python3"} and "-c" in argv[1:]:
+            # `python -c "print(open('f').read())"` 是换了名字的读者，一样挡回去。
+            index = argv.index("-c")
+            code = argv[index + 1] if index + 1 < len(argv) else ""
+            return program if "open(" in code else None
+        if program not in TERMINAL_READ_ONLY_COMMANDS:
+            return None
+        if program == "sed" and any(
+            arg == "-i" or arg.startswith("-i") or arg == "--in-place" for arg in argv[1:]
+        ):
+            return None
+        try:
+            root = self.store.workspace_path.resolve()
+        except (MeetingError, OSError):
+            return None
+        for arg in argv[1:]:
+            if arg.startswith("-") or not (arg.startswith("/") or ".." in Path(arg).parts):
+                continue
+            candidate = Path(arg) if arg.startswith("/") else root / arg
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                return None
+            if root != resolved and root not in resolved.parents:
+                return None
+        return program
 
     def _pane_snapshot(self, pane_id: str) -> Optional[tuple]:
         try:

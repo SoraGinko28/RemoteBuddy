@@ -1164,6 +1164,74 @@ class InteractiveRunnerTest(unittest.TestCase):
             resolve_workspace_path(self.store, current, "snake.py", "python"),
         )
 
+    def _typed_for_command(self, name, line, backend="trae-acp"):
+        """让 actor 只发这一条 `command`，返回真正打进了共享终端的那几行程序名。"""
+        store = MeetingStore.create(
+            self.root,
+            name,
+            "Read notes.md and tell me what changed.",
+            self.skill,
+            f"remotebuddy-{name}",
+            "test-model",
+            agent_backend=backend,
+            agent_provider="deepseek" if backend == "claude-code" else "openai",
+        )
+        transport = FakeTransport()
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("command", command=line),
+                make_action("done", message_type="final", content="Said what changed."),
+            ]
+        )
+        client.backend_name = backend
+        InteractiveRunner(
+            store, transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+        self.typed = [item[1] for item in transport.commands if item[0] != "create"]
+        self.last_observation = client.calls[2][2]
+        return self.typed
+
+    def test_plain_readers_never_reach_the_shared_terminal(self):
+        typed = self._typed_for_command("runner-reader", "sed -n '1,40p' notes.md")
+
+        self.assertNotIn("sed", typed)
+        self.assertIn("for changes, not for reading", self.last_observation)
+        self.assertIn("Read/Glob/Grep", self.last_observation)
+
+    def test_commands_that_change_something_still_reach_the_shared_terminal(self):
+        for name, line, program in (
+            ("runner-git", "git diff notes.md", "git"),
+            ("runner-edit", "sed -i 's/a/b/' notes.md", "sed"),
+            ("runner-pipeline", "cat notes.md | wc -l", "cat"),
+            ("runner-outside", "cat /etc/hosts", "cat"),
+        ):
+            with self.subTest(line=line):
+                typed = self._typed_for_command(name, line)
+                self.assertIn(program, typed)
+
+    def test_a_reader_of_a_file_outside_the_workspace_is_still_allowed(self):
+        """外面的东西 backend 自己的工具本来就够不着，终端是唯一那条路。"""
+        typed = self._typed_for_command("runner-reader-outside", "sed -n '1,20p' /etc/hosts")
+
+        self.assertIn("sed", typed)
+
+    def test_a_python_one_liner_that_opens_a_file_is_a_reader_too(self):
+        typed = self._typed_for_command(
+            "runner-reader-python", "python -c \"print(open('notes.md').read())\""
+        )
+
+        self.assertNotIn("python", typed)
+        self.assertIn("for changes, not for reading", self.last_observation)
+
+    def test_a_backend_without_read_tools_still_reads_through_the_terminal(self):
+        """纯对话的 backend 没有自己的读工具：终端是它唯一那条路，不许挡。"""
+        typed = self._typed_for_command(
+            "runner-reader-fallback", "sed -n '1,40p' notes.md", backend="responses"
+        )
+
+        self.assertIn("sed", typed)
+
     def test_dynamic_backend_actions_still_pass_through_runner_and_one_pane(self):
         backend = DynamicBackend()
         InteractiveRunner(

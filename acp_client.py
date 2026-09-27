@@ -443,7 +443,9 @@ class AcpBackend:
             self._last_text = ""
         contract = (
             "To look at a file, use your own read tools (or your own read-only shell) -- never a "
-            "reader pushed through the terminal. To change anything, call the `remotebuddy_action` "
+            "reader pushed through the terminal: RemoteBuddy refuses a plain reader (cat, sed, "
+            "head, tail, nl, rg, grep, ls, wc, file, stat, tree) sent as a `command` action. To "
+            "change anything, call the `remotebuddy_action` "
             "tool (MCP server `remotebuddy`) exactly once; an action written as text is not an "
             "action and is ignored."
         )
