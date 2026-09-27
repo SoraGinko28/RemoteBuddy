@@ -539,17 +539,29 @@ class MeetingWebService:
             return False
 
     def _ensure_terminal(self, store: MeetingStore) -> None:
-        """要用终端之前先保证它在；没有就在同一个工作区重开一个。
+        """要用终端之前先保证它在；没有就在同一个目录上重开一个。
 
-        tmux 会话没了（tmux 服务被杀、机器重启、清理时误伤）不是这场会的结局：
-        工作区目录还在，在同一个目录上再开一个同名会话，人就又能接管、agent 又能接着跑。
-        只有工作区目录真的不在了，才拦下来。
+        tmux 会话没了（tmux 服务被杀、机器重启、清理时误伤）不是这场会的结局：那条路径
+        还在，就在那儿再开一个同名会话，人就又能接管、agent 又能接着跑。开在哪儿按原来的
+        位置来：终端当时在哪个目录（`current_path`）就回哪个目录，那个目录不在了才回工作区根。
+        两处都不在了（工作区被删/搬走）才拦下来。
         """
         if self._terminal_alive(store):
             return
         workspace = store.workspace_path
-        if not workspace.is_dir():
-            raise WebError(409, "the workspace directory is gone: this meeting cannot get a terminal")
+        home: Optional[Path] = None
+        for candidate in (store.meeting.current_path, str(workspace)):
+            text = str(candidate or "").strip()
+            if not text:
+                continue
+            path = Path(text)
+            if path.is_dir():
+                home = path
+                break
+        if home is None:
+            raise WebError(
+                409, "the workspace directory is gone: this meeting cannot get a terminal"
+            )
         transport = self._transport()
         # 会话名还在、只是里面的 pane 死了：先把这个空壳收掉，再开新的。
         try:
@@ -557,7 +569,7 @@ class MeetingWebService:
                 transport.kill_session(store.meeting.session_name)
         except (TmuxError, OSError):
             pass
-        pane_id = transport.create_workspace_session(store.meeting.session_name, workspace)
+        pane_id = transport.create_workspace_session(store.meeting.session_name, home)
         store.set_session(pane_id)
         capture_workspace(store, transport)
         store.append_event(
@@ -565,7 +577,7 @@ class MeetingWebService:
             "harness",
             store.meeting.phase,
             content="终端会话已重开（原来的没了）。",
-            data={"status": "terminal_reopened", "pane_id": pane_id},
+            data={"status": "terminal_reopened", "pane_id": pane_id, "path": str(home)},
         )
 
     def _make_backend(self, config: ModelApiConfig) -> AgentBackend:

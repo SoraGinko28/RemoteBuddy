@@ -394,8 +394,11 @@ class MeetingWebServiceTest(unittest.TestCase):
 
     def test_takeover_reopens_a_terminal_that_went_away(self):
         self.start_meeting("reopen-demo")
-        # 终端会话在外面被杀了（tmux 被杀、机器重启）：数据还在，接管在同一个工作区
+        # 终端会话在外面被杀了（tmux 被杀、机器重启）：那条路径还在，接管在原来的目录
         # 重开一个终端，而不是把这场会卡死。
+        below = self.root / "project"
+        below.mkdir()
+        MeetingStore.load_in_workspace(self.root, "reopen-demo").update(current_path=str(below))
         self.transport.exists = False
 
         store = self.service.acquire("reopen-demo")
@@ -404,12 +407,14 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual("human_control", store.meeting.phase)
         self.assertEqual("running", store.meeting.session_state)
         self.assertTrue(self.transport.exists)
+        self.assertEqual(below.resolve(), Path(self.transport.path).resolve())
         self.assertTrue(store.meeting.pane_id)
         reopened = [
             event for event in store.events()
             if (event.get("data") or {}).get("status") == "terminal_reopened"
         ]
         self.assertEqual(1, len(reopened))
+        self.assertEqual(below.resolve(), Path(reopened[0]["data"]["path"]).resolve())
         # 接管期间抓屏 worker 是活着的：交还之后它才停。
         self.service.release("reopen-demo")
         self.wait_for_workers()
