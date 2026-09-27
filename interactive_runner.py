@@ -278,7 +278,8 @@ class InteractiveRunner:
                 self.store.refresh()
                 self._check_stop()
                 if not self.transport.session_exists(self.store.meeting.session_name):
-                    raise RunnerError("retained tmux session is not available")
+                    # 终端会话没了（tmux 被杀、机器重启）：工作区还在，在同一个目录上重开一个再接着干。
+                    self.store.set_session(self._ensure_pane())
                 if not self.store.meeting.pane_id:
                     raise RunnerError("meeting has no workspace pane")
                 capture_workspace(self.store, self.transport)

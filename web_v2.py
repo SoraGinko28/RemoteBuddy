@@ -538,17 +538,35 @@ class MeetingWebService:
         except (TmuxError, OSError):
             return False
 
-    def _require_terminal(self, store: MeetingStore, action: str) -> None:
-        """Refuse an action that needs a terminal the meeting no longer has.
+    def _ensure_terminal(self, store: MeetingStore) -> None:
+        """要用终端之前先保证它在；没有就在同一个工作区重开一个。
 
-        The refusal also records what the probe just learned: the session is
-        gone, so the meeting must stop offering terminal operations.
+        tmux 会话没了（tmux 服务被杀、机器重启、清理时误伤）不是这场会的结局：
+        工作区目录还在，在同一个目录上再开一个同名会话，人就又能接管、agent 又能接着跑。
+        只有工作区目录真的不在了，才拦下来。
         """
         if self._terminal_alive(store):
             return
-        if store.meeting.session_state != "stopped":
-            store.mark_session_stopped()
-        raise WebError(410, f"terminal session is gone; cannot {action}")
+        workspace = store.workspace_path
+        if not workspace.is_dir():
+            raise WebError(409, "the workspace directory is gone: this meeting cannot get a terminal")
+        transport = self._transport()
+        # 会话名还在、只是里面的 pane 死了：先把这个空壳收掉，再开新的。
+        try:
+            if transport.session_exists(store.meeting.session_name):
+                transport.kill_session(store.meeting.session_name)
+        except (TmuxError, OSError):
+            pass
+        pane_id = transport.create_workspace_session(store.meeting.session_name, workspace)
+        store.set_session(pane_id)
+        capture_workspace(store, transport)
+        store.append_event(
+            "state",
+            "harness",
+            store.meeting.phase,
+            content="终端会话已重开（原来的没了）。",
+            data={"status": "terminal_reopened", "pane_id": pane_id},
+        )
 
     def _make_backend(self, config: ModelApiConfig) -> AgentBackend:
         if self.client_factory is not None:
@@ -1867,7 +1885,7 @@ class MeetingWebService:
             if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
                 # A chat while the human holds the terminal is an explicit
                 # instruction: hand control back AND resume the Agent with it.
-                self._require_terminal(store, "hand control back")
+                self._ensure_terminal(store)
                 self._sync_human_pipe(store)
                 return self._resume_agent_from_human(meeting_id)
             # 2b routing: @mention summons the named non-actor member;
@@ -1881,7 +1899,7 @@ class MeetingWebService:
             # rather than the actor.
             mentioned_agent_names(message, store.meeting.effective_role_map)
             if delivery == "interrupt" or wake_agent:
-                self._require_terminal(store, "run the agent")
+                self._ensure_terminal(store)
                 store.bump_request_generation(
                     failure=None,
                     cycle_action_count=0,
@@ -1937,7 +1955,7 @@ class MeetingWebService:
                 raise WebError(409, "meeting is already finished")
             # Refuse before touching any state: taking over a pane that no
             # longer exists used to fail the whole meeting afterwards.
-            self._require_terminal(store, "take over")
+            self._ensure_terminal(store)
             if store.meeting.control_owner == "human":
                 return store
             orphaned_agent = self._orphaned_agent(store, meeting_id)
@@ -2382,7 +2400,7 @@ class MeetingWebService:
             orphaned_agent = self._orphaned_agent(store, meeting_id)
             if store.meeting.phase not in RESUMABLE_PHASES and not orphaned_agent:
                 raise WebError(409, "Agent can resume only while waiting or after an API error")
-            self._require_terminal(store, "resume the agent")
+            self._ensure_terminal(store)
             config = self._config_for_store(store)
             fresh_conversation = (
                 store.meeting.phase in {"api_error", "cycle_timeout", "completion_proposed"}

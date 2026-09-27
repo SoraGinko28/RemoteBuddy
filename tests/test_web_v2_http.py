@@ -392,22 +392,26 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(["human", None],
                          [event["data"].get("user_name") for event in controls])
 
-    def test_takeover_is_refused_when_the_terminal_is_gone(self):
-        self.start_meeting("gone-demo")
-        before = MeetingStore.load_in_workspace(self.root, "gone-demo").meeting
-        # The tmux session was killed outside RemoteBuddy (or the machine
-        # restarted); takeover must not pretend to succeed and then fail the
-        # meeting through the capture worker.
+    def test_takeover_reopens_a_terminal_that_went_away(self):
+        self.start_meeting("reopen-demo")
+        # 终端会话在外面被杀了（tmux 被杀、机器重启）：数据还在，接管在同一个工作区
+        # 重开一个终端，而不是把这场会卡死。
         self.transport.exists = False
-        with self.assertRaises(WebError) as refused:
-            self.service.acquire("gone-demo")
-        self.assertEqual(410, refused.exception.status)
-        after = MeetingStore.load_in_workspace(self.root, "gone-demo").meeting
-        self.assertEqual(before.phase, after.phase)
-        self.assertEqual(before.status, after.status)
-        self.assertEqual(before.control_owner, after.control_owner)
-        # The refusal records the discovery so the UI stops offering takeover.
-        self.assertEqual("stopped", after.session_state)
+
+        store = self.service.acquire("reopen-demo")
+
+        self.assertEqual("human", store.meeting.control_owner)
+        self.assertEqual("human_control", store.meeting.phase)
+        self.assertEqual("running", store.meeting.session_state)
+        self.assertTrue(self.transport.exists)
+        self.assertTrue(store.meeting.pane_id)
+        reopened = [
+            event for event in store.events()
+            if (event.get("data") or {}).get("status") == "terminal_reopened"
+        ]
+        self.assertEqual(1, len(reopened))
+        # 接管期间抓屏 worker 是活着的：交还之后它才停。
+        self.service.release("reopen-demo")
         self.wait_for_workers()
 
     def test_terminal_input_requires_human_control(self):
