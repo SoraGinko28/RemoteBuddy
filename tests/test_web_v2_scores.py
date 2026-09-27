@@ -180,7 +180,6 @@ class WebV2ScoreTest(unittest.TestCase):
                     "content": "",
                     "command": "none",
                     "path": "",
-                    "keys": [],
                     "delay_ms": 0,
                 }
             )

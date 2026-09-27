@@ -972,8 +972,8 @@ class ClaudeCodeBackend:
                     "message_type": "question",
                     "content": salvage_text[: 64 * 1024],
                     "command": "none",
+                    "diff": "",
                     "path": "",
-                    "keys": [],
                     "delay_ms": 0,
                     "references": [],
                 }
@@ -1097,16 +1097,13 @@ class ClaudeCodeBackend:
             + "message, 你/我 rather than a role in the third person, and do not paste output that is "
             + "already on the screen — point at it instead. If you disagree or need something, say so "
             + "or ask; agreeing to everything is not being helpful.\n"
-            + "- For terminal input, prefer the `keystrokes` action. Its `keys` array accepts the DSL "
-            + "`$text <literal text>`, `$ctrl <named key>`, and `$rest <milliseconds>` (a pause that "
-            + "sends nothing). Send quotes/brackets as explicit paired keystrokes (e.g. `$text \"`, "
-            + "then later `$text \"`) instead of dumping one whole line. The harness types each "
-            + "`$text` as one whole line and pauses only briefly on Enter, so the pace between lines "
-            + "is yours to set: use `$rest` where a human would naturally hesitate — about "
-            + "`$rest 400` before the Enter that submits a command line, and after a line you want "
-            + "the human to read before typing the next one. A run of lines that is mere work "
-            + "(`:wq`, a quick `ls`, closing braces) needs no rest. Do not put a rest inside a line "
-            + "or use one while moving the cursor.\n"
+            + "- You never type into the terminal and you never open an editor. To run something, "
+            + "use a `command` action: one bash line, non-interactive, which the harness runs in the "
+            + "shared pane and whose return code and output you get back. To change file contents, "
+            + "use a `diff` action: one unified diff against the files as they are right now — the "
+            + "harness applies it with vim, file by file, saves after each file, and compares the "
+            + "result with what you asked for. A command that waits for input at a prompt is a "
+            + "mistake: it is stopped when the wait runs out.\n"
         )
 
     def _redact(self, text: str) -> str:

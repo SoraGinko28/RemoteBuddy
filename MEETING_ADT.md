@@ -769,6 +769,52 @@ KeystrokeStr =
   | $text str
   | $ctrl str
   | $rest ($millisecond int)
+
+# Agent 不自己操作终端：它交一条 AgentCmd，敲进去的是 harness（harness 是它的手）。
+AgentCmd =
+    Oneof
+  | $cmd str
+  | $appliable_diff str
+
+ApplyAgentCmd =
+    Oneof
+  | $apply_cmd ApplyCmd
+  | $apply_diff ApplyDiff
+
+# $cmd 在共享终端里跑一行。跑之前先确认前台是 shell —— 不是就想办法退出来，实在不行重开
+# 那个会话；跑完返回码和整屏缓存都要拿到，缓存是整条历史，不是可见的那几行。
+ApplyCmd =
+    Object
+  * $cmd str
+  * Assert[{ $cmd 是一条会自己结束的命令行：它不等人在终端里输入 }]
+
+# $appliable_diff 把一份 diff 落到工作区。动手之前拍一份快照；先确认它应用到快照上，
+# 应用不了就一个字都不敲。落盘在共享终端里由 harness 逐文件做，一步一次：两步之间人可能
+# 说话、critic 可能提问，要不要接着做必须问过 agent 才继续。每一轮结束都比一次"工作区现在
+# 是什么样"和"这份 diff 要求的是什么样"，只重做还对不上的那些文件，最多 $rounds 轮。
+ApplyDiff =
+    Object
+  * $appliable_diff str
+  * $rounds int
+  * Assert[{ $appliable_diff 应用到动手前那份快照上 }]
+
+AgentCmdResult =
+    Oneof
+  | $tmux_cmd_result TmuxCmdResult
+  | $shell_cmd_result ShellCmdResult
+
+# 共享终端里的结果：返回码 + 整屏缓存
+TmuxCmdResult =
+    Object
+  * $retcode str
+  * $output_on_screen str
+
+# harness 自己在工作区里跑出来的结果
+ShellCmdResult =
+    Object
+  * $retcode str
+  * $stdout str
+  * $stderr str
 ```
 
 ---

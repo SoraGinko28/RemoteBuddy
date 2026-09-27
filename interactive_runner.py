@@ -23,6 +23,7 @@ from agent_protocol import (
     AgentInterrupted,
     AgentProtocolError,
 )
+import tmux_vim
 from meeting_v2 import MeetingError, MeetingStore, utc_now
 from references import reference_from_event
 from tmux_transport import TmuxError, TmuxTransport
@@ -41,8 +42,25 @@ from workspace_capture import (  # noqa: F401
 )
 
 
+def _tail_lines(text: str, limit: int) -> str:
+    """整屏缓存可能几千行：交给模型的是最后那一段，并说清前面还有多少行。"""
+    lines = (text or "").splitlines()
+    if len(lines) <= limit:
+        return text or ""
+    return f"<{len(lines) - limit} earlier lines not shown>\n" + "\n".join(lines[-limit:])
+
+
+def _typed_command(action: AgentAction) -> str:
+    """这条动作真正要敲进终端的那一行（结构化命令按工作区路径拼好引号）。"""
+    from tmux_transport import workspace_command_text
+
+    return workspace_command_text(action.command, action.path)
+
+
 ACTION_LIMIT = 60
 CYCLE_LIMIT_SECONDS = 900.0
+# 交给模型看的命令输出有多长：整屏缓存可能几千行，模型要的是结果那一段。
+COMMAND_RESULT_LINES = 120
 # Consecutive undecodable/invalid model actions tolerated before the cycle
 # fails; each retry feeds the validation error back as an observation.
 MAX_INVALID_ACTION_RETRIES = 3
@@ -155,9 +173,9 @@ class InteractiveRunner:
             action.type,
             action.message_type,
             action.command,
+            action.diff[:80],
             action.path,
             action.content[:80],
-            repr(action.keys)[:80],
             action.delay_ms,
         )
 
@@ -177,6 +195,7 @@ class InteractiveRunner:
         work done "in this cycle"; a reused runner must not inherit it.
         """
         self._last_terminal_evidence = None
+        self._last_action_result: Optional[Dict[str, Any]] = None
         self._include_agent_chat_once = False
         self._last_action_success = True
         self._invalid_action_streak = 0
@@ -871,9 +890,7 @@ class InteractiveRunner:
                 # screen that changed while the model thought is stale --
                 # refuse to run it, then re-observe and let the model decide
                 # again against the current screen.
-                if response.action.type in {
-                    "command", "keystrokes",
-                }:
+                if response.action.type in {"command", "diff"}:
                     pane_id = self.store.meeting.pane_id
                     before = self._screen_before_think
                     now = self._pane_snapshot(pane_id) if pane_id else None
@@ -947,13 +964,14 @@ class InteractiveRunner:
                     return
 
     def _phase_constraints(self) -> Tuple[Optional[Sequence[str]], Optional[Sequence[str]], bool]:
-        """What the pane structurally allows now, and whether the cycle must close.
+        """What the pane allows now, and whether the cycle must close.
 
-        The runner constrains only what is physically possible in the shared
-        pane: a shell command line has to be typed at a shell prompt, while keys
-        go to whatever program currently holds the foreground. How the Agent
-        talks to the human — when to acknowledge, when to answer in one line,
-        when to report a result — belongs to the Skill, not to the harness.
+        The Agent never types into the pane: it hands over a command line or a
+        diff, and the harness does the typing, so the vocabulary no longer
+        depends on which program holds the foreground -- a leftover program is
+        cleaned up before the harness starts. How the Agent talks to the human
+        — when to acknowledge, when to answer in one line, when to report a
+        result — belongs to the Skill, not to the harness.
         """
         elapsed = self._cycle_elapsed()
         configured_timeout = float(
@@ -964,19 +982,9 @@ class InteractiveRunner:
             self.store.meeting.cycle_action_count >= ACTION_LIMIT - 1
             or remaining <= configured_timeout
         )
-        command = (self.store.meeting.current_command or "").lower()
         if budget_final:
-            if command in SHELL_COMMANDS:
-                return ("chat", "done"), MESSAGE_TYPES, True
-            return ("chat",), MESSAGE_TYPES, True
-        if command in SHELL_COMMANDS:
-            return ("chat", "command", "done", "observe", "keystrokes"), MESSAGE_TYPES, False
-        if command:
-            # A foreground program launched by a relaxed bash command: the
-            # Agent may type into it (including C-c) or observe, keeping every
-            # interaction inside the shared pane.
-            return ("chat", "keystrokes", "observe"), MESSAGE_TYPES, False
-        return ("chat", "observe"), MESSAGE_TYPES, False
+            return ("chat", "done"), MESSAGE_TYPES, True
+        return ("chat", "command", "diff", "done", "observe"), MESSAGE_TYPES, False
 
     def _cycle_elapsed(self) -> float:
         return max(0.0, time.monotonic() - self._cycle_started_monotonic)
@@ -1067,7 +1075,6 @@ class InteractiveRunner:
     def _validate_action_for_current_phase(self, action: AgentAction) -> bool:
         allowed_types, allowed_messages, budget_final = self._phase_constraints()
         payload = asdict(action)
-        payload["keys"] = list(action.keys)
         payload["references"] = [dict(item) for item in action.references]
         try:
             AgentAction.from_dict(payload, allowed_types, allowed_messages)
@@ -1322,6 +1329,7 @@ class InteractiveRunner:
                 "phase": self.store.meeting.phase,
                 "current_command": screen_data.get("current_command", ""),
                 "current_path": screen_data.get("current_path", ""),
+                "action_result": self._last_action_result,
                 "screen": screen.get("content", ""),
             }
             return {
@@ -1564,6 +1572,7 @@ class InteractiveRunner:
         with self.lock:
             self.store.refresh()
             self._last_action_success = True
+            self._last_action_result = None
             self.store.append_event(
                 "action",
                 self.agent_name,
@@ -1623,8 +1632,6 @@ class InteractiveRunner:
         interrupt_check = lambda: self._typing_should_interrupt(generation)
         try:
             if action.type == "command":
-                if info["command"] not in SHELL_COMMANDS:
-                    raise RunnerError("structured commands are allowed only at the shell")
                 reader = (
                     self._plain_reader_command(str(action.command or ""))
                     if self.store.meeting.agent_backend in BACKENDS_WITH_OWN_READ_TOOLS
@@ -1640,7 +1647,6 @@ class InteractiveRunner:
                         f"there). If the human asked to see this file, say so and show it with "
                         f"`git diff` or by pasting it into chat."
                     )
-                typed_path = ""
                 if action.command in {"cd", "python"}:
                     resolve_workspace_path(
                         self.store,
@@ -1648,37 +1654,44 @@ class InteractiveRunner:
                         action.path,
                         action.command,
                     )
-                    typed_path = action.path
-                send_command_with_captures(
-                    self.store,
+                result = tmux_vim.run_command(
                     self.transport,
-                    pane_id,
-                    action.command,
-                    typed_path,
-                    self.typing_interval_seconds,
-                    meeting_id=self.store.meeting.meeting_id,
-                    action_id=action_id,
-                    profile=profile,
-                    interrupt_check=interrupt_check,
-                )
-            elif action.type == "keystrokes":
-                # One low-level keystroke DSL for the whole pane. Whatever holds
-                # the foreground receives the keys verbatim -- the shell, an
-                # editor, a REPL, a pager -- so the Agent reads the screen and
-                # decides what to send; the harness adds no per-program rules.
-                send_tokens_with_captures(
                     self.store,
-                    self.transport,
                     pane_id,
-                    action.keys,
-                    min(self.action_settle_seconds, 0.05),
-                    self.typing_interval_seconds,
-                    meeting_id=self.store.meeting.meeting_id,
-                    action_id=action_id,
-                    profile=profile,
-                    context="keystrokes",
+                    _typed_command(action),
                     interrupt_check=interrupt_check,
+                    restarter=self._pane_restarter(),
                 )
+                self._last_action_result = {
+                    "kind": "cmd",
+                    "cmd": action.command,
+                    "retcode": result.retcode,
+                    "output_lines": len(result.output_on_screen.splitlines()),
+                    "output_tail": _tail_lines(result.output_on_screen, COMMAND_RESULT_LINES),
+                }
+            elif action.type == "diff":
+                outcome = tmux_vim.tmux_apply_diff_by_vim(
+                    self.transport,
+                    self.store,
+                    pane_id,
+                    action.diff,
+                    ask=self._ask_continue,
+                    interrupt_check=interrupt_check,
+                    restarter=self._pane_restarter(),
+                )
+                retcode = outcome.result.retcode if outcome.result else "1"
+                self._last_action_result = {
+                    "kind": "diff",
+                    "rounds": outcome.rounds,
+                    "retcode": retcode,
+                    "files": [patch.path for patch in tmux_vim.parse_unified_diff(action.diff)],
+                    "mismatched_files": list(outcome.mismatched_files),
+                    "stopped": retcode == "130",
+                }
+                if retcode != "0":
+                    # 没落全（被打断、或者还有文件对不上）：这不是一次成功的动作，
+                    # 交回给模型的那个结果里会带着还差哪些文件。
+                    self._last_action_success = False
             else:
                 raise RunnerError("unsupported agent action")
             if self.action_settle_seconds > 0:
@@ -1688,13 +1701,23 @@ class InteractiveRunner:
                 self._check_stop()
                 capture_workspace(self.store, self.transport)
                 self._complete_action(action_id)
-                if action.type in {"keystrokes"} or (
-                    action.type == "command" and action.command != "cd"
-                ):
-                    self._last_terminal_evidence = action.type
+                self._last_terminal_evidence = action.type
+                self.store.append_event(
+                    "action",
+                    "harness",
+                    self.store.meeting.phase,
+                    data={
+                        "action_id": action_id,
+                        "status": "result",
+                        "action": asdict(action),
+                        "result": self._last_action_result,
+                    },
+                )
                 self.store.update(phase="agent_thinking")
             return False
-        except TypingInterrupted as exc:
+        except (TypingInterrupted, tmux_vim.Interrupted) as exc:
+            if isinstance(exc, tmux_vim.Interrupted):
+                exc = TypingInterrupted(sent=0, remaining=0, submitted=True)
             with self.lock:
                 self.store.refresh()
                 self._check_stop()
@@ -1732,7 +1755,8 @@ class InteractiveRunner:
                 if self.store.meeting.status == "running" and self.store.meeting.control_owner == self.agent_name:
                     self.store.update(phase="agent_thinking")
                 return self.store.meeting.control_owner != self.agent_name
-        except (RunnerError, TmuxError) as exc:
+        except (RunnerError, TmuxError, tmux_vim.DiffError, tmux_vim.DiffNotAppliable,
+                tmux_vim.CommandTimeout) as exc:
             with self.lock:
                 self.store.refresh()
                 self._last_action_success = False
@@ -1764,6 +1788,62 @@ class InteractiveRunner:
             recovery_required=False,
             failure=failure,
         )
+
+    def _pane_restarter(self):
+        """共享终端的窗格没了、或者前台收拾不回来：在同一个目录重开一个会话，交回新的窗格。
+
+        和页面上"接管"用的是同一条路：终端在哪个目录就回哪个目录，那个目录不在了才回工作区根。
+        """
+
+        def restart() -> str:
+            with self.lock:
+                self.store.refresh()
+                home: Optional[Path] = None
+                for candidate in (self.store.meeting.current_path, str(self.store.workspace_path)):
+                    text = str(candidate or "").strip()
+                    if text and Path(text).is_dir():
+                        home = Path(text)
+                        break
+                if home is None:
+                    raise RunnerError("工作区的目录不在了，这场会没法重开终端")
+                if self.transport.session_exists(self.store.meeting.session_name):
+                    try:
+                        self.transport.kill_session(self.store.meeting.session_name)
+                    except (TmuxError, OSError):
+                        pass
+                pane_id = self.transport.create_workspace_session(
+                    self.store.meeting.session_name, home
+                )
+                self.store.set_session(pane_id)
+                capture_workspace(self.store, self.transport)
+                self.store.append_event(
+                    "state",
+                    "harness",
+                    self.store.meeting.phase,
+                    content="终端会话已重开（原来的没了）。",
+                    data={"status": "terminal_reopened", "pane_id": pane_id, "path": str(home)},
+                )
+            return pane_id
+
+        return restart
+
+    def _ask_continue(self, question: str) -> str:
+        """落盘途中被人打断：停在这里，把这个问题留给下一步。
+
+        不能就地再问 agent 一句：动态工具这条路正卡在它的一次请求里，再发一次请求就是
+        两个请求叠在一起。停在这里、把话记进 journal，下一步的观察里带着它 —— agent
+        要接着做，就把同一份 diff 再交一次：比对时已经算过落了哪些，只会补没落上的。
+        """
+        with self.lock:
+            self.store.refresh()
+            self.store.append_event(
+                "state",
+                "harness",
+                self.store.meeting.phase,
+                content=question,
+                data={"status": "diff_paused", "question": question},
+            )
+        return "stop"
 
     def _typing_should_interrupt(self, generation: int) -> bool:
         with self.lock:

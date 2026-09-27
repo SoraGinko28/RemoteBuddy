@@ -1924,7 +1924,8 @@ class RealTmuxEdgeTest(unittest.TestCase):
         case = _case_by_name("2files_1hunks_replace")
         work = repo_with_case(self, case)
         transport, _session, pane = self.open_session(work)
-        transport.send_workspace_command(pane, "vim a-does-not-matter.txt")
+        # harness 自己敲编辑器用的是直接送键这条路（不是 actor 交上来的命令行）。
+        transport.send_keys(pane, "vim -u NONE -N -i NONE -- a-does-not-matter.txt")
         for _ in range(40):
             if transport.pane_info(pane)["command"] in {"vim", "vi"}:
                 break

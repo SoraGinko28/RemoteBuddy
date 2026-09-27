@@ -24,10 +24,10 @@ TASK_ACTIONS = [
     {
         "type": "chat",
         "message_type": "ack",
-        "content": "收到，我先打开编辑器创建 notes.md。",
+        "content": "收到，我先建目录再验证。",
         "command": "none",
+        "diff": "",
         "path": "",
-        "keys": [],
         "delay_ms": 0,
         "references": [{"kind": "chat", "seq": 1, "region": None}],
     },
@@ -35,24 +35,9 @@ TASK_ACTIONS = [
         "type": "command",
         "message_type": "none",
         "content": "",
-        "command": "vim notes.md",
+        "command": "mkdir -p build",
+        "diff": "",
         "path": "",
-        "keys": [],
-        "delay_ms": 0,
-    },
-    {
-        "type": "keystrokes",
-        "message_type": "none",
-        "content": "",
-        "command": "none",
-        "path": "",
-        "keys": [
-            {"kind": "text", "value": "i"},
-            {"kind": "text", "value": "# RemoteBuddy DeepSeek+CC e2e"},
-            {"kind": "ctrl", "value": "Escape"},
-            {"kind": "text", "value": ":wq"},
-            {"kind": "ctrl", "value": "Enter"},
-        ],
         "delay_ms": 0,
     },
     {
@@ -61,17 +46,17 @@ TASK_ACTIONS = [
         "message_type": "none",
         "content": "",
         "command": "touch checked.marker",
+        "diff": "",
         "path": "",
-        "keys": [],
         "delay_ms": 0,
     },
     {
         "type": "done",
         "message_type": "final",
-        "content": "notes.md 已创建并验证，PROJECT TESTS PASSED 可见。",
+        "content": "目录已建好，checked.marker 也落下了，PROJECT TESTS PASSED 可见。",
         "command": "none",
+        "diff": "",
         "path": "",
-        "keys": [],
         "delay_ms": 0,
         "references": [{"kind": "screen", "seq": 2, "region": None}],
     },
@@ -282,17 +267,19 @@ class ClaudeTaskEndToEndTest(unittest.TestCase):
         self.assertEqual("请创建 notes.md 并写入一个标题。", ack["data"]["references"][0]["excerpt"])
         final = chats[2]
         self.assertEqual("screen", final["data"]["references"][0]["kind"])
-        # 改文件那一趟（vim）和那条验证命令都走共享终端。
-        self.assertTrue(any(item[1] == "vim" for item in self.transport.commands))
+        # 两条命令都由 harness 在共享终端里敲进去：动作本身不再带按键。
         typed = [text for _pane, text in self.transport.literal_sends]
+        self.assertIn("mkdir -p build", typed)
         self.assertIn("touch checked.marker", typed)
+        self.assertEqual([], self.transport.tokens)
         statuses = [
             event["data"].get("status")
             for event in loaded.events()
             if event["kind"] == "action"
         ]
         self.assertNotIn("rejected", statuses)
-        self.assertGreaterEqual(statuses.count("completed"), 5)
+        results = [status for status in statuses if status == "result"]
+        self.assertEqual(2, len(results), statuses)
 
 
 if __name__ == "__main__":

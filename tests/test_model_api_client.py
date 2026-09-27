@@ -6,6 +6,7 @@ import unittest
 import urllib.error
 from pathlib import Path
 
+from agent_protocol import normalize_model_key_tokens, validate_key_tokens
 from model_api_client import (
     AgentAction,
     AgentProtocolError,
@@ -39,7 +40,6 @@ def action_payload(**changes):
         "content": "I will inspect the current note first.",
         "command": "none",
         "path": "",
-        "keys": [],
         "delay_ms": 0,
     }
     value.update(changes)
@@ -272,7 +272,7 @@ class ModelApiConfigTest(unittest.TestCase):
 
 
 class AgentActionTest(unittest.TestCase):
-    def test_action_semantics_and_key_allowlist(self):
+    def test_action_semantics_and_the_action_types(self):
         action = AgentAction.from_dict(action_payload())
         self.assertEqual("ack", action.message_type)
         command = AgentAction.from_dict(
@@ -280,126 +280,105 @@ class AgentActionTest(unittest.TestCase):
                 type="command",
                 message_type="none",
                 content="",
-                command="vim notes.md",
+                command="python3 -m pytest -q",
             )
         )
-        self.assertEqual("vim notes.md", command.command)
+        self.assertEqual("python3 -m pytest -q", command.command)
+        patch = (
+            "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n-old\n+new\n keep\n"
+            "--- a/other/thing.md\n+++ b/other/thing.md\n@@ -3,1 +3,1 @@\n-x\n+y\n"
+        )
+        diff = AgentAction.from_dict(
+            action_payload(type="diff", message_type="none", content="", command="none", diff=patch)
+        )
+        self.assertEqual(patch, diff.diff)
         with self.assertRaises(ModelResponseError):
             AgentAction.from_dict(action_payload(type="command", content="rm -rf ."))
-        with self.assertRaisesRegex(ModelResponseError, "not allowed"):
-            AgentAction.from_dict(
-                action_payload(
-                    type="keystrokes",
-                    message_type="none",
-                    content="",
-                    keys=[{"kind": "ctrl", "value": "F12"}],
-                )
-            )
-        with self.assertRaisesRegex(ModelResponseError, "control characters"):
-            AgentAction.from_dict(
-                action_payload(
-                    type="keystrokes",
-                    message_type="none",
-                    content="",
-                    keys=[{"kind": "text", "value": "\x1b"}],
-                )
-            )
-        insert = AgentAction.from_dict(
+        far_away = AgentAction.from_dict(
             action_payload(
-                type="keystrokes",
-                message_type="none",
-                content="",
-                keys=[{"kind": "ctrl", "value": "i"}],
+                type="diff", message_type="none", content="", command="none",
+                diff="--- a/a.py\n+++ b/a.py\n@@ -9,1 +9,1 @@\n-nope\n+yep\n",
             )
         )
-        self.assertEqual(({"kind": "text", "value": "i"},), insert.keys)
+        self.assertIn("-nope", far_away.diff)
+        with self.assertRaisesRegex(ModelResponseError, "unified diff"):
+            AgentAction.from_dict(
+                action_payload(
+                    type="diff", message_type="none", content="", command="none",
+                    diff="--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n只有一行没有前缀\n",
+                )
+            )
+        with self.assertRaisesRegex(ModelResponseError, "keystrokes action is gone"):
+            AgentAction.from_dict(
+                action_payload(
+                    type="command",
+                    message_type="none",
+                    content="",
+                    command="git status",
+                    keys=[{"kind": "ctrl", "value": "Enter"}],
+                )
+            )
         with self.assertRaises(ModelResponseError):
             AgentAction.from_dict(action_payload(), allowed_types=("command",))
 
+    def test_a_diff_must_be_plain_text_with_unix_line_endings(self):
+        with self.assertRaisesRegex(ModelResponseError, "unix line endings"):
+            AgentAction.from_dict(
+                action_payload(
+                    type="diff", message_type="none", content="", command="none",
+                    diff="--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\r\n+b\n",
+                )
+            )
+        with self.assertRaisesRegex(ModelResponseError, "unified diff"):
+            AgentAction.from_dict(
+                action_payload(
+                    type="diff", message_type="none", content="", command="none",
+                    diff="把这两行改掉就行",
+                )
+            )
+
+    def test_a_diff_may_not_be_empty(self):
+        with self.assertRaisesRegex(ModelResponseError, "requires a unified diff"):
+            AgentAction.from_dict(
+                action_payload(type="diff", message_type="none", content="", command="none")
+            )
+
     def test_empty_fields_mean_unused_and_stray_fields_are_named(self):
         """`""`/`null` 是"这个字段没用"，不是"我想用它"；真多带的字段要指名。"""
+        patch = "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+b\n"
         action = AgentAction.from_dict(action_payload(
-            type="keystrokes",
+            type="diff",
             message_type=None,
             content=None,
             command="",
             path=None,
             delay_ms=None,
-            keys=[{"kind": "ctrl", "value": "Enter"}],
+            diff=patch,
         ))
-        self.assertEqual(({"kind": "ctrl", "value": "Enter"},), action.keys)
+        self.assertEqual(patch, action.diff)
+        self.assertEqual("none", action.message_type)
         with self.assertRaisesRegex(ModelResponseError, "unrelated fields: content"):
             AgentAction.from_dict(action_payload(
-                type="keystrokes",
+                type="diff",
                 message_type="none",
                 content="我不该在这里",
                 command="none",
-                keys=[{"kind": "text", "value": "x"}],
+                diff=patch,
             ))
 
-    def test_visible_newlines_become_enter_without_corrupting_string_escapes(self):
-        action = AgentAction.from_dict(
-            action_payload(
-                type="keystrokes",
-                message_type="none",
-                content="",
-                keys=[
-                    {"kind": "text", "value": "i"},
-                    {
-                        "kind": "text",
-                        "value": 'print("\\n")\\nvalue = 1\\nprint(value)',
-                    },
-                ],
-            )
-        )
+    def test_key_dsl_is_normalized_for_the_takeover_path(self):
+        """人从页面上接管时发的按键还走这套 DSL；动作里已经没有它了。"""
+        keys = normalize_model_key_tokens([
+            "$text echo ",
+            "$text '",
+            "$text 1",
+            "$text '",
+            "$ctrl Left",
+            "$text  ",
+            "$ctrl Enter",
+        ])
         self.assertEqual(
-            (
-                {"kind": "text", "value": "i"},
-                {"kind": "text", "value": 'print("\\n")'},
-                {"kind": "ctrl", "value": "Enter"},
-                {"kind": "text", "value": "value = 1"},
-                {"kind": "ctrl", "value": "Enter"},
-                {"kind": "text", "value": "print(value)"},
-            ),
-            action.keys,
-        )
-
-        actual_newline = AgentAction.from_dict(
-            action_payload(
-                type="keystrokes",
-                message_type="none",
-                content="",
-                keys=[{"kind": "text", "value": "first\nsecond"}],
-            )
-        )
-        self.assertEqual(
-            (
-                {"kind": "text", "value": "first"},
-                {"kind": "ctrl", "value": "Enter"},
-                {"kind": "text", "value": "second"},
-            ),
-            actual_newline.keys,
-        )
-
-    def test_keystroke_dsl_is_normalized_to_key_tokens(self):
-        action = AgentAction.from_dict(
-            action_payload(
-                type="keystrokes",
-                message_type="none",
-                content="",
-                keys=[
-                    "$text echo ",
-                    "$text '",
-                    "$text 1",
-                    "$text '",
-                    "$ctrl Left",
-                    "$text  ",
-                    "$ctrl Enter",
-                ],
-            )
-        )
-        self.assertEqual(
-            (
+            [
                 {"kind": "text", "value": "echo "},
                 {"kind": "text", "value": "'"},
                 {"kind": "text", "value": "1"},
@@ -407,24 +386,30 @@ class AgentActionTest(unittest.TestCase):
                 {"kind": "ctrl", "value": "Left"},
                 {"kind": "text", "value": " "},
                 {"kind": "ctrl", "value": "Enter"},
-            ),
-            action.keys,
+            ],
+            keys,
         )
 
-    def test_keystroke_rest_dsl_is_normalized_and_bounds_checked(self):
-        action = AgentAction.from_dict(
-            action_payload(
-                type="keystrokes",
-                message_type="none",
-                content="",
-                keys=[
-                    "$text echo hi",
-                    "$rest 200",
-                    {"kind": "rest", "value": 350},
-                    "$ctrl Enter",
-                ],
-            )
+    def test_visible_newlines_in_a_key_become_enter(self):
+        keys = normalize_model_key_tokens([
+            {"kind": "text", "value": "first\nsecond"},
+        ])
+        self.assertEqual(
+            [
+                {"kind": "text", "value": "first"},
+                {"kind": "ctrl", "value": "Enter"},
+                {"kind": "text", "value": "second"},
+            ],
+            keys,
         )
+
+    def test_rest_tokens_are_bounds_checked(self):
+        keys = normalize_model_key_tokens([
+            "$text echo hi",
+            "$rest 200",
+            {"kind": "rest", "value": 350},
+            "$ctrl Enter",
+        ])
         self.assertEqual(
             [
                 {"kind": "text", "value": "echo hi"},
@@ -432,35 +417,14 @@ class AgentActionTest(unittest.TestCase):
                 {"kind": "rest", "value": 350},
                 {"kind": "ctrl", "value": "Enter"},
             ],
-            list(action.keys),
+            keys,
         )
         with self.assertRaisesRegex(AgentProtocolError, "millisecond integer"):
-            AgentAction.from_dict(
-                action_payload(
-                    type="keystrokes",
-                    message_type="none",
-                    content="",
-                    keys=["$rest soon"],
-                )
-            )
+            normalize_model_key_tokens(["$rest soon"])
         with self.assertRaisesRegex(AgentProtocolError, "between 20 and 2000"):
-            AgentAction.from_dict(
-                action_payload(
-                    type="keystrokes",
-                    message_type="none",
-                    content="",
-                    keys=[{"kind": "rest", "value": 30000}],
-                )
-            )
+            validate_key_tokens([{"kind": "rest", "value": 30000}])
         with self.assertRaisesRegex(AgentProtocolError, "between 20 and 2000"):
-            AgentAction.from_dict(
-                action_payload(
-                    type="keystrokes",
-                    message_type="none",
-                    content="",
-                    keys=["$rest 5"],
-                )
-            )
+            validate_key_tokens(normalize_model_key_tokens(["$rest 5"]))
 
     def test_schema_can_force_first_ack_or_question(self):
         schema = action_json_schema(("chat",), ("ack", "question"))
@@ -473,22 +437,18 @@ class AgentActionTest(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
 
         full_schema = action_json_schema()
-        key_variants = [
-            variant
-            for variant in full_schema["properties"]["action"]["anyOf"]
-            if variant["properties"]["type"]["enum"] == ["keystrokes"]
-        ][0]["properties"]["keys"]["items"]["anyOf"]
-        self.assertEqual(["text"], key_variants[0]["properties"]["kind"]["enum"])
-        self.assertIn("pattern", key_variants[0]["properties"]["value"])
-        self.assertIn("Escape", key_variants[1]["properties"]["value"]["enum"])
-        rest_variant = [
-            variant
-            for variant in key_variants
-            if variant.get("properties", {}).get("kind", {}).get("enum") == ["rest"]
+        variants = full_schema["properties"]["action"]["anyOf"]
+        kinds = sorted({variant["properties"]["type"]["enum"][0] for variant in variants})
+        self.assertEqual(["chat", "command", "diff", "done", "observe"], kinds)
+        diff_variant = [
+            variant for variant in variants
+            if variant["properties"]["type"]["enum"] == ["diff"]
         ][0]
-        self.assertEqual(20, rest_variant["properties"]["value"]["minimum"])
-        self.assertEqual(2000, rest_variant["properties"]["value"]["maximum"])
-        self.assertIn(r"^\$rest [0-9]+$", key_variants[-1]["pattern"])
+        self.assertEqual({"type": "string", "description": diff_variant["properties"]["diff"]["description"],
+                          "minLength": 1}, diff_variant["properties"]["diff"])
+        self.assertIn("unified diff", diff_variant["properties"]["diff"]["description"])
+        for variant in variants:
+            self.assertNotIn("keys", variant["properties"])
 
 
 class ResponsesClientTest(unittest.TestCase):

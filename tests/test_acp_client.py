@@ -121,7 +121,7 @@ class AcpBackendTest(unittest.TestCase):
         self.messages = []
         self.action = {
             "type": "command", "message_type": "none", "content": "",
-            "command": "touch ran.marker", "path": "", "keys": [], "delay_ms": 0,
+            "command": "touch ran.marker", "path": "", "delay_ms": 0,
         }
         self.permission_kinds = ["read", "edit"]
         self.submit = True

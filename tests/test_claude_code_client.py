@@ -21,8 +21,8 @@ ACK = {
     "message_type": "ack",
     "content": "I will inspect the workspace.",
     "command": "none",
+    "diff": "",
     "path": "",
-    "keys": [],
     "delay_ms": 0,
 }
 
@@ -449,7 +449,6 @@ class ClaudeCodeBackendTest(unittest.TestCase):
                         "content": "",
                         "command": "pwd",
                         "path": "",
-                        "keys": [],
                         "delay_ms": 0,
                     }
                 },

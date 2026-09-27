@@ -11,7 +11,7 @@
         ↓ initialize → session/new（cwd=工作区，mcpServers 里内联 claude_mcp_server.py）
     它的读：自己的只读工具，在它自己的沙箱里，不碰 tmux
     它的写：ACP 会发 session/request_permission(kind=edit)，我们**拒掉** ——
-            于是改文件只能走我们的动作（command/keystrokes），也就是共享终端
+            于是改文件只能走我们的动作（command/diff），也就是共享终端
     动作：从 MCP 工具回到 `ActionSocket`，跟 Claude Code 那条一模一样
     收尾：动作到手后发 session/cancel，一轮一个动作（runner 的约定）
 """

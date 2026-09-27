@@ -18,7 +18,6 @@ ACK = {
     "content": "I will inspect the shared terminal first.",
     "command": "none",
     "path": "",
-    "keys": [],
     "delay_ms": 0,
 }
 PWD = {
@@ -27,7 +26,6 @@ PWD = {
     "content": "",
     "command": "pwd",
     "path": "",
-    "keys": [],
     "delay_ms": 0,
 }
 DONE = {
@@ -36,7 +34,6 @@ DONE = {
     "content": "The shared-terminal task is complete.",
     "command": "none",
     "path": "",
-    "keys": [],
     "delay_ms": 0,
 }
 

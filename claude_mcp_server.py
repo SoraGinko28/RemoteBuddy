@@ -111,7 +111,6 @@ async def run() -> None:
         try:
             action = AgentAction.from_dict(payload)
             normalized_action = asdict(action)
-            normalized_action["keys"] = list(action.keys)
             if action.references:
                 normalized_action["references"] = [dict(item) for item in action.references]
             else:

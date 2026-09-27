@@ -25,7 +25,7 @@ REST_MIN_MS = 20
 REST_MAX_MS = 2000
 # The vocabulary one action may use. Kept as an ordered tuple as well: a
 # rejection has to name the choices, and that text goes back to the model.
-ACTION_TYPE_ORDER = ("chat", "command", "keystrokes", "observe", "done")
+ACTION_TYPE_ORDER = ("chat", "command", "diff", "observe", "done")
 ACTION_TYPES = set(ACTION_TYPE_ORDER)
 REFERENCE_KINDS = {"chat", "screen"}
 # Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
@@ -33,6 +33,8 @@ MAX_ACTION_REFERENCES = 32
 # Structured commands keep workspace path resolution and safe quoting.
 STRUCTURED_COMMANDS = {"pwd", "cd", "python"}
 MAX_SHELL_COMMAND_CHARS = 2000
+# 一份 diff 能有多长：多文件多行的改动也要装得下，但不能让一条动作把一轮撑爆。
+MAX_DIFF_CHARS = 256 * 1024
 # The relaxed shell policy allows general bash and restricts only the
 # deletion/destruction family. Tokens are matched against every whitespace-
 # or metacharacter-separated word, so chained commands, pipelines, xargs,
@@ -75,6 +77,49 @@ FORBIDDEN_INTERFACE_BASENAMES = {
 # policy cannot see: reading a pipeline/stdin (bare, no script argument) or an
 # inline -c command string. Running an existing script file stays allowed.
 SHELL_INTERPRETER_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+# 会一直等着人敲键盘的程序。harness 跑一条命令是无人值守的：这类命令只会把共享终端占住，
+# 占用者的活永远干不完。要改文件就交 diff，要看东西就用自己那只读的那套。
+INTERACTIVE_PROGRAM_BASENAMES = {
+    "vim",
+    "vi",
+    "nvim",
+    "nano",
+    "pico",
+    "emacs",
+    "less",
+    "more",
+    "most",
+    "man",
+    "top",
+    "htop",
+    "watch",
+    "screen",
+    "tmux",
+}
+# 交互式解释器：不带参数起就是等人输入，带了脚本或 -c 才算一条会结束的命令。
+REPL_BASENAMES = {
+    "python",
+    "python2",
+    "python3",
+    "ipython",
+    "ipython3",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "irb",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "julia",
+    "Rscript",
+    "psql",
+    "mysql",
+    "sqlite3",
+    "ghci",
+    "iex",
+}
 # git options before the subcommand that consume the following word.
 _GIT_VALUE_OPTIONS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 # Punctuation tokens produced by the shlex lexer that end a command segment.
@@ -154,22 +199,24 @@ INVESTIGATE_STEP_TEXT = (
 # Responses）——后者共享终端就是它唯一能看东西的地方，再跟它说"这里不许读"它就只能去问人。
 ACT_STEP_BODY_REFUSED = (
     "Action step. Reading is over: whatever you needed was read in the investigation step that "
-    "just ended, so read nothing here. Change things in the shared terminal, which the human "
-    "watches. A plain reader (cat, sed, head, tail, nl, rg, grep, ls, wc, file, stat, tree) sent "
-    "as a `command` action is refused; a file the human asked to see in the terminal is the "
-    "exception. If the human asked you to find something out or to show something, this step is "
-    "where they hear it -- your investigation answer was not shown to them, so a short `chat` "
-    "saying it is part of the work, not an extra message. "
+    "just ended, so read nothing here. Two moves change things, and neither of them is typing: a "
+    "`command` is one bash line the harness runs for you in the shared terminal, and a `diff` is a "
+    "unified diff the harness lands with vim, file by file, in that same pane. You never open an "
+    "editor and you never send keys. A plain reader (cat, sed, head, tail, nl, rg, grep, ls, wc, "
+    "file, stat, tree) sent as a `command` is refused; a file the human asked to see in the "
+    "terminal is the exception. If the human asked you to find something out or to show something, "
+    "this step is where they hear it -- your investigation answer was not shown to them, so a short "
+    "`chat` saying it is part of the work, not an extra message. "
 )
 ACT_STEP_BODY_OPEN = (
     "Action step. You have no read tools of your own, so the shared terminal -- the pane the "
     "human watches -- is also where you look: `cat`, `sed`, `head`, `tail`, `nl`, `rg`, `grep`, "
-    "`ls`, `wc`, `git diff` all work there. Look first (one or two commands, not a tour of the "
-    "repository), then change what the request asks for. Never ask the human for a path you can "
-    "find yourself: the pane's working directory is the workspace, and `ls`/`git ls-files` show "
-    "what is in it. If the human asked you to find something out or to show something, say it in "
-    "a short `chat` in this step -- they do not see your reasoning, only your actions and what "
-    "you say. "
+    "`ls`, `wc`, `git diff` all work as `command` lines. Look first (one or two commands, not a "
+    "tour of the repository), then change what the request asks for -- a `diff` for file contents, "
+    "a `command` for everything else. Never ask the human for a path you can find yourself: the "
+    "pane's working directory is the workspace, and `ls`/`git ls-files` show what is in it. If the "
+    "human asked you to find something out or to show something, say it in a short `chat` in this "
+    "step -- they do not see your reasoning, only your actions and what you say. "
 )
 # 走一个真的工具（Claude Code 的 MCP、ACP 的 MCP、app-server 的动态工具）。
 ACTION_BY_TOOL_TEXT = (
@@ -225,8 +272,8 @@ class AgentAction:
     message_type: str
     content: str
     command: str
+    diff: str
     path: str
-    keys: Sequence[Dict[str, str]]
     delay_ms: int
     references: Sequence[Dict[str, Any]] = ()
     # Model-declared: when False the action's output is not needed for the
@@ -257,7 +304,7 @@ class AgentAction:
         allowed_types: Optional[Sequence[str]] = None,
         allowed_message_types: Optional[Sequence[str]] = None,
     ) -> "AgentAction":
-        optional = {"message_type", "content", "command", "path", "keys", "delay_ms"}
+        optional = {"message_type", "content", "command", "diff", "path", "delay_ms"}
         allowed = {"type", "references", "result_needed"} | optional
         payload = unwrap_action_envelope(payload)
         if not isinstance(payload, dict):
@@ -265,6 +312,12 @@ class AgentAction:
         # Name the offending fields: this text goes back to the model as a
         # correction hint, and different model families invent different keys.
         unknown = sorted(set(payload) - allowed)
+        if "keys" in unknown:
+            raise AgentProtocolError(
+                "the keystrokes action is gone: the harness does the typing now. Hand over a "
+                "`diff` (a unified diff of the file contents) or a `command` (one bash line) "
+                "instead of `keys`."
+            )
         if unknown:
             raise AgentProtocolError("model action has unexpected fields: " + ", ".join(unknown))
         # Every action but chat and done carries message_type "none", so an
@@ -280,8 +333,8 @@ class AgentAction:
         payload = {
             "content": "",
             "command": "none",
+            "diff": "",
             "path": "",
-            "keys": [],
             "delay_ms": 0,
             **payload,
         }
@@ -290,7 +343,7 @@ class AgentAction:
         # 字段拒掉 —— 那种拒绝说不清是哪一项，模型只能猜，猜不中就在同一个错上转到整轮
         # 以 api_error 收场（20260926-213214-3dbedc 的三次 `keystrokes has unrelated
         # fields` 就是这么死的）。
-        for field, neutral in (("message_type", "none"), ("command", "none"),
+        for field, neutral in (("message_type", "none"), ("command", "none"), ("diff", ""),
                                ("content", ""), ("path", ""), ("delay_ms", 0)):
             if payload.get(field) is None:
                 payload[field] = neutral
@@ -326,18 +379,17 @@ class AgentAction:
                 + _name_list(allowed_message_types))
         content = payload["content"]
         command = payload["command"]
+        diff = payload["diff"]
         path = payload["path"]
-        keys = payload["keys"]
         delay_ms = payload["delay_ms"]
-        if not all(isinstance(value, str) for value in (content, command, path)):
+        if not all(isinstance(value, str) for value in (content, command, diff, path)):
             raise AgentProtocolError("model action strings are invalid")
         if len(content.encode("utf-8")) > 64 * 1024 or len(path.encode("utf-8")) > 4096:
             raise AgentProtocolError("model action text is too large")
+        if len(diff.encode("utf-8")) > MAX_DIFF_CHARS:
+            raise AgentProtocolError(f"diff is larger than {MAX_DIFF_CHARS} bytes")
         if isinstance(delay_ms, bool) or not isinstance(delay_ms, int):
             raise AgentProtocolError("delay_ms must be an integer")
-        if not isinstance(keys, list):
-            raise AgentProtocolError("keys must be an array")
-        keys = normalize_model_key_tokens(keys)
         references = normalize_reference_tokens(payload.get("references", []))
         raw_result_needed = payload.get("result_needed", True)
         if isinstance(raw_result_needed, bool):
@@ -352,11 +404,11 @@ class AgentAction:
         if action_type == "chat":
             if message_type not in {"ack", "progress", "question"} or not content.strip():
                 raise AgentProtocolError("chat requires ack, progress, or question content")
-            _require_unused(command, path, keys, delay_ms)
+            _require_unused(command, diff, path, delay_ms)
         elif action_type == "done":
             if message_type != "final" or not content.strip():
                 raise AgentProtocolError("done requires final content")
-            _require_unused(command, path, keys, delay_ms)
+            _require_unused(command, diff, path, delay_ms)
         elif references:
             raise AgentProtocolError("only chat and done actions may carry references")
         def stray_fields(*candidates: tuple) -> str:
@@ -388,12 +440,12 @@ class AgentAction:
                 validate_shell_command(command)
                 if path:
                     raise AgentProtocolError("a bash command line does not accept a separate path")
-            if keys or delay_ms:
+            if diff or delay_ms:
                 raise AgentProtocolError(
                     "command has unrelated fields: "
-                    + stray_fields(("keys", bool(keys)), ("delay_ms", bool(delay_ms)))
+                    + stray_fields(("diff", bool(diff)), ("delay_ms", bool(delay_ms)))
                 )
-        elif action_type == "keystrokes":
+        elif action_type == "diff":
             stray = stray_fields(("message_type", message_type != "none"),
                                  ("content", bool(content)),
                                  ("command", command != "none"),
@@ -401,19 +453,30 @@ class AgentAction:
                                  ("delay_ms", bool(delay_ms)))
             if stray:
                 raise AgentProtocolError(
-                    "keystrokes has unrelated fields: " + stray
-                    + "; a keystroke action carries only `keys`"
+                    "diff has unrelated fields: " + stray
+                    + "; a diff action carries only the unified diff"
                 )
-            validate_key_tokens(keys)
+            if not diff.strip():
+                raise AgentProtocolError("diff action requires a unified diff")
+            if "\x00" in diff or "\r" in diff:
+                raise AgentProtocolError("diff must be plain text with unix line endings")
+            from tmux_vim import DiffError, parse_unified_diff
+
+            try:
+                patches = parse_unified_diff(diff)
+            except DiffError as exc:
+                raise AgentProtocolError(f"diff action is not a unified diff: {exc}") from exc
+            if not patches:
+                raise AgentProtocolError("diff action carries no file changes")
         elif action_type == "observe":
-            if message_type != "none" or content or command != "none" or path or keys:
+            if message_type != "none" or content or command != "none" or diff or path:
                 raise AgentProtocolError(
                     "observe has unrelated fields: "
                     + stray_fields(("message_type", message_type != "none"),
                                    ("content", bool(content)),
                                    ("command", command != "none"),
-                                   ("path", bool(path)),
-                                   ("keys", bool(keys)))
+                                   ("diff", bool(diff)),
+                                   ("path", bool(path)))
                 )
             if delay_ms < 100 or delay_ms > 2000:
                 raise AgentProtocolError("observe delay must be between 100 and 2000 ms")
@@ -422,8 +485,8 @@ class AgentAction:
             message_type,
             content,
             command,
+            diff,
             path,
-            tuple(keys),
             delay_ms,
             tuple(references),
             result_needed,
@@ -524,6 +587,24 @@ def _validate_command_word(word: str, words: Sequence[str], index: int) -> None:
         raise AgentProtocolError(f"command would leave the shared terminal interface: {base}")
     if base == "eval":
         raise AgentProtocolError("eval would execute content outside the policy's view")
+    if base in INTERACTIVE_PROGRAM_BASENAMES:
+        raise AgentProtocolError(
+            f"{base} is an interactive program, and the harness runs commands unattended: it "
+            "would sit there waiting for a keyboard and the terminal would never come back. "
+            "To change a file, hand over a `diff`; to read one, use your own read-only tools "
+            "(or a reader command, if you have none)."
+        )
+    if base in REPL_BASENAMES:
+        followers = [
+            follower
+            for follower in words[index + 1 :]
+            if follower != "&" and follower not in _SEGMENT_BREAKS and not _is_shell_punctuation(follower)
+        ]
+        if not followers:
+            raise AgentProtocolError(
+                f"{base} with no arguments is an interactive session: the harness runs commands "
+                "unattended, so it would wait for input forever. Give it a script or a `-c` one-liner."
+            )
     if base in SHELL_INTERPRETER_BASENAMES:
         followers = []
         for follower in words[index + 1 :]:
@@ -628,8 +709,8 @@ def _substitution_bodies(line: str) -> list:
     return bodies
 
 
-def _require_unused(command: str, path: str, keys: Sequence[Any], delay_ms: int) -> None:
-    if command != "none" or path or keys or delay_ms:
+def _require_unused(command: str, diff: str, path: str, delay_ms: int) -> None:
+    if command != "none" or diff or path or delay_ms:
         raise AgentProtocolError("chat action has unrelated fields")
 
 
@@ -966,77 +1047,13 @@ def action_json_schema(
     allowed_types: Optional[Sequence[str]] = None,
     allowed_message_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    action_types = list(
-        allowed_types or ("chat", "command", "keystrokes", "observe", "done")
-    )
+    action_types = list(allowed_types or ACTION_TYPE_ORDER)
     message_types = set(
         allowed_message_types or ("none", "ack", "progress", "question", "final")
     )
     if set(action_types) - ACTION_TYPES:
         raise ValueError("unsupported action schema type")
 
-    key_item = {
-        "anyOf": [
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["kind", "value"],
-                "properties": {
-                    "kind": {"type": "string", "enum": ["text"]},
-                    "value": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": r"^[^\r\n\u0000]+$",
-                        "description": (
-                            "Text to type. `Enter`, `Escape`, `Tab` and `C-c` are key "
-                            "names, not text: the literal value \"Enter\" types the six "
-                            "letters E-n-t-e-r."
-                        ),
-                    },
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["kind", "value"],
-                "properties": {
-                    "kind": {"type": "string", "enum": ["ctrl"]},
-                    "value": {
-                        "type": "string",
-                        "enum": sorted(SPECIAL_KEYS),
-                        "description": "The named key to press. This is how Enter and Escape are sent.",
-                    },
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["kind", "value"],
-                "properties": {
-                    "kind": {"type": "string", "enum": ["rest"]},
-                    "value": {
-                        "type": "integer",
-                        "minimum": REST_MIN_MS,
-                        "maximum": REST_MAX_MS,
-                        "description": "A pause in milliseconds; nothing is sent.",
-                    },
-                },
-            },
-            {
-                "type": "string",
-                "pattern": (
-                    r"^\$text [^\r\n\u0000]+$|^\$ctrl "
-                    r"(?:Enter|Escape|Tab|Up|Down|Left|Right|Backspace|Delete|C-c)$"
-                    rf"|^\$rest [0-9]+$"
-                ),
-                "description": (
-                    "Keystroke DSL: $text sends literal text, $ctrl sends a named key, "
-                    "$rest pauses N milliseconds without typing. A bare string is text, "
-                    "so \"Enter\" on its own types the letters."
-                ),
-            },
-        ]
-    }
     reference_item = {
         "type": "object",
         "additionalProperties": False,
@@ -1068,7 +1085,6 @@ def action_json_schema(
             },
         },
     }
-    required = ["type", "message_type", "content", "command", "path", "keys", "delay_ms", "references"]
 
     def branch(
         action_type: str,
@@ -1077,12 +1093,14 @@ def action_json_schema(
         *,
         content: bool = False,
         path: bool = False,
-        keys: bool = False,
+        diff: bool = False,
         delay: Optional[Dict[str, Any]] = None,
         references: bool = False,
         command_schema: Optional[Dict[str, Any]] = None,
         message_description: str = "",
     ) -> Dict[str, Any]:
+        required = ["type", "message_type", "content", "command", "diff", "path", "delay_ms",
+                    "references"]
         return {
             "type": "object",
             "additionalProperties": False,
@@ -1101,25 +1119,22 @@ def action_json_schema(
                     "description": "A relative path inside the shared workspace." if path else "Unused.",
                     **({"minLength": 1} if path else {"enum": [""]}),
                 },
-                "keys": {
-                    "type": "array",
-                    "items": key_item,
-                    **({"minItems": 1, "maxItems": 128} if keys else {"maxItems": 0}),
-                    **(
-                        {
-                            "description": (
-                                "Keystrokes for the foreground program, in order. Each "
-                                "token is either text to type ($text / kind=text) or a "
-                                "key to press ($ctrl / kind=ctrl); a key name sent as text "
-                                "types its letters. Keys go to whatever holds the "
-                                "foreground, so check `terminal.current_command` first: "
-                                "editor keys sent while a shell is in front run as shell "
-                                "commands."
-                            )
-                        }
-                        if keys
-                        else {}
+                "diff": {
+                    "type": "string",
+                    "description": (
+                        "A unified diff to land in the workspace. It is checked first (it must "
+                        "apply to the files as they are right now), then the harness opens each "
+                        "file in vim and makes the change for you, one step at a time, saving "
+                        "after each file; afterwards it compares the files with the change you "
+                        "asked for and redoes only what still differs. Write `--- a/<path>` and "
+                        "`+++ b/<path>` headers with `@@ -start,count +start,count @@` hunks, "
+                        "paths relative to the workspace root, one or more files. Never hand "
+                        "over a diff you have not seen applied: for your own reading, use your "
+                        "read-only tools (or `git diff` as a command)."
+                        if diff
+                        else "Unused; must stay empty."
                     ),
+                    **({"minLength": 1} if diff else {"enum": [""]}),
                 },
                 "delay_ms": delay or {"type": "integer", "enum": [0]},
                 "references": {
@@ -1187,15 +1202,18 @@ def action_json_schema(
                         "truncate, dd, mkfs, find -delete, rsync --delete, git clean/rm) and "
                         "anything leaving the shared interface (background '&' jobs, nohup, "
                         "setsid, disown, tmux, screen, open, osascript, exec) are rejected. "
-                        "Any program started this way (an editor, a REPL, a pager) takes the "
-                        "pane's foreground; read the screen to see what is in front, then "
-                        "type into it with the keystrokes action."
+                        "The harness runs this line for you, waits for it to finish and hands "
+                        "back its return code and the whole buffer, so the command must be "
+                        "non-interactive and must terminate on its own: a program that waits "
+                        "for input at a prompt is a mistake, and it is stopped when the wait "
+                        "runs out. Changing file contents is the `diff` action's job, not an "
+                        "editor session."
                     ),
                 },
             )
         )
-    if "keystrokes" in action_types and "none" in message_types:
-        variants.append(branch("keystrokes", ("none",), ("none",), keys=True))
+    if "diff" in action_types and "none" in message_types:
+        variants.append(branch("diff", ("none",), ("none",), diff=True))
     if "observe" in action_types and "none" in message_types:
         variants.append(
             branch(
