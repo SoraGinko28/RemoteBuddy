@@ -906,3 +906,195 @@ class ApplyPlanManyFilesTest(unittest.TestCase):
         self.assertEqual(1, sum(1 for call in git.calls if call[1] == "worktree"),
                          "动手之前拍一次快照就够了")
         self.assertNotIn("unrelated", outcome.got_diff)
+
+
+# ======================================================================
+# 真 tmux + 真 vim + 真 git 的验收层（假件证明不了真终端里的行为）
+# ======================================================================
+
+import shutil
+import subprocess
+import time
+import uuid
+
+from tmux_transport import TmuxTransport
+
+
+def git_run(argv, cwd):
+    return subprocess.run(["git", *argv], cwd=str(cwd), capture_output=True, text=True)
+
+
+@unittest.skipUnless(shutil.which("tmux"), "需要真的 tmux")
+class RealTmuxTest(unittest.TestCase):
+    """每条都开一个真 tmux 会话、跑真命令/真 vim，然后读文件核对。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.workspace = self.root / "proj"
+        self.workspace.mkdir()
+        git_run(["init", "-q"], self.workspace)
+        git_run(["config", "user.email", "t@example.com"], self.workspace)
+        git_run(["config", "user.name", "test"], self.workspace)
+        (self.workspace / "a.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+        (self.workspace / "b.py").write_text("keep1\nkeep2\nkeep3\n", encoding="utf-8")
+        git_run(["add", "-A"], self.workspace)
+        git_run(["commit", "-qm", "base"], self.workspace)
+        self.session = f"remotubuddy-test-{uuid.uuid4().hex[:8]}"
+        self.transport = TmuxTransport(shutil.which("tmux"))
+        self.pane_id = self.transport.create_workspace_session(self.session, self.workspace)
+        self.transport.send_workspace_command(self.pane_id, "cd " + str(self.workspace))
+
+    def tearDown(self):
+        try:
+            self.transport.kill_session(self.session)
+        except Exception:
+            pass
+        self.temporary.cleanup()
+
+    # --- 小工具 -------------------------------------------------------
+    def read(self, name):
+        return (self.workspace / name).read_text(encoding="utf-8")
+
+    def foreground(self):
+        return self.transport.pane_info(self.pane_id)["command"]
+
+    def open_vim(self):
+        self.transport.send_workspace_command(self.pane_id, "vim a.py")
+        for _ in range(20):
+            if self.foreground() in {"vim", "vi"}:
+                return
+            time.sleep(0.1)
+        self.fail("vim 没起来")
+
+    def diff(self):
+        return subprocess.run(["git", "diff"], cwd=str(self.workspace),
+                              capture_output=True, text=True).stdout
+
+    # --- $cmd 那条路 ---------------------------------------------------
+    def test_r1_run_command_reads_the_shell_result(self):              # R1
+        result = tmux_vim.run_command(self.transport, None, self.pane_id, "echo hi")
+        self.assertEqual("0", result.retcode)
+        self.assertIn("hi", result.output_on_screen)
+
+    def test_r2_run_command_reports_a_non_zero_exit_code(self):        # R2
+        result = tmux_vim.run_command(self.transport, None, self.pane_id, "sh -c 'exit 7'")
+        self.assertEqual("7", result.retcode)
+
+    def test_r3_output_comes_from_the_whole_scrollback(self):          # R3
+        result = tmux_vim.run_command(self.transport, None, self.pane_id, "seq 1 300")
+        self.assertIn("1", result.output_on_screen)
+        self.assertIn("300", result.output_on_screen, "滚出视口的行也要在，说明抓的是整个缓存")
+
+    def test_r4_ensure_shell_quits_a_real_vim(self):                   # R4
+        self.open_vim()
+        tmux_vim.ensure_shell(self.transport, self.pane_id)
+        self.assertNotIn(self.foreground(), {"vim", "vi"})
+
+    # --- $appliable_diff 那条路 ----------------------------------------
+    def test_r5_one_line_replacement_lands_in_a_real_file(self):       # R5
+        diff = ("--- a/a.py\n+++ b/a.py\n@@ -2,1 +2,1 @@\n-two\n+TWO\n")
+        tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                        ask=lambda question: "continue")
+        self.assertEqual("one\nTWO\nthree\n", self.read("a.py"))
+
+    def test_r6_many_inserted_lines_land_in_order(self):               # R6
+        added = "".join(f"+line {n}\n" for n in range(12))
+        diff = f"--- a/a.py\n+++ b/a.py\n@@ -0,0 +1,12 @@\n{added}"
+        tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                        ask=lambda question: "continue")
+        self.assertEqual("".join(f"line {n}\n" for n in range(12)) + "one\ntwo\nthree\n",
+                         self.read("a.py"))
+
+    def test_r7_many_deleted_lines_land(self):                         # R7
+        diff = "--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,0 @@\n-one\n-two\n"
+        tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                        ask=lambda question: "continue")
+        self.assertEqual("three\n", self.read("a.py"))
+
+    def test_r8_several_files_in_one_diff(self):                       # R8
+        diff = (file_block("a.py", h(1, 1, 1, 2, "-one", "+ONE", "+one-and-a-half"))
+                + file_block("b.py", h(2, 1, 2, 1, "-keep2", "+KEEP2"))
+                + file_block("c.py", h(0, 0, 1, 2, "+fresh", "+file"), new=True))
+        outcome = tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                                  ask=lambda question: "continue")
+        self.assertEqual("ONE\none-and-a-half\ntwo\nthree\n", self.read("a.py"))
+        self.assertEqual("keep1\nKEEP2\nkeep3\n", self.read("b.py"))
+        self.assertEqual("fresh\nfile\n", self.read("c.py"))
+        self.assertEqual(1, outcome.rounds)
+        self.assertEqual("0", outcome.result.retcode)
+
+    def test_r9_a_deleted_file_really_disappears(self):                # R9
+        diff = file_block("b.py", h(1, 3, 0, 0, "-keep1", "-keep2", "-keep3"), delete=True)
+        tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                        ask=lambda question: "continue")
+        self.assertFalse((self.workspace / "b.py").exists())
+
+    def test_r10_whitespace_and_unicode_survive_real_vim(self):        # R10
+        diff = file_block("a.py", h(1, 1, 1, 1, "-one", "+\t中文 与 🚀  "))
+        tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                        ask=lambda question: "continue")
+        self.assertTrue(self.read("a.py").startswith("\t中文 与 🚀  \n"), repr(self.read("a.py")))
+
+    def test_r11_the_snapshot_is_taken_and_cleaned_up(self):           # R11
+        diff = file_block("a.py", h(2, 1, 2, 1, "-two", "+TWO"))
+        tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                        ask=lambda question: "continue")
+        listed = subprocess.run(["git", "worktree", "list", "--porcelain"],
+                                cwd=str(self.workspace), capture_output=True, text=True).stdout
+        self.assertNotIn("snapshot-", listed, "动手前拍的那张快照要收掉")
+
+    def test_r12_a_wrong_edit_is_caught_and_redone(self):              # R12
+        diff = file_block("a.py", h(2, 1, 2, 1, "-two", "+TWO"))
+        original = tmux_vim.vim_steps_for_diff
+        calls = {"n": 0}
+
+        def broken(text):
+            calls["n"] += 1
+            steps = original(text)
+            if calls["n"] == 1:
+                # 第一次故意少写一步：落盘的东西和要求的不一致
+                return [step for step in steps if "TWO" not in keys_of(step)]
+            return steps
+
+        tmux_vim.vim_steps_for_diff = broken
+        try:
+            outcome = tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                                      ask=lambda question: "continue")
+        finally:
+            tmux_vim.vim_steps_for_diff = original
+        self.assertGreaterEqual(outcome.rounds, 2)
+        self.assertEqual("one\nTWO\nthree\n", self.read("a.py"))
+
+    def test_r13_a_human_stop_leaves_the_second_file_alone(self):      # R13
+        diff = (file_block("a.py", h(1, 1, 1, 1, "-one", "+ONE"))
+                + file_block("b.py", h(1, 1, 1, 1, "-keep1", "+KEEP1")))
+        before = self.read("b.py")
+        tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                        interrupt_check=lambda: True,
+                                        ask=lambda question: "stop")
+        self.assertEqual(before, self.read("b.py"), "人喊停之后 b.py 不许动")
+
+    def test_r14_continue_after_a_pause_finishes_the_work(self):       # R14
+        diff = (file_block("a.py", h(1, 1, 1, 1, "-one", "+ONE"))
+                + file_block("b.py", h(1, 1, 1, 1, "-keep1", "+KEEP1")))
+        asked = []
+        outcome = tmux_vim.tmux_apply_diff_by_vim(
+            self.transport, None, self.pane_id, diff,
+            interrupt_check=lambda: True,
+            ask=lambda question: asked.append(question) or "continue")
+        self.assertTrue(asked, "暂停时要问过 actor")
+        self.assertEqual("ONE\ntwo\nthree\n", self.read("a.py"))
+        self.assertEqual("KEEP1\nkeep2\nkeep3\n", self.read("b.py"))
+
+    def test_r15_check_appliable_really_runs_git(self):                # R15
+        good = file_block("a.py", h(2, 1, 2, 1, "-two", "+TWO"))
+        bad = file_block("a.py", h(2, 1, 2, 1, "-nope", "+TWO"))
+        self.assertEqual("0", tmux_vim.check_appliable(self.workspace, good).retcode)
+        self.assertNotEqual("0", tmux_vim.check_appliable(self.workspace, bad).retcode)
+
+    def test_r16_the_new_diff_is_taken_from_the_workspace(self):       # R16
+        diff = file_block("a.py", h(2, 1, 2, 1, "-two", "+TWO"))
+        outcome = tmux_vim.tmux_apply_diff_by_vim(self.transport, None, self.pane_id, diff,
+                                                  ask=lambda question: "continue")
+        self.assertIn("+TWO", outcome.got_diff or self.diff())
