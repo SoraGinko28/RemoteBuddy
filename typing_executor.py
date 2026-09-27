@@ -46,12 +46,11 @@ def send_tokens_with_captures(
     _send_typing_plan(store, transport, pane_id, plan, action_id, interrupt_check)
 
 
-def send_command_with_captures(
+def send_line_with_captures(
     store: MeetingStore,
     transport: TmuxTransport,
     pane_id: str,
-    command: str,
-    path: str,
+    text: str,
     typing_interval_seconds: float,
     *,
     meeting_id: str = "legacy",
@@ -59,7 +58,11 @@ def send_command_with_captures(
     profile: str = "balanced",
     interrupt_check: Optional[Any] = None,
 ) -> None:
-    text = workspace_command_text(command, path)
+    """把一整行原样敲进终端（含回车），按人的节奏。
+
+    这一行是 harness 自己生成的（一条动作命令，或者它自己拼出来的编辑器命令行），所以这里
+    不做 `workspace_command_text` 那道面向 actor 的校验；校验在生成这一行的地方已经做过了。
+    """
     if typing_interval_seconds <= 0:
         transport.send_keys(pane_id, text)
         return

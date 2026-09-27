@@ -36,8 +36,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 KeyToken = Dict[str, Any]
 Runner = Callable[..., Any]
 
-# 一个步骤里最多写几行文本：太粗就不能及时打断，太细就慢。
-MAX_LINES_PER_STEP = 5
+# 一个步骤里写几行文本。一行一行的：人在屏上看得见每一行的到来，也能在两行之间叫停。
+MAX_LINES_PER_STEP = 1
 
 # vim 用一套干净的配置跑：不读用户的 vimrc（autoindent/expandtab 这类设置会把写进去的
 # 行改样），不写 viminfo，nocompatible。
@@ -776,13 +776,21 @@ def run_command(
     interrupt_check: Optional[Callable[[], bool]] = None,
     restarter: Optional[Callable[[], str]] = None,
     timeout: float = COMMAND_TIMEOUT_SECONDS,
+    type_line: Optional[Callable[[str, str], None]] = None,
 ) -> TmuxCmdResult:
-    """`$cmd`：确认是 shell、执行、整屏抓下来、`echo $?` 取返回码。"""
+    """`$cmd`：确认是 shell、执行、整屏抓下来、`echo $?` 取返回码。
+
+    `type_line(pane_id, text)` 是"把这一行敲进去"的执行器：给了就用它（按人的节奏一个字符
+    一个字符敲，人在屏上看得见），没给就直接 `send_keys` 一次发完。
+    """
     ready = ensure_shell(transport, pane_id, restarter=restarter)
     pane_id = ready.pane_id
     if interrupt_check is not None and interrupt_check():
         raise Interrupted("还没开始跑命令就被打断了")
-    transport.send_keys(pane_id, command)
+    if type_line is not None:
+        type_line(pane_id, command)
+    else:
+        transport.send_keys(pane_id, command)
     retcode = _read_retcode(transport, pane_id, interrupt_check, timeout=timeout)
     screen = transport.capture(pane_id)
     _record(transport, store, pane_id, change_kind="command")
@@ -842,6 +850,7 @@ def apply_vim_steps(
     interrupt_check: Optional[Callable[[], bool]] = None,
     ask: Optional[Callable[[str], str]] = None,
     restarter: Optional[Callable[[], str]] = None,
+    type_tokens: Optional[Callable[[str, Sequence[KeyToken]], None]] = None,
 ) -> List[VimStep]:
     """一步步执行 vim 动作：每步之间检查打断，必要时问 actor 要不要继续。返回执行过的步骤。
 
@@ -859,7 +868,13 @@ def apply_vim_steps(
         if not _gate(interrupt_check, ask, step, f"第 {position + 1} / {len(steps)} 步"):
             break
         pane_id = _execute(
-            transport, store, pane_id, step, restarter=restarter, interrupt_check=interrupt_check
+            transport,
+            store,
+            pane_id,
+            step,
+            restarter=restarter,
+            interrupt_check=interrupt_check,
+            type_tokens=type_tokens,
         )
         executed.append(step)
     return executed
@@ -890,6 +905,7 @@ def _execute(
     *,
     restarter: Optional[Callable[[], str]] = None,
     interrupt_check: Optional[Callable[[], bool]] = None,
+    type_tokens: Optional[Callable[[str, Sequence[KeyToken]], None]] = None,
 ) -> str:
     if step.kind == "shell":
         if step.expect_foreground:
@@ -910,7 +926,10 @@ def _execute(
             # shell"——刚敲下去的时候前台还没换成子进程，那一等就白等了。
             _read_retcode(transport, pane_id, interrupt_check)
     else:
-        transport.send_tokens(pane_id, list(step.keys))
+        if type_tokens is not None:
+            type_tokens(pane_id, list(step.keys))
+        else:
+            transport.send_tokens(pane_id, list(step.keys))
         if step.expect_foreground == "shell" and not _wait_for(
             transport, pane_id, _foreground_is_shell, FOREGROUND_TIMEOUT_SECONDS
         ):
@@ -1206,6 +1225,7 @@ def tmux_apply_diff_by_vim(
     max_rounds: int = 3,
     run: Optional[Runner] = None,
     restarter: Optional[Callable[[], str]] = None,
+    type_tokens: Optional[Callable[[str, Sequence[KeyToken]], None]] = None,
 ) -> ApplyOutcome:
     """一份 diff 通过 tmux 里的 vim 落到工作区，然后核对新 diff 是否与要求的一致。"""
     runner = run or _default_run
@@ -1234,6 +1254,7 @@ def tmux_apply_diff_by_vim(
                 interrupt_check=interrupt_check,
                 ask=ask,
                 restarter=restarter,
+                type_tokens=type_tokens,
             )
             outcome.steps_taken.extend(executed)
             current, current_scratch = _current_tree(snapshot.workspace, runner)

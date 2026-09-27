@@ -936,14 +936,15 @@ class VimStepShapeTest(unittest.TestCase):
         self.assertEqual(["4G", "1dd"], self.values(steps[3]))
         self.assertEqual(":wq", keys_of(steps[4])[:3])
 
-    def test_insert_two_lines_opens_below_and_separates_with_enter(self):
+    def test_insert_two_lines_writes_them_one_line_per_step(self):
         text = self.two_file_diff(
             "@@ -2,2 +2,4 @@\n a1\n a2\n+x1\n+x2\n",
             "@@ -5,2 +5,4 @@\n b4\n b5\n+y1\n+y2\n",
         )
         steps = self.file_steps(text, "a.py")
         self.assertEqual([("search", "^a1$", 1)], anchor_plan_of_steps([steps[1]]))
-        self.assertEqual(["o", "x1", "Enter", "x2", "C-c"], self.values(steps[2]))
+        self.assertEqual(["o", "x1", "C-c"], self.values(steps[2]))
+        self.assertEqual(["o", "x2", "C-c"], self.values(steps[3]))
 
     def test_delete_three_lines_uses_3dd(self):
         text = self.two_file_diff(
@@ -954,21 +955,30 @@ class VimStepShapeTest(unittest.TestCase):
         self.assertEqual([("search", "^a2$", 1)], anchor_plan_of_steps([steps[1]]))
         self.assertEqual(["4G", "3dd"], self.values(steps[2]))
 
-    def test_forty_lines_cost_eight_steps(self):
+    def test_forty_lines_are_forty_steps_of_one_line(self):
         text = self.two_file_diff(
             "@@ -1,1 +1,41 @@\n a1\n" + "".join(f"+row {n}\n" for n in range(40)),
             "@@ -1,1 +1,2 @@\n b1\n+b1-new\n",
         )
         counts = [count for count in written_line_counts(self.steps_for(text)) if count > 1]
-        self.assertEqual([5] * 8, counts)
+        self.assertEqual([], counts, "每一步只写一行")
+        a_steps = self.file_steps(text, "a.py")
+        writers = [
+            step for step in a_steps
+            if any(token.get("value") == "o" for token in step.keys)
+        ]
+        self.assertEqual(40, len(writers))
+        self.assertEqual(40, sum(written_line_counts(a_steps)))
 
     def test_a_blank_added_line_writes_no_text(self):
         text = self.two_file_diff(
             "@@ -1,1 +1,4 @@\n a1\n+\n+ \n+a2\n",
             "@@ -1,1 +1,2 @@\n b1\n+\n",
         )
-        insert = self.file_steps(text, "a.py")[2]
-        self.assertEqual(["o", "Enter", " ", "Enter", "a2", "C-c"], self.values(insert))
+        a_steps = self.file_steps(text, "a.py")
+        self.assertEqual(["o", "C-c"], self.values(a_steps[2]))
+        self.assertEqual(["o", " ", "C-c"], self.values(a_steps[3]))
+        self.assertEqual(["o", "a2", "C-c"], self.values(a_steps[4]))
         for step in self.steps_for(text):
             self.assertNotIn("", self.values(step))
 
@@ -1006,7 +1016,10 @@ class VimStepShapeTest(unittest.TestCase):
         steps = self.steps_for(text)
         self.assertEqual("vim -u NONE -N -i NONE -- pkg/fresh.py", steps[0].command)
         self.assertEqual(["pkg/fresh.py", "other.py"], paths_in(steps))
-        self.assertEqual(["i", "one", "Enter", "two", "Enter", "three", "C-c"], self.values(steps[2]))
+        self.assertEqual(["1G"], self.values(steps[1]))
+        self.assertEqual(["i", "one", "Enter", "C-c"], self.values(steps[2]))
+        self.assertEqual(["i", "two", "Enter", "C-c"], self.values(steps[3]))
+        self.assertEqual(["i", "three", "C-c"], self.values(steps[4]))
 
     def test_special_content_is_typed_verbatim(self):
         text = self.two_file_diff(

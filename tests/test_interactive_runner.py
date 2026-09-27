@@ -14,7 +14,7 @@ from interactive_runner import (
     RunnerError,
     TypingInterrupted,
     resolve_workspace_path,
-    send_command_with_captures,
+    send_line_with_captures,
     send_tokens_with_captures,
 )
 from typing_executor import _send_typing_plan

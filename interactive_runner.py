@@ -28,8 +28,8 @@ from meeting_v2 import MeetingError, MeetingStore, utc_now
 from references import reference_from_event
 from tmux_transport import TmuxError, TmuxTransport
 
-from typing_executor import (  # noqa: F401
-    send_command_with_captures,
+from typing_executor import (
+    send_line_with_captures,
     send_tokens_with_captures,
 )
 from workspace_capture import (  # noqa: F401
@@ -1661,6 +1661,7 @@ class InteractiveRunner:
                     _typed_command(action),
                     interrupt_check=interrupt_check,
                     restarter=self._pane_restarter(),
+                    type_line=self._paced_line(action_id, generation),
                 )
                 self._last_action_result = {
                     "kind": "cmd",
@@ -1678,6 +1679,7 @@ class InteractiveRunner:
                     ask=self._ask_continue,
                     interrupt_check=interrupt_check,
                     restarter=self._pane_restarter(),
+                    type_tokens=self._paced_tokens(action_id, generation),
                 )
                 retcode = outcome.result.retcode if outcome.result else "1"
                 self._last_action_result = {
@@ -1788,6 +1790,49 @@ class InteractiveRunner:
             recovery_required=False,
             failure=failure,
         )
+
+    def _paced_tokens(self, action_id: str, generation: int):
+        """把 vim 动作交给按人节奏打字那套：一行一行看得见，每一步之间都留账。
+
+        `typing_executor` 里那套（`typing_policy` 的 demo/balanced/fast 三档）本来就是为
+        "人看着终端"写的：一个字符一个字符敲、一行敲完停一下再回车，每步截一屏。动作这条路
+        也必须走它 —— 一步一把发完，屏上就是整段瞬间出现，人根本来不及看。
+        """
+
+        def send(pane_id: str, tokens) -> None:
+            send_tokens_with_captures(
+                self.store,
+                self.transport,
+                pane_id,
+                list(tokens),
+                min(self.action_settle_seconds, 0.05),
+                self.typing_interval_seconds,
+                meeting_id=self.store.meeting.meeting_id,
+                action_id=action_id,
+                profile=self.store.meeting.typing_profile or "balanced",
+                context="vim",
+                interrupt_check=lambda: self._typing_should_interrupt(generation),
+            )
+
+        return send
+
+    def _paced_line(self, action_id: str, generation: int):
+        """一行 shell 命令同样按人的节奏敲进去。"""
+
+        def send(pane_id: str, text: str) -> None:
+            send_line_with_captures(
+                self.store,
+                self.transport,
+                pane_id,
+                text,
+                self.typing_interval_seconds,
+                meeting_id=self.store.meeting.meeting_id,
+                action_id=action_id,
+                profile=self.store.meeting.typing_profile or "balanced",
+                interrupt_check=lambda: self._typing_should_interrupt(generation),
+            )
+
+        return send
 
     def _pane_restarter(self):
         """共享终端的窗格没了、或者前台收拾不回来：在同一个目录重开一个会话，交回新的窗格。
