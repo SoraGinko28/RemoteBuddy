@@ -3371,11 +3371,6 @@ function beginDrag(event, kind, node) {
   if (event.button !== 0) return;
   // 这里不动 preventDefault：按下去什么都不发生，双击选词、单击打开都还照旧；
   // 真拖起来之后（updateDrag）才把刚开始的那点选字清掉。
-  // 抓住这个指针：松开鼠标时人可能已经在窗口外了，没有这一下就收不到 pointerup，
-  // 这一枪会一直挂着（列表也不再重画）。
-  try {
-    node.setPointerCapture?.(event.pointerId);
-  } catch (_error) { /* 抓不住也照旧：多半只是鼠标已经抬起来了 */ }
   state.drag = {
     kind,
     node,
@@ -3402,6 +3397,12 @@ function updateDrag(event) {
     if (Math.abs(event.clientY - drag.originY) < DRAG_THRESHOLD_PX) return;
     drag.active = true;
     drag.node.classList.add("dragging");
+    // 到这里才抓住指针：松开时人可能在窗口外，没这一下就收不到 pointerup，这一枪会一直
+    // 挂着。按下时就抓不行——那会把 click 也改投到这一行上，行里"打开会话"的按钮就收
+    // 不到点击，等于点不动会话。
+    try {
+      drag.node.setPointerCapture?.(event.pointerId);
+    } catch (_error) { /* 抓不住也照旧 */ }
     // 鼠标动这几下可能已经拉出一点选区了：拖起来了就把它清掉，免得半行字亮着。
     clearBrowserSelection();
   }
