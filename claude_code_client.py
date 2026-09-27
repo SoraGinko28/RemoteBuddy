@@ -730,6 +730,11 @@ class ClaudeCodeBackend:
                 # the bridge, they can no longer burn the retry budget.
             else:
                 self._last_rejection = content[:500]
+                if self._turn_investigating:
+                    # 调查步里它去调动作工具，被退回来了：这一步已经到头了。让这一枪当场
+                    # 收尾（拿它写过的那点文字当结论），而不是让 CLI 在那儿干等到超时。
+                    self._turn_result_seen = True
+                    self._condition.notify_all()
                 # A rejected chat message is a correctable message-type or
                 # evidence mistake whose reason names the allowed options, so
                 # it must not burn the retry budget on its own; only rejected

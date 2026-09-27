@@ -101,6 +101,8 @@ class AcpBackend:
         self._process_error: Optional[str] = None
         self._instructions = ""
         self._first_turn = True
+        # 这一枪是不是调查步（动作工具关着，被退回就让这一枪收尾）。
+        self._turn_investigating = False
         self._last_text = ""
         # 调查步要整段文字（`_last_text` 是给错误提示用的，只留尾巴 600 字）。
         self._turn_text_parts: List[str] = []
@@ -553,6 +555,7 @@ class AcpBackend:
             self._interrupted = False
             self._last_text = ""
             self._turn_text_parts = []
+            self._turn_investigating = True
         text = (
             self._instructions + "\n\n" + observation
             if self._first_turn
@@ -605,6 +608,7 @@ class AcpBackend:
             with self._condition:
                 self._active_handler = None
                 self._turn_id = None
+                self._turn_investigating = False
 
     def _handle_bridge_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         request_id = request.get("request_id")
@@ -642,6 +646,13 @@ class AcpBackend:
                 self._claimed = action
                 self._claimed_call_id = str(request_id)
                 self._condition.notify_all()
+            investigating = self._turn_investigating
+        if investigating and not result.get("success", False):
+            # 调查步里它去调动作工具，被退回来了：这一步到头了，让这一枪收尾，别干等超时。
+            try:
+                self._notify("session/cancel", {"sessionId": self._session_id})
+            except AgentBackendError:
+                pass
         return {
             "request_id": request_id,
             "success": bool(result.get("success", False)),

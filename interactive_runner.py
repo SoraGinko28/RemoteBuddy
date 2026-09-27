@@ -56,6 +56,8 @@ SHELL_COMMANDS = {"bash", "zsh", "sh"}
 # backend 没有自己的读工具（纯对话的 responses、结构化 app-server 的那两种），终端就是
 # 它们唯一那条路，所以不挡。
 BACKENDS_WITH_OWN_READ_TOOLS = {"claude-code", "trae-acp"}
+# 调查步的时间下限：它可能真的在翻一个很大的文件，一次请求的默认预算不够。
+INVESTIGATION_TIMEOUT_FLOOR = 300.0
 # 一轮里最多交给模型几张图：够用就行，免得一次把整场会的图都塞进去。
 MAX_IMAGES_PER_TURN = 4
 # 太大的图不随请求走（观察里仍然写着它在哪），免得一次请求大到发不出去。
@@ -627,8 +629,9 @@ class InteractiveRunner:
                             session_id,
                             INVESTIGATE_STEP_TEXT + "\n\n" + observation,
                             model=self.store.meeting.model,
+                            # 调查步是一整趟"读文件"：比一次普通往返久，给它一个下限。
                             request_timeout_seconds=min(
-                                configured_timeout,
+                                max(configured_timeout, INVESTIGATION_TIMEOUT_FLOOR),
                                 max(0.1, remaining_seconds - self._request_overhead_seconds()),
                             ),
                             action_handler=self._investigation_refusal,
@@ -653,10 +656,6 @@ class InteractiveRunner:
                                 },
                             )
                             self.store.update(pending_action_id=None)
-                        try:
-                            self.client.interrupt()
-                        except Exception:  # noqa: BLE001 — 掐不掉也照旧往下走
-                            pass
                         continue
                     with self.lock:
                         self.store.refresh()
