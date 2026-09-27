@@ -22,6 +22,10 @@ KeyToken = Dict[str, Any]
 Runner = Callable[..., Any]
 
 
+# 一个步骤里最多写几行文本：太粗就不能及时打断，太细就慢。
+MAX_LINES_PER_STEP = 5
+
+
 class DiffError(RuntimeError):
     """这份 diff 读不出来（不是 unified diff、hunk 头坏掉、行前缀不认识）。"""
 
@@ -76,10 +80,20 @@ class FilePatch:
 
 @dataclass(frozen=True)
 class VimStep:
-    """vim 里的一步：一串按键 + 一句"这一步在干什么"（写进 journal，给人和 critic 看）。"""
+    """一步：要么是一串按键（vim 里），要么是一条 shell 命令（改名/删文件这类 vim 干不了的）。
 
-    keys: Tuple[KeyToken, ...]
+    `label` 说清这一步在哪个文件的哪一段干什么——写进 journal，给人、critic 和 actor 看；
+    打断之后要问 actor 要不要继续，问的就是这些标签。
+    """
+
+    keys: Tuple[KeyToken, ...] = ()
     label: str = ""
+    command: str = ""
+    path: str = ""
+
+    @property
+    def kind(self) -> str:
+        return "shell" if self.command else "keys"
 
 
 @dataclass(frozen=True)
@@ -94,13 +108,14 @@ class Snapshot:
 
 @dataclass
 class ApplyOutcome:
-    """一轮 apply 的收尾账：新 diff、对不对、用了几轮。"""
+    """一轮 apply 的收尾账：新 diff、对不对、用了几轮、哪些文件还对不上。"""
 
     result: Optional[AgentCmdResult] = None
     wanted_diff: str = ""
     got_diff: str = ""
     rounds: int = 0
     steps_taken: list = field(default_factory=list)
+    mismatched_files: list = field(default_factory=list)
 
 
 def parse_unified_diff(text: str) -> list:

@@ -576,3 +576,333 @@ class TmuxApplyDiffTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ======================================================================
+# 追加：多文件、多行、大批量（H/I/J/K 四组，34 条）
+# ======================================================================
+
+def h(old_start, old_count, new_start, new_count, *lines):
+    return f"@@ -{old_start},{old_count} +{new_start},{new_count} @@\n" + "".join(
+        f"{line}\n" for line in lines)
+
+
+def file_block(path, *hunks, new=False, delete=False, old_path=None):
+    old = "/dev/null" if new else f"a/{old_path or path}"
+    new_path = "/dev/null" if delete else f"b/{path}"
+    return f"--- {old}\n+++ {new_path}\n" + "".join(hunks)
+
+
+def keys_of(step) -> str:
+    return "".join(str(token.get("value", "")) for token in step.keys)
+
+
+def steps_text(steps) -> str:
+    return " | ".join(keys_of(step) for step in steps)
+
+
+def paths_in(steps):
+    return [step.path for step in steps if step.path]
+
+
+class ParseManyFilesTest(unittest.TestCase):
+    """H 组：多文件、混合、脏边界。"""
+
+    def test_h1_three_files_parse_with_their_hunks(self):              # H1
+        text = (file_block("a.py", h(1, 1, 1, 1, "-a", "+A"))
+                + file_block("b.py", h(2, 1, 2, 1, "-b", "+B"), h(9, 1, 9, 1, "-c", "+C"))
+                + file_block("c.py", h(4, 1, 4, 1, "-d", "+D")))
+        patches = tmux_vim.parse_unified_diff(text)
+        self.assertEqual(["a.py", "b.py", "c.py"], [one.old_path for one in patches])
+        self.assertEqual([1, 2, 1], [len(one.hunks) for one in patches])
+
+    def test_h2_many_hunks_in_one_file(self):                          # H2
+        hunks = [h(n, 1, n, 1, f"-old{n}", f"+new{n}") for n in range(1, 60, 5)]
+        patches = tmux_vim.parse_unified_diff(file_block("big.py", *hunks))
+        self.assertEqual(12, len(patches[0].hunks))
+
+    def test_h3_mixed_new_modified_deleted(self):                      # H3
+        text = (file_block("fresh.py", h(0, 0, 1, 1, "+only"), new=True)
+                + file_block("edited.py", h(1, 1, 1, 1, "-x", "+y"))
+                + file_block("gone.py", h(1, 2, 0, 0, "-one", "-two"), delete=True))
+        patches = tmux_vim.parse_unified_diff(text)
+        self.assertTrue(patches[0].is_new)
+        self.assertFalse(patches[1].is_new or patches[1].is_delete)
+        self.assertTrue(patches[2].is_delete)
+
+    def test_h4_unsorted_hunks_are_kept_as_written(self):               # H4
+        text = file_block("a.py", h(50, 1, 50, 1, "-late", "+LATE"), h(3, 1, 3, 1, "-早", "+EARLY"))
+        hunks = tmux_vim.parse_unified_diff(text)[0].hunks
+        self.assertEqual([50, 3], [one.old_start for one in hunks])
+
+    def test_h5_a_content_line_may_begin_with_two_at_signs(self):       # H5
+        text = file_block("a.py", h(1, 2, 1, 2, "-@@ -1 +1 @@", "+@@ -2 +2 @@"))
+        hunks = tmux_vim.parse_unified_diff(text)[0].hunks
+        self.assertEqual(("-@@ -1 +1 @@", "+@@ -2 +2 @@"), hunks[0].lines)
+
+    def test_h6_paths_with_spaces_and_unicode(self):                    # H6
+        text = file_block("src/我的 模块.py", h(1, 1, 1, 1, "-a", "+b"))
+        one = tmux_vim.parse_unified_diff(text)[0]
+        self.assertEqual("src/我的 模块.py", one.new_path)
+
+    def test_h7_no_newline_marker_on_both_sides(self):                  # H7
+        text = file_block("a.py", h(1, 1, 1, 1, "-old", "\\ No newline at end of file",
+                                    "+new", "\\ No newline at end of file"))
+        lines = tmux_vim.parse_unified_diff(text)[0].hunks[0].lines
+        self.assertEqual(2, sum(1 for line in lines if line.startswith("\\")))
+
+    def test_h8_a_thousand_character_line_survives(self):               # H8
+        long_line = "+" + "x" * 1000
+        text = file_block("a.py", h(1, 1, 1, 1, "-short", long_line))
+        lines = tmux_vim.parse_unified_diff(text)[0].hunks[0].lines
+        self.assertEqual(1001, len(lines[1]))
+
+
+class VimStepsManyFilesTest(unittest.TestCase):
+    """I 组：多文件、多行改动的动作序列。"""
+
+    def test_i1_every_file_gets_its_own_group_in_diff_order(self):      # I1
+        text = (file_block("a.py", h(1, 1, 1, 1, "-a", "+A"))
+                + file_block("b.py", h(1, 1, 1, 1, "-b", "+B"))
+                + file_block("c.py", h(1, 1, 1, 1, "-c", "+C")))
+        steps = tmux_vim.vim_steps_for_diff(text)
+        self.assertEqual(["a.py", "b.py", "c.py"], paths_in(steps))
+
+    def test_i2_hunks_inside_one_file_run_bottom_up(self):              # I2
+        text = file_block("a.py", h(2, 1, 2, 1, "-a", "+A"), h(40, 1, 40, 1, "-b", "+B"),
+                          h(90, 1, 90, 1, "-c", "+C"))
+        anchors = [keys_of(step) for step in tmux_vim.vim_steps_for_diff(text)
+                   if keys_of(step).endswith("G")]
+        self.assertEqual(["90G", "40G", "2G"], anchors)
+
+    def test_i3_forty_inserted_lines_cost_eight_steps(self):            # I3
+        lines = [f"+line {n}" for n in range(40)]
+        text = file_block("a.py", h(0, 0, 1, 40, *lines))
+        steps = [step for step in tmux_vim.vim_steps_for_diff(text) if "+" not in keys_of(step)]
+        written = [step for step in tmux_vim.vim_steps_for_diff(text)
+                   if any(str(token.get("value", "")).startswith("line ") for token in step.keys)]
+        self.assertEqual(8, len(written), "一个步骤最多写 5 行")
+        for step in written:
+            count = sum(1 for token in step.keys if str(token.get("value", "")).startswith("line "))
+            self.assertLessEqual(count, tmux_vim.MAX_LINES_PER_STEP)
+        self.assertTrue(steps)
+
+    def test_i4_thirty_deleted_lines_are_one_step(self):                # I4
+        lines = [f"-gone {n}" for n in range(30)]
+        text = file_block("a.py", h(5, 30, 5, 0, *lines))
+        steps = tmux_vim.vim_steps_for_diff(text)
+        self.assertIn("30dd", steps_text(steps))
+
+    def test_i5_three_lines_become_seven(self):                         # I5
+        text = file_block("a.py", h(4, 3, 4, 7, "-o1", "-o2", "-o3",
+                                    *[f"+n{n}" for n in range(7)]))
+        steps = tmux_vim.vim_steps_for_diff(text)
+        self.assertIn("3dd", steps_text(steps))
+        self.assertIn("n6", steps_text(steps))
+
+    def test_i6_hunks_five_hundred_lines_apart(self):                   # I6
+        text = file_block("a.py", h(10, 1, 10, 1, "-a", "+A"), h(510, 1, 510, 1, "-b", "+B"))
+        anchors = [keys_of(step) for step in tmux_vim.vim_steps_for_diff(text)
+                   if keys_of(step).endswith("G")]
+        self.assertEqual(["510G", "10G"], anchors)
+
+    def test_i7_blank_lines_are_preserved(self):                        # I7
+        text = file_block("a.py", h(1, 1, 1, 4, "-old", "+one", "+", "+three", "+"))
+        steps = tmux_vim.vim_steps_for_diff(text)
+        blanks = [step for step in steps
+                  if keys_of(step).strip() in {"", "one", "three", "one|", "|"}]
+        self.assertTrue(any("one" in keys_of(step) for step in steps))
+        self.assertGreaterEqual(len(blanks), 1)
+
+    def test_i8_tabs_are_preserved(self):                              # I8
+        text = file_block("a.py", h(1, 1, 1, 1, "-old", "+\tif x:\t\tpass"))
+        steps = tmux_vim.vim_steps_for_diff(text)
+        self.assertIn("\tif x:\t\tpass", steps_text(steps))
+
+    def test_i9_unicode_is_preserved(self):                           # I9
+        text = file_block("a.py", h(1, 1, 1, 1, "-old", "+中文与 emoji 🚀"))
+        steps = tmux_vim.vim_steps_for_diff(text)
+        self.assertIn("中文与 emoji 🚀", steps_text(steps))
+
+    def test_i10_trailing_spaces_are_preserved(self):                 # I10
+        text = file_block("a.py", h(1, 1, 1, 1, "-old", "+value = 1   "))
+        steps = tmux_vim.vim_steps_for_diff(text)
+        self.assertIn("value = 1   ", steps_text(steps))
+
+    def test_i11_a_new_file_is_opened_at_its_new_path(self):          # I11
+        text = file_block("pkg/fresh.py", h(0, 0, 1, 2, "+one", "+two"), new=True)
+        steps = tmux_vim.vim_steps_for_diff(text)
+        self.assertEqual({"pkg/fresh.py"}, set(paths_in(steps)))
+        self.assertIn("one", steps_text(steps))
+        self.assertIn("two", steps_text(steps))
+
+    def test_i12_deleting_a_file_is_a_shell_step(self):               # I12
+        text = file_block("gone.py", h(1, 2, 0, 0, "-one", "-two"), delete=True)
+        steps = tmux_vim.vim_steps_for_diff(text)
+        shells = [step for step in steps if step.kind == "shell"]
+        self.assertEqual(1, len(shells))
+        self.assertIn("gone.py", shells[0].command)
+
+    def test_i13_renaming_a_file_is_a_shell_step(self):               # I13
+        one = FilePatch(old_path="a/old.py", new_path="b/new.py",
+                        hunks=(hunk(1, 1, 1, 1, ["-a", "+b"]),), is_rename=True)
+        steps = tmux_vim.vim_steps_for(one)
+        self.assertTrue(any(step.kind == "shell" for step in steps), "改名要用 shell 步骤")
+        self.assertIn("old.py", " ".join(step.command for step in steps if step.kind == "shell"))
+
+    def test_i14_each_file_ends_with_a_save_labelled_with_its_path(self):  # I14
+        text = (file_block("a.py", h(1, 1, 1, 1, "-a", "+A"))
+                + file_block("b.py", h(1, 1, 1, 1, "-b", "+B")))
+        steps = tmux_vim.vim_steps_for_diff(text)
+        saves = [step for step in steps if "wq" in keys_of(step)]
+        self.assertEqual(2, len(saves))
+        self.assertEqual({"a.py", "b.py"}, {step.path for step in saves})
+
+
+class ApplyLongRunTest(unittest.TestCase):
+    """J 组：长序列里的打断、继续、停下。"""
+
+    def long_steps(self):
+        text = (file_block("a.py", h(1, 1, 1, 1, "-a", "+A"), h(30, 1, 30, 1, "-b", "+B"))
+                + file_block("b.py", h(1, 1, 1, 1, "-c", "+C"))
+                + file_block("c.py", h(1, 1, 1, 1, "-d", "+D")))
+        return tmux_vim.vim_steps_for_diff(text)
+
+    def test_j1_one_interrupt_then_the_rest_runs(self):                 # J1
+        pane = Pane().at_shell()
+        steps = self.long_steps()
+        fired = {"once": False}
+
+        def check():
+            if not fired["once"] and len(pane.keys) >= 3:
+                fired["once"] = True
+                return True
+            return False
+
+        done = tmux_vim.apply_vim_steps(pane, None, pane.pane_id, steps, interrupt_check=check,
+                                        ask=lambda question: "continue")
+        self.assertEqual(len(steps), len(done))
+
+    def test_j2_two_interrupts_still_finish(self):                      # J2
+        pane = Pane().at_shell()
+        steps = self.long_steps()
+        seen = {"n": 0}
+
+        def check():
+            if len(pane.keys) in {2, 5} and seen["n"] < 2:
+                seen["n"] += 1
+                return True
+            return False
+
+        done = tmux_vim.apply_vim_steps(pane, None, pane.pane_id, steps, interrupt_check=check,
+                                        ask=lambda question: "continue")
+        self.assertEqual(len(steps), len(done))
+        self.assertEqual(2, seen["n"])
+
+    def test_j3_stop_leaves_the_other_files_untouched(self):            # J3
+        pane = Pane().at_shell()
+        steps = self.long_steps()
+        tmux_vim.apply_vim_steps(pane, None, pane.pane_id, steps,
+                                 interrupt_check=lambda: len(pane.keys) >= 2,
+                                 ask=lambda question: "stop")
+        opened = [command for command in pane.commands if command.startswith("vim ")]
+        self.assertEqual(["vim a.py"], opened, "停了以后不许再打开别的文件")
+
+    def test_j4_the_shell_is_confirmed_again_between_files(self):       # J4
+        pane = Pane().at_shell()
+        tmux_vim.apply_vim_steps(pane, None, pane.pane_id, self.long_steps())
+        self.assertGreaterEqual(pane.enters, 3, "每进一个文件之前都要确认前台是 shell")
+
+    def test_j5_every_text_step_is_followed_by_a_capture(self):         # J5
+        pane = Pane().at_shell()
+        steps = self.long_steps()
+        tmux_vim.apply_vim_steps(pane, None, pane.pane_id, steps)
+        self.assertGreaterEqual(pane.captures + pane.visible_captures, len(steps))
+
+    def test_j6_a_changed_screen_pauses_instead_of_running_on(self):    # J6
+        pane = Pane().at_shell()
+        steps = self.long_steps()
+        state = {"paused": 0}
+
+        def check():
+            if len(pane.keys) == 1:
+                pane.show("人在这里敲了字\n")       # 屏幕被人改了
+                state["paused"] += 1
+                return True
+            return False
+
+        asked = []
+        tmux_vim.apply_vim_steps(pane, None, pane.pane_id, steps, interrupt_check=check,
+                                 ask=lambda question: asked.append(question) or "continue")
+        self.assertEqual(1, state["paused"])
+        self.assertTrue(asked)
+
+
+class ApplyPlanManyFilesTest(unittest.TestCase):
+    """K 组：多文件下的"再来一轮"。"""
+
+    def wanted(self):
+        return (file_block("a.py", h(1, 1, 1, 1, "-a", "+A"))
+                + file_block("b.py", h(1, 1, 1, 1, "-b", "+B"))
+                + file_block("c.py", h(1, 1, 1, 1, "-c", "+C"))
+                + file_block("d.py", h(1, 1, 1, 1, "-d", "+D")))
+
+    def test_k1_four_files_happy_path(self):                            # K1
+        pane = Pane().at_shell()
+        git = Git(diff_out=self.wanted())
+        outcome = tmux_vim.tmux_apply_diff_by_vim(pane, None, pane.pane_id, self.wanted(),
+                                                  run=git, ask=lambda question: "continue")
+        self.assertEqual("0", outcome.result.retcode)
+        self.assertEqual([], outcome.mismatched_files)
+        self.assertEqual(1, outcome.rounds)
+
+    def test_k2_one_bad_file_is_the_only_one_redone(self):              # K2
+        pane = Pane().at_shell()
+        got = (file_block("a.py", h(1, 1, 1, 1, "-a", "+A"))
+               + file_block("b.py", h(1, 1, 1, 1, "-b", "+WRONG"))
+               + file_block("c.py", h(1, 1, 1, 1, "-c", "+C"))
+               + file_block("d.py", h(1, 1, 1, 1, "-d", "+D")))
+        outcome = tmux_vim.tmux_apply_diff_by_vim(pane, None, pane.pane_id, self.wanted(),
+                                                  run=Git(diff_out=got),
+                                                  ask=lambda question: "continue")
+        self.assertEqual(["b.py"], outcome.mismatched_files)
+        opened = [command for command in pane.commands if command.startswith("vim ")]
+        self.assertEqual(2, opened.count("vim b.py"))
+        self.assertEqual(1, opened.count("vim a.py"))
+        self.assertEqual(1, opened.count("vim c.py"))
+
+    def test_k3_two_bad_files_are_both_redone(self):                    # K3
+        pane = Pane().at_shell()
+        got = (file_block("a.py", h(1, 1, 1, 1, "-a", "+WRONG"))
+               + file_block("b.py", h(1, 1, 1, 1, "-b", "+B"))
+               + file_block("c.py", h(1, 1, 1, 1, "-c", "+WRONG"))
+               + file_block("d.py", h(1, 1, 1, 1, "-d", "+D")))
+        outcome = tmux_vim.tmux_apply_diff_by_vim(pane, None, pane.pane_id, self.wanted(),
+                                                  run=Git(diff_out=got),
+                                                  ask=lambda question: "continue")
+        self.assertEqual(["a.py", "c.py"], outcome.mismatched_files)
+
+    def test_k4_max_rounds_is_respected_with_a_big_diff(self):          # K4
+        pane = Pane().at_shell()
+        got = file_block("a.py", h(1, 1, 1, 1, "-a", "+WRONG")) + file_block(
+            "b.py", h(1, 1, 1, 1, "-b", "+WRONG"))
+        outcome = tmux_vim.tmux_apply_diff_by_vim(pane, None, pane.pane_id, self.wanted(),
+                                                  run=Git(diff_out=got), max_rounds=3,
+                                                  ask=lambda question: "continue")
+        self.assertEqual(3, outcome.rounds)
+        self.assertNotEqual("0", outcome.result.retcode)
+
+    def test_k5_the_same_result_in_another_grouping_matches(self):      # K5
+        wanted = file_block("a.py", h(1, 1, 1, 1, "-a", "+A"), h(5, 1, 5, 1, "-b", "+B"))
+        got = file_block("a.py", h(1, 1, 1, 1, "-a", "+A")) + file_block(
+            "a.py", h(5, 1, 5, 1, "-b", "+B"))
+        self.assertTrue(tmux_vim.diffs_match(wanted, got))
+
+    def test_k6_unrelated_edits_do_not_appear_in_the_new_diff(self):    # K6
+        pane = Pane().at_shell()
+        git = Git(diff_out=self.wanted())
+        outcome = tmux_vim.tmux_apply_diff_by_vim(pane, None, pane.pane_id, self.wanted(),
+                                                  run=git, ask=lambda question: "continue")
+        self.assertEqual(1, sum(1 for call in git.calls if call[1] == "worktree"),
+                         "动手之前拍一次快照就够了")
+        self.assertNotIn("unrelated", outcome.got_diff)
