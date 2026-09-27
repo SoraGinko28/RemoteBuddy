@@ -134,6 +134,7 @@ class AcpBackend:
         images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Optional[Any] = None,
         workspace: Optional[str] = None,
+        resume_session_id: Optional[str] = None,
     ) -> str:
         if self._process is not None:
             raise AgentBackendError("Trae ACP cycle is already active")
@@ -191,9 +192,29 @@ class AcpBackend:
                 {"protocolVersion": ACP_PROTOCOL_VERSION, "clientCapabilities": {}},
                 timeout=min(15.0, self.config.request_timeout_seconds),
             )
+            directory = workspace or str(private_cwd)
+            servers = [self._mcp_server_spec()]
+            wanted = str(resume_session_id or "").strip()
+            session: Any = None
+            if wanted:
+                # 上一次那个会话还在就接着它：CLI 自己带着对话，provider 那串前缀才接得上
+                # （实测续会话后 cachedReadTokens≈99%）。续不上（被删、换了机器、版本不认）
+                # 就退回新建，绝不因为"续不上"把这一轮弄死。
+                loaded = self._request(
+                    "session/load",
+                    {"sessionId": wanted, "cwd": directory, "mcpServers": servers},
+                    timeout=min(30.0, self.config.request_timeout_seconds),
+                    tolerate_error=True,
+                )
+                if isinstance(loaded, dict) and "error" not in loaded:
+                    self._session_id = wanted
+                    self._emit("session_resumed", session_id=wanted, status="ready")
+                    return wanted
+                self._emit("session_resume_failed", session_id=wanted,
+                           status=str((loaded or {}).get("error") or "unknown"))
             session = self._request(
                 "session/new",
-                {"cwd": workspace or str(private_cwd), "mcpServers": [self._mcp_server_spec()]},
+                {"cwd": directory, "mcpServers": servers},
                 timeout=min(20.0, self.config.request_timeout_seconds),
             )
             session_id = session.get("sessionId") if isinstance(session, dict) else None
@@ -246,7 +267,8 @@ class AcpBackend:
     def _notify(self, method: str, params: Dict[str, Any]) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
-    def _request(self, method: str, params: Dict[str, Any], *, timeout: float) -> Dict[str, Any]:
+    def _request(self, method: str, params: Dict[str, Any], *, timeout: float,
+                 tolerate_error: bool = False) -> Dict[str, Any]:
         with self._condition:
             self._next_id += 1
             request_id = self._next_id
@@ -261,6 +283,9 @@ class AcpBackend:
                         self._inbound.pop(index)
                         if "error" in message:
                             error = message.get("error") or {}
+                            if tolerate_error:
+                                # 有的方法（session/load）本来就允许失败：拿错误回去自己决定退路。
+                                return {"error": error}
                             raise AgentProtocolError(
                                 f"Trae ACP {method} failed: {error.get('message') or error}"
                             )

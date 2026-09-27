@@ -232,10 +232,12 @@ class InteractiveRunner:
                 self.store.set_session(self._ensure_pane())
                 capture_workspace(self.store, self.transport)
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
-                initial_context = self._initial_observation()
+                resume_session_id = str(self.store.meeting.agent_session_id or "")
+                initial_context = self._initial_observation(resuming=bool(resume_session_id))
             session_id = self._start_backend_cycle(
                 instructions, initial_context,
                 images=self._images_of(self.store.events_after(0)),
+                resume_session_id=resume_session_id,
             )
             with self.lock:
                 self._cycle_started_monotonic = time.monotonic()
@@ -286,12 +288,15 @@ class InteractiveRunner:
                     raise RunnerError("meeting has no workspace pane")
                 capture_workspace(self.store, self.transport)
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
-                initial_context = self._initial_observation()
+                resume_session_id = str(self.store.meeting.agent_session_id or "")
+                initial_context = self._initial_observation(resuming=bool(resume_session_id))
             # Every worker is a new Agent work cycle. App Server threads are
-            # deliberately never resumed after waiting, errors, or restarts.
+            # deliberately never resumed after waiting, errors, or restarts;
+            # Claude Code and ACP sessions are resumed by id when they exist.
             session_id = self._start_backend_cycle(
                 instructions, initial_context,
                 images=self._images_of(self.store.events_after(0)),
+                resume_session_id=resume_session_id,
             )
             with self.lock:
                 self._cycle_started_monotonic = time.monotonic()
@@ -349,7 +354,8 @@ class InteractiveRunner:
             self._fail(exc)
 
     def _start_backend_cycle(self, instructions: str, initial_context: str,
-                             images: Optional[Sequence[Dict[str, str]]] = None) -> str:
+                             images: Optional[Sequence[Dict[str, str]]] = None,
+                             resume_session_id: Optional[str] = None) -> str:
         start_cycle = getattr(self.client, "start_cycle", None)
         if callable(start_cycle):
             return str(
@@ -362,6 +368,9 @@ class InteractiveRunner:
                     event_callback=self._backend_event,
                     # 工作区路径给 backend 读文件用（只读）；写还是在共享终端里。
                     workspace=str(self.store.workspace_path),
+                    # 上一次那个会话还在就接着它：CLI 自己带着对话，前缀缓存才接得上。
+                    # 没有（新会/换会话）就传空，backend 新建一个。
+                    resume_session_id=resume_session_id,
                 )
             )
         # Compatibility for older injected test clients.
@@ -504,7 +513,8 @@ class InteractiveRunner:
         """杀掉当前 backend 进程，用现在的 Skill 重开一个，继续这一轮。"""
         with self.lock:
             instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
-            context = self._initial_observation()
+            resume_session_id = str(self.store.meeting.agent_session_id or "")
+            context = self._initial_observation(resuming=bool(resume_session_id))
             images = self._images_of(self.store.events_after(0))
             # 新进程的第一次请求就是上面的初始上下文：那一次请求是调查步。
             self._step = "investigate"
@@ -516,7 +526,8 @@ class InteractiveRunner:
                 data={"status": "started", "backend": str(getattr(self.client, "backend_name", ""))},
             )
         self._close_backend()
-        session_id = self._start_backend_cycle(instructions, context, images=images)
+        session_id = self._start_backend_cycle(
+            instructions, context, images=images, resume_session_id=resume_session_id)
         with self.lock:
             self.store.refresh()
             self._check_stop()
@@ -1127,10 +1138,16 @@ class InteractiveRunner:
             kind = str(payload.get("type") or "")
         return kind in ACTION_TYPES
 
-    def _initial_observation(self) -> str:
+    def _initial_observation(self, resuming: bool = False) -> str:
         """cycle 开头的那个观察。一个 cycle 的第一次请求是调查步（能拆步的 backend），
-        所以这段话要跟它一致——第一次请求用的是这段初始上下文，不是请求里的观察。"""
-        text = self._observation(self.store.events_after(0), False, force_history=True)
+        所以这段话要跟它一致——第一次请求用的是这段初始上下文，不是请求里的观察。
+
+        续上一次会话时（`resuming`）只发"它还没读过的"：整段历史在 CLI 那个会话里已经是
+        它自己上下文的一部分，重发一遍既费 token 又把前缀缓存打散。
+        """
+        unread = (self.store.events_after(self.store.meeting.agent_cursor) if resuming
+                  else self.store.events_after(0))
+        text = self._observation(unread, False, force_history=not resuming)
         banner = (INVESTIGATE_STEP_TEXT if self._can_investigate()
                   else act_step_text(getattr(self.client, "action_submission", "tool")))
         return banner + "\n\n" + text

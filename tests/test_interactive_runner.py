@@ -240,6 +240,23 @@ class JsonActionClient(FakeClient):
     action_submission = "json"
 
 
+class RecordingCycleClient(FakeClient):
+    """记下每一轮 start_cycle 拿到的 resume_session_id 和初始上下文。"""
+
+    # trae-acp：能续会话（claude-code 要求 deepseek provider，这里用默认的 openai）。
+    backend_name = "trae-acp"
+    stateful = True
+
+    def __init__(self, outcomes):
+        super().__init__(outcomes)
+        self.cycles = []
+
+    def start_cycle(self, meeting_id, instructions, initial_context, **kwargs):
+        self.cycles.append({"resume": kwargs.get("resume_session_id"),
+                            "context": initial_context, "instructions": instructions})
+        return f"session-{len(self.cycles)}"
+
+
 class InvestigatingClient(FakeClient):
     """有自己读工具的 backend：每个动作之前，harness 都会先要一次调查。"""
 
@@ -1339,6 +1356,28 @@ class InteractiveRunnerTest(unittest.TestCase):
         ]
         self.assertEqual([], findings)
         self.assertTrue(any(item[1] == "vim" for item in self.transport.commands))
+
+    def test_the_next_cycle_resumes_the_session_and_does_not_replay_history(self):
+        """第二轮带上上一轮的 agent_session_id，而且不再把整段历史重发一遍。"""
+        client = RecordingCycleClient([
+            make_action("done", message_type="final", content="Done."),
+            make_action("done", message_type="final", content="Done again."),
+        ])
+        runner = InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        )
+        runner.start()
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        first_session = loaded.meeting.agent_session_id
+        self.assertTrue(first_session)
+
+        runner.resume()
+
+        self.assertEqual("", client.cycles[0]["resume"])
+        self.assertEqual(first_session, client.cycles[1]["resume"])
+        # 续会话那一轮的初始上下文里不该再出现第一次那句人类请求。
+        self.assertIn("Create notes.md", client.cycles[0]["context"])
+        self.assertNotIn("Create notes.md", client.cycles[1]["context"])
 
     def test_a_backend_without_tools_is_asked_for_json_not_for_a_tool(self):
         """没工具的 backend 不能叫它去调 `remotebuddy_action`：它会回一句"没有这个工具"，

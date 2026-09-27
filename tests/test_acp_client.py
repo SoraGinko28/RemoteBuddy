@@ -31,6 +31,7 @@ settings = json.loads(sys.argv[1])
 action = settings["action"]
 permission_kinds = settings["permission_kinds"]
 submit = settings.get("submit", True)
+load_ok = settings.get("load_ok", True)
 say = settings.get("say", "看着呢")
 
 
@@ -79,6 +80,14 @@ for line in sys.stdin:
         servers.extend(message["params"]["mcpServers"])
         record({"servers": servers})
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"sessionId": session_id}})
+    elif method == "session/load":
+        if load_ok:
+            record({"loaded": message["params"]["sessionId"]})
+            send({"jsonrpc": "2.0", "id": message["id"],
+                  "result": {"configOptions": [], "sessionId": message["params"]["sessionId"]}})
+        else:
+            send({"jsonrpc": "2.0", "id": message["id"],
+                  "error": {"code": -32002, "message": "Resource not found"}})
     elif method == "session/prompt":
         if say:
             send({"jsonrpc": "2.0", "method": "session/update",
@@ -117,6 +126,7 @@ class AcpBackendTest(unittest.TestCase):
         self.permission_kinds = ["read", "edit"]
         self.submit = True
         self.say = "看着呢"
+        self.load_ok = True
 
     def config(self):
         return ModelApiConfig(
@@ -132,7 +142,8 @@ class AcpBackendTest(unittest.TestCase):
 
     def process_factory(self, _command, cwd):
         settings = json.dumps({"action": self.action, "permission_kinds": self.permission_kinds,
-                               "submit": self.submit, "say": self.say})
+                               "submit": self.submit, "say": self.say,
+                               "load_ok": self.load_ok})
         return subprocess.Popen(
             [sys.executable, str(self.script), settings],
             cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -229,6 +240,29 @@ class AcpBackendTest(unittest.TestCase):
         finally:
             backend.close()
         self.assertEqual("看着呢", findings)
+
+    def test_a_previous_session_is_loaded_instead_of_created(self):
+        """有上一次的会话 id 就 session/load 接着它，而不是每轮新开一个会话。"""
+        backend = self.backend()
+        try:
+            session = backend.start_cycle("meeting-acp", "skill", "context",
+                                          workspace=str(self.workspace),
+                                          resume_session_id="session-from-last-time")
+        finally:
+            backend.close()
+        self.assertEqual("session-from-last-time", session)
+
+    def test_a_session_that_cannot_be_loaded_falls_back_to_a_new_one(self):
+        """续不上（会话被删）就新建，绝不因为续不上把这一轮弄死。"""
+        self.load_ok = False
+        backend = self.backend()
+        try:
+            session = backend.start_cycle("meeting-acp", "skill", "context",
+                                          workspace=str(self.workspace),
+                                          resume_session_id="session-that-is-gone")
+        finally:
+            backend.close()
+        self.assertEqual("session-fake", session)
 
     def test_a_silent_investigation_comes_back_empty(self):
         """没什么可查的它一句话都不说：这一枪照样正常收尾，结论就是空串。"""

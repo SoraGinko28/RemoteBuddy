@@ -778,7 +778,11 @@ class OpenAIResponsesClient:
         images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Any = None,
         workspace: Optional[str] = None,
+        resume_session_id: Optional[str] = None,
     ) -> str:
+        # Responses 是无状态的：动作和上下文每次都随请求带上，没有会话可续。
+        del resume_session_id
+
         del initial_context, model, images, workspace
         self._cycle_instructions = instructions
         session_id = self.create_conversation(meeting_id)

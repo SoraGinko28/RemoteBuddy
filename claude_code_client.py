@@ -54,14 +54,18 @@ REQUIRED_HELP_FLAGS = {
     "--bare",
     "--input-format",
     "--mcp-config",
-    "--no-session-persistence",
     "--output-format",
+    "--resume",
     "--permission-mode",
     "--restricted",
     "--strict-mcp-config",
     "--system-prompt-file",
     "--tools",
 }
+
+
+# 续会话之后等 CLI 报 init 的上限：等不到就认为续不上，退回新会话。
+SESSION_RESUME_WAIT_SECONDS = 20.0
 
 
 class ClaudeCodeError(AgentBackendError):
@@ -298,6 +302,7 @@ class ClaudeCodeBackend:
         images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Optional[BackendEventCallback] = None,
         workspace: Optional[str] = None,
+        resume_session_id: Optional[str] = None,
     ) -> str:
         if self._process is not None:
             raise ClaudeCodeError("Claude Code cycle is already active")
@@ -330,7 +335,13 @@ class ClaudeCodeBackend:
         self._callback = event_callback
         self._initial_context = initial_context
         self._initial_images = list(images or [])
-        self._session_id = str(uuid.uuid4())
+        # 上一次那个会话还在就接着它（`--resume`）：CLI 自己带着对话，provider 那串前缀
+        # 才接得上（实测续会话后 cache_read ≈99%）。这里先按它设 id，起进程时用它续。
+        self._resume_session_id = str(resume_session_id or "").strip()
+        self._session_id = self._resume_session_id or str(uuid.uuid4())
+        # 续会话时把"第一次要发初始上下文"这件事关掉：历史在 CLI 那边，别再重发一遍。
+        if self._resume_session_id:
+            self._first_turn = False
         self._temporary = tempfile.TemporaryDirectory(prefix="remotebuddy-claude-")
         private_cwd = Path(self._temporary.name).resolve()
         os.chmod(private_cwd, 0o700)
@@ -392,21 +403,33 @@ class ClaudeCodeBackend:
                 str(mcp_path),
                 "--system-prompt-file",
                 str(prompt_path),
-                "--no-session-persistence",
+                # 不再带 --no-session-persistence：它写着 "cannot be resumed"，带上就永远续不了。
                 "--no-chrome",
-                "--session-id",
-                self._session_id,
+                *(["--resume", self._resume_session_id] if self._resume_session_id
+                  else ["--session-id", self._session_id]),
                 "--model",
                 selected_model,
             ]
             self._process = self._process_factory(command, private_cwd, self._child_environment(selected_model))
-            if self._process.stdin is None or self._process.stdout is None:
-                raise ClaudeCodeError("Claude Code stream stdio is unavailable")
-            self._reader = threading.Thread(target=self._read_stdout, name="remotebuddy-claude-stdout", daemon=True)
-            self._reader.start()
-            if self._process.stderr is not None:
-                self._stderr_reader = threading.Thread(target=self._drain_stderr, name="remotebuddy-claude-stderr", daemon=True)
-                self._stderr_reader.start()
+            self._start_reader_threads()
+            if self._resume_session_id and not self._wait_for_init(SESSION_RESUME_WAIT_SECONDS):
+                # 续不上（会话被删、换了机器、版本不认）：退回新会话，绝不因此把这一轮弄死。
+                failed = self._process_error or "no init message"
+                self._emit("session_resume_failed", session_id=self._resume_session_id,
+                           status=str(failed)[:200])
+                self._stop_process()
+                self._resume_session_id = ""
+                self._session_id = str(uuid.uuid4())
+                self._process_error = None
+                self._initialized = False
+                self._first_turn = bool(self._initial_context)
+                retry = [item for index, item in enumerate(command)
+                         if not (item == "--resume"
+                                 or (index and command[index - 1] == "--resume"))]
+                retry += ["--session-id", self._session_id]
+                self._process = self._process_factory(
+                    retry, private_cwd, self._child_environment(selected_model))
+                self._start_reader_threads()
             self._started_at = time.monotonic()
             self._emit("session_started", session_id=self._session_id, status="starting")
             return self._session_id
@@ -573,6 +596,56 @@ class ClaudeCodeBackend:
                 self._active_handler = None
                 self._turn_id = None
                 self._turn_investigating = False
+
+    def _start_reader_threads(self) -> None:
+        if self._process is None or self._process.stdin is None or self._process.stdout is None:
+            raise ClaudeCodeError("Claude Code stream stdio is unavailable")
+        self._reader = threading.Thread(target=self._read_stdout, name="remotebuddy-claude-stdout", daemon=True)
+        self._reader.start()
+        if self._process.stderr is not None:
+            self._stderr_reader = threading.Thread(
+                target=self._drain_stderr, name="remotebuddy-claude-stderr", daemon=True)
+            self._stderr_reader.start()
+
+    def _wait_for_init(self, timeout: float) -> bool:
+        """等 CLI 的第一条 init：等到了说明这一枪起来了（续会话成功也走这里）。"""
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                if self._initialized:
+                    return True
+                if self._process_error or self._process is None:
+                    return False
+                process = self._process
+                if getattr(process, "poll", lambda: None)() is not None:
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(min(0.2, remaining))
+
+    def _stop_process(self) -> None:
+        """只收掉 CLI 进程（bridge、临时目录留着）：续会话失败时换个进程重来。"""
+        process = self._process
+        self._process = None
+        if process is not None:
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=1.5)
+            except Exception:
+                try:
+                    self._signal_process(signal.SIGKILL, process=process)
+                except Exception:
+                    pass
+        for worker in (self._reader, self._stderr_reader):
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=1)
+        self._reader = None
+        self._stderr_reader = None
 
     def interrupt(self) -> None:
         with self._condition:

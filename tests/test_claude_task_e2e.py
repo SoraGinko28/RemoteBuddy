@@ -147,6 +147,60 @@ for line in sys.stdin:
 '''.format(tool=TOOL_NAME)
 
 
+class ClaudeResumeCommandTest(unittest.TestCase):
+    """续会话/退回新建：看真正拼出来的命令行（不跑 CLI）。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.commands = []
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def backend(self):
+        config = ModelApiConfig(
+            model="deepseek-v4-pro[1m]", base_url="https://api.deepseek.com/anthropic",
+            request_timeout_seconds=10.0, reasoning_effort="max", api_key="deepseek-secret",
+            warnings=(), agent_backend="claude-code", agent_provider="deepseek",
+            fast_model="deepseek-v4-flash", auth_keys={"DEEPSEEK_API_KEY": "deepseek-secret"},
+        )
+
+        def factory(command, cwd, env):
+            self.commands.append(list(command))
+            return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                    cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, encoding="utf-8")
+
+        return ClaudeCodeBackend(config, claude_binary="fake-claude", process_factory=factory,
+                                 skip_protocol_check=True)
+
+    def test_a_stored_session_is_resumed_and_never_persisted_off(self):
+        backend = self.backend()
+        try:
+            backend.start_cycle("m", "skill", "context", workspace=str(self.root),
+                                resume_session_id="11111111-2222-3333-4444-555555555555")
+        finally:
+            backend.close()
+        command = self.commands[0]
+        self.assertIn("--resume", command)
+        self.assertEqual("11111111-2222-3333-4444-555555555555", command[command.index("--resume") + 1])
+        self.assertNotIn("--session-id", command)
+        # 带上它会话就永远续不了（帮助原文：cannot be resumed）。
+        self.assertNotIn("--no-session-persistence", command)
+
+    def test_without_a_stored_session_a_new_one_is_created(self):
+        backend = self.backend()
+        try:
+            session = backend.start_cycle("m", "skill", "context", workspace=str(self.root))
+        finally:
+            backend.close()
+        command = self.commands[0]
+        self.assertIn("--session-id", command)
+        self.assertEqual(session, command[command.index("--session-id") + 1])
+        self.assertNotIn("--resume", command)
+
+
 class ClaudeTaskEndToEndTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

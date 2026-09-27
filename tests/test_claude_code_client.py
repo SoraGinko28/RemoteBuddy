@@ -241,7 +241,9 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         # 没有工作区就不给 --add-dir；给了就知道自己被允许读哪儿。
         self.assertNotIn("--add-dir", command)
         self.assertIn("--strict-mcp-config", command)
-        self.assertIn("--no-session-persistence", command)
+        # 不再带它：帮助原文写着 "cannot be resumed"，带上就永远续不了上一次会话。
+        self.assertNotIn("--no-session-persistence", command)
+        self.assertIn("--session-id", command)
         self.assertNotIn("deepseek-secret", command)
         self.assertEqual("deepseek-secret", env["ANTHROPIC_AUTH_TOKEN"])
         self.assertNotIn("DEEPSEEK_API_KEY", env)

@@ -183,7 +183,11 @@ class CodexAppServerBackend:
         images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Optional[BackendEventCallback] = None,
         workspace: Optional[str] = None,
+        resume_session_id: Optional[str] = None,
     ) -> str:
+        # app-server 的线程不在这里续：这条路的续会话没验过，先照旧每轮新线程。
+        del resume_session_id
+
         if self._process is not None:
             raise CodexAppServerError("Codex App Server cycle is already active")
         # 同一个 backend 对象可以再开一个 cycle（页面上那个"重启"就是这么干的）：
