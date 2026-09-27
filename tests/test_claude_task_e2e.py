@@ -219,10 +219,16 @@ class ClaudeTaskEndToEndTest(unittest.TestCase):
         self.assertEqual("请创建 notes.md 并写入一个标题。", ack["data"]["references"][0]["excerpt"])
         final = chats[2]
         self.assertEqual("screen", final["data"]["references"][0]["kind"])
-        # Vim edit and the relaxed bash command both reached the shared pane.
+        # 改文件那一趟（vim）走共享终端；`grep` 是读，harness 自己跑掉，不打进终端。
         self.assertTrue(any(item[1] == "vim" for item in self.transport.commands))
         typed = [text for _pane, text in self.transport.literal_sends]
-        self.assertIn("grep -c RemoteBuddy notes.md", typed)
+        self.assertNotIn("grep -c RemoteBuddy notes.md", typed)
+        by_harness = [
+            event["data"].get("command")
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("executed_by") == "harness"
+        ]
+        self.assertIn("grep -c RemoteBuddy notes.md", by_harness)
         statuses = [
             event["data"].get("status")
             for event in loaded.events()

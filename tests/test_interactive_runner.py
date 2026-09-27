@@ -312,6 +312,93 @@ class BackendRequestTest(unittest.TestCase):
         self.assertEqual(1, len(session_ids))
 
 
+class ReadActionTest(unittest.TestCase):
+    """`read` 动作：读工作区里的文件，内容随下一次观察回来，不碰共享终端。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        skill = self.root / "SKILL.md"
+        skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")
+        self.store = MeetingStore.create(
+            self.root, "read-demo", "读一下 merge.py。", skill, "remotebuddy-read-demo",
+            "test-model", workspace=self.root,
+        )
+        (self.root / "merge.py").write_text("def merge_sort(items):\n    return items\n",
+                                            encoding="utf-8")
+        self.transport = FakeTransport()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_the_file_comes_back_in_the_next_observation(self):
+        client = FakeClient([
+            make_action(),
+            make_action("read", path="merge.py"),
+            make_action("done", message_type="final", content="merge_sort，就一个函数。"),
+        ])
+        InteractiveRunner(self.store, self.transport, client, action_settle_seconds=0,
+                          typing_interval_seconds=0).start()
+        self.assertIn('"file"', client.calls[2][2])
+        self.assertIn("def merge_sort(items)", client.calls[2][2])
+        # 读不碰终端：一个字都没往 pane 里打
+        self.assertEqual([], self.transport.literal_sends)
+        loaded = MeetingStore.load_in_workspace(self.root, "read-demo")
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        reads = [e for e in loaded.events()
+                 if e["kind"] == "action" and (e["data"].get("action") or {}).get("type") == "read"]
+        self.assertTrue(reads)
+
+    def test_plain_reader_commands_run_in_the_harness_not_the_pane(self):
+        """模型爱发的 `cat`/`sed -n`/`rg` 由 harness 自己跑，一个字不打进终端。"""
+        (self.root / "notes.txt").write_text("第一行\n第二行\n", encoding="utf-8")
+        client = FakeClient([
+            make_action(),
+            make_action("command", command="cat merge.py"),
+            make_action("command", command="sed -n '1,5p' notes.txt"),
+            make_action("done", message_type="final", content="看完了。"),
+        ])
+        InteractiveRunner(self.store, self.transport, client, action_settle_seconds=0,
+                          typing_interval_seconds=0).start()
+        self.assertEqual([], self.transport.literal_sends)
+        self.assertIn("def merge_sort(items)", client.calls[2][2])
+        self.assertIn("第一行", client.calls[3][2])
+        loaded = MeetingStore.load_in_workspace(self.root, "read-demo")
+        ran = [e for e in loaded.events()
+               if e["kind"] == "action" and e["data"].get("executed_by") == "harness"]
+        self.assertEqual(2, len(ran))
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+
+    def test_writes_and_chained_lines_still_go_through_the_pane(self):
+        """`sed -i`、带 `;`/`|` 的行、名单外的命令：一律回终端（人看得见）。"""
+        self.assertEqual(None, self.runner_read_only("sed -i 's/a/b/' merge.py"))
+        self.assertEqual(None, self.runner_read_only("cat merge.py; rm -rf /tmp/x"))
+        self.assertEqual(None, self.runner_read_only("cat merge.py | head -3"))
+        self.assertEqual(None, self.runner_read_only("python3 x.py"))
+        self.assertEqual(None, self.runner_read_only("cat ../outside.txt"))
+        self.assertIsNotNone(self.runner_read_only("head -20 merge.py"))
+
+    def runner_read_only(self, line):
+        runner = InteractiveRunner(self.store, self.transport, FakeClient([]),
+                                   action_settle_seconds=0, typing_interval_seconds=0)
+        return runner._read_only_argv(line)
+
+    def test_a_path_outside_the_workspace_is_refused_and_the_agent_replans(self):
+        client = FakeClient([
+            make_action(),
+            make_action("read", path="../outside.txt"),
+            make_action("done", message_type="final", content="读不到就算了。"),
+        ])
+        InteractiveRunner(self.store, self.transport, client, action_settle_seconds=0,
+                          typing_interval_seconds=0).start()
+        self.assertNotIn("outside.txt", str(client.calls[-1][2])[:0] or "")
+        loaded = MeetingStore.load_in_workspace(self.root, "read-demo")
+        rejected = [e for e in loaded.events()
+                    if e["kind"] == "action" and e["data"].get("status") == "rejected"]
+        self.assertEqual(1, len(rejected))
+        self.assertIn("escapes the shared workspace", rejected[0]["content"])
+
+
 class DelayedVimTransport(FakeTransport):
     """Mimic Vim drawing after the command echo has already been captured."""
 
@@ -715,11 +802,11 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertTrue(any(item[1] == "vim" for item in self.transport.commands if item[0] != "create"))
         self.assertTrue(self.transport.tokens)
         self.assertEqual(
-            ("chat", "command", "done", "observe", "keystrokes"),
+            ("chat", "command", "read", "done", "observe", "keystrokes"),
             client.calls[0][3]["allowed_types"],
         )
         self.assertEqual(
-            ("chat", "keystrokes", "observe"),
+            ("chat", "read", "keystrokes", "observe"),
             client.calls[2][3]["allowed_types"],
         )
         self.assertIn("Be specific.", client.calls[0][1])
@@ -778,7 +865,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual("command", rejected[0]["data"]["action"]["type"])
         self.assertEqual(5, len(client.calls))
         self.assertEqual(
-            ("chat", "keystrokes", "observe"),
+            ("chat", "read", "keystrokes", "observe"),
             client.calls[3][3]["allowed_types"],
         )
 
@@ -809,7 +896,7 @@ class InteractiveRunnerTest(unittest.TestCase):
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         ).start()
         self.assertEqual(
-            ("chat", "keystrokes", "observe"),
+            ("chat", "read", "keystrokes", "observe"),
             client.calls[4][3]["allowed_types"],
         )
         self.assertEqual(
@@ -1110,7 +1197,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         with mock.patch("interactive_runner.time.monotonic", return_value=101.0):
             allowed_types, _, budget_final = runner._phase_constraints()
-        self.assertEqual(("chat", "command", "done", "observe", "keystrokes"), allowed_types)
+        self.assertEqual(("chat", "command", "read", "done", "observe", "keystrokes"), allowed_types)
         self.assertFalse(budget_final)
 
     def test_first_cycle_action_is_not_pinned_to_an_acknowledgement(self):
@@ -1122,7 +1209,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         self.store.append_screen("bash-3.2$", "bash", str(self.store.workspace_path))
         allowed_types, allowed_messages, _ = runner._phase_constraints()
-        self.assertEqual(("chat", "command", "done", "observe", "keystrokes"), allowed_types)
+        self.assertEqual(("chat", "command", "read", "done", "observe", "keystrokes"), allowed_types)
         self.assertEqual(("none", "ack", "progress", "question", "final"), allowed_messages)
 
     def test_done_is_the_agents_call_even_without_a_screen_marker(self):

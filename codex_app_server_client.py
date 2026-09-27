@@ -233,6 +233,9 @@ class CodexAppServerBackend:
                 "personality": "friendly",
                 "developerInstructions": instructions,
                 "ephemeral": True,
+                # 线程级也要声明沙箱：不声明，CLI 就不给模型 shell 工具，
+                # 于是它只能把 cat/sed 当动作发进共享终端（慢，而且满屏）。
+                "sandbox": "read-only",
                 "serviceName": "remotebuddy",
                 "environments": [],
                 "runtimeWorkspaceRoots": [self._workspace] if self._workspace else [],
