@@ -1008,6 +1008,68 @@ class HTTPBoundaryTest(unittest.TestCase):
         self.assertEqual((self.root / ".meeting" / "copy-demo").resolve(),
                          self.service._open_store("copy-demo").run_dir)
 
+    def test_meetings_can_be_dragged_into_an_order(self):
+        for suffix in ("a", "b", "c"):
+            self.request("/api/meetings", method="POST",
+                         body=json.dumps({"message": f"写个便签 {suffix}",
+                                          "meeting_id": f"order-{suffix}"}),
+                         csrf=True)
+        self.wait_for_workers()
+        listed = json.load(self.request("/api/meetings"))["meetings"]
+        self.assertEqual(["order-a", "order-b", "order-c"],
+                         sorted(one["meeting_id"] for one in listed))
+
+        response = self.request(
+            "/api/meetings/order",
+            method="POST",
+            body=json.dumps({"workspace": str(self.root),
+                             "meetings": ["order-a", "order-c", "order-b"]}),
+            csrf=True,
+        )
+        self.assertEqual(200, response.status)
+        self.assertEqual(
+            ["order-a", "order-c", "order-b"],
+            [one["meeting_id"] for one in json.load(self.request("/api/meetings"))["meetings"]],
+        )
+        # 拖动之后新开的会不在那份顺序里：照旧排在最上面，不会挤掉谁。
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "又一个", "meeting_id": "order-d"}), csrf=True)
+        self.wait_for_workers()
+        self.assertEqual(
+            ["order-d", "order-a", "order-c", "order-b"],
+            [one["meeting_id"] for one in json.load(self.request("/api/meetings"))["meetings"]],
+        )
+
+    def test_workspaces_can_be_dragged_into_an_order(self):
+        for name in ("alpha", "beta"):
+            (self.root / name).mkdir()
+            self.request("/api/workspaces", method="POST",
+                         body=json.dumps({"directory": str(self.root / name)}), csrf=True)
+        self.assertEqual(
+            [str(self.root.resolve()), str((self.root / "alpha").resolve()),
+             str((self.root / "beta").resolve())],
+            json.load(self.request("/api/meetings"))["workspaces"],
+        )
+
+        self.request("/api/workspaces/order", method="POST",
+                     body=json.dumps({"workspaces": [str((self.root / "beta").resolve()),
+                                                     str(self.root.resolve()),
+                                                     str((self.root / "alpha").resolve())]}),
+                     csrf=True)
+
+        self.assertEqual(
+            [str((self.root / "beta").resolve()), str(self.root.resolve()),
+             str((self.root / "alpha").resolve())],
+            json.load(self.request("/api/meetings"))["workspaces"],
+        )
+        # 名单上没点到的（后来才加的）补在后面，不会因为一次拖动就不见。
+        (self.root / "gamma").mkdir()
+        self.request("/api/workspaces", method="POST",
+                     body=json.dumps({"directory": str(self.root / "gamma")}), csrf=True)
+        workspaces = json.load(self.request("/api/meetings"))["workspaces"]
+        self.assertEqual(4, len(workspaces))
+        self.assertEqual(str((self.root / "gamma").resolve()), workspaces[-1])
+
     def test_workspace_rename_and_delete_routes(self):
         other = self.root / "elsewhere"
         other.mkdir()

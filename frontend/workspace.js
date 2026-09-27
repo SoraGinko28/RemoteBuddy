@@ -45,6 +45,10 @@ const state = {
   workspaceTitles: {},
   workspaceMenuPath: "",
   meetingMenuId: "",
+  // 正在拖的东西（`meeting:<会议号>` / `workspace:<目录>`）、拖的范围和拖之前的顺序。
+  dragKey: "",
+  dragScope: "",
+  dragBefore: [],
   workspace: "",
   listed: [],
   workspaceFilled: false,
@@ -576,10 +580,12 @@ function meetingLabel(meeting) {
 }
 
 // 一条会话就一行：标题 + 相对时间。会议号、provider、阶段都不占地方（会议号在悬停
-// 的提示里，header 也一样）。鼠标悬在这一行上时时间让位给「···」：删除会话在那后面，
-// 平时不占地方，也不怕点错。
+// 的提示里，header 也一样）。鼠标悬在这一行上时时间让位给「⠿」和「···」：前者拖顺序，
+// 后者是删除与会话操作。拖动不用整行做把手，是因为在标题上拖是人在选字复制。
 function meetingItem(meeting) {
   const row = node("div", "meeting-row");
+  row.dataset.meeting = meeting.meeting_id;
+  row.dataset.workspace = meeting.workspace_root || state.workspace || "";
   const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
   button.type = "button";
   button.title = meeting.meeting_id;
@@ -587,6 +593,12 @@ function meetingItem(meeting) {
     node("span", "meeting-item-title", meetingLabel(meeting)),
     node("span", "meeting-item-time", fmtAgo(meeting.updated_at)),
   );
+  const handle = node("button", "meeting-item-handle", "⠿");
+  handle.type = "button";
+  handle.draggable = true;
+  handle.title = "拖动调整会话顺序";
+  handle.setAttribute("aria-label", "拖动调整会话顺序");
+  handle.addEventListener("dragstart", (event) => beginRowDrag(event, row));
   const more = node("button", "meeting-item-more", "···");
   more.type = "button";
   more.title = "会话操作";
@@ -603,7 +615,10 @@ function meetingItem(meeting) {
     if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
     selectMeeting(meeting.meeting_id);
   });
-  row.append(button, more);
+  row.addEventListener("dragover", (event) => moveRowUnderPointer(event, row));
+  row.addEventListener("drop", (event) => event.preventDefault());
+  row.addEventListener("dragend", () => { finishDrag().catch((error) => toast(error.message)); });
+  row.append(button, handle, more);
   return row;
 }
 
@@ -624,9 +639,11 @@ function folderIcon() {
 function renderMeetingList() {
   // Rebuilding the items drops any selection inside them, so stand down while
   // the human is selecting something in the list (the next render, after the
-  // selection is cleared, picks the change up).
+  // selection is cleared, picks the change up). A drag in progress is the same
+  // case: a redraw would take the row out from under the pointer.
   const live = window.getSelection();
   if (live && !live.isCollapsed && el.meeting_list.contains(live.anchorNode)) return;
+  if (state.dragKey) return;
   el.meeting_list.replaceChildren();
   const groups = meetingGroups();
   // "No v2 session yet" is for having no workspace at all: a workspace that has
@@ -634,8 +651,16 @@ function renderMeetingList() {
   el.list_empty.hidden = groups.length > 0;
   for (const group of groups) {
     const section = node("section", "meeting-group");
+    section.dataset.workspace = group.path;
     const head = node("div", "meeting-group-head");
     head.title = group.path;
+    head.draggable = true;
+    head.addEventListener("dragstart", (event) => beginGroupDrag(event, section));
+    head.addEventListener("dragover", (event) => moveGroupUnderPointer(event, section));
+    head.addEventListener("drop", (event) => event.preventDefault());
+    section.addEventListener("dragend", () => {
+      finishDrag().catch((error) => toast(error.message));
+    });
     head.append(
       folderIcon(),
       node("span", "meeting-group-name",
@@ -3331,6 +3356,93 @@ async function deleteMeeting(meetingId) {
   }
   await loadMeetings();
   renderAll();
+}
+
+// 拖动排序：拖的时候先把元素在 DOM 里挪到该在的位置（当场看得见），松手才把顺序发给
+// 服务；服务把它记在盘上，下一次刷新照这份顺序画。
+const DRAG_WORKSPACES = "workspaces";
+
+function dragRowsOf(workspacePath) {
+  return [...el.meeting_list.querySelectorAll(".meeting-row")]
+    .filter((row) => row.dataset.workspace === workspacePath);
+}
+
+function dragSections() {
+  return [...el.meeting_list.querySelectorAll(".meeting-group")];
+}
+
+function beginRowDrag(event, row) {
+  state.dragKey = `meeting:${row.dataset.meeting}`;
+  state.dragScope = row.dataset.workspace || "";
+  state.dragBefore = dragRowsOf(state.dragScope).map((one) => one.dataset.meeting);
+  row.classList.add("dragging");
+  // Firefox 只有 setData 过才真的开始拖。
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", state.dragKey);
+  }
+}
+
+function beginGroupDrag(event, section) {
+  state.dragKey = `workspace:${section.dataset.workspace}`;
+  state.dragScope = DRAG_WORKSPACES;
+  state.dragBefore = dragSections().map((one) => one.dataset.workspace);
+  section.classList.add("dragging");
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", state.dragKey);
+  }
+}
+
+// 会话只在它自己那个工作区里挪：拖到别的工作区上不算（那要搬数据，是另一件事）。
+function moveRowUnderPointer(event, row) {
+  if (!state.dragKey.startsWith("meeting:")) return;
+  const dragged = dragRowsOf(state.dragScope)
+    .find((one) => one.dataset.meeting === state.dragKey.slice("meeting:".length));
+  if (!dragged || dragged === row) return;
+  event.preventDefault();
+  const box = row.getBoundingClientRect();
+  const after = event.clientY > box.top + box.height / 2;
+  row.parentNode.insertBefore(dragged, after ? row.nextSibling : row);
+}
+
+function moveGroupUnderPointer(event, section) {
+  if (!state.dragKey.startsWith("workspace:")) return;
+  const dragged = dragSections()
+    .find((one) => one.dataset.workspace === state.dragKey.slice("workspace:".length));
+  if (!dragged || dragged === section) return;
+  event.preventDefault();
+  const box = section.getBoundingClientRect();
+  const after = event.clientY > box.top + box.height / 2;
+  section.parentNode.insertBefore(dragged, after ? section.nextSibling : section);
+}
+
+// 松手：顺序真变了才发一次，然后按服务那份顺序重画一遍。
+async function finishDrag() {
+  const key = state.dragKey;
+  const scope = state.dragScope;
+  const before = state.dragBefore || [];
+  state.dragKey = "";
+  state.dragScope = "";
+  state.dragBefore = [];
+  el.meeting_list.querySelectorAll(".dragging").forEach((one) => one.classList.remove("dragging"));
+  if (!key) return;
+  if (key.startsWith("meeting:")) {
+    const after = dragRowsOf(scope).map((one) => one.dataset.meeting);
+    if (!after.length || after.join("|") === before.join("|")) return;
+    await api("/api/meetings/order", {
+      method: "POST",
+      body: JSON.stringify({ workspace: scope, meetings: after }),
+    });
+  } else {
+    const after = dragSections().map((one) => one.dataset.workspace);
+    if (!after.length || after.join("|") === before.join("|")) return;
+    await api("/api/workspaces/order", {
+      method: "POST",
+      body: JSON.stringify({ workspaces: after }),
+    });
+  }
+  await loadMeetings();
 }
 
 // 重命名改的是列表里怎么叫它：目录名不动，会议一条也不挪。留空就用目录名。

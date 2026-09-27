@@ -87,6 +87,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # 服务默认就用项目根，`--workspace DIR` 换一个。
 WORKSPACE_INDEX = "workspaces"
 WORKSPACE_NAMES = "workspace_names"
+# 拖出来的顺序：工作区那份放在默认工作区的 `.meeting/` 里，一行一个目录；会话那份放在
+# 它自己工作区的 `.meeting/` 里，一行一个会议号（见 order_workspaces / order_meetings）。
+WORKSPACE_ORDER = "workspace_order"
+MEETING_ORDER = "order"
 # 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
 CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
@@ -1101,7 +1105,7 @@ class MeetingWebService:
         return self.workspace / MeetingStore.WORKSPACE_DIR / WORKSPACE_INDEX
 
     def _known_workspaces(self) -> List[Path]:
-        """默认那一个，加上以前用过、现在还在的那些目录。"""
+        """默认那一个，加上以前用过、现在还在的那些目录；人拖过序就按他拖的来。"""
         found = [self.workspace]
         try:
             lines = self._workspace_index().read_text(encoding="utf-8").splitlines()
@@ -1111,7 +1115,41 @@ class MeetingWebService:
             path = Path(line.strip()).expanduser()
             if line.strip() and path.is_dir() and path not in found:
                 found.append(path.resolve())
+        order = self._workspace_order()
+        if not order:
+            return found
+        ordered = [path for path in order if path in found]
+        return ordered + [path for path in found if path not in ordered]
+
+    def _workspace_order_index(self) -> Path:
+        """人拖出来的工作区顺序：默认工作区里的一行行目录。"""
+        return self.workspace / MeetingStore.WORKSPACE_DIR / WORKSPACE_ORDER
+
+    def _workspace_order(self) -> List[Path]:
+        try:
+            lines = self._workspace_order_index().read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        found: List[Path] = []
+        for line in lines:
+            text = line.strip()
+            if not text:
+                continue
+            path = Path(text).expanduser()
+            if path.is_dir() and path not in found:
+                found.append(path.resolve())
         return found
+
+    def _meeting_order_index(self, workspace: Path) -> Path:
+        """那个工作区里人拖出来的会话顺序：`.meeting/order`，一行一个会议号。"""
+        return workspace / MeetingStore.WORKSPACE_DIR / MEETING_ORDER
+
+    def _meeting_order(self, workspace: Path) -> List[str]:
+        try:
+            lines = self._meeting_order_index(workspace).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        return [line.strip() for line in lines if line.strip()]
 
     def _listed_workspaces(self) -> List[Path]:
         """名单上明着记着的目录：索引里的一行行，目录还在的那些。
@@ -1228,7 +1266,23 @@ class MeetingWebService:
             if existing is None or (at_home and not existing[1]):
                 chosen[summary["meeting_id"]] = (summary, at_home)
         summaries = [item[0] for item in chosen.values()]
-        summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+        # 顺序：先按工作区（人在侧边栏拖出来的那个次序），工作区里面按人拖出来的会话次序；
+        # 没拖过序的会话排在最上面（新的在上），跟没拖过时一样。这样页面只是照着这份顺序画。
+        workspaces = self._known_workspaces()
+        workspace_rank = {str(path): index for index, path in enumerate(workspaces)}
+        meeting_rank: Dict[Tuple[str, str], int] = {}
+        for path in workspaces:
+            for index, meeting_id in enumerate(self._meeting_order(path)):
+                meeting_rank[(str(path), meeting_id)] = index
+        # 两次稳定排序：先按时间（新的在前），再按（工作区次序，会话次序）——
+        # 没拖过序的那些（次序为 -1）就保留时间那一遍的结果。
+        summaries.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        summaries.sort(key=lambda item: (
+            workspace_rank.get(str(item.get("workspace_root") or ""), len(workspaces)),
+            meeting_rank.get(
+                (str(item.get("workspace_root") or ""), str(item.get("meeting_id") or "")), -1
+            ),
+        ))
         return {"meetings": summaries, "warnings": warnings,
                 **self._workspaces_payload(self.workspace)}
 
@@ -1274,8 +1328,12 @@ class MeetingWebService:
         return self._workspaces_payload(self.workspace)
 
     def _asked_workspace(self, payload: Dict[str, Any]) -> Path:
-        """payload 里那个目录：必须是已经记着的工作区。"""
-        workspace = _as_workspace(payload.get("directory"), self.workspace)
+        """payload 里那个目录：必须是已经记着的工作区。
+
+        两个字段名都收：老的那几处写 `directory`，拖动排序写 `workspace`。
+        """
+        asked = payload.get("directory") or payload.get("workspace")
+        workspace = _as_workspace(asked, self.workspace)
         if workspace not in self._known_workspaces():
             raise WebError(400, f"不是已记着的工作区：{workspace}")
         return workspace
@@ -1290,6 +1348,55 @@ class MeetingWebService:
                 "workspaces": [str(one) for one in self._known_workspaces()],
                 "listed": [str(one) for one in self._listed_workspaces()],
                 "workspace_titles": self._workspace_names()}
+
+    def order_workspaces(self, payload: Any = None) -> Dict[str, Any]:
+        """人把工作区拖出来的次序记下来（默认工作区的 `.meeting/workspace_order`）。
+
+        只认已经记着的目录；名单上没点到的那些按原来的次序补在后面，所以一次拖动不会让
+        谁从列表里消失（新加的工作区也一样）。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        asked = payload.get("workspaces")
+        if not isinstance(asked, list) or not all(isinstance(one, str) for one in asked):
+            raise WebError(400, "workspaces must be an array of directories")
+        known = self._known_workspaces()
+        ordered: List[Path] = []
+        for text in asked:
+            path = Path(text).expanduser()
+            if not path.is_dir():
+                continue
+            resolved = path.resolve()
+            if resolved in known and resolved not in ordered:
+                ordered.append(resolved)
+        ordered.extend(path for path in known if path not in ordered)
+        index = self._workspace_order_index()
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(f"{path}\n" for path in ordered), encoding="utf-8")
+        return self._workspaces_payload(self.workspace)
+
+    def order_meetings(self, payload: Any = None) -> Dict[str, Any]:
+        """人把一个工作区里的会话拖出来的次序记下来（那个工作区的 `.meeting/order`）。
+
+        只认这个工作区里真有的会议号；没点到的（比如拖动之后新开的会）留着不写，
+        列表里它们照旧按时间排在最上面。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace = self._asked_workspace(payload)
+        asked = payload.get("meetings")
+        if not isinstance(asked, list) or not all(isinstance(one, str) for one in asked):
+            raise WebError(400, "meetings must be an array of meeting ids")
+        folder = workspace / MeetingStore.WORKSPACE_DIR
+        ordered: List[str] = []
+        for meeting_id in asked:
+            if not MEETING_ID_RE.fullmatch(meeting_id) or meeting_id in ordered:
+                continue
+            if (folder / meeting_id).is_dir():
+                ordered.append(meeting_id)
+        index = self._meeting_order_index(workspace)
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(f"{meeting_id}\n" for meeting_id in ordered), encoding="utf-8")
+        return {"workspace": str(workspace), "meetings": ordered,
+                **self._workspaces_payload(self.workspace)}
 
     def _open_terminal_if_needed(self, store: MeetingStore) -> None:
         """只开了工作区、终端还没开出来的会：被看上一眼就把终端补上。
@@ -2926,8 +3033,14 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 store = self.service.start(self._read_json())
                 self._json({"meeting_id": store.meeting.meeting_id, "meeting": _public_manifest(store)}, status=201)
                 return
+            if path == "/api/meetings/order":
+                self._json(self.service.order_meetings(self._read_json()))
+                return
             if path == "/api/workspaces":
                 self._json(self.service.add_workspace(self._read_json()))
+                return
+            if path == "/api/workspaces/order":
+                self._json(self.service.order_workspaces(self._read_json()))
                 return
             if path == "/api/workspaces/rename":
                 self._json(self.service.rename_workspace(self._read_json()))
