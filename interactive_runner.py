@@ -120,6 +120,9 @@ class InteractiveRunner:
         self._current_input_seq = self.store.last_event_sequence()
         self._stall_fingerprint: Optional[tuple] = None
         self._stall_streak = 0
+        # 这一轮是带着上一次的会话 id 起的吗；续不上时只允许退回一次。
+        self._resumed_session_id = ""
+        self._resume_retried = False
         # 这一次请求是调查还是行动（见 _agent_loop）。_agent_loop 开头会重置它。
         self._step = "investigate"
         # 页面上那两个按钮留下的请求，在下一个请求边界处理（见 _apply_backend_requests）：
@@ -234,6 +237,7 @@ class InteractiveRunner:
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
                 resume_session_id = str(self.store.meeting.agent_session_id or "")
                 initial_context = self._initial_observation(resuming=bool(resume_session_id))
+            self._resumed_session_id = resume_session_id
             session_id = self._start_backend_cycle(
                 instructions, initial_context,
                 images=self._images_of(self.store.events_after(0)),
@@ -290,6 +294,7 @@ class InteractiveRunner:
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
                 resume_session_id = str(self.store.meeting.agent_session_id or "")
                 initial_context = self._initial_observation(resuming=bool(resume_session_id))
+            self._resumed_session_id = resume_session_id
             # Every worker is a new Agent work cycle. App Server threads are
             # deliberately never resumed after waiting, errors, or restarts;
             # Claude Code and ACP sessions are resumed by id when they exist.
@@ -721,6 +726,9 @@ class InteractiveRunner:
                 self._api_error(request_id, exc)
                 return
             except AgentBackendError as exc:
+                if self._resume_failed(exc, request_id):
+                    # 已经安排了一次后端重启，回到循环顶部让它落地，这一轮不算死。
+                    continue
                 if self._cycle_elapsed() >= CYCLE_LIMIT_SECONDS - self._request_overhead_seconds():
                     self._cycle_timeout(request_id)
                     return
@@ -1105,6 +1113,33 @@ class InteractiveRunner:
             return self._run_dynamic_action(action, metadata, generation, input_seq)
         finally:
             self._dynamic_action_active.clear()
+
+    def _resume_failed(self, exc: Exception, request_id: str) -> bool:
+        """带着上一次的会话起、第一条请求就失败：多半个是那个会话续不上了（被删、换了机器）。
+
+        这时候把存着的 id 清掉、记一笔，然后用新会话重来一次；只退一次，免得来回打转。
+        """
+        if not self._resumed_session_id or self._resume_retried:
+            return False
+        if self.store.meeting.agent_cursor:
+            # 已经干过活了（不是这轮的第一条请求）：那是别的问题，别赖在续会话上。
+            return False
+        self._resume_retried = True
+        with self.lock:
+            self.store.refresh()
+            self.store.append_event(
+                "state",
+                "harness",
+                self.store.meeting.phase,
+                content=f"续上一次的会话没成功（{str(exc)[:160]}），改用新会话重来。",
+                data={"status": "session_resume_failed", "action_id": request_id,
+                      "session_id": self._resumed_session_id},
+            )
+            self.store.update(agent_session_id=None)
+            self._resumed_session_id = ""
+        # 换一个进程、用新会话把这一轮重新起来（走页面"重启"那条路，上下文会重建成整段历史）。
+        self.request_backend_restart()
+        return True
 
     def _can_investigate(self) -> bool:
         """这一次请求能不能拆出调查步：backend 得有自己的读工具，而且它实现了这一步。"""

@@ -64,10 +64,6 @@ REQUIRED_HELP_FLAGS = {
 }
 
 
-# 续会话之后等 CLI 报 init 的上限：等不到就认为续不上，退回新会话。
-SESSION_RESUME_WAIT_SECONDS = 20.0
-
-
 class ClaudeCodeError(AgentBackendError):
     pass
 
@@ -412,24 +408,9 @@ class ClaudeCodeBackend:
             ]
             self._process = self._process_factory(command, private_cwd, self._child_environment(selected_model))
             self._start_reader_threads()
-            if self._resume_session_id and not self._wait_for_init(SESSION_RESUME_WAIT_SECONDS):
-                # 续不上（会话被删、换了机器、版本不认）：退回新会话，绝不因此把这一轮弄死。
-                failed = self._process_error or "no init message"
-                self._emit("session_resume_failed", session_id=self._resume_session_id,
-                           status=str(failed)[:200])
-                self._stop_process()
-                self._resume_session_id = ""
-                self._session_id = str(uuid.uuid4())
-                self._process_error = None
-                self._initialized = False
-                self._first_turn = bool(self._initial_context)
-                retry = [item for index, item in enumerate(command)
-                         if not (item == "--resume"
-                                 or (index and command[index - 1] == "--resume"))]
-                retry += ["--session-id", self._session_id]
-                self._process = self._process_factory(
-                    retry, private_cwd, self._child_environment(selected_model))
-                self._start_reader_threads()
+            # 这里不等 init 再判断"续会话成没成"：stream-json 模式下 CLI 要收到第一条用户
+            # 消息之后才发 system/init，起进程时等它只会永远等不到（实测 90 秒也没有）。
+            # 续不上时它会报错退出，那由 runner 在"第一条请求失败"那里退回新会话。
             self._started_at = time.monotonic()
             self._emit("session_started", session_id=self._session_id, status="starting")
             return self._session_id
@@ -606,23 +587,6 @@ class ClaudeCodeBackend:
             self._stderr_reader = threading.Thread(
                 target=self._drain_stderr, name="remotebuddy-claude-stderr", daemon=True)
             self._stderr_reader.start()
-
-    def _wait_for_init(self, timeout: float) -> bool:
-        """等 CLI 的第一条 init：等到了说明这一枪起来了（续会话成功也走这里）。"""
-        deadline = time.monotonic() + timeout
-        with self._condition:
-            while True:
-                if self._initialized:
-                    return True
-                if self._process_error or self._process is None:
-                    return False
-                process = self._process
-                if getattr(process, "poll", lambda: None)() is not None:
-                    return False
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                self._condition.wait(min(0.2, remaining))
 
     def _stop_process(self) -> None:
         """只收掉 CLI 进程（bridge、临时目录留着）：续会话失败时换个进程重来。"""
@@ -1093,7 +1057,9 @@ class ClaudeCodeBackend:
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": fast_model,
                 "CLAUDE_CODE_SUBAGENT_MODEL": fast_model,
                 "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432",
-                "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
+                # 不再设 CLAUDE_CODE_SKIP_PROMPT_HISTORY：它连会话记录一起省掉，
+                # 于是 --resume 找不到上一次的会话（实测：带上它 resume 必 rc=1，
+                # 去掉就正常续上）。续会话要的正是那份记录。
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                 "DISABLE_AUTOUPDATER": "1",
                 "DISABLE_TELEMETRY": "1",
