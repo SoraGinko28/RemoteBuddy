@@ -20,6 +20,7 @@ from glob import glob
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from action_bridge import ActionSocket
 from agent_protocol import (
     AgentAction,
     AgentBackendError,
@@ -242,8 +243,7 @@ class ClaudeCodeBackend:
         self._skip_protocol_check = skip_protocol_check
         self._process: Any = None
         self._temporary: Optional[tempfile.TemporaryDirectory] = None
-        self._listener: Optional[socket.socket] = None
-        self._listener_thread: Optional[threading.Thread] = None
+        self._bridge: Optional[ActionSocket] = None
         self._reader: Optional[threading.Thread] = None
         self._stderr_reader: Optional[threading.Thread] = None
         self._condition = threading.Condition(threading.RLock())
@@ -512,13 +512,10 @@ class ClaudeCodeBackend:
         with self._condition:
             self._interrupted = True
             self._condition.notify_all()
-        listener = self._listener
-        self._listener = None
-        if listener is not None:
-            try:
-                listener.close()
-            except OSError:
-                pass
+        bridge = self._bridge
+        self._bridge = None
+        if bridge is not None:
+            bridge.close()
         process = self._process
         self._process = None
         if process is not None:
@@ -541,7 +538,7 @@ class ClaudeCodeBackend:
                         pass
         # Join the readers before closing their streams so a reader never
         # observes a closed file mid-iteration and records a bogus error.
-        for worker in (self._reader, self._stderr_reader, self._listener_thread):
+        for worker in (self._reader, self._stderr_reader):
             if worker is not None and worker is not threading.current_thread():
                 worker.join(timeout=1)
         if process is not None:
@@ -580,76 +577,17 @@ class ClaudeCodeBackend:
                 pass
 
     def _start_bridge_listener(self) -> None:
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(self._socket_path)
-        os.chmod(self._socket_path, 0o600)
-        listener.listen(4)
-        listener.settimeout(0.25)
-        self._listener = listener
-        self._listener_thread = threading.Thread(
-            target=self._serve_bridge,
-            name="remotebuddy-claude-bridge",
-            daemon=True,
+        self._bridge = ActionSocket(
+            self._socket_path,
+            self._bridge_token,
+            float(self.config.request_timeout_seconds),
+            self._handle_bridge_request,
+            label="claude",
         )
-        self._listener_thread.start()
-
-    def _serve_bridge(self) -> None:
-        while True:
-            listener = self._listener
-            if listener is None:
-                return
-            try:
-                connection, _address = listener.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                return
-            with connection:
-                connection.settimeout(max(1.0, min(self.config.request_timeout_seconds, 300.0)))
-                try:
-                    request = self._read_bridge_request(connection)
-                    response = self._handle_bridge_request(request)
-                except Exception as exc:
-                    response = {
-                        "request_id": "unknown",
-                        "success": False,
-                        "content": self._redact(str(exc))[:4096],
-                        "pause": True,
-                    }
-                try:
-                    encoded = json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-                    connection.sendall(encoded[:MAX_WIRE_BYTES] + b"\n")
-                except OSError:
-                    pass
-
-    def _read_bridge_request(self, connection: socket.socket) -> Dict[str, Any]:
-        chunks = bytearray()
-        while True:
-            block = connection.recv(min(65536, MAX_WIRE_BYTES + 1 - len(chunks)))
-            if not block:
-                break
-            chunks.extend(block)
-            if len(chunks) > MAX_WIRE_BYTES:
-                raise AgentProtocolError("Claude MCP request is too large")
-            if b"\n" in block:
-                break
-        line, separator, trailing = bytes(chunks).partition(b"\n")
-        if not separator or trailing:
-            raise AgentProtocolError("Claude MCP request has an invalid frame")
-        try:
-            value = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AgentProtocolError("Claude MCP request is invalid JSON") from exc
-        if not isinstance(value, dict):
-            raise AgentProtocolError("Claude MCP request must be an object")
-        return value
+        self._bridge.start()
 
     def _handle_bridge_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         request_id = request.get("request_id")
-        if not isinstance(request_id, str) or not request_id:
-            raise AgentProtocolError("Claude MCP request id is invalid")
-        if not hmac.compare_digest(str(request.get("token", "")), self._bridge_token):
-            raise AgentProtocolError("Claude MCP authentication failed")
         arguments = request.get("action")
         payload = arguments.get("action") if isinstance(arguments, dict) else None
         action: Optional[AgentAction] = None

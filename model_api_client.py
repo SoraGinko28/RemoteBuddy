@@ -82,7 +82,7 @@ CANONICAL_PROVIDER_KEYS = {
     "requires_openai_auth",
 }
 CANONICAL_HARNESS_KEYS = {"binary", "min_version", "restricted"}
-SUPPORTED_BACKENDS = {"responses", "codex-app-server", "claude-code", "trae-agent"}
+SUPPORTED_BACKENDS = {"responses", "codex-app-server", "claude-code", "trae-agent", "trae-acp"}
 SUPPORTED_PROVIDERS = {"openai", "deepseek"}
 # DeepSeek's long-context model uses a literal ``[1m]`` suffix.
 MODEL_RE = re.compile(r"^(?=.{1,200}$)[A-Za-z0-9][A-Za-z0-9._-]*(?:\[1m\])?$")
@@ -213,15 +213,15 @@ class ModelApiConfig:
             raise ModelConfigError("agent_provider is not supported")
         if backend == "claude-code" and provider != "deepseek":
             raise ModelConfigError("claude-code currently requires agent_provider=deepseek")
-        if backend == "trae-agent" and provider != "openai":
-            raise ModelConfigError("trae-agent currently requires agent_provider=openai")
+        if backend in {"trae-agent", "trae-acp"} and provider != "openai":
+            raise ModelConfigError(f"{backend} currently requires agent_provider=openai")
         profile = self.provider_profiles.get(provider, {})
         if not isinstance(profile, Mapping):
             profile = {}
         # An explicit empty model on an app-server backend means "let the CLI
         # use its own configured default" — required for subscription logins
         # (ChatGPT plan, Trae account) without access to a hard-coded model id.
-        if backend in {"codex-app-server", "trae-agent"} and model == "":
+        if backend in {"codex-app-server", "trae-agent", "trae-acp"} and model == "":
             selected_model = ""
         else:
             selected_model = model or profile.get("model") or (self.model if provider == self.agent_provider else None)
@@ -229,7 +229,7 @@ class ModelApiConfig:
         if provider == "deepseek":
             selected_model = selected_model or "deepseek-v4-pro[1m]"
             selected_base_url = selected_base_url or "https://api.deepseek.com/anthropic"
-        if not (backend in {"codex-app-server", "trae-agent"} and selected_model == ""):
+        if not (backend in {"codex-app-server", "trae-agent", "trae-acp"} and selected_model == ""):
             if not isinstance(selected_model, str) or not MODEL_RE.fullmatch(selected_model):
                 raise ModelConfigError("model must be a short model identifier")
         if not isinstance(selected_base_url, str):

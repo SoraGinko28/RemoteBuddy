@@ -340,7 +340,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.service.message("cli-default", {"message": "Continue."})
         self.wait_for_workers()
         self.assertEqual("", MeetingStore.load_in_workspace(self.root, "cli-default").meeting.model)
-        with self.assertRaisesRegex(WebError, "codex-app-server"):
+        with self.assertRaisesRegex(WebError, "codex-app-server, trae-agent or trae-acp"):
             self.service.start({"message": "Bad.", "model": ""})
 
     def test_acquire_terminal_keys_and_release_human_control(self):
