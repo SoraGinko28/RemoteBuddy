@@ -266,6 +266,9 @@ class ClaudeCodeBackend:
         self._turn_result_seen = False
         self._turn_protocol_error: Optional[str] = None
         self._last_text: Optional[str] = None
+        # 调查步：这一枪不要动作，只要它写的字（见 investigate）。
+        self._turn_investigating = False
+        self._turn_text_parts: List[str] = []
         self._rejections = 0
         self._last_rejection = ""
         self._turn_nudges = 0
@@ -308,6 +311,8 @@ class ClaudeCodeBackend:
         self._turn_response_id = None
         self._turn_result_seen = False
         self._turn_protocol_error = None
+        self._turn_investigating = False
+        self._turn_text_parts = []
         self._events = []
         if not meeting_id or not instructions.strip():
             raise ClaudeCodeError("Claude Code requires meeting instructions")
@@ -494,6 +499,78 @@ class ClaudeCodeBackend:
             with self._condition:
                 self._active_handler = None
                 self._turn_id = None
+
+    def investigate(
+        self,
+        session_id: str,
+        observation: str,
+        *,
+        model: Optional[str] = None,
+        request_timeout_seconds: Optional[float] = None,
+        action_handler: Optional[DynamicActionHandler] = None,
+    ) -> str:
+        """调查步：这一枪只让它用自己的读工具看，拿它写的文字当结论。
+
+        共享终端在这一枪里是关着的：它要是去调动作工具，runner 传进来的 `action_handler`
+        会把那个调用退回（`success=False`，所以不会变成"这一枪的动作"），它只能在同一步里
+        改用文字回答。文字就是下一步唯一拿到的东西。
+        """
+        del model
+        if not self._session_id or session_id != self._session_id or self._process is None:
+            raise ClaudeCodeError("Claude Code session is not active")
+        if action_handler is None:
+            raise ClaudeCodeError("Claude Code requires the RemoteBuddy action handler")
+        timeout = float(request_timeout_seconds or self.config.request_timeout_seconds)
+        with self._condition:
+            if self._turn_id is not None:
+                raise ClaudeCodeError("Claude Code already has an active turn")
+            self._turn_id = "turn-" + uuid.uuid4().hex
+            self._turn_started_at = time.monotonic()
+            self._active_handler = action_handler
+            self._turn_investigating = True
+            self._turn_text_parts = []
+            self._last_text = None
+            self._turn_result_seen = False
+            self._turn_action = None
+            self._turn_claimed_action = None
+            self._turn_response_id = None
+            self._turn_protocol_error = None
+            self._interrupted = False
+            turn_id = self._turn_id
+        first_turn = bool(self._first_turn and self._initial_context)
+        text = self._initial_context if first_turn else observation
+        self._first_turn = False
+        deadline = time.monotonic() + timeout
+        try:
+            self._send_user_message(text, self._initial_images if first_turn else None)
+            self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
+            with self._condition:
+                while True:
+                    if self._interrupted:
+                        raise AgentInterrupted(f"Claude Code turn interrupted: {turn_id}")
+                    if self._turn_protocol_error:
+                        raise AgentProtocolError(self._turn_protocol_error)
+                    if self._process_error:
+                        raise ClaudeCodeError("Claude Code process exited")
+                    if self._turn_result_seen:
+                        findings = "\n".join(part for part in self._turn_text_parts if part).strip()
+                        self._emit(
+                            "turn_completed",
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            status="completed",
+                            duration_ms=int(max(0.0, time.monotonic() - self._turn_started_at) * 1000),
+                        )
+                        return findings
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ClaudeCodeError("Claude Code investigation turn timed out")
+                    self._condition.wait(min(remaining, 0.5))
+        finally:
+            with self._condition:
+                self._active_handler = None
+                self._turn_id = None
+                self._turn_investigating = False
 
     def interrupt(self) -> None:
         with self._condition:
@@ -773,6 +850,8 @@ class ClaudeCodeBackend:
                     # turn ends without a tool call, this text is salvaged as a
                     # chat question instead of failing the session.
                     self._last_text = block["text"]
+                    if self._turn_investigating:
+                        self._turn_text_parts.append(block["text"])
                 if (
                     block.get("type") == "tool_use"
                     and block.get("name") not in ALLOWED_TOOLS
@@ -782,6 +861,12 @@ class ClaudeCodeBackend:
                         self._condition.notify_all()
             return
         if kind == "result":
+            if self._turn_investigating:
+                # 调查步要的是这一枪的文字，不是动作：动作被退回、它收尾，都算这一枪正常结束。
+                with self._condition:
+                    self._turn_result_seen = True
+                    self._condition.notify_all()
+                return
             nudge = False
             salvage_text = None
             with self._condition:

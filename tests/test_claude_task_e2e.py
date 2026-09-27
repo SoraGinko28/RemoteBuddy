@@ -100,7 +100,7 @@ def send(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
 for line in sys.stdin:
-    json.loads(line)
+    message = json.loads(line)
     if not initialized:
         send({{
             "type": "system",
@@ -111,6 +111,17 @@ for line in sys.stdin:
             "claude_code_version": "2.1.248",
         }})
         initialized = True
+    content = message.get("message", {{}}).get("content") if isinstance(message.get("message"), dict) else None
+    text = " ".join(part.get("text", "") for part in (content or []) if isinstance(part, dict))
+    if text.startswith("Investigation step"):
+        # 调查枪：真 CLI 在这里用自己的读工具看文件，然后写字回答；这一枪不交动作。
+        send({{
+            "type": "assistant",
+            "session_id": session_id,
+            "message": {{"content": [{{"type": "text", "text": "我看了工作区：notes.md 还不存在。"}}]}},
+        }})
+        send({{"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}})
+        continue
     if turn >= len(actions):
         send({{"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}})
         continue

@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from agent_protocol import (
+    ACT_STEP_TEXT,
+    INVESTIGATE_STEP_TEXT,
+    INVESTIGATION_CLOSED_MESSAGE,
     AgentAction,
     AgentActionError,
     AgentBackend,
@@ -63,6 +66,13 @@ TERMINAL_READ_ONLY_COMMANDS = {
     "cat", "bat", "sed", "head", "tail", "nl", "rg", "grep", "ls", "wc", "file",
     "stat", "tree", "fd", "column",
 }
+# 人最近那句话要是要求"看"，上面这套就整条让开：那时候终端就是给人看的屏幕，慢是应该的。
+# 只看人最近一条（更早的"给我看看"不该一直生效），也不猜模型的心思——判据全在人说的话里。
+HUMAN_LOOK_MARKERS = (
+    "看", "显示", "打印", "输出", "打出来", "列出来", "贴", "展示", "读出来",
+    "show", "print", "display", "output", "dump", "view",
+    "cat ", "sed ", "head ", "tail ", "nl ", "rg ", "grep ", "ls ", "wc ", "tree",
+)
 TERMINAL_READ_ONLY_BREAKERS = (";", "&", "|", ">", "<", "`", "$(", "\n")
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
@@ -107,6 +117,8 @@ class InteractiveRunner:
         self._current_input_seq = self.store.last_event_sequence()
         self._stall_fingerprint: Optional[tuple] = None
         self._stall_streak = 0
+        # 这一枪是调查还是行动（见 _agent_loop）。_agent_loop 开头会重置它。
+        self._step = "investigate"
         # 页面上那两个按钮留下的请求，在下一个请求边界处理（见 _apply_backend_requests）：
         # 换 Skill 文本不动进程，或者把进程杀掉重开。
         self._skill_reload_requested = False
@@ -217,7 +229,7 @@ class InteractiveRunner:
                 self.store.set_session(self._ensure_pane())
                 capture_workspace(self.store, self.transport)
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
-                initial_context = self._observation(self.store.events_after(0), False, force_history=True)
+                initial_context = self._initial_observation()
             session_id = self._start_backend_cycle(
                 instructions, initial_context,
                 images=self._images_of(self.store.events_after(0)),
@@ -270,7 +282,7 @@ class InteractiveRunner:
                     raise RunnerError("meeting has no workspace pane")
                 capture_workspace(self.store, self.transport)
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
-                initial_context = self._observation(self.store.events_after(0), False, force_history=True)
+                initial_context = self._initial_observation()
             # Every worker is a new Agent work cycle. App Server threads are
             # deliberately never resumed after waiting, errors, or restarts.
             session_id = self._start_backend_cycle(
@@ -488,8 +500,10 @@ class InteractiveRunner:
         """杀掉当前 backend 进程，用现在的 Skill 重开一个，继续这一轮。"""
         with self.lock:
             instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
-            context = self._observation(self.store.events_after(0), False, force_history=True)
+            context = self._initial_observation()
             images = self._images_of(self.store.events_after(0))
+            # 新进程的第一枪就是上面的初始上下文：那一枪是调查枪。
+            self._step = "investigate"
             self.store.update(phase="agent_restart", pending_action_id=None)
             self.store.append_event(
                 "state",
@@ -527,6 +541,9 @@ class InteractiveRunner:
         return True
 
     def _agent_loop(self) -> None:
+        # 每一枪都属于两步之一：调查（只用自己的读工具，共享终端关着）和行动（只改东西）。
+        # 一枪之后必然回到调查，所以写一个文件会是：调查→vim→调查→打字→调查→:wq→…
+        self._step = "investigate"
         while True:
             if not self._apply_backend_requests():
                 return
@@ -564,6 +581,11 @@ class InteractiveRunner:
                 allowed_types, allowed_messages, budget_final = self._phase_constraints()
                 observation = self._observation(unread, budget_final)
                 images = self._images_of(unread)
+                step = self._step
+                if step == "investigate" and not self._can_investigate():
+                    # 没有自己读工具的 backend 拆不开两步（终端是它唯一的读路）。
+                    step = "act"
+                self._step = "act" if step == "investigate" else "investigate"
                 self._include_agent_chat_once = False
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
                 session_id = self.store.meeting.agent_session_id or self.store.meeting.conversation_id
@@ -575,7 +597,12 @@ class InteractiveRunner:
                     "action",
                     self.agent_name,
                     "agent_thinking",
-                    data={"action_id": request_id, "status": "request_started", "input_seq": latest_sequence},
+                    data={
+                        "action_id": request_id,
+                        "status": "request_started",
+                        "input_seq": latest_sequence,
+                        "step": step,
+                    },
                 )
 
             capture_stop = threading.Event()
@@ -592,10 +619,36 @@ class InteractiveRunner:
                         self.store.refresh()
                         self._cycle_timeout()
                     return
+                if step == "investigate":
+                    findings = self.client.investigate(
+                        session_id,
+                        INVESTIGATE_STEP_TEXT + "\n\n" + observation,
+                        model=self.store.meeting.model,
+                        request_timeout_seconds=min(
+                            configured_timeout,
+                            max(0.1, remaining_seconds - self._request_overhead_seconds()),
+                        ),
+                        action_handler=self._investigation_refusal,
+                    )
+                    with self.lock:
+                        self.store.refresh()
+                        self._check_stop()
+                        if self.store.meeting.control_owner != self.agent_name:
+                            return
+                        # 这一段是下一步唯一拿到的东西：写进 journal，行动枪的观察里带着它。
+                        self.store.append_event(
+                            "state",
+                            self.agent_name,
+                            self.store.meeting.phase,
+                            content=str(findings or ""),
+                            data={"step": "investigate", "action_id": request_id},
+                        )
+                        self.store.update(pending_action_id=None)
+                    continue
                 response = self._next_backend_action(
                     session_id,
                     instructions,
-                    observation,
+                    ACT_STEP_TEXT + "\n\n" + observation,
                     images=images,
                     allowed_types=allowed_types,
                     allowed_messages=allowed_messages,
@@ -1011,6 +1064,47 @@ class InteractiveRunner:
         finally:
             self._dynamic_action_active.clear()
 
+    def _can_investigate(self) -> bool:
+        """这一枪能不能拆出调查步：backend 得有自己的读工具，而且它实现了这一步。"""
+        if not callable(getattr(self.client, "investigate", None)):
+            return False
+        name = str(getattr(self.client, "backend_name", "") or self.store.meeting.agent_backend)
+        return name in BACKENDS_WITH_OWN_READ_TOOLS
+
+    def _initial_observation(self) -> str:
+        """cycle 开头的那个观察。一个 cycle 的第一枪是调查枪（能拆步的 backend），
+        所以这段话要跟它一致——第一枪用的是这段初始上下文，不是请求里的观察。"""
+        text = self._observation(self.store.events_after(0), False, force_history=True)
+        banner = INVESTIGATE_STEP_TEXT if self._can_investigate() else ACT_STEP_TEXT
+        return banner + "\n\n" + text
+
+    def _investigation_refusal(
+        self, action: AgentAction, metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """调查步里来的动作：共享终端整枪关着，工具退回去，让它改用文字说。
+
+        这里既不执行也不花动作预算——这一步本来就不该产生动作；`pause` 必须是 False，
+        否则 Claude Code 会把这次退回当成"这一枪的动作"。
+        """
+        with self.lock:
+            self.store.refresh()
+            self.store.append_event(
+                "action",
+                "harness",
+                self.store.meeting.phase,
+                content=INVESTIGATION_CLOSED_MESSAGE,
+                data={
+                    "action_id": "tool-action-" + uuid.uuid4().hex,
+                    "status": "rejected",
+                    "reason": "investigation_step",
+                    "step": "investigate",
+                    "action": asdict(action),
+                    "dynamic_tool": True,
+                },
+            )
+            self._last_action_success = False
+        return {"success": False, "content": INVESTIGATION_CLOSED_MESSAGE, "pause": False}
+
     def _run_dynamic_action(
         self,
         action: AgentAction,
@@ -1418,6 +1512,7 @@ class InteractiveRunner:
                 reader = (
                     self._plain_reader_command(str(action.command or ""))
                     if self.store.meeting.agent_backend in BACKENDS_WITH_OWN_READ_TOOLS
+                    and not self._human_asked_to_look()
                     else None
                 )
                 if reader is not None:
@@ -1567,6 +1662,15 @@ class InteractiveRunner:
                 or self.store.meeting.control_owner != self.agent_name
                 or self.store.meeting.status != "running"
             )
+
+    def _human_asked_to_look(self) -> bool:
+        """人最近说的那句话是不是在要求"看"？是的话终端就是用来看的，读者命令不挡。"""
+        for event in reversed(self.store.chat_messages()):
+            if event.get("kind") != "chat" or event.get("actor") != "human":
+                continue
+            text = str(event.get("content") or "").lower()
+            return any(marker in text for marker in HUMAN_LOOK_MARKERS)
+        return False
 
     def _plain_reader_command(self, line: str) -> Optional[str]:
         """这条命令行是不是"单纯看一眼"？是就返回程序名，不是就 None（照旧交给终端）。"""

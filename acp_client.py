@@ -100,6 +100,8 @@ class AcpBackend:
         self._instructions = ""
         self._first_turn = True
         self._last_text = ""
+        # 调查步要整段文字（`_last_text` 是给错误提示用的，只留尾巴 600 字）。
+        self._turn_text_parts: List[str] = []
 
     # ------------------------------------------------------------------
     # 进程与握手
@@ -341,6 +343,7 @@ class AcpBackend:
         text = content.get("text")
         if isinstance(text, str) and text.strip():
             self._last_text = (self._last_text + text)[-600:]
+            self._turn_text_parts.append(text)
 
     def _answer_request(self, message: Dict[str, Any]) -> Optional[str]:
         """agent 来问的事：只有权限值得答，别的老实说不会。
@@ -441,18 +444,12 @@ class AcpBackend:
             self._claimed_call_id = None
             self._interrupted = False
             self._last_text = ""
-        contract = (
-            "To look at a file, use your own read tools (or your own read-only shell) -- never a "
-            "reader pushed through the terminal: RemoteBuddy refuses a plain reader (cat, sed, "
-            "head, tail, nl, rg, grep, ls, wc, file, stat, tree) sent as a `command` action. To "
-            "change anything, call the `remotebuddy_action` "
-            "tool (MCP server `remotebuddy`) exactly once; an action written as text is not an "
-            "action and is ignored."
-        )
+            self._turn_text_parts = []
+        # 这一步的那段话由 runner 拼在 observation 前面（三条 backend 都一样拼），这里只管发。
         text = (
-            self._instructions + "\n\n" + contract + "\n\n" + observation
+            self._instructions + "\n\n" + observation
             if self._first_turn
-            else contract + "\n\n" + observation
+            else observation
         )
         self._first_turn = False
         # images: ACP 的 prompt 支持 image 内容块；这里跟 runner 的约定一致，先只发文字。
@@ -520,6 +517,89 @@ class AcpBackend:
                     self._notify("session/cancel", {"sessionId": self._session_id})
                 except AgentBackendError:
                     pass
+            with self._condition:
+                self._active_handler = None
+                self._turn_id = None
+
+    def investigate(
+        self,
+        session_id: str,
+        observation: str,
+        *,
+        model: Optional[str] = None,
+        request_timeout_seconds: Optional[float] = None,
+        action_handler: Optional[DynamicActionHandler] = None,
+    ) -> str:
+        """调查步：这一枪只让它用自己的读工具看，拿它写的整段文字当结论。
+
+        它要是去调动作工具，runner 传进来的 `action_handler` 会把那个调用退回（工具结果里
+        带 `is_error`），它只能在同一步里改用文字回答。文字就是下一步唯一拿到的东西。
+        """
+        del model
+        if not self._session_id or session_id != self._session_id or self._process is None:
+            raise AgentBackendError("Trae ACP session is not active")
+        if action_handler is None:
+            raise AgentBackendError("Trae ACP requires the RemoteBuddy action handler")
+        timeout = float(request_timeout_seconds or self.config.request_timeout_seconds)
+        with self._condition:
+            self._turn_id = "turn-" + uuid.uuid4().hex
+            turn_id = self._turn_id
+            self._active_handler = action_handler
+            self._turn_action = None
+            self._claimed = None
+            self._claimed_call_id = None
+            self._interrupted = False
+            self._last_text = ""
+            self._turn_text_parts = []
+        text = (
+            self._instructions + "\n\n" + observation
+            if self._first_turn
+            else observation
+        )
+        self._first_turn = False
+        with self._condition:
+            self._next_id += 1
+            prompt_id = self._next_id
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": prompt_id,
+                "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]},
+            }
+        )
+        self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                with self._condition:
+                    for index, message in enumerate(self._inbound):
+                        if message.get("id") == prompt_id:
+                            self._inbound.pop(index)
+                            if "error" in message:
+                                error = message.get("error") or {}
+                                raise AgentProtocolError(
+                                    f"Trae ACP session/prompt failed: {error.get('message') or error}"
+                                )
+                            findings = "".join(self._turn_text_parts).strip()
+                            self._emit(
+                                "turn_completed",
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                status="completed",
+                            )
+                            return findings
+                    if self._interrupted:
+                        raise AgentInterrupted("Trae ACP turn interrupted")
+                    if self._process_error:
+                        raise AgentBackendError(f"Trae ACP process exited: {self._process_error}")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise AgentBackendError(
+                            "Trae ACP returned no answer for the investigation step"
+                        )
+                    self._condition.wait(min(0.2, remaining))
+        finally:
             with self._condition:
                 self._active_handler = None
                 self._turn_id = None

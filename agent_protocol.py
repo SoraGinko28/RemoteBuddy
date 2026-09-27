@@ -134,6 +134,32 @@ class AgentActionError(AgentProtocolError):
 
 
 MESSAGE_TYPE_ORDER = ("none", "ack", "progress", "question", "final")
+# 每一枪都属于两步之一。调查步：只许用自己的读工具，共享终端整个关掉，结论用文字说。
+# 行动步：只许改东西，文件读取已经在上一枪的调查步里做完了。这两段话是 prompt 里
+# 唯一告诉模型"现在是哪一步"的地方，harness 那边另有硬拦（调查步的动作工具一律退回）。
+INVESTIGATE_STEP_TEXT = (
+    "Investigation step. The shared terminal is closed for this turn: do not call "
+    "`remotebuddy_action`, and do not run anything there. Read what you need with your own "
+    "tools -- Claude Code has Read/Glob/Grep, Trae has its own read tools and a read-only "
+    "shell -- then answer in plain text: what you found, and what you are about to change. "
+    "Only you read that answer, so anything the human is waiting to hear -- the answer to their "
+    "question, the file contents they asked to see -- is said in the action step, not here."
+)
+ACT_STEP_TEXT = (
+    "Action step. Reading is over: whatever you needed was read in the investigation step that "
+    "just ended, so read nothing here. Change things in the shared terminal, which the human "
+    "watches, by calling the `remotebuddy_action` tool (MCP server `remotebuddy`) exactly once "
+    "-- an action written as text is not an action. A plain reader (cat, sed, head, tail, nl, "
+    "rg, grep, ls, wc, file, stat, tree) sent as a `command` action is refused; a file the human "
+    "asked to see in the terminal is the exception. If the human asked you to find something out "
+    "or to show something, this step is where they hear it -- your investigation answer was not "
+    "shown to them, so a short `chat` saying it is part of the work, not an extra message."
+)
+INVESTIGATION_CLOSED_MESSAGE = (
+    "The shared terminal is closed in the investigation step, so the action tool is not "
+    "available here. Read what you need with your own tools and answer in plain text; the action "
+    "step asks you to act right after this answer."
+)
 
 
 def _name_list(names: Sequence[str]) -> str:
@@ -870,6 +896,22 @@ class AgentBackend(Protocol):
         request_timeout_seconds: Optional[float] = None,
         action_handler: Optional[DynamicActionHandler] = None,
     ) -> AgentResponse:
+        ...
+
+    def investigate(
+        self,
+        session_id: str,
+        observation: str,
+        *,
+        model: Optional[str] = None,
+        request_timeout_seconds: Optional[float] = None,
+        action_handler: Optional[DynamicActionHandler] = None,
+    ) -> str:
+        """调查步：这一枪不碰共享终端，返回模型用文字说的结论。
+
+        有自己读工具的 backend 实现它；没有的（纯对话、结构化 app-server）返回空串——
+        它们的终端就是唯一那条读路，两步拆不开。
+        """
         ...
 
     def interrupt(self) -> None:

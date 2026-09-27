@@ -30,6 +30,7 @@ audit = []
 settings = json.loads(sys.argv[1])
 action = settings["action"]
 permission_kinds = settings["permission_kinds"]
+submit = settings.get("submit", True)
 
 
 def send(value):
@@ -85,7 +86,8 @@ for line in sys.stdin:
         for kind in permission_kinds:
             ask_permission(kind)
         time.sleep(0.2)
-        threading.Thread(target=submit_action, args=(servers[0]["env"],), daemon=True).start()
+        if submit:
+            threading.Thread(target=submit_action, args=(servers[0]["env"],), daemon=True).start()
         time.sleep(1.2)
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"stopReason": "end_turn"}})
     elif method == "session/cancel":
@@ -111,6 +113,7 @@ class AcpBackendTest(unittest.TestCase):
             "command": "touch ran.marker", "path": "", "keys": [], "delay_ms": 0,
         }
         self.permission_kinds = ["read", "edit"]
+        self.submit = True
 
     def config(self):
         return ModelApiConfig(
@@ -125,7 +128,8 @@ class AcpBackendTest(unittest.TestCase):
         )
 
     def process_factory(self, _command, cwd):
-        settings = json.dumps({"action": self.action, "permission_kinds": self.permission_kinds})
+        settings = json.dumps({"action": self.action, "permission_kinds": self.permission_kinds,
+                               "submit": self.submit})
         return subprocess.Popen(
             [sys.executable, str(self.script), settings],
             cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -204,6 +208,45 @@ class AcpBackendTest(unittest.TestCase):
             {"outcome": {"outcome": "selected", "optionId": "approved"}},
             sent[0]["result"],
         )
+
+    def test_the_investigation_turn_returns_only_its_text(self):
+        """调查步：这一枪不交动作，它写的字就是结论。"""
+        self.submit = False
+        self.permission_kinds = []
+        backend = self.backend()
+        try:
+            session = backend.start_cycle(
+                "meeting-acp", "RemoteBuddy skill", "context", workspace=str(self.workspace)
+            )
+            findings = backend.investigate(
+                session, "看看 merge.py",
+                action_handler=lambda action, metadata: {"success": True, "content": "ok", "pause": True},
+                request_timeout_seconds=8.0,
+            )
+        finally:
+            backend.close()
+        self.assertEqual("看着呢", findings)
+
+    def test_an_action_claimed_in_the_investigation_turn_is_answered_and_ignored(self):
+        """调查步里它去调动作工具：退回（is_error）还是会答，这一枪仍然只收文字。"""
+        handed = []
+        backend = self.backend()
+        try:
+            session = backend.start_cycle(
+                "meeting-acp", "RemoteBuddy skill", "context", workspace=str(self.workspace)
+            )
+            findings = backend.investigate(
+                session, "看看 merge.py",
+                action_handler=lambda action, metadata: (
+                    handed.append(action)
+                    or {"success": False, "content": "终端关着", "pause": False}
+                ),
+                request_timeout_seconds=8.0,
+            )
+        finally:
+            backend.close()
+        self.assertEqual(["command"], [action.type for action in handed])
+        self.assertEqual("看着呢", findings)
 
     def test_permissions_are_answered_by_kind(self):
         """读放行、写拒绝：写只能走共享终端，读走它自己的只读工具。"""

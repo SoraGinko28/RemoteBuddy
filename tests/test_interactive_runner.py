@@ -20,6 +20,7 @@ from meeting_v2 import MeetingStore, utc_now
 from agent_protocol import AgentActionError
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
+from agent_protocol import ACT_STEP_TEXT, INVESTIGATE_STEP_TEXT
 
 
 def make_action(action_type="chat", **changes):
@@ -230,6 +231,21 @@ class FakeTransport:
                     self.command = "bash"
                 self.pending_input = ""
         self.screen_revision += 1
+
+
+class InvestigatingClient(FakeClient):
+    """有自己读工具的 backend：每个动作之前，harness 都会先要一枪调查。"""
+
+    backend_name = "trae-acp"
+
+    def __init__(self, outcomes, findings="我看了 notes.md：里面还是空的。"):
+        super().__init__(outcomes)
+        self.findings = findings
+        self.investigations = []
+
+    def investigate(self, session_id, observation, **kwargs):
+        self.investigations.append(observation)
+        return self.findings
 
 
 class AskingClient(FakeClient):
@@ -1231,6 +1247,74 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
 
         self.assertIn("sed", typed)
+
+    def test_every_action_is_preceded_by_an_investigation_step(self):
+        client = InvestigatingClient(
+            [
+                make_action(),
+                make_action("command", command="pwd"),
+                make_action("done", message_type="final", content="Done."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual(3, len(client.investigations))
+        self.assertIn(INVESTIGATE_STEP_TEXT, client.investigations[0])
+        # 行动那一枪：明说这一步不读，而且带着上一枪调查的结论。
+        self.assertIn(ACT_STEP_TEXT, client.calls[0][2])
+        self.assertIn("我看了 notes.md", client.calls[1][2])
+        started = [
+            event["data"].get("step")
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "request_started"
+        ]
+        self.assertEqual(["investigate", "act", "investigate", "act", "investigate", "act"], started)
+        findings = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "state" and event["data"].get("step") == "investigate"
+        ]
+        self.assertEqual(3, len(findings))
+        self.assertEqual("我看了 notes.md：里面还是空的。", findings[0]["content"])
+
+    def test_the_investigation_step_refuses_every_action(self):
+        runner = InteractiveRunner(
+            self.store, self.transport, InvestigatingClient([]),
+            action_settle_seconds=0, typing_interval_seconds=0,
+        )
+        answer = runner._investigation_refusal(make_action("command", command="pwd"), {})
+
+        self.assertFalse(answer["success"])
+        # pause 必须是 False：True 会让 Claude Code 把这次退回当成"这一枪的动作"。
+        self.assertFalse(answer["pause"])
+        self.assertIn("closed in the investigation step", answer["content"])
+        rejected = [
+            event
+            for event in self.store.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "investigation_step"
+        ]
+        self.assertEqual(1, len(rejected))
+        self.assertEqual(0, self.store.meeting.cycle_action_count)
+
+    def test_a_backend_without_read_tools_has_no_investigation_step(self):
+        """没有自己读工具的 backend：终端就是它唯一的读路，两步拆不开，每一枪都是行动枪。"""
+        client = FakeClient([make_action("done", message_type="final", content="Done.")])
+        Runner = InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        )
+        Runner.start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("responses", loaded.meeting.agent_backend)
+        started = [
+            event["data"].get("step")
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "request_started"
+        ]
+        self.assertEqual(["act"], started)
 
     def test_dynamic_backend_actions_still_pass_through_runner_and_one_pane(self):
         backend = DynamicBackend()
