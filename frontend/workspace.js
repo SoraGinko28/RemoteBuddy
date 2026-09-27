@@ -14,7 +14,7 @@ const el = Object.fromEntries([
   "health-message", "welcome-new-button", "meeting-list", "list-empty",
   "add-workspace-button",
   "welcome", "session-view", "agent-states", "status-badge", "owner-badge",
-  "workspace-menu", "meeting-menu",
+  "workspace-menu", "meeting-menu", "drop-line",
   "welcome-advanced-button",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "member-panel", "member-panel-close",
@@ -45,10 +45,8 @@ const state = {
   workspaceTitles: {},
   workspaceMenuPath: "",
   meetingMenuId: "",
-  // 正在拖的东西（`meeting:<会议号>` / `workspace:<目录>`）、拖的范围和拖之前的顺序。
-  dragKey: "",
-  dragScope: "",
-  dragBefore: [],
+  // 正在拖的那一样：kind（meeting/workspace）、node、scope、起点和落点（见 beginDrag）。
+  drag: null,
   workspace: "",
   listed: [],
   workspaceFilled: false,
@@ -580,8 +578,8 @@ function meetingLabel(meeting) {
 }
 
 // 一条会话就一行：标题 + 相对时间。会议号、provider、阶段都不占地方（会议号在悬停
-// 的提示里，header 也一样）。鼠标悬在这一行上时时间让位给「⠿」和「···」：前者拖顺序，
-// 后者是删除与会话操作。拖动不用整行做把手，是因为在标题上拖是人在选字复制。
+// 的提示里，header 也一样）。鼠标悬在这一行上时时间让位给「···」（会话操作、删除在
+// 那个浮层里）；调顺序是右键按住这一行上下拖，见 beginDrag。
 function meetingItem(meeting) {
   const row = node("div", "meeting-row");
   row.dataset.meeting = meeting.meeting_id;
@@ -593,12 +591,6 @@ function meetingItem(meeting) {
     node("span", "meeting-item-title", meetingLabel(meeting)),
     node("span", "meeting-item-time", fmtAgo(meeting.updated_at)),
   );
-  const handle = node("button", "meeting-item-handle", "⠿");
-  handle.type = "button";
-  handle.draggable = true;
-  handle.title = "拖动调整会话顺序";
-  handle.setAttribute("aria-label", "拖动调整会话顺序");
-  handle.addEventListener("dragstart", (event) => beginRowDrag(event, row));
   const more = node("button", "meeting-item-more", "···");
   more.type = "button";
   more.title = "会话操作";
@@ -615,10 +607,9 @@ function meetingItem(meeting) {
     if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
     selectMeeting(meeting.meeting_id);
   });
-  row.addEventListener("dragover", (event) => moveRowUnderPointer(event, row));
-  row.addEventListener("drop", (event) => event.preventDefault());
-  row.addEventListener("dragend", () => { finishDrag().catch((error) => toast(error.message)); });
-  row.append(button, handle, more);
+  // 右键按住上下拖 = 调整顺序（左键留给选字复制和打开会话）。
+  row.addEventListener("mousedown", (event) => beginDrag(event, "meeting", row));
+  row.append(button, more);
   return row;
 }
 
@@ -643,7 +634,7 @@ function renderMeetingList() {
   // case: a redraw would take the row out from under the pointer.
   const live = window.getSelection();
   if (live && !live.isCollapsed && el.meeting_list.contains(live.anchorNode)) return;
-  if (state.dragKey) return;
+  if (state.drag) return;
   el.meeting_list.replaceChildren();
   const groups = meetingGroups();
   // "No v2 session yet" is for having no workspace at all: a workspace that has
@@ -654,13 +645,7 @@ function renderMeetingList() {
     section.dataset.workspace = group.path;
     const head = node("div", "meeting-group-head");
     head.title = group.path;
-    head.draggable = true;
-    head.addEventListener("dragstart", (event) => beginGroupDrag(event, section));
-    head.addEventListener("dragover", (event) => moveGroupUnderPointer(event, section));
-    head.addEventListener("drop", (event) => event.preventDefault());
-    section.addEventListener("dragend", () => {
-      finishDrag().catch((error) => toast(error.message));
-    });
+    head.addEventListener("mousedown", (event) => beginDrag(event, "workspace", section));
     head.append(
       folderIcon(),
       node("span", "meeting-group-name",
@@ -3358,91 +3343,124 @@ async function deleteMeeting(meetingId) {
   renderAll();
 }
 
-// 拖动排序：拖的时候先把元素在 DOM 里挪到该在的位置（当场看得见），松手才把顺序发给
-// 服务；服务把它记在盘上，下一次刷新照这份顺序画。
+// 拖动排序：在会话行或工作区标题上按住**右键**上下拖，落点画一条白线，松手才把顺序发给
+// 服务（服务记在盘上，刷新照它画）。右键是特意的：左键在标题上拖是人在选字复制。
 const DRAG_WORKSPACES = "workspaces";
 
-function dragRowsOf(workspacePath) {
+function rowNodesOf(workspacePath) {
   return [...el.meeting_list.querySelectorAll(".meeting-row")]
     .filter((row) => row.dataset.workspace === workspacePath);
 }
 
-function dragSections() {
+function sectionNodes() {
   return [...el.meeting_list.querySelectorAll(".meeting-group")];
 }
 
-function beginRowDrag(event, row) {
-  state.dragKey = `meeting:${row.dataset.meeting}`;
-  state.dragScope = row.dataset.workspace || "";
-  state.dragBefore = dragRowsOf(state.dragScope).map((one) => one.dataset.meeting);
-  row.classList.add("dragging");
-  // Firefox 只有 setData 过才真的开始拖。
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", state.dragKey);
-  }
+function sectionFor(workspacePath) {
+  return sectionNodes().find((one) => one.dataset.workspace === workspacePath) || null;
 }
 
-function beginGroupDrag(event, section) {
-  state.dragKey = `workspace:${section.dataset.workspace}`;
-  state.dragScope = DRAG_WORKSPACES;
-  state.dragBefore = dragSections().map((one) => one.dataset.workspace);
-  section.classList.add("dragging");
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", state.dragKey);
-  }
-}
-
-// 会话只在它自己那个工作区里挪：拖到别的工作区上不算（那要搬数据，是另一件事）。
-function moveRowUnderPointer(event, row) {
-  if (!state.dragKey.startsWith("meeting:")) return;
-  const dragged = dragRowsOf(state.dragScope)
-    .find((one) => one.dataset.meeting === state.dragKey.slice("meeting:".length));
-  if (!dragged || dragged === row) return;
+// 右键按下先只记着：鼠标真的挪了（4px）才算开始拖，右键点一下不该动顺序。
+function beginDrag(event, kind, node) {
+  if (event.button !== 2 || state.drag) return;
   event.preventDefault();
-  const box = row.getBoundingClientRect();
-  const after = event.clientY > box.top + box.height / 2;
-  row.parentNode.insertBefore(dragged, after ? row.nextSibling : row);
+  state.drag = {
+    kind,
+    node,
+    key: kind === "meeting" ? node.dataset.meeting : node.dataset.workspace,
+    scope: kind === "meeting" ? node.dataset.workspace : DRAG_WORKSPACES,
+    originY: event.clientY,
+    active: false,
+    index: -1,
+  };
 }
 
-function moveGroupUnderPointer(event, section) {
-  if (!state.dragKey.startsWith("workspace:")) return;
-  const dragged = dragSections()
-    .find((one) => one.dataset.workspace === state.dragKey.slice("workspace:".length));
-  if (!dragged || dragged === section) return;
-  event.preventDefault();
-  const box = section.getBoundingClientRect();
-  const after = event.clientY > box.top + box.height / 2;
-  section.parentNode.insertBefore(dragged, after ? section.nextSibling : section);
+// 能插到谁旁边：会话只看它自己那个工作区里的行，工作区只看整段。所以会话出不了组，
+// 工作区也不会插到另一个工作区的两条会话中间。
+function dragCandidates(drag) {
+  return drag.kind === "meeting" ? rowNodesOf(drag.scope) : sectionNodes();
 }
 
-// 松手：顺序真变了才发一次，然后按服务那份顺序重画一遍。
+function updateDrag(event) {
+  const drag = state.drag;
+  if (!drag) return;
+  if (!drag.active) {
+    if (Math.abs(event.clientY - drag.originY) < 4) return;
+    drag.active = true;
+    drag.node.classList.add("dragging");
+  }
+  const candidates = dragCandidates(drag);
+  let index = candidates.length;
+  for (let position = 0; position < candidates.length; position += 1) {
+    const box = candidates[position].getBoundingClientRect();
+    if (event.clientY < box.top + box.height / 2) { index = position; break; }
+  }
+  drag.index = index;
+  showDropLine(candidates, index);
+}
+
+// 目的位置那条白线：画在"会插到谁前面"的那条边上；插在最后就画在最后一条的下边。
+function showDropLine(candidates, index) {
+  if (!el.drop_line) return;
+  if (!candidates.length) { hideDropLine(); return; }
+  const box = index >= candidates.length
+    ? candidates[candidates.length - 1].getBoundingClientRect()
+    : candidates[index].getBoundingClientRect();
+  const listBox = el.meeting_list.getBoundingClientRect();
+  el.drop_line.style.left = `${Math.round(listBox.left + 4)}px`;
+  el.drop_line.style.width = `${Math.round(Math.max(0, listBox.width - 8))}px`;
+  el.drop_line.style.top = `${Math.round(index >= candidates.length ? box.bottom : box.top)}px`;
+  el.drop_line.hidden = false;
+}
+
+function hideDropLine() {
+  if (el.drop_line) el.drop_line.hidden = true;
+}
+
 async function finishDrag() {
-  const key = state.dragKey;
-  const scope = state.dragScope;
-  const before = state.dragBefore || [];
-  state.dragKey = "";
-  state.dragScope = "";
-  state.dragBefore = [];
-  el.meeting_list.querySelectorAll(".dragging").forEach((one) => one.classList.remove("dragging"));
-  if (!key) return;
-  if (key.startsWith("meeting:")) {
-    const after = dragRowsOf(scope).map((one) => one.dataset.meeting);
-    if (!after.length || after.join("|") === before.join("|")) return;
+  const drag = state.drag;
+  state.drag = null;
+  hideDropLine();
+  if (!drag) return;
+  drag.node.classList.remove("dragging");
+  if (!drag.active || drag.index < 0) return;
+  const keys = dragCandidates(drag).map(
+    (one) => (drag.kind === "meeting" ? one.dataset.meeting : one.dataset.workspace));
+  const from = keys.indexOf(drag.key);
+  if (from < 0) return;
+  const next = keys.filter((key) => key !== drag.key);
+  const insert = drag.index > from ? drag.index - 1 : drag.index;
+  next.splice(Math.max(0, Math.min(next.length, insert)), 0, drag.key);
+  if (next.join("|") === keys.join("|")) return;
+  await applyOrder(drag.kind, drag.scope, next);
+}
+
+// 顺序定下来：先把 DOM 挪成那样（立刻看得见），再把它发给服务。
+async function applyOrder(kind, scope, keys) {
+  if (kind === "meeting") {
+    const rows = new Map(rowNodesOf(scope).map((row) => [row.dataset.meeting, row]));
+    const section = sectionFor(scope);
+    if (section) {
+      for (const key of keys) {
+        const row = rows.get(key);
+        if (row) section.append(row);
+      }
+    }
     await api("/api/meetings/order", {
       method: "POST",
-      body: JSON.stringify({ workspace: scope, meetings: after }),
+      body: JSON.stringify({ workspace: scope, meetings: keys }),
     });
   } else {
-    const after = dragSections().map((one) => one.dataset.workspace);
-    if (!after.length || after.join("|") === before.join("|")) return;
+    const sections = new Map(sectionNodes().map((one) => [one.dataset.workspace, one]));
+    for (const key of keys) {
+      const section = sections.get(key);
+      if (section) el.meeting_list.append(section);
+    }
     await api("/api/workspaces/order", {
       method: "POST",
-      body: JSON.stringify({ workspaces: after }),
+      body: JSON.stringify({ workspaces: keys }),
     });
   }
-  await loadMeetings();
 }
 
 // 重命名改的是列表里怎么叫它：目录名不动，会议一条也不挪。留空就用目录名。
@@ -3803,6 +3821,18 @@ function bind() {
           || event.target.closest("dialog"));
     if (!sourceRootFromNode(event.target) && !chromeSurface) {
       clearBrowserSelection();
+    }
+  });
+  // 右键拖顺序：按住挪（画白线）、松手落位。右键点一下不动顺序。
+  document.addEventListener("mousemove", updateDrag);
+  document.addEventListener("mouseup", () => {
+    if (state.drag) finishDrag().catch((error) => toast(error.message));
+  });
+  // 这两处右键是"拖顺序"的手势：不弹系统菜单（拖到一半弹出来更糟）。
+  document.addEventListener("contextmenu", (event) => {
+    if (state.drag || event.target.closest?.(".meeting-row")
+        || event.target.closest?.(".meeting-group-head")) {
+      event.preventDefault();
     }
   });
   document.addEventListener("keydown", (event) => {

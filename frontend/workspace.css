@@ -85,20 +85,16 @@ button:disabled { cursor: not-allowed; opacity: .45; }
    lives in the item's tooltip. */
 .meeting-item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .meeting-item-time { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
-/* 悬在这一行上时，时间让位给「⠿」和「···」：前者拖顺序，后者是会话操作（删除在
-   那个浮层里）。拖动只用「⠿」做把手——在标题上拖是人在选字复制，不能抢。 */
+/* 悬在这一行上时，时间让位给「···」（会话操作、删除在那个浮层里）；调顺序是右键按住
+   这一行上下拖，落点用下面那条白线标出来。 */
 .meeting-row { position: relative; display: flex; align-items: center; }
-.meeting-item-more, .meeting-item-handle { position: absolute; display: none; align-items: center; justify-content: center; width: 22px; min-height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-weight: 700; line-height: 1; }
-.meeting-item-more { right: 6px; font-size: 13px; }
-.meeting-item-handle { right: 28px; font-size: 11px; cursor: grab; }
+.meeting-item-more { position: absolute; right: 6px; display: none; align-items: center; justify-content: center; width: 22px; min-height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 700; line-height: 1; }
 .meeting-row:hover .meeting-item-time, .meeting-row:focus-within .meeting-item-time { display: none; }
 .meeting-row:hover .meeting-item-more, .meeting-row:focus-within .meeting-item-more { display: inline-flex; }
-.meeting-row:hover .meeting-item-handle, .meeting-row:focus-within .meeting-item-handle { display: inline-flex; }
 .meeting-item-more:hover:not(:disabled), .meeting-item-more:focus-visible { color: var(--ink); background: var(--surface-2); }
-.meeting-item-handle:hover, .meeting-item-handle:focus-visible { color: var(--ink); background: var(--surface-2); }
-/* 拖着的那个淡一半，落点就是它当场挪到的地方。 */
+/* 拖着的那个淡一半；要插进去的位置画一条白线（位置由 updateDrag 算）。 */
 .meeting-row.dragging, .meeting-group.dragging { opacity: .55; }
-.meeting-group-head { cursor: grab; }
+.drop-line { position: fixed; z-index: 60; height: 2px; border-radius: 1px; background: #fff; box-shadow: 0 0 6px rgb(255 255 255 / .55); pointer-events: none; }
 /* The workspace layer's own head: the word 工作区 and its "＋". The groups are
    the meeting groups above; the head only adds the one action. */
 /* 第一组工作区和右边那条会话头的下边框平齐：侧边栏上内边距 20 + 这一行 22 + 这里 14
