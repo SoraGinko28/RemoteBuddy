@@ -171,6 +171,8 @@ def main() -> int:
         if data.get("status") == "result" and isinstance(data.get("result"), dict):
             results.append(data["result"])
 
+    diff_files = sorted({path for one in results if one.get("kind") == "diff"
+                         for path in (one.get("files") or [])})
     pytest_run = subprocess.run(
         [sys.executable, "-m", "pytest", "-q"], cwd=workspace, capture_output=True, text=True
     )
@@ -183,8 +185,7 @@ def main() -> int:
         "action_count": len([kind for kind in kinds]),
         "diff_results": [one for one in results if one.get("kind") == "diff"],
         "cmd_results": [one for one in results if one.get("kind") == "cmd"],
-        "greet_py": (workspace / "greet.py").is_file(),
-        "test_greet_py": (workspace / "test_greet.py").is_file(),
+        "diff_files": {path: (workspace / path).is_file() for path in diff_files},
         "pytest_returncode": pytest_run.returncode,
         "pytest_tail": pytest_run.stdout.strip().splitlines()[-3:],
         "event_count": len(events),
@@ -202,8 +203,9 @@ def main() -> int:
         landed = [one for one in report["diff_results"] if one.get("retcode") == "0"]
         if not landed:
             failures.append(f"没有一次 diff 落盘成功：{report['diff_results']}")
-    if not report["greet_py"] or not report["test_greet_py"]:
-        failures.append("文件没建出来")
+    missing = [path for path, here in report["diff_files"].items() if not here]
+    if missing or not report["diff_files"]:
+        failures.append(f"diff 说落下的文件不在工作区里: {missing or '一个都没有'}")
     if pytest_run.returncode != 0:
         failures.append("pytest 没过")
     report["failures"] = failures
