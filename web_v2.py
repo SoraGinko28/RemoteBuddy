@@ -771,12 +771,36 @@ class MeetingWebService:
                 self._store_cache.pop(next(iter(self._store_cache)))
         return store
 
+    def _meeting_dir(self, meeting_id: str) -> Optional[Path]:
+        """这场会的数据目录。
+
+        同一个会议号可能出现在两个工作区里（有人把工作区连 `.meeting/` 一起拷了一份）。
+        真正属于某个工作区的那一份，manifest 里写的 `workspace_root` 就是它所在的目录；
+        拷贝出来的那一份写的是原来那个目录。所以先认这一份，认不出来才用先碰到的。
+        """
+        fallback: Optional[Path] = None
+        for directory in self._meeting_dirs():
+            if directory.name != meeting_id:
+                continue
+            if fallback is None:
+                fallback = directory
+            manifest_path = directory / "meeting.json"
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if str(manifest.get("workspace_root") or "") == str(directory.parent.parent):
+                return directory
+        return fallback
+
     def _open_store(self, meeting_id: str) -> MeetingStore:
         """这场会在哪个工作区的 `.meeting/` 下，就按那条数据路径读回来。"""
-        for directory in self._meeting_dirs():
-            if directory.name == meeting_id:
-                return MeetingStore.load_at(directory, meeting_id)
-        raise MeetingError(f"meeting not found: {meeting_id}")
+        directory = self._meeting_dir(meeting_id)
+        if directory is None:
+            raise MeetingError(f"meeting not found: {meeting_id}")
+        return MeetingStore.load_at(directory, meeting_id)
 
     def revision(self, meeting_id: str) -> str:
         """Stat-only change marker used to answer conditional GETs early."""
@@ -1154,6 +1178,9 @@ class MeetingWebService:
     def list_meetings(self) -> Dict[str, Any]:
         summaries: List[Dict[str, Any]] = []
         warnings: List[str] = []
+        # 会议号是这层接口里唯一的名字（每条路由都只有 id），所以列表里一个号只能出现一次。
+        # 同一个号被拷到两个工作区时留真正属于那个目录的一份（判据见 _meeting_dir）。
+        chosen: Dict[str, Tuple[Dict[str, Any], bool]] = {}
         for directory in self._meeting_dirs():
             if not MEETING_ID_RE.fullmatch(directory.name):
                 continue
@@ -1162,9 +1189,15 @@ class MeetingWebService:
                 continue
             try:
                 store = MeetingStore.load_at(directory, directory.name)
-                summaries.append(_public_manifest(store))
+                summary = _public_manifest(store)
             except (MeetingError, OSError, ValueError) as exc:
                 warnings.append(f"{directory.name}: {exc}")
+                continue
+            at_home = str(summary.get("workspace_root") or "") == str(directory.parent.parent)
+            existing = chosen.get(summary["meeting_id"])
+            if existing is None or (at_home and not existing[1]):
+                chosen[summary["meeting_id"]] = (summary, at_home)
+        summaries = [item[0] for item in chosen.values()]
         summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
         return {"meetings": summaries, "warnings": warnings,
                 **self._workspaces_payload(self.workspace)}
@@ -2213,6 +2246,43 @@ class MeetingWebService:
             store.append_event("control", "human", store.meeting.phase, data={"status": "cleaned"})
         return store
 
+    def delete_meeting(self, meeting_id: str) -> Dict[str, Any]:
+        """把一场会从列表和磁盘上删掉（页面上那条会话的"删除会话"）。
+
+        先照停止那套把在跑的 worker 和它的终端收掉，再删数据目录。目录先改名、再删：
+        列表是按目录名扫出来的，改完名字它立刻不在了，哪怕删到一半也不会有半场会留在列表上。
+        """
+        store = self.load_store(meeting_id)
+        if store.meeting.status not in TERMINAL_STATUSES:
+            self.stop(meeting_id)
+        elif store.meeting.session_state != "stopped":
+            self.cleanup(meeting_id)
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            run_dir = Path(store.run_dir)
+            folder = run_dir.parent
+            if (folder.name != MeetingStore.WORKSPACE_DIR or run_dir.name != meeting_id
+                    or not run_dir.is_dir()):
+                raise WebError(500, "meeting data path looks wrong")
+            workspace = folder.parent
+            graveyard = folder / f".deleting-{meeting_id}-{secrets.token_hex(4)}"
+            try:
+                os.replace(run_dir, graveyard)
+            except OSError as exc:
+                raise WebError(502, f"meeting data could not be moved aside: {exc}") from exc
+            shutil.rmtree(graveyard, ignore_errors=True)
+            with self.lock:
+                self.jobs.pop(meeting_id, None)
+                self.queued_jobs.pop(meeting_id, None)
+                self.capture_jobs.pop(meeting_id, None)
+                self.active_backends.pop(meeting_id, None)
+                self.active_runners.pop(meeting_id, None)
+                self.human_pipes.pop(meeting_id, None)
+                self.human_geometry.pop(meeting_id, None)
+                self.human_resume.pop(meeting_id, None)
+                self._store_cache.pop(meeting_id, None)
+        return {"meeting_id": meeting_id, "deleted": True, "workspace": str(workspace)}
+
     # ------------------------------------------------------------------
     # Skill 那一侧：更新（不动进程）与重启（换一个进程）
     # ------------------------------------------------------------------
@@ -2891,6 +2961,11 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 self._read_json()
                 self._json(self.service.issue_ticket(unquote(match.group(1)),
                                                      unquote(match.group(2))))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/delete", path)
+            if match:
+                self._read_empty_json()
+                self._json(self.service.delete_meeting(unquote(match.group(1))))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/(control/acquire|control/release|agent/resume|complete|stop|cleanup)", path)
             if match:

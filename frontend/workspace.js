@@ -14,7 +14,7 @@ const el = Object.fromEntries([
   "health-message", "welcome-new-button", "meeting-list", "list-empty",
   "add-workspace-button",
   "welcome", "session-view", "agent-states", "status-badge", "owner-badge",
-  "workspace-menu",
+  "workspace-menu", "meeting-menu",
   "welcome-advanced-button",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
   "member-panel", "member-panel-close",
@@ -44,6 +44,7 @@ const state = {
   workspaces: [],
   workspaceTitles: {},
   workspaceMenuPath: "",
+  meetingMenuId: "",
   workspace: "",
   listed: [],
   workspaceFilled: false,
@@ -575,8 +576,10 @@ function meetingLabel(meeting) {
 }
 
 // 一条会话就一行：标题 + 相对时间。会议号、provider、阶段都不占地方（会议号在悬停
-// 的提示里，header 也一样）。
+// 的提示里，header 也一样）。鼠标悬在这一行上时时间让位给「···」：删除会话在那后面，
+// 平时不占地方，也不怕点错。
 function meetingItem(meeting) {
+  const row = node("div", "meeting-row");
   const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
   button.type = "button";
   button.title = meeting.meeting_id;
@@ -584,6 +587,14 @@ function meetingItem(meeting) {
     node("span", "meeting-item-title", meetingLabel(meeting)),
     node("span", "meeting-item-time", fmtAgo(meeting.updated_at)),
   );
+  const more = node("button", "meeting-item-more", "···");
+  more.type = "button";
+  more.title = "会话操作";
+  more.setAttribute("aria-label", "会话操作");
+  more.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleMeetingMenu(meeting, more);
+  });
   // A drag across the title is the human selecting it to copy, not a command
   // to open the meeting: a click that ends with a selection inside this item
   // must not navigate, which would also rebuild the list and drop it.
@@ -592,7 +603,8 @@ function meetingItem(meeting) {
     if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
     selectMeeting(meeting.meeting_id);
   });
-  return button;
+  row.append(button, more);
+  return row;
 }
 
 // 工作区那一行前面那个文件夹图标（内联 SVG，跟着文字颜色走）。
@@ -3276,6 +3288,51 @@ function toggleWorkspaceMenu(path, anchor) {
   el.workspace_menu.style.top = `${top}px`;
 }
 
+// 会话那一行的「···」：浮层里就一件事——删除会话。它跟工作区那个菜单是一套长相。
+function hideMeetingMenu() {
+  if (!el.meeting_menu) return;
+  el.meeting_menu.hidden = true;
+  state.meetingMenuId = "";
+}
+
+function toggleMeetingMenu(meeting, anchor) {
+  if (!el.meeting_menu || !meeting) return;
+  if (!el.meeting_menu.hidden && state.meetingMenuId === meeting.meeting_id) {
+    hideMeetingMenu();
+    return;
+  }
+  state.meetingMenuId = meeting.meeting_id;
+  el.meeting_menu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const box = el.meeting_menu.getBoundingClientRect();
+  const gutter = 8;
+  const left = Math.max(gutter,
+    Math.min(window.innerWidth - box.width - gutter, rect.right - box.width));
+  const top = Math.max(gutter,
+    Math.min(window.innerHeight - box.height - gutter, rect.bottom + 6));
+  el.meeting_menu.style.left = `${left}px`;
+  el.meeting_menu.style.top = `${top}px`;
+}
+
+// 删除会话：数据、终端、那一行一起走。删除按钮在浮层里，问一句再动手。
+async function deleteMeeting(meetingId) {
+  hideMeetingMenu();
+  const summary = state.meetings.find((one) => one.meeting_id === meetingId);
+  const name = summary ? meetingLabel(summary) : meetingId;
+  if (!window.confirm(`删除会话「${name}」？它的对话、终端和数据都会删掉。`)) return;
+  await api(`/api/meetings/${encodeURIComponent(meetingId)}/delete`, { method: "POST" });
+  if (state.selectedId === meetingId) {
+    // 删掉的正是打开着的那一场：回到"没开会"的样子，而不是继续轮询一个不存在的会。
+    state.selectedId = null;
+    state.snapshot = null;
+    state.tickets = null;
+    state.timeline = [];
+    rememberMeeting("");
+  }
+  await loadMeetings();
+  renderAll();
+}
+
 // 重命名改的是列表里怎么叫它：目录名不动，会议一条也不挪。留空就用目录名。
 async function renameWorkspace(path) {
   hideWorkspaceMenu();
@@ -3366,6 +3423,9 @@ function bind() {
   });
   el.workspace_menu?.querySelector('[data-workspace-action="delete"]')?.addEventListener("click", () => {
     deleteWorkspace(state.workspaceMenuPath).catch((error) => toast(error.message));
+  });
+  el.meeting_menu?.querySelector('[data-meeting-action="delete"]')?.addEventListener("click", () => {
+    deleteMeeting(state.meetingMenuId).catch((error) => toast(error.message));
   });
   el.welcome_new_button.addEventListener("click", openWorkspace);
   el.welcome_advanced_button?.addEventListener("click", openNewDialog);
@@ -3599,6 +3659,10 @@ function bind() {
         && !el.workspace_menu.contains(event.target)) {
       hideWorkspaceMenu();
     }
+    if (el.meeting_menu && !el.meeting_menu.hidden
+        && !el.meeting_menu.contains(event.target)) {
+      hideMeetingMenu();
+    }
     if (el.selection_menu.contains(event.target)) return;
     hideSelectionMenu();
     // A terminal selection lives inside xterm rather than the DOM, so it
@@ -3637,6 +3701,7 @@ function bind() {
       closeMemberDetails();
       hideSelectionMenu();
       hideWorkspaceMenu();
+      hideMeetingMenu();
       clearBrowserSelection();
       state.keyboardSelection = null;
     }

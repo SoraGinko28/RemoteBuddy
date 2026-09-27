@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -953,6 +954,50 @@ class HTTPBoundaryTest(unittest.TestCase):
             csrf=True,
         )
         self.assertEqual(400, status)
+
+    def test_delete_meeting_route_removes_the_data_and_the_row(self):
+        """侧边栏那条会话的"删除会话"：数据、终端、列表里那一行一起走。"""
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "delete-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+        run_dir = self.root / ".meeting" / "delete-demo"
+        self.assertTrue(run_dir.is_dir())
+
+        response = self.request("/api/meetings/delete-demo/delete", method="POST",
+                                body="{}", csrf=True)
+        payload = json.load(response)
+        self.assertEqual(200, response.status)
+        self.assertTrue(payload["deleted"])
+        self.assertFalse(run_dir.exists())
+        self.assertEqual(1, self.transport.kills)
+        self.assertEqual(
+            [],
+            [one["meeting_id"] for one in json.load(self.request("/api/meetings"))["meetings"]],
+        )
+        # 已经删掉的再删一次：找不到，而不是又删一遍。
+        status, _payload = self.error_status("/api/meetings/delete-demo/delete", method="POST",
+                                             body="{}", csrf=True)
+        self.assertEqual(404, status)
+
+    def test_a_meeting_copied_into_another_workspace_is_listed_once(self):
+        """整目录拷过去的那种副本：会议号是这层接口唯一的名字，所以一个号只出现一次，
+        留下的是真正属于那个工作区的一份。"""
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "copy-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+        other = self.root / "second"
+        (other / ".meeting").mkdir(parents=True)
+        self.request("/api/workspaces", method="POST",
+                     body=json.dumps({"directory": str(other)}), csrf=True)
+        shutil.copytree(self.root / ".meeting" / "copy-demo", other / ".meeting" / "copy-demo")
+
+        listed = json.load(self.request("/api/meetings"))["meetings"]
+        self.assertEqual(["copy-demo"], [one["meeting_id"] for one in listed])
+        self.assertEqual(str(self.root.resolve()), listed[0]["workspace_root"])
+        self.assertEqual((self.root / ".meeting" / "copy-demo").resolve(),
+                         self.service._open_store("copy-demo").run_dir)
 
     def test_workspace_rename_and_delete_routes(self):
         other = self.root / "elsewhere"

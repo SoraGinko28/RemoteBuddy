@@ -85,6 +85,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
    lives in the item's tooltip. */
 .meeting-item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .meeting-item-time { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+/* 悬在这一行上时，时间让位给「···」（删除会话在那个浮层里）：时间不在悬停时展示，
+   免得它跟那个按钮抢同一条右边。 */
+.meeting-row { position: relative; display: flex; align-items: center; }
+.meeting-item-more { position: absolute; right: 6px; display: none; align-items: center; justify-content: center; width: 22px; min-height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 700; line-height: 1; }
+.meeting-row:hover .meeting-item-time, .meeting-row:focus-within .meeting-item-time { display: none; }
+.meeting-row:hover .meeting-item-more, .meeting-row:focus-within .meeting-item-more { display: inline-flex; }
+.meeting-item-more:hover:not(:disabled), .meeting-item-more:focus-visible { color: var(--ink); background: var(--surface-2); }
 /* The workspace layer's own head: the word 工作区 and its "＋". The groups are
    the meeting groups above; the head only adds the one action. */
 /* 第一组工作区和右边那条会话头的下边框平齐：侧边栏上内边距 20 + 这一行 22 + 这里 14
@@ -358,6 +365,12 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .workspace-menu button { min-height: 31px; border: 0; border-radius: 4px; padding: 0 10px; color: var(--ink); background: transparent; font-size: 11px; font-weight: 700; text-align: left; }
 .workspace-menu button:hover:not(:disabled), .workspace-menu button:focus-visible { outline: 2px solid var(--line-strong); outline-offset: -2px; }
 .workspace-menu [data-workspace-action="delete"]:hover:not(:disabled), .workspace-menu [data-workspace-action="delete"]:focus-visible { color: var(--red); background: var(--red-soft); }
+
+/* 会话那一行的「···」弹出来的：跟工作区菜单一套长相，目前只有删除会话。 */
+.meeting-menu { position: fixed; z-index: 45; display: flex; flex-direction: column; gap: 3px; min-width: 132px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-2); box-shadow: 0 10px 32px rgb(0 0 0 / .55); }
+.meeting-menu button { min-height: 31px; border: 0; border-radius: 4px; padding: 0 10px; color: var(--ink); background: transparent; font-size: 11px; font-weight: 700; text-align: left; }
+.meeting-menu button:hover:not(:disabled), .meeting-menu button:focus-visible { outline: 2px solid var(--line-strong); outline-offset: -2px; }
+.meeting-menu [data-meeting-action="delete"]:hover:not(:disabled), .meeting-menu [data-meeting-action="delete"]:focus-visible { color: var(--red); background: var(--red-soft); }
 
 .evaluation-panel { min-width: 0; padding: 13px 11px 12px; background: var(--surface); }
 .evaluation-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
