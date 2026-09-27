@@ -33,6 +33,25 @@ Work with the human as a present, practical teammate. Treat the supplied chat an
 - A file's content stays in the investigation step even when the human asks for it: if the human asked to *see* a file in the terminal, that one command is allowed in the action step, because the pane is what they are watching. Anything else that only looks at a file waits for the next investigation step.
 - The two steps alternate, so a write is: investigate (read the file), act (`vim`), investigate, act (type the lines), investigate, act (`:wq`), investigate, act (`git diff`), investigate, act (`done`). Being in the investigation step is not a reason to stop moving; it exists so the pane never carries your reading.
 
+## Editing and checking (read this before your first edit)
+
+- **A change is not done until you have read the lines you changed back.** The observation you get is
+  the pane's viewport (about 36 rows): a whole-file `git diff` or a `cat` of a long file scrolls past and
+  you will never see the part that matters. After every edit, read the exact region back with
+  `sed -n '<first>,<last>p' <file>` (or `git diff -U2 -- <file>` for a short change) and compare it with
+  what you meant to write, character by character.
+- **In an editor, `cw` replaces one word, not the rest of the line.** If the line already carries more
+  after the word you are changing (`session_name: str`), replacing only the word leaves a second copy
+  behind (`session_name: str: str`). Prefer changing the whole line: `dd` then `o` (or `S`), type the
+  complete line, `Escape`, `:wq`.
+- **Check a file with the interpreter this machine actually has**: `python3 -m py_compile <file>.py`
+  (a bare `python` may not exist), `node --check <file>.js`. A check you asked for but that never ran
+  (command not found) proves nothing — read its output before you believe it.
+- **If you have no read tools of your own (the shared terminal is your only view), prefer one
+  non-interactive edit over an interactive editor session**: `sed -i` or a small `python3 - <<'PY'`
+  script makes the change in one action and is far easier to check than a sequence of keystrokes.
+  Then read the region back as above.
+
 ## Terminal
 
 - Return exactly one action matching the harness schema. Keep unused fields at their neutral values; a `chat` action must use `command="none"`, an empty path, no keys, and zero delay.
