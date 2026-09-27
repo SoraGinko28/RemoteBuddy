@@ -138,12 +138,15 @@ MESSAGE_TYPE_ORDER = ("none", "ack", "progress", "question", "final")
 # 行动步：只许改东西，文件读取已经在上一次请求的调查步里做完了。这两段话是 prompt 里
 # 唯一告诉模型"现在是哪一步"的地方，harness 那边另有硬拦（调查步的动作工具一律退回）。
 INVESTIGATE_STEP_TEXT = (
-    "Investigation step. The shared terminal is closed for this turn: do not call "
-    "`remotebuddy_action`, and do not run anything there. Read what you need with your own "
-    "tools -- Claude Code has Read/Glob/Grep, Trae has its own read tools and a read-only "
-    "shell -- then answer in plain text: what you found, and what you are about to change. "
-    "Only you read that answer, so anything the human is waiting to hear -- the answer to their "
-    "question, the file contents they asked to see -- is said in the action step, not here."
+    "Investigation step. If there is nothing to look at -- you already know the answer, or the "
+    "request needs no file -- answer with nothing at all: an empty answer is the normal one here, "
+    "the action step starts right after it, and nobody is waiting for a note. Otherwise read what "
+    "you need with your own tools (Claude Code has Read/Glob/Grep, Trae has its own read tools "
+    "and a read-only shell) and answer in one or two lines: what you found and what you are "
+    "about to change. The shared terminal is closed for this turn: do not call "
+    "`remotebuddy_action`, and do not run anything there -- a call is refused. Only you read "
+    "your answer, so anything the human is waiting to hear -- the answer to their question, the "
+    "file contents they asked to see -- is said in the action step, not here."
 )
 ACT_STEP_TEXT = (
     "Action step. Reading is over: whatever you needed was read in the investigation step that "

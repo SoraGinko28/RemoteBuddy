@@ -31,6 +31,7 @@ settings = json.loads(sys.argv[1])
 action = settings["action"]
 permission_kinds = settings["permission_kinds"]
 submit = settings.get("submit", True)
+say = settings.get("say", "看着呢")
 
 
 def send(value):
@@ -79,10 +80,11 @@ for line in sys.stdin:
         record({"servers": servers})
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"sessionId": session_id}})
     elif method == "session/prompt":
-        send({"jsonrpc": "2.0", "method": "session/update",
-              "params": {"sessionId": session_id,
-                         "update": {"sessionUpdate": "agent_message_chunk",
-                                    "content": {"type": "text", "text": "看着呢"}}}})
+        if say:
+            send({"jsonrpc": "2.0", "method": "session/update",
+                  "params": {"sessionId": session_id,
+                             "update": {"sessionUpdate": "agent_message_chunk",
+                                        "content": {"type": "text", "text": say}}}})
         for kind in permission_kinds:
             ask_permission(kind)
         time.sleep(0.2)
@@ -114,6 +116,7 @@ class AcpBackendTest(unittest.TestCase):
         }
         self.permission_kinds = ["read", "edit"]
         self.submit = True
+        self.say = "看着呢"
 
     def config(self):
         return ModelApiConfig(
@@ -129,7 +132,7 @@ class AcpBackendTest(unittest.TestCase):
 
     def process_factory(self, _command, cwd):
         settings = json.dumps({"action": self.action, "permission_kinds": self.permission_kinds,
-                               "submit": self.submit})
+                               "submit": self.submit, "say": self.say})
         return subprocess.Popen(
             [sys.executable, str(self.script), settings],
             cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -226,6 +229,25 @@ class AcpBackendTest(unittest.TestCase):
         finally:
             backend.close()
         self.assertEqual("看着呢", findings)
+
+    def test_a_silent_investigation_comes_back_empty(self):
+        """没什么可查的它一句话都不说：这一枪照样正常收尾，结论就是空串。"""
+        self.submit = False
+        self.permission_kinds = []
+        self.say = ""
+        backend = self.backend()
+        try:
+            session = backend.start_cycle(
+                "meeting-acp", "RemoteBuddy skill", "context", workspace=str(self.workspace)
+            )
+            findings = backend.investigate(
+                session, "看看 merge.py",
+                action_handler=lambda action, metadata: {"success": True, "content": "ok", "pause": True},
+                request_timeout_seconds=8.0,
+            )
+        finally:
+            backend.close()
+        self.assertEqual("", findings)
 
     def test_an_action_claimed_in_the_investigation_turn_is_answered_and_ignored(self):
         """调查步里它去调动作工具：退回（is_error）还是会答，这一次请求仍然只收文字。"""

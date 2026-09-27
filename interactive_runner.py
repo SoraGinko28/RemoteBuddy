@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from agent_protocol import (
+    ACTION_TYPES,
     ACT_STEP_TEXT,
     INVESTIGATE_STEP_TEXT,
     INVESTIGATION_CLOSED_MESSAGE,
@@ -635,14 +636,17 @@ class InteractiveRunner:
                         self._check_stop()
                         if self.store.meeting.control_owner != self.agent_name:
                             return
-                        # 这一段是下一步唯一拿到的东西：写进 journal，行动步的观察里带着它。
-                        self.store.append_event(
-                            "state",
-                            self.agent_name,
-                            self.store.meeting.phase,
-                            content=str(findings or ""),
-                            data={"step": "investigate", "action_id": request_id},
-                        )
+                        # 没可查的它就静默：那时不留空记录，也不给它补一句。
+                        note = str(findings or "").strip()
+                        if note and not self._stray_action_text(note):
+                            # 这一段是下一步唯一拿到的东西：写进 journal，行动步的观察里带着它。
+                            self.store.append_event(
+                                "state",
+                                self.agent_name,
+                                self.store.meeting.phase,
+                                content=note,
+                                data={"step": "investigate", "action_id": request_id},
+                            )
                         self.store.update(pending_action_id=None)
                     continue
                 response = self._next_backend_action(
@@ -1070,6 +1074,31 @@ class InteractiveRunner:
             return False
         name = str(getattr(self.client, "backend_name", "") or self.store.meeting.agent_backend)
         return name in BACKENDS_WITH_OWN_READ_TOOLS
+
+    @staticmethod
+    def _stray_action_text(text: str) -> bool:
+        """它把动作写成了文字：那不是调查结论，是走错门的动作，别当结论记下来。
+
+        记下来下一步的观察里就躺着一个像"我已经做过这个动作"的 JSON——它可能真的以为做过了。
+        """
+        if not (text.startswith("{") and text.endswith("}")):
+            return False
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        # 两种写法都见过：`{"action": {...}}`（把动作包在里面）和
+        # `{"action": "command", ...}`（`action` 就是动作类型名）。
+        inner = payload.get("action")
+        if isinstance(inner, dict):
+            kind = str(inner.get("type") or "")
+        elif isinstance(inner, str):
+            kind = inner
+        else:
+            kind = str(payload.get("type") or "")
+        return kind in ACTION_TYPES
 
     def _initial_observation(self) -> str:
         """cycle 开头的那个观察。一个 cycle 的第一次请求是调查步（能拆步的 backend），

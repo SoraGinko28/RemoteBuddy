@@ -1280,6 +1280,51 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(3, len(findings))
         self.assertEqual("我看了 notes.md：里面还是空的。", findings[0]["content"])
 
+    def test_a_silent_investigation_leaves_no_record(self):
+        """没什么可查的它会静默：那一刻不留空记录，行动步照样接着走。"""
+        client = InvestigatingClient(
+            [make_action("done", message_type="final", content="Done.")], findings=""
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual(1, len(client.investigations))
+        findings = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "state" and event["data"].get("step") == "investigate"
+        ]
+        self.assertEqual([], findings)
+        self.assertEqual(
+            ["investigate", "act"],
+            [
+                event["data"].get("step")
+                for event in loaded.events()
+                if event["kind"] == "action" and event["data"].get("status") == "request_started"
+            ],
+        )
+
+    def test_an_action_written_as_text_is_not_a_finding(self):
+        """它在调查步把动作写成文字：那不是结论，别记下来当"我做过了"。"""
+        client = InvestigatingClient(
+            [make_action("command", command="vim notes.md")],
+            findings='{"action":"command","command":"vim notes.md","path":"","keys":[]}',
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        findings = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "state" and event["data"].get("step") == "investigate"
+        ]
+        self.assertEqual([], findings)
+        self.assertTrue(any(item[1] == "vim" for item in self.transport.commands))
+
     def test_the_investigation_step_refuses_every_action(self):
         runner = InteractiveRunner(
             self.store, self.transport, InvestigatingClient([]),
