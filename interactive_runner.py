@@ -329,6 +329,8 @@ class InteractiveRunner:
                     model=self.store.meeting.model,
                     images=images,
                     event_callback=self._backend_event,
+                    # 工作区路径给 backend 读文件用（只读）；写还是在共享终端里。
+                    workspace=str(self.store.workspace_path),
                 )
             )
         # Compatibility for older injected test clients.

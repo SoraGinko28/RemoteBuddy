@@ -105,7 +105,7 @@ for line in sys.stdin:
             "type": "system",
             "subtype": "init",
             "session_id": session_id,
-            "tools": [TOOL],
+            "tools": [TOOL, "Read"],
             "mcp_servers": [{{"name": "remotebuddy", "status": "connected"}}],
             "claude_code_version": "2.1.248",
         }})

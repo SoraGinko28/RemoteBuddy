@@ -769,8 +769,9 @@ class OpenAIResponsesClient:
         model: Optional[str] = None,
         images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Any = None,
+        workspace: Optional[str] = None,
     ) -> str:
-        del initial_context, model, images
+        del initial_context, model, images, workspace
         self._cycle_instructions = instructions
         session_id = self.create_conversation(meeting_id)
         if event_callback:

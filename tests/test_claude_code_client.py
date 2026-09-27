@@ -59,7 +59,7 @@ for line in sys.stdin:
             "type": "system",
             "subtype": "init",
             "session_id": session_id,
-            "tools": [TOOL],
+            "tools": [TOOL, "Read"],
             "mcp_servers": [{{"name": "remotebuddy", "status": "connected"}}],
             "claude_code_version": "2.1.248",
         }})
@@ -234,8 +234,12 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         self.assertEqual(1, len(actions))
         command, env, process = self.spawned[0]
         self.assertIn("--restricted", command)
-        self.assertEqual("", command[command.index("--tools") + 1])
-        self.assertEqual(TOOL_NAME, command[command.index("--allowedTools") + 1])
+        self.assertEqual("Read,Glob,Grep,LS,NotebookRead",
+                         command[command.index("--tools") + 1])
+        self.assertEqual(f"{TOOL_NAME},Read,Glob,Grep,LS,NotebookRead",
+                         command[command.index("--allowedTools") + 1])
+        # 没有工作区就不给 --add-dir；给了就知道自己被允许读哪儿。
+        self.assertNotIn("--add-dir", command)
         self.assertIn("--strict-mcp-config", command)
         self.assertIn("--no-session-persistence", command)
         self.assertNotIn("deepseek-secret", command)
