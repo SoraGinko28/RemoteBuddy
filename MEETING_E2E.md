@@ -34,6 +34,39 @@
 }
 ```
 
+## 一次实测（2026-09-27，AgentCmd：agent 交命令与 diff，不再自己敲键盘）
+
+用户旅程：
+
+1. human 说一句题面（建 `greet.py` + `test_greet.py`，跑通 pytest）；
+2. agent 不再开编辑器、也不再发按键：它交一份 `diff`（两个文件），harness 在共享终端里逐文件
+   用 vim 落盘并核对，一轮对上；随后交 `command` 跑 pytest，从返回码里发现没装 pytest，
+   按 `pip --user` 被 PEP 668 挡回、改用 venv 装上，最后 `1 passed`；
+3. 会议走到 `completion_proposed`。
+
+可复跑：`.venv/bin/python e2e_agent_cmd.py`（真 agent、真 tmux、真文件）。
+
+```json
+{
+  "meeting_id": "agent-cmd-fb66a3ad",
+  "phase": "completion_proposed",
+  "elapsed_s": 34.7,
+  "action_kinds": ["command", "diff", "done"],
+  "diff_results": [
+    {"kind": "diff", "rounds": 1, "retcode": "0",
+     "files": ["greet.py", "test_greet.py"], "mismatched_files": [], "stopped": false}
+  ],
+  "cmd_results": [
+    {"cmd": "python3 -m pytest -q", "retcode": "1"},
+    {"cmd": "python3 -m pip install --user -q pytest", "retcode": "1"},
+    {"cmd": "python3 -m venv .venv && .venv/bin/pip install -q pytest && .venv/bin/python -m pytest -q",
+     "retcode": "0"}
+  ],
+  "greet_py": true, "test_greet_py": true, "pytest_returncode": 0,
+  "passed": true, "failures": []
+}
+```
+
 ## 断言的不变量（用户可感知）与结果
 
 | # | 不变量 | 用户意义 | 结果 |
