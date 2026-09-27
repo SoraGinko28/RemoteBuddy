@@ -1873,6 +1873,7 @@ class RealTmuxEdgeTest(unittest.TestCase):
         outcome = self.apply(work, "".join(shifted))
         self.assertEqual("0", outcome.result.retcode, outcome.got_diff[-3000:])
         self.assertGreaterEqual(outcome.rounds, 2, "行号错了要靠再核一轮补回来")
+        self.assertEqual([], outcome.mismatched_files, "补上之后不该再留着上一轮的名字")
         assert_case_target(self, case, work)
 
     def test_a_stop_leaves_the_later_files_untouched(self):

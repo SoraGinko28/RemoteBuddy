@@ -36,21 +36,24 @@
 
 ## 一次实测（2026-09-27，AgentCmd：agent 交命令与 diff，不再自己敲键盘）
 
+工作区是**测试工作区** `/Users/bytedance/tmp/test`（先给它建了 git 仓库：harness 拍快照、核对
+落盘结果要一个仓库，`.gitignore` 里排掉 `.meeting/` 和 `__pycache__/`）。
+
 用户旅程：
 
 1. human 说一句题面（建 `greet.py` + `test_greet.py`，跑通 pytest）；
-2. agent 不再开编辑器、也不再发按键：它交一份 `diff`（两个文件），harness 在共享终端里逐文件
-   用 vim 落盘并核对，一轮对上；随后交 `command` 跑 pytest，从返回码里发现没装 pytest，
-   按 `pip --user` 被 PEP 668 挡回、改用 venv 装上，最后 `1 passed`；
-3. 会议走到 `completion_proposed`。
+2. agent 交一份 `diff`（两个新文件），harness 在共享终端里逐文件用 vim 落盘、核对，**一轮对上**；
+3. 随后 `command` 跑 pytest：先读到返回码 1（没装 pytest），装上再跑，返回码 0；
+4. 会议走到 `completion_proposed`。
 
-可复跑：`.venv/bin/python e2e_agent_cmd.py`（真 agent、真 tmux、真文件）。
+可复跑：`.venv/bin/python e2e_agent_cmd.py --workspace /Users/bytedance/tmp/test --keep`
 
 ```json
 {
-  "meeting_id": "agent-cmd-fb66a3ad",
+  "meeting_id": "agent-cmd-3132d2b3",
+  "workspace": "/Users/bytedance/tmp/test",
   "phase": "completion_proposed",
-  "elapsed_s": 34.7,
+  "elapsed_s": 14.5,
   "action_kinds": ["command", "diff", "done"],
   "diff_results": [
     {"kind": "diff", "rounds": 1, "retcode": "0",
@@ -58,14 +61,19 @@
   ],
   "cmd_results": [
     {"cmd": "python3 -m pytest -q", "retcode": "1"},
-    {"cmd": "python3 -m pip install --user -q pytest", "retcode": "1"},
-    {"cmd": "python3 -m venv .venv && .venv/bin/pip install -q pytest && .venv/bin/python -m pytest -q",
-     "retcode": "0"}
+    {"cmd": "python3 -m pip install --break-system-packages -q pytest", "retcode": "0"},
+    {"cmd": "python3 -m pytest -q", "retcode": "0"}
   ],
   "greet_py": true, "test_greet_py": true, "pytest_returncode": 0,
   "passed": true, "failures": []
 }
 ```
+
+这一轮还逼出过一个真 bug：`vim` 起来之后、把终端设成 raw 模式之前有一小段，那段时间敲进去的
+按键仍按行输入算 —— `C-c`（我们用来退出插入模式的键）会变成信号，把还在初始化的 vim 打断，
+剩下的按键就落到 shell 手里（journal 里能直接看到 `1Gidef greet(name):` 被 shell 回显、
+`:wq` 被当命令执行）。修法是等编辑器**真的把屏幕接管过去**（前台是编辑器，而且画面已经不是
+刚才那一屏）再开始敲。修完在同一个工作区连跑 8 次、CPU 满载再跑 8 次，都是第一轮就对。
 
 ## 断言的不变量（用户可感知）与结果
 

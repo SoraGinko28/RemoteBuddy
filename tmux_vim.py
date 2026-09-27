@@ -895,10 +895,16 @@ def _execute(
         if step.expect_foreground:
             ready = ensure_shell(transport, pane_id, restarter=restarter)
             pane_id = ready.pane_id
+        before = ""
+        if step.expect_foreground == "editor":
+            try:
+                before = transport.capture_visible(pane_id)
+            except Exception:
+                before = ""
         transport.send_keys(pane_id, step.command)
         if step.expect_foreground == "editor":
-            if not _wait_for(transport, pane_id, _foreground_is_editor, FOREGROUND_TIMEOUT_SECONDS):
-                raise CommandTimeout(f"vim 没起来: {step.command}")
+            if not _wait_for_editor(transport, pane_id, before, FOREGROUND_TIMEOUT_SECONDS):
+                raise CommandTimeout(f"vim 没起来，或者起来了还没接管屏幕: {step.command}")
         elif step.expect_foreground == "shell":
             # 等这条命令自己跑完（`echo $?` 出来的那一行就是"跑完了"），不能等"前台是
             # shell"——刚敲下去的时候前台还没换成子进程，那一等就白等了。
@@ -953,6 +959,27 @@ def _foreground_is_shell(info: Dict[str, str]) -> bool:
 
 def _foreground_is_editor(info: Dict[str, str]) -> bool:
     return _program_name(info.get("command", "")) in VIM_PROGRAMS
+
+
+def _wait_for_editor(transport: Any, pane_id: str, before: str, timeout: float) -> bool:
+    """等编辑器真的把屏幕接管过去：前台是编辑器，而且画面已经不是刚才那一屏了。
+
+    只看前台进程名不够。从 vim 起来到它把终端设成 raw 模式之间有一小段：那段时间里终端
+    还是按行输入，敲进去的按键会被当成行内容（`C-c` 更是直接变成信号，把还在初始化的 vim
+    打断，剩下的按键就落到 shell 手里）。所以还要等它把画面换掉 —— 换掉了才说明它接管了。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if _foreground_is_editor(_pane_info(transport, pane_id)):
+            try:
+                screen = transport.capture_visible(pane_id)
+            except Exception:
+                screen = ""
+            if screen and screen != before:
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_SECONDS)
 
 
 def _wait_for(
@@ -1225,6 +1252,7 @@ def tmux_apply_diff_by_vim(
                 outcome.result = TmuxCmdResult(retcode="130", output_on_screen=transport.capture(pane_id))
                 return outcome
             if not left.strip():
+                outcome.mismatched_files = []
                 outcome.result = TmuxCmdResult(retcode="0", output_on_screen=transport.capture(pane_id))
                 return outcome
             outcome.mismatched_files = [

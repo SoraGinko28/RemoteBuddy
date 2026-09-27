@@ -115,15 +115,22 @@ class LiveMeeting:
 
 
 def prepare_workspace(path: Path) -> None:
+    """工作区得是个 git 仓库：harness 拍快照、核对落盘结果都靠它。
+
+    没有仓库就在这里建一个（已有的文件当基线提交进去）；已经有内容的工作区不再多写文件。
+    """
     path.mkdir(parents=True, exist_ok=True)
+    empty = not any(path.iterdir())
     if not (path / ".git").is_dir():
         subprocess.run(["git", "init", "-q", "."], cwd=path, check=True)
         subprocess.run(["git", "config", "user.email", "e2e@example.com"], cwd=path, check=True)
         subprocess.run(["git", "config", "user.name", "e2e"], cwd=path, check=True)
-    if not (path / "README.md").exists():
+        (path / ".gitignore").write_text(".meeting/\n__pycache__/\n*.pyc\n", encoding="utf-8")
+    if empty:
         (path / "README.md").write_text("# e2e 工作区\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=path, check=True)
-        subprocess.run(["git", "commit", "-qm", "base"], cwd=path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=path).returncode != 0:
+        subprocess.run(["git", "commit", "-qm", "e2e 基线"], cwd=path, check=True)
 
 
 def main() -> int:
