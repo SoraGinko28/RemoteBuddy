@@ -114,7 +114,7 @@ for line in sys.stdin:
     content = message.get("message", {{}}).get("content") if isinstance(message.get("message"), dict) else None
     text = " ".join(part.get("text", "") for part in (content or []) if isinstance(part, dict))
     if text.startswith("Investigation step"):
-        # 调查枪：真 CLI 在这里用自己的读工具看文件，然后写字回答；这一枪不交动作。
+        # 调查步：真 CLI 在这里用自己的读工具看文件，然后写字回答；这一次请求不交动作。
         send({{
             "type": "assistant",
             "session_id": session_id,

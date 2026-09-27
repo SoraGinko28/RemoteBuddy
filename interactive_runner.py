@@ -117,7 +117,7 @@ class InteractiveRunner:
         self._current_input_seq = self.store.last_event_sequence()
         self._stall_fingerprint: Optional[tuple] = None
         self._stall_streak = 0
-        # 这一枪是调查还是行动（见 _agent_loop）。_agent_loop 开头会重置它。
+        # 这一次请求是调查还是行动（见 _agent_loop）。_agent_loop 开头会重置它。
         self._step = "investigate"
         # 页面上那两个按钮留下的请求，在下一个请求边界处理（见 _apply_backend_requests）：
         # 换 Skill 文本不动进程，或者把进程杀掉重开。
@@ -502,7 +502,7 @@ class InteractiveRunner:
             instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
             context = self._initial_observation()
             images = self._images_of(self.store.events_after(0))
-            # 新进程的第一枪就是上面的初始上下文：那一枪是调查枪。
+            # 新进程的第一次请求就是上面的初始上下文：那一次请求是调查步。
             self._step = "investigate"
             self.store.update(phase="agent_restart", pending_action_id=None)
             self.store.append_event(
@@ -541,8 +541,8 @@ class InteractiveRunner:
         return True
 
     def _agent_loop(self) -> None:
-        # 每一枪都属于两步之一：调查（只用自己的读工具，共享终端关着）和行动（只改东西）。
-        # 一枪之后必然回到调查，所以写一个文件会是：调查→vim→调查→打字→调查→:wq→…
+        # 每一次请求都属于两步之一：调查（只用自己的读工具，共享终端关着）和行动（只改东西）。
+        # 一次请求之后必然回到调查，所以写一个文件会是：调查→vim→调查→打字→调查→:wq→…
         self._step = "investigate"
         while True:
             if not self._apply_backend_requests():
@@ -635,7 +635,7 @@ class InteractiveRunner:
                         self._check_stop()
                         if self.store.meeting.control_owner != self.agent_name:
                             return
-                        # 这一段是下一步唯一拿到的东西：写进 journal，行动枪的观察里带着它。
+                        # 这一段是下一步唯一拿到的东西：写进 journal，行动步的观察里带着它。
                         self.store.append_event(
                             "state",
                             self.agent_name,
@@ -1065,15 +1065,15 @@ class InteractiveRunner:
             self._dynamic_action_active.clear()
 
     def _can_investigate(self) -> bool:
-        """这一枪能不能拆出调查步：backend 得有自己的读工具，而且它实现了这一步。"""
+        """这一次请求能不能拆出调查步：backend 得有自己的读工具，而且它实现了这一步。"""
         if not callable(getattr(self.client, "investigate", None)):
             return False
         name = str(getattr(self.client, "backend_name", "") or self.store.meeting.agent_backend)
         return name in BACKENDS_WITH_OWN_READ_TOOLS
 
     def _initial_observation(self) -> str:
-        """cycle 开头的那个观察。一个 cycle 的第一枪是调查枪（能拆步的 backend），
-        所以这段话要跟它一致——第一枪用的是这段初始上下文，不是请求里的观察。"""
+        """cycle 开头的那个观察。一个 cycle 的第一次请求是调查步（能拆步的 backend），
+        所以这段话要跟它一致——第一次请求用的是这段初始上下文，不是请求里的观察。"""
         text = self._observation(self.store.events_after(0), False, force_history=True)
         banner = INVESTIGATE_STEP_TEXT if self._can_investigate() else ACT_STEP_TEXT
         return banner + "\n\n" + text
@@ -1081,10 +1081,10 @@ class InteractiveRunner:
     def _investigation_refusal(
         self, action: AgentAction, metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """调查步里来的动作：共享终端整枪关着，工具退回去，让它改用文字说。
+        """调查步里来的动作：共享终端整个关着，工具退回去，让它改用文字说。
 
         这里既不执行也不花动作预算——这一步本来就不该产生动作；`pause` 必须是 False，
-        否则 Claude Code 会把这次退回当成"这一枪的动作"。
+        否则 Claude Code 会把这次退回当成"这一次请求的动作"。
         """
         with self.lock:
             self.store.refresh()

@@ -234,7 +234,7 @@ class FakeTransport:
 
 
 class InvestigatingClient(FakeClient):
-    """有自己读工具的 backend：每个动作之前，harness 都会先要一枪调查。"""
+    """有自己读工具的 backend：每个动作之前，harness 都会先要一次调查。"""
 
     backend_name = "trae-acp"
 
@@ -252,7 +252,7 @@ class AskingClient(FakeClient):
     """第一次请求飞着的时候按下页面那个按钮。
 
     页面上就是"请求在路上、人按下去"这个时序；用真线程去卡这个窗口是碰运气，
-    所以让前端自己在下第一枪时按。
+    所以让前端自己在下第一次请求时按。
     """
 
     def __init__(self, outcomes, ask):
@@ -1263,7 +1263,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         loaded = MeetingStore.load(self.root, "runner-demo")
         self.assertEqual(3, len(client.investigations))
         self.assertIn(INVESTIGATE_STEP_TEXT, client.investigations[0])
-        # 行动那一枪：明说这一步不读，而且带着上一枪调查的结论。
+        # 行动那一次请求：明说这一步不读，而且带着上一次请求调查的结论。
         self.assertIn(ACT_STEP_TEXT, client.calls[0][2])
         self.assertIn("我看了 notes.md", client.calls[1][2])
         started = [
@@ -1288,7 +1288,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         answer = runner._investigation_refusal(make_action("command", command="pwd"), {})
 
         self.assertFalse(answer["success"])
-        # pause 必须是 False：True 会让 Claude Code 把这次退回当成"这一枪的动作"。
+        # pause 必须是 False：True 会让 Claude Code 把这次退回当成"这一次请求的动作"。
         self.assertFalse(answer["pause"])
         self.assertIn("closed in the investigation step", answer["content"])
         rejected = [
@@ -1300,7 +1300,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(0, self.store.meeting.cycle_action_count)
 
     def test_a_backend_without_read_tools_has_no_investigation_step(self):
-        """没有自己读工具的 backend：终端就是它唯一的读路，两步拆不开，每一枪都是行动枪。"""
+        """没有自己读工具的 backend：终端就是它唯一的读路，两步拆不开，每一次请求都是行动步。"""
         client = FakeClient([make_action("done", message_type="final", content="Done.")])
         Runner = InteractiveRunner(
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0

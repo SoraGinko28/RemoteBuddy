@@ -134,8 +134,8 @@ class AgentActionError(AgentProtocolError):
 
 
 MESSAGE_TYPE_ORDER = ("none", "ack", "progress", "question", "final")
-# 每一枪都属于两步之一。调查步：只许用自己的读工具，共享终端整个关掉，结论用文字说。
-# 行动步：只许改东西，文件读取已经在上一枪的调查步里做完了。这两段话是 prompt 里
+# 每一次请求都属于两步之一。调查步：只许用自己的读工具，共享终端整个关掉，结论用文字说。
+# 行动步：只许改东西，文件读取已经在上一次请求的调查步里做完了。这两段话是 prompt 里
 # 唯一告诉模型"现在是哪一步"的地方，harness 那边另有硬拦（调查步的动作工具一律退回）。
 INVESTIGATE_STEP_TEXT = (
     "Investigation step. The shared terminal is closed for this turn: do not call "
@@ -907,7 +907,7 @@ class AgentBackend(Protocol):
         request_timeout_seconds: Optional[float] = None,
         action_handler: Optional[DynamicActionHandler] = None,
     ) -> str:
-        """调查步：这一枪不碰共享终端，返回模型用文字说的结论。
+        """调查步：这一次请求不碰共享终端，返回模型用文字说的结论。
 
         有自己读工具的 backend 实现它；没有的（纯对话、结构化 app-server）返回空串——
         它们的终端就是唯一那条读路，两步拆不开。

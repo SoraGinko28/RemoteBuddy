@@ -266,7 +266,7 @@ class ClaudeCodeBackend:
         self._turn_result_seen = False
         self._turn_protocol_error: Optional[str] = None
         self._last_text: Optional[str] = None
-        # 调查步：这一枪不要动作，只要它写的字（见 investigate）。
+        # 调查步：这一次请求不要动作，只要它写的字（见 investigate）。
         self._turn_investigating = False
         self._turn_text_parts: List[str] = []
         self._rejections = 0
@@ -509,10 +509,10 @@ class ClaudeCodeBackend:
         request_timeout_seconds: Optional[float] = None,
         action_handler: Optional[DynamicActionHandler] = None,
     ) -> str:
-        """调查步：这一枪只让它用自己的读工具看，拿它写的文字当结论。
+        """调查步：这一次请求只让它用自己的读工具看，拿它写的文字当结论。
 
-        共享终端在这一枪里是关着的：它要是去调动作工具，runner 传进来的 `action_handler`
-        会把那个调用退回（`success=False`，所以不会变成"这一枪的动作"），它只能在同一步里
+        共享终端在这一次请求里是关着的：它要是去调动作工具，runner 传进来的 `action_handler`
+        会把那个调用退回（`success=False`，所以不会变成"这一次请求的动作"），它只能在同一步里
         改用文字回答。文字就是下一步唯一拿到的东西。
         """
         del model
@@ -862,7 +862,7 @@ class ClaudeCodeBackend:
             return
         if kind == "result":
             if self._turn_investigating:
-                # 调查步要的是这一枪的文字，不是动作：动作被退回、它收尾，都算这一枪正常结束。
+                # 调查步要的是这一次请求的文字，不是动作：动作被退回、它收尾，都算这一次请求正常结束。
                 with self._condition:
                     self._turn_result_seen = True
                     self._condition.notify_all()

@@ -210,7 +210,7 @@ class AcpBackendTest(unittest.TestCase):
         )
 
     def test_the_investigation_turn_returns_only_its_text(self):
-        """调查步：这一枪不交动作，它写的字就是结论。"""
+        """调查步：这一次请求不交动作，它写的字就是结论。"""
         self.submit = False
         self.permission_kinds = []
         backend = self.backend()
@@ -228,7 +228,7 @@ class AcpBackendTest(unittest.TestCase):
         self.assertEqual("看着呢", findings)
 
     def test_an_action_claimed_in_the_investigation_turn_is_answered_and_ignored(self):
-        """调查步里它去调动作工具：退回（is_error）还是会答，这一枪仍然只收文字。"""
+        """调查步里它去调动作工具：退回（is_error）还是会答，这一次请求仍然只收文字。"""
         handed = []
         backend = self.backend()
         try:

@@ -530,7 +530,7 @@ class AcpBackend:
         request_timeout_seconds: Optional[float] = None,
         action_handler: Optional[DynamicActionHandler] = None,
     ) -> str:
-        """调查步：这一枪只让它用自己的读工具看，拿它写的整段文字当结论。
+        """调查步：这一次请求只让它用自己的读工具看，拿它写的整段文字当结论。
 
         它要是去调动作工具，runner 传进来的 `action_handler` 会把那个调用退回（工具结果里
         带 `is_error`），它只能在同一步里改用文字回答。文字就是下一步唯一拿到的东西。
