@@ -3346,9 +3346,9 @@ async function deleteMeeting(meetingId) {
 }
 
 // 拖动排序：鼠标放在会话行（或工作区标题）上**按住左键上下拖**——拖拽就是这个手势。
-// 拖的时候那一行当场跟着走，落点画一条白线，松手才把顺序发给服务。左键要拖成拖、
-// 要选成选：没挪够 4px 之前什么都不动（单击打开、双击选词照旧），真拖起来了才把刚
-// 开始的那点选字清掉。右键不参与，系统菜单照旧。
+// 拖的过程中列表**不动**，只有一条白线标出落点；松手才把那一行插过去、发给服务。
+// 左键要拖成拖、要选成选：没挪够 4px 之前什么都不动（单击打开、双击选词照旧），
+// 真拖起来了才把刚开始的那点选字清掉。右键不参与，系统菜单照旧。
 const DRAG_WORKSPACES = "workspaces";
 // 手指抖一下不算拖：挪够这么多像素才开始。
 const DRAG_THRESHOLD_PX = 4;
@@ -3405,17 +3405,15 @@ function updateDrag(event) {
     // 鼠标动这几下可能已经拉出一点选区了：拖起来了就把它清掉，免得半行字亮着。
     clearBrowserSelection();
   }
-  // 被拖的那个不参与比较，剩下的按"指针越过谁的中线"决定插到第几位。
+  // 被拖的那个不参与比较，剩下的按"指针越过谁的中线"决定插到第几位。这里只算、不挪：
+  // 拖的时候列表不动，只有白线在走（落位在 finishDrag 里一次做完）。
   const others = dragCandidates(drag).filter((one) => one !== drag.node);
   let index = others.length;
   for (let position = 0; position < others.length; position += 1) {
     const box = others[position].getBoundingClientRect();
     if (event.clientY < box.top + box.height / 2) { index = position; break; }
   }
-  const anchor = others[index] || null;
-  if (anchor) anchor.parentNode.insertBefore(drag.node, anchor);
-  else if (drag.kind === "meeting") sectionFor(drag.scope)?.append(drag.node);
-  else el.meeting_list.append(drag.node);
+  drag.index = index;
   showDropLine(others, index, drag);
 }
 
@@ -3437,19 +3435,27 @@ function hideDropLine() {
   if (el.drop_line) el.drop_line.hidden = true;
 }
 
-// 松手：顺序真变了才发一次，再和服务对一遍。
+// 松手：到这里才动列表——把那一行插到白线画的地方——顺序真变了才发一次，再和服务对一遍。
 async function finishDrag() {
   const drag = state.drag;
   state.drag = null;
   hideDropLine();
   if (!drag) return;
   drag.node.classList.remove("dragging");
-  if (!drag.active) return;
+  if (!drag.active || drag.index < 0) return;
+  const others = dragCandidates(drag).filter((one) => one !== drag.node);
+  const next = others.slice();
+  const insert = Math.max(0, Math.min(next.length, drag.index));
+  next.splice(insert, 0, drag.node);
+  const keys = next.map(
+    (one) => (drag.kind === "meeting" ? one.dataset.meeting : one.dataset.workspace));
+  if (keys.join("|") === drag.before.join("|")) return;    // 落点就是原位：不动
+  const anchor = others[insert] || null;
+  if (anchor) anchor.parentNode.insertBefore(drag.node, anchor);
+  else if (drag.kind === "meeting") sectionFor(drag.scope)?.append(drag.node);
+  else el.meeting_list.append(drag.node);
   // 拖完之后浏览器还会补一个 click：刚拖过这一行的人不是想打开它。
   state.suppressClickUntil = Date.now() + 400;
-  const keys = dragCandidates(drag).map(
-    (one) => (drag.kind === "meeting" ? one.dataset.meeting : one.dataset.workspace));
-  if (keys.join("|") === drag.before.join("|")) return;
   // 先按新顺序把本地那份也改了：轮询正好在这时候重画，才不会又画回旧顺序。
   if (drag.kind === "meeting") orderLocalMeetings(drag.scope, keys);
   else state.workspaces = keys.slice();
