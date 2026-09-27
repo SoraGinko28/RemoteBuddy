@@ -622,16 +622,42 @@ class InteractiveRunner:
                         self._cycle_timeout()
                     return
                 if step == "investigate":
-                    findings = self.client.investigate(
-                        session_id,
-                        INVESTIGATE_STEP_TEXT + "\n\n" + observation,
-                        model=self.store.meeting.model,
-                        request_timeout_seconds=min(
-                            configured_timeout,
-                            max(0.1, remaining_seconds - self._request_overhead_seconds()),
-                        ),
-                        action_handler=self._investigation_refusal,
-                    )
+                    try:
+                        findings = self.client.investigate(
+                            session_id,
+                            INVESTIGATE_STEP_TEXT + "\n\n" + observation,
+                            model=self.store.meeting.model,
+                            request_timeout_seconds=min(
+                                configured_timeout,
+                                max(0.1, remaining_seconds - self._request_overhead_seconds()),
+                            ),
+                            action_handler=self._investigation_refusal,
+                        )
+                    except AgentInterrupted:
+                        raise
+                    except AgentBackendError as exc:
+                        # 调查是可选的：它超时或断掉，不该把整轮判死（`api_error` 就再也
+                        # 没人干活了）。记一笔，把它掐掉，直接进行动步——观察里本来就有
+                        # 人说的话和终端那一屏，够它动手了。
+                        with self.lock:
+                            self.store.refresh()
+                            self.store.append_event(
+                                "state",
+                                "harness",
+                                self.store.meeting.phase,
+                                content=f"调查步没跑完（{exc}），直接进行动步。",
+                                data={
+                                    "step": "investigate",
+                                    "status": "failed",
+                                    "action_id": request_id,
+                                },
+                            )
+                            self.store.update(pending_action_id=None)
+                        try:
+                            self.client.interrupt()
+                        except Exception:  # noqa: BLE001 — 掐不掉也照旧往下走
+                            pass
+                        continue
                     with self.lock:
                         self.store.refresh()
                         self._check_stop()

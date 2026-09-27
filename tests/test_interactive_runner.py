@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from agent_protocol import AgentBackendError
 from interactive_runner import (
     MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
@@ -252,6 +253,14 @@ class InvestigatingClient(FakeClient):
     def investigate(self, session_id, observation, **kwargs):
         self.investigations.append(observation)
         return self.findings
+
+
+class StuckInvestigationClient(InvestigatingClient):
+    """调查步超时的 backend：这一步可选，超了也要接着干，不能把整轮判死。"""
+
+    def investigate(self, session_id, observation, **kwargs):
+        self.investigations.append(observation)
+        raise AgentBackendError("Claude Code investigation turn timed out")
 
 
 class AskingClient(FakeClient):
@@ -1354,6 +1363,25 @@ class InteractiveRunnerTest(unittest.TestCase):
         observation = client.calls[0][2]
         self.assertIn("`remotebuddy_action` tool", observation)
         self.assertNotIn("the response schema asks for", observation)
+
+    def test_a_failed_investigation_does_not_kill_the_cycle(self):
+        """调查步超时/断掉：记一笔就进行动步，别把整轮弄成 api_error。"""
+        client = StuckInvestigationClient([make_action("done", message_type="final", content="Done.")])
+        runner = InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        )
+        runner.start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        failed = [
+            event for event in loaded.events()
+            if event["kind"] == "state" and event["data"].get("status") == "failed"
+            and event["data"].get("step") == "investigate"
+        ]
+        self.assertEqual(1, len(failed))
+        self.assertIn("直接进行动步", failed[0]["content"])
+        self.assertTrue(self.transport.commands or client.calls)
 
     def test_the_investigation_step_refuses_every_action(self):
         runner = InteractiveRunner(
