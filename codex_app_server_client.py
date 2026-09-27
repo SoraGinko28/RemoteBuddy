@@ -106,6 +106,12 @@ class CodexAppServerBackend:
 
     backend_name = PROTOCOL_NAME
     stateful = True
+
+    @property
+    def action_submission(self) -> str:
+        """动态工具开着就是"调工具"，关着就是"把动作当 JSON 交"（outputSchema 钉住）。"""
+        return "tool" if self.config.codex_dynamic_tools else "json"
+
     # Subcommand + flags that put the CLI into stdio app-server mode.
     app_server_command = ("app-server", "--stdio")
     default_binary = "codex"

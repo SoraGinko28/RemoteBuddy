@@ -62,6 +62,8 @@ class AcpBackend:
 
     backend_name = "trae-acp"
     stateful = True
+    # 动作怎么交上来：走 MCP 工具（见 agent_protocol.act_step_text）。
+    action_submission = "tool"
 
     def __init__(
         self,

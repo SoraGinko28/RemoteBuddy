@@ -149,16 +149,37 @@ INVESTIGATE_STEP_TEXT = (
     "after it. Anything the human is waiting to hear -- the answer to their question, the file "
     "contents they asked to see -- is said in the action step, not here."
 )
-ACT_STEP_TEXT = (
+# 行动步的正文：跟"动作怎么交上来"无关的那部分（两步的分工、只读命令被拒、人要听的话
+# 在这一步说）。末尾那句"怎么交"按 backend 分两种：走工具的，和把动作当 JSON 交的。
+ACT_STEP_BODY = (
     "Action step. Reading is over: whatever you needed was read in the investigation step that "
     "just ended, so read nothing here. Change things in the shared terminal, which the human "
-    "watches, by calling the `remotebuddy_action` tool (MCP server `remotebuddy`) exactly once "
-    "-- an action written as text is not an action. A plain reader (cat, sed, head, tail, nl, "
-    "rg, grep, ls, wc, file, stat, tree) sent as a `command` action is refused; a file the human "
-    "asked to see in the terminal is the exception. If the human asked you to find something out "
-    "or to show something, this step is where they hear it -- your investigation answer was not "
-    "shown to them, so a short `chat` saying it is part of the work, not an extra message."
+    "watches. A plain reader (cat, sed, head, tail, nl, rg, grep, ls, wc, file, stat, tree) sent "
+    "as a `command` action is refused; a file the human asked to see in the terminal is the "
+    "exception. If the human asked you to find something out or to show something, this step is "
+    "where they hear it -- your investigation answer was not shown to them, so a short `chat` "
+    "saying it is part of the work, not an extra message. "
 )
+# 走一个真的工具（Claude Code 的 MCP、ACP 的 MCP、app-server 的动态工具）。
+ACTION_BY_TOOL_TEXT = (
+    "Send it by calling the `remotebuddy_action` tool (MCP server `remotebuddy`) exactly once "
+    "-- an action written as text is not an action."
+)
+# 把动作当 JSON 交（结构化 Responses、app-server 的 outputSchema）：这些 backend 手里
+# 根本没有工具，跟它们说"去调某个工具"只会让它回一句"没有这个工具"然后什么都不做。
+ACTION_BY_JSON_TEXT = (
+    "Send it as the single JSON object the response schema asks for: that object is the action, "
+    "and prose is not."
+)
+ACT_STEP_TEXT = ACT_STEP_BODY + ACTION_BY_TOOL_TEXT
+ACT_STEP_JSON_TEXT = ACT_STEP_BODY + ACTION_BY_JSON_TEXT
+
+
+def act_step_text(action_submission: str = "tool") -> str:
+    """行动步那段话：按这个 backend 把动作交上来的方式选末尾那句。"""
+    return ACT_STEP_JSON_TEXT if str(action_submission or "").lower() == "json" else ACT_STEP_TEXT
+
+
 INVESTIGATION_CLOSED_MESSAGE = (
     "The shared terminal is closed in the investigation step, so the action tool is not "
     "available here. Read what you need with your own tools and answer in plain text; the action "

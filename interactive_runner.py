@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 from agent_protocol import (
     ACTION_TYPES,
-    ACT_STEP_TEXT,
+    act_step_text,
     INVESTIGATE_STEP_TEXT,
     INVESTIGATION_CLOSED_MESSAGE,
     AgentAction,
@@ -653,7 +653,8 @@ class InteractiveRunner:
                 response = self._next_backend_action(
                     session_id,
                     instructions,
-                    ACT_STEP_TEXT + "\n\n" + observation,
+                    act_step_text(getattr(self.client, "action_submission", "tool"))
+                    + "\n\n" + observation,
                     images=images,
                     allowed_types=allowed_types,
                     allowed_messages=allowed_messages,
@@ -1105,7 +1106,8 @@ class InteractiveRunner:
         """cycle 开头的那个观察。一个 cycle 的第一次请求是调查步（能拆步的 backend），
         所以这段话要跟它一致——第一次请求用的是这段初始上下文，不是请求里的观察。"""
         text = self._observation(self.store.events_after(0), False, force_history=True)
-        banner = INVESTIGATE_STEP_TEXT if self._can_investigate() else ACT_STEP_TEXT
+        banner = (INVESTIGATE_STEP_TEXT if self._can_investigate()
+                  else act_step_text(getattr(self.client, "action_submission", "tool")))
         return banner + "\n\n" + text
 
     def _investigation_refusal(

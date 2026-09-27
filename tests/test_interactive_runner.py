@@ -20,7 +20,7 @@ from meeting_v2 import MeetingStore, utc_now
 from agent_protocol import AgentActionError
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
-from agent_protocol import ACT_STEP_TEXT, INVESTIGATE_STEP_TEXT
+from agent_protocol import ACT_STEP_JSON_TEXT, ACT_STEP_TEXT, INVESTIGATE_STEP_TEXT
 
 
 def make_action(action_type="chat", **changes):
@@ -231,6 +231,12 @@ class FakeTransport:
                     self.command = "bash"
                 self.pending_input = ""
         self.screen_revision += 1
+
+
+class JsonActionClient(FakeClient):
+    """手里没有工具的 backend（结构化 app-server、Responses）：动作按 schema 交 JSON。"""
+
+    action_submission = "json"
 
 
 class InvestigatingClient(FakeClient):
@@ -1324,6 +1330,30 @@ class InteractiveRunnerTest(unittest.TestCase):
         ]
         self.assertEqual([], findings)
         self.assertTrue(any(item[1] == "vim" for item in self.transport.commands))
+
+    def test_a_backend_without_tools_is_asked_for_json_not_for_a_tool(self):
+        """没工具的 backend 不能叫它去调 `remotebuddy_action`：它会回一句"没有这个工具"，
+        然后一步都不动（20260926-213214-3dbedc 就是这么停在那儿的）。"""
+        client = JsonActionClient([make_action("done", message_type="final", content="Done.")])
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        observation = client.calls[0][2]
+        self.assertIn(ACT_STEP_JSON_TEXT, observation)
+        self.assertNotIn("remotebuddy_action", observation)
+        self.assertIn("the response schema asks for", observation)
+
+    def test_a_backend_with_tools_is_still_asked_to_call_the_tool(self):
+        """有工具的还是原来那句：调 `remotebuddy_action`。"""
+        client = InvestigatingClient([make_action("done", message_type="final", content="Done.")])
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        observation = client.calls[0][2]
+        self.assertIn("`remotebuddy_action` tool", observation)
+        self.assertNotIn("the response schema asks for", observation)
 
     def test_the_investigation_step_refuses_every_action(self):
         runner = InteractiveRunner(

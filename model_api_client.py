@@ -657,6 +657,8 @@ _EFFORT_OUTPUT_BUDGET = {
 class OpenAIResponsesClient:
     backend_name = "responses"
     stateful = False
+    # 手里没有工具：动作就是它按 schema 返回的那个 JSON 对象。
+    action_submission = "json"
 
     # HTTP statuses worth a bounded retry: throttling and gateway hiccups.
     RETRYABLE_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}

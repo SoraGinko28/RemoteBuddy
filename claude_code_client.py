@@ -227,6 +227,8 @@ class ClaudeCodeBackend:
 
     backend_name = PROTOCOL_NAME
     stateful = True
+    # 动作怎么交上来：走 MCP 工具（见 agent_protocol.act_step_text）。
+    action_submission = "tool"
     restart_on_interrupt = True
 
     def __init__(
