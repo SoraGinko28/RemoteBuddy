@@ -21,7 +21,8 @@ from meeting_v2 import MeetingStore, utc_now
 from agent_protocol import AgentActionError
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
-from agent_protocol import ACT_STEP_JSON_TEXT, ACT_STEP_TEXT, INVESTIGATE_STEP_TEXT
+from agent_protocol import (ACT_STEP_JSON_TEXT, ACT_STEP_OPEN_JSON_TEXT, ACT_STEP_TEXT,
+                            INVESTIGATE_STEP_TEXT)
 
 
 def make_action(action_type="chat", **changes):
@@ -1379,18 +1380,24 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertIn("Create notes.md", client.cycles[0]["context"])
         self.assertNotIn("Create notes.md", client.cycles[1]["context"])
 
-    def test_a_backend_without_tools_is_asked_for_json_not_for_a_tool(self):
-        """没工具的 backend 不能叫它去调 `remotebuddy_action`：它会回一句"没有这个工具"，
-        然后一步都不动（20260926-213214-3dbedc 就是这么停在那儿的）。"""
+    def test_a_backend_without_tools_is_asked_for_json_and_may_read_in_the_pane(self):
+        """没工具的 backend：既不能叫它去调工具，也不能叫它"这里不许读"。
+
+        它手里没有读工具，共享终端就是它唯一能看东西的地方；跟它说"读已经结束"它就只能
+        去问人要路径（20260927-193126-f896ad 就是这么卡住的）。
+        """
         client = JsonActionClient([make_action("done", message_type="final", content="Done.")])
         InteractiveRunner(
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         ).start()
 
         observation = client.calls[0][2]
-        self.assertIn(ACT_STEP_JSON_TEXT, observation)
+        self.assertIn(ACT_STEP_OPEN_JSON_TEXT, observation)
         self.assertNotIn("remotebuddy_action", observation)
         self.assertIn("the response schema asks for", observation)
+        self.assertIn("is also where you look", observation)
+        # 自己有读工具的 backend 仍然是原来那句（共享终端拒收只读命令）。
+        self.assertNotIn("Reading is over", observation)
 
     def test_a_backend_with_tools_is_still_asked_to_call_the_tool(self):
         """有工具的还是原来那句：调 `remotebuddy_action`。"""

@@ -694,8 +694,7 @@ class InteractiveRunner:
                 response = self._next_backend_action(
                     session_id,
                     instructions,
-                    act_step_text(getattr(self.client, "action_submission", "tool"))
-                    + "\n\n" + observation,
+                    self._act_step_banner() + "\n\n" + observation,
                     images=images,
                     allowed_types=allowed_types,
                     allowed_messages=allowed_messages,
@@ -1141,6 +1140,14 @@ class InteractiveRunner:
         self.request_backend_restart()
         return True
 
+    def _readers_refused(self) -> bool:
+        """这一轮共享终端拒收只读命令吗（= backend 自己有读工具）。"""
+        return self.store.meeting.agent_backend in BACKENDS_WITH_OWN_READ_TOOLS
+
+    def _act_step_banner(self) -> str:
+        return act_step_text(getattr(self.client, "action_submission", "tool"),
+                             self._readers_refused())
+
     def _can_investigate(self) -> bool:
         """这一次请求能不能拆出调查步：backend 得有自己的读工具，而且它实现了这一步。"""
         if not callable(getattr(self.client, "investigate", None)):
@@ -1184,7 +1191,7 @@ class InteractiveRunner:
                   else self.store.events_after(0))
         text = self._observation(unread, False, force_history=not resuming)
         banner = (INVESTIGATE_STEP_TEXT if self._can_investigate()
-                  else act_step_text(getattr(self.client, "action_submission", "tool")))
+                  else self._act_step_banner())
         return banner + "\n\n" + text
 
     def _investigation_refusal(

@@ -149,9 +149,10 @@ INVESTIGATE_STEP_TEXT = (
     "after it. Anything the human is waiting to hear -- the answer to their question, the file "
     "contents they asked to see -- is said in the action step, not here."
 )
-# 行动步的正文：跟"动作怎么交上来"无关的那部分（两步的分工、只读命令被拒、人要听的话
-# 在这一步说）。末尾那句"怎么交"按 backend 分两种：走工具的，和把动作当 JSON 交的。
-ACT_STEP_BODY = (
+# 行动步的正文分两种：一种给"它自己有读工具、并且共享终端拒收只读命令"的 backend
+# （Claude Code / ACP），另一种给"它手里没有读工具"的 backend（结构化 app-server、
+# Responses）——后者共享终端就是它唯一能看东西的地方，再跟它说"这里不许读"它就只能去问人。
+ACT_STEP_BODY_REFUSED = (
     "Action step. Reading is over: whatever you needed was read in the investigation step that "
     "just ended, so read nothing here. Change things in the shared terminal, which the human "
     "watches. A plain reader (cat, sed, head, tail, nl, rg, grep, ls, wc, file, stat, tree) sent "
@@ -159,6 +160,16 @@ ACT_STEP_BODY = (
     "exception. If the human asked you to find something out or to show something, this step is "
     "where they hear it -- your investigation answer was not shown to them, so a short `chat` "
     "saying it is part of the work, not an extra message. "
+)
+ACT_STEP_BODY_OPEN = (
+    "Action step. You have no read tools of your own, so the shared terminal -- the pane the "
+    "human watches -- is also where you look: `cat`, `sed`, `head`, `tail`, `nl`, `rg`, `grep`, "
+    "`ls`, `wc`, `git diff` all work there. Look first (one or two commands, not a tour of the "
+    "repository), then change what the request asks for. Never ask the human for a path you can "
+    "find yourself: the pane's working directory is the workspace, and `ls`/`git ls-files` show "
+    "what is in it. If the human asked you to find something out or to show something, say it in "
+    "a short `chat` in this step -- they do not see your reasoning, only your actions and what "
+    "you say. "
 )
 # 走一个真的工具（Claude Code 的 MCP、ACP 的 MCP、app-server 的动态工具）。
 ACTION_BY_TOOL_TEXT = (
@@ -171,13 +182,18 @@ ACTION_BY_JSON_TEXT = (
     "Send it as the single JSON object the response schema asks for: that object is the action, "
     "and prose is not."
 )
-ACT_STEP_TEXT = ACT_STEP_BODY + ACTION_BY_TOOL_TEXT
-ACT_STEP_JSON_TEXT = ACT_STEP_BODY + ACTION_BY_JSON_TEXT
+ACT_STEP_TEXT = ACT_STEP_BODY_REFUSED + ACTION_BY_TOOL_TEXT
+ACT_STEP_JSON_TEXT = ACT_STEP_BODY_REFUSED + ACTION_BY_JSON_TEXT
+ACT_STEP_OPEN_TEXT = ACT_STEP_BODY_OPEN + ACTION_BY_TOOL_TEXT
+ACT_STEP_OPEN_JSON_TEXT = ACT_STEP_BODY_OPEN + ACTION_BY_JSON_TEXT
 
 
-def act_step_text(action_submission: str = "tool") -> str:
-    """行动步那段话：按这个 backend 把动作交上来的方式选末尾那句。"""
-    return ACT_STEP_JSON_TEXT if str(action_submission or "").lower() == "json" else ACT_STEP_TEXT
+def act_step_text(action_submission: str = "tool", readers_refused: bool = True) -> str:
+    """行动步那段话：按 backend 的两件事选——动作怎么交、共享终端让不让读。"""
+    by_json = str(action_submission or "").lower() == "json"
+    if readers_refused:
+        return ACT_STEP_JSON_TEXT if by_json else ACT_STEP_TEXT
+    return ACT_STEP_OPEN_JSON_TEXT if by_json else ACT_STEP_OPEN_TEXT
 
 
 INVESTIGATION_CLOSED_MESSAGE = (
