@@ -47,6 +47,7 @@ const state = {
   meetingMenuId: "",
   // 正在拖的那一样：kind（meeting/workspace）、node、scope、起点和落点（见 beginDrag）。
   drag: null,
+  suppressClickUntil: 0,
   workspace: "",
   listed: [],
   workspaceFilled: false,
@@ -603,6 +604,7 @@ function meetingItem(meeting) {
   // to open the meeting: a click that ends with a selection inside this item
   // must not navigate, which would also rebuild the list and drop it.
   button.addEventListener("click", () => {
+    if (Date.now() < (state.suppressClickUntil || 0)) return;   // 刚拖完，别打开
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
     selectMeeting(meeting.meeting_id);
@@ -3343,9 +3345,10 @@ async function deleteMeeting(meetingId) {
   renderAll();
 }
 
-// 拖动排序：鼠标放在会话行（或工作区标题）上按住**右键**上下拖；左键按在这两处的
-// 非文字区也能拖。拖的时候那一行当场跟着走，落点画一条白线，松手才把顺序发给服务。
-// 左键在标题文字上是选字复制，那种情况不抢（见 beginDrag 的 onTitle）。
+// 拖动排序：鼠标放在会话行（或工作区标题）上**按住左键上下拖**——拖拽就是这个手势。
+// 拖的时候那一行当场跟着走，落点画一条白线，松手才把顺序发给服务。左键要拖成拖、
+// 要选成选：没挪够 4px 之前什么都不动（单击打开、双击选词照旧），真拖起来了才把刚
+// 开始的那点选字清掉。右键不参与，系统菜单照旧。
 const DRAG_WORKSPACES = "workspaces";
 // 手指抖一下不算拖：挪够这么多像素才开始。
 const DRAG_THRESHOLD_PX = 4;
@@ -3365,12 +3368,14 @@ function sectionFor(workspacePath) {
 
 function beginDrag(event, kind, node) {
   if (state.drag) return;
-  if (event.button !== 0 && event.button !== 2) return;
-  // 左键落在标题文字上是在选字复制，不是拖。
-  if (event.button === 0 && event.target.closest?.(".meeting-item-title, .meeting-group-name")) {
-    return;
-  }
-  event.preventDefault();
+  if (event.button !== 0) return;
+  // 这里不动 preventDefault：按下去什么都不发生，双击选词、单击打开都还照旧；
+  // 真拖起来之后（updateDrag）才把刚开始的那点选字清掉。
+  // 抓住这个指针：松开鼠标时人可能已经在窗口外了，没有这一下就收不到 pointerup，
+  // 这一枪会一直挂着（列表也不再重画）。
+  try {
+    node.setPointerCapture?.(event.pointerId);
+  } catch (_error) { /* 抓不住也照旧：多半只是鼠标已经抬起来了 */ }
   state.drag = {
     kind,
     node,
@@ -3397,6 +3402,8 @@ function updateDrag(event) {
     if (Math.abs(event.clientY - drag.originY) < DRAG_THRESHOLD_PX) return;
     drag.active = true;
     drag.node.classList.add("dragging");
+    // 鼠标动这几下可能已经拉出一点选区了：拖起来了就把它清掉，免得半行字亮着。
+    clearBrowserSelection();
   }
   // 被拖的那个不参与比较，剩下的按"指针越过谁的中线"决定插到第几位。
   const others = dragCandidates(drag).filter((one) => one !== drag.node);
@@ -3438,6 +3445,8 @@ async function finishDrag() {
   if (!drag) return;
   drag.node.classList.remove("dragging");
   if (!drag.active) return;
+  // 拖完之后浏览器还会补一个 click：刚拖过这一行的人不是想打开它。
+  state.suppressClickUntil = Date.now() + 400;
   const keys = dragCandidates(drag).map(
     (one) => (drag.kind === "meeting" ? one.dataset.meeting : one.dataset.workspace));
   if (keys.join("|") === drag.before.join("|")) return;
@@ -3833,13 +3842,6 @@ function bind() {
   });
   document.addEventListener("pointercancel", () => {
     if (state.drag) finishDrag().catch((error) => toast(error.message));
-  });
-  // 这两处右键是"拖顺序"的手势：不弹系统菜单（拖到一半弹出来更糟）。
-  document.addEventListener("contextmenu", (event) => {
-    if (state.drag || event.target.closest?.(".meeting-row")
-        || event.target.closest?.(".meeting-group-head")) {
-      event.preventDefault();
-    }
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
