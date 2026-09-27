@@ -96,7 +96,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .meeting-item-more:hover:not(:disabled), .meeting-item-more:focus-visible { color: var(--ink); background: var(--surface-2); }
 /* 拖着的那个淡一半；要插进去的位置画一条白线（位置由 updateDrag 算）。 */
 .meeting-row.dragging, .meeting-group.dragging { opacity: .55; }
-.drop-line { position: fixed; z-index: 60; height: 3px; border-radius: 1px; background: #fff; box-shadow: 0 0 8px rgb(255 255 255 / .75); pointer-events: none; }
+.drop-line { position: fixed; z-index: 60; height: 2px; border-radius: 1px; background: rgb(231 238 233 / .55); box-shadow: 0 0 3px rgb(0 0 0 / .45); pointer-events: none; }
 /* The workspace layer's own head: the word 工作区 and its "＋". The groups are
    the meeting groups above; the head only adds the one action. */
 /* 第一组工作区和右边那条会话头的下边框平齐：侧边栏上内边距 20 + 这一行 22 + 这里 14
