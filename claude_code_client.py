@@ -45,7 +45,7 @@ MAX_TURN_NUDGES = 2
 NUDGE_TEXT = (
     "You have not called the remotebuddy_action tool for the current observation. "
     "Call it exactly once now with your chosen action for the same observation; "
-    "do not answer in prose."
+    "an answer without an action is not usable."
 )
 MIN_RESTRICTED_VERSION = (2, 1, 248)
 REQUIRED_HELP_FLAGS = {
@@ -265,7 +265,7 @@ class ClaudeCodeBackend:
         self._turn_response_id: Optional[str] = None
         self._turn_result_seen = False
         self._turn_protocol_error: Optional[str] = None
-        self._last_prose: Optional[str] = None
+        self._last_text: Optional[str] = None
         self._rejections = 0
         self._last_rejection = ""
         self._turn_nudges = 0
@@ -441,7 +441,7 @@ class ClaudeCodeBackend:
             self._turn_response_id = None
             self._turn_result_seen = False
             self._turn_protocol_error = None
-            self._last_prose = None
+            self._last_text = None
             self._rejections = 0
             self._last_rejection = ""
             self._turn_nudges = 0
@@ -831,10 +831,10 @@ class ClaudeCodeBackend:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"].strip():
-                    # Remember the model's latest prose: if the whole turn ends
-                    # without a tool call, this text is salvaged as a chat
-                    # question instead of failing the session.
-                    self._last_prose = block["text"]
+                    # Remember the model's latest piece of text: if the whole
+                    # turn ends without a tool call, this text is salvaged as a
+                    # chat question instead of failing the session.
+                    self._last_text = block["text"]
                 if (
                     block.get("type") == "tool_use"
                     and block.get("name") not in ALLOWED_TOOLS
@@ -845,7 +845,7 @@ class ClaudeCodeBackend:
             return
         if kind == "result":
             nudge = False
-            synth_prose = None
+            salvage_text = None
             with self._condition:
                 if self._turn_id is None:
                     return
@@ -875,9 +875,9 @@ class ClaudeCodeBackend:
                     self._turn_nudges += 1
                     nudge = True
                 else:
-                    prose = self._last_prose.strip() if self._last_prose else ""
-                    if prose and self._active_handler is not None:
-                        synth_prose = prose
+                    answer_text = self._last_text.strip() if self._last_text else ""
+                    if answer_text and self._active_handler is not None:
+                        salvage_text = answer_text
                     else:
                         self._turn_protocol_error = "Claude Code returned no RemoteBuddy action"
                         self._turn_result_seen = True
@@ -896,14 +896,14 @@ class ClaudeCodeBackend:
                         self._process_error = self._process_error or self._redact(str(exc))
                         self._condition.notify_all()
                 return
-            if synth_prose is not None:
-                # Nudges are exhausted but the model did produce prose: hand
+            if salvage_text is not None:
+                # Nudges are exhausted but the model did write something: hand
                 # it back as a chat question so the session keeps working and
                 # the human can steer, instead of failing the whole cycle.
                 action = {
                     "type": "chat",
                     "message_type": "question",
-                    "content": synth_prose[: 64 * 1024],
+                    "content": salvage_text[: 64 * 1024],
                     "command": "none",
                     "path": "",
                     "keys": [],

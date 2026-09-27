@@ -45,7 +45,7 @@ socket_path = mcp["env"]["REMOTEBUDDY_MCP_SOCKET"]
 token = mcp["env"]["REMOTEBUDDY_MCP_TOKEN"]
 initialized = False
 refuse_forever = [False]
-prose_forever = [False]
+text_only_forever = [False]
 
 def send(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
@@ -70,13 +70,13 @@ for line in sys.stdin:
     if refuse_forever[0] or "NO_TOOL" in text:
         send({{"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}})
         continue
-    if "PROSE_ONLY_FOREVER" in text:
-        prose_forever[0] = True
-    if prose_forever[0] or "PROSE_ONLY" in text:
+    if "TEXT_ONLY_FOREVER" in text:
+        text_only_forever[0] = True
+    if text_only_forever[0] or "TEXT_ONLY" in text:
         send({{
             "type": "assistant",
             "session_id": session_id,
-            "message": {{"content": [{{"type": "text", "text": "just prose answer"}}]}},
+            "message": {{"content": [{{"type": "text", "text": "just an answer, no action"}}]}},
         }})
         send({{"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}})
         continue
@@ -276,7 +276,7 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         self.assertEqual(3, len(inputs))
         self.assertIn("remotebuddy_action", inputs[1]["message"]["content"][0]["text"])
 
-    def test_prose_only_turn_is_nudged_and_recovers(self):
+    def test_text_only_turn_is_nudged_and_recovers(self):
         backend = self.backend()
         actions = []
         try:
@@ -299,16 +299,16 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         self.assertEqual(2, len(inputs))
         self.assertTrue(any(item.get("event") == "turn_nudged" for item in self.telemetry))
 
-    def test_prose_only_after_nudges_becomes_a_question_not_a_failure(self):
+    def test_text_only_after_nudges_becomes_a_question_not_a_failure(self):
         backend = self.backend()
         actions = []
         try:
             session = backend.start_cycle(
-                "meeting-prose-forever", "Skill", "", event_callback=self.telemetry.append
+                "meeting-text-only", "Skill", "", event_callback=self.telemetry.append
             )
             response = backend.next_action(
                 session,
-                "PROSE_ONLY_FOREVER",
+                "TEXT_ONLY_FOREVER",
                 action_handler=lambda action, metadata: (
                     actions.append(action)
                     or {"success": True, "content": "accepted", "pause": True}
@@ -321,7 +321,7 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         action = actions[0]
         self.assertEqual("chat", action.type)
         self.assertEqual("question", action.message_type)
-        self.assertEqual("just prose answer", action.content)
+        self.assertEqual("just an answer, no action", action.content)
         inputs = [json.loads(line) for line in self.audit.read_text("utf-8").splitlines()]
         self.assertEqual(3, len(inputs))  # initial + two nudges, then salvaged
         self.assertEqual(2, len([item for item in self.telemetry if item.get("event") == "turn_nudged"]))
