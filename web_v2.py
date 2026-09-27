@@ -91,6 +91,10 @@ WORKSPACE_NAMES = "workspace_names"
 # 它自己工作区的 `.meeting/` 里，一行一个会议号（见 order_workspaces / order_meetings）。
 WORKSPACE_ORDER = "workspace_order"
 MEETING_ORDER = "order"
+# 同一场会同时只能有一个服务在驱。声明写在这场会自己的目录里（谁在跑就写谁 + 心跳），
+# 因为两个服务共享的正是这个目录；数据共享、驱动不共享。
+DRIVER_STATE = "driver.json"
+DRIVER_HEARTBEAT_SECONDS = 20.0
 # 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
 CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
@@ -1751,6 +1755,100 @@ class MeetingWebService:
         )
         return store
 
+    # ------------------------------------------------------------------
+    # 谁在驱这场会：两个服务共享同一个工作区时，只有一个能动
+    # ------------------------------------------------------------------
+
+    def _driver_path(self, store: MeetingStore) -> Path:
+        return Path(store.run_dir) / DRIVER_STATE
+
+    def _driver_state(self, store: MeetingStore) -> Optional[Dict[str, Any]]:
+        try:
+            payload = json.loads(self._driver_path(store).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _process_alive(pid: Any) -> bool:
+        if not isinstance(pid, int) or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def _driver_alive(self, state: Dict[str, Any]) -> bool:
+        """这份声明还算数吗：写它的进程活着，而且心跳还新。"""
+        if not self._process_alive(state.get("pid")):
+            return False
+        beat = state.get("heartbeat")
+        if not isinstance(beat, (int, float)):
+            return False
+        return (time.time() - float(beat)) <= DRIVER_HEARTBEAT_SECONDS * 3
+
+    def _write_driver(self, store: MeetingStore, state: Dict[str, Any]) -> None:
+        path = self._driver_path(store)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _claim_driver(self, store: MeetingStore) -> None:
+        self._write_driver(store, {
+            "pid": os.getpid(),
+            "url": self.public_url or "",
+            "workspace": str(self.workspace),
+            "meeting_id": store.meeting.meeting_id,
+            "heartbeat": time.time(),
+        })
+
+    def _touch_driver(self, store: MeetingStore) -> None:
+        state = self._driver_state(store)
+        if state and state.get("pid") == os.getpid():
+            state["heartbeat"] = time.time()
+            self._write_driver(store, state)
+
+    def _release_driver(self, store: MeetingStore) -> None:
+        state = self._driver_state(store)
+        if state and state.get("pid") == os.getpid():
+            try:
+                self._driver_path(store).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def driver_url(self, meeting_id: str) -> str:
+        """这场会现在归哪个服务驱；没人驱（或声明过期）就是空串。"""
+        try:
+            store = self.load_store(meeting_id)
+        except WebError:
+            return ""
+        state = self._driver_state(store)
+        if not state or not self._driver_alive(state):
+            return ""
+        if state.get("pid") == os.getpid():
+            return ""
+        return str(state.get("url") or "")
+
+    def _ensure_driver(self, store: MeetingStore) -> None:
+        """要驱这场会之前先拿声明；别的服务握着就明确拒绝，并报出它的地址。
+
+        两个服务共享同一个工作区（同一份会议目录、同一个 tmux 会话名）时，读是天然一致的，
+        但写只能有一个：否则两个模型会各起一个 CLI、往同一个 pane 里各打各的。
+        """
+        state = self._driver_state(store)
+        if state and state.get("pid") != os.getpid() and self._driver_alive(state):
+            url = str(state.get("url") or "")
+            where = f"（它在 {url}）" if url else ""
+            raise WebError(409, f"这场会正由另一个服务驱动{where}：请到那边操作，或先停掉它")
+        self._claim_driver(store)
+
     def _ensure_worker(
         self,
         store: MeetingStore,
@@ -1761,6 +1859,7 @@ class MeetingWebService:
         terminal_only: bool = False,
     ) -> None:
         meeting_id = store.meeting.meeting_id
+        self._ensure_driver(store)
         try:
             config = config.resolve(
                 store.meeting.agent_backend,
@@ -1804,6 +1903,14 @@ class MeetingWebService:
     ) -> None:
         pending: Optional[Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = None
         runner: Optional[Any] = None
+        heartbeat_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._driver_heartbeat,
+            args=(store, heartbeat_stop),
+            name=f"remotebuddy-driver-{store.meeting.meeting_id}",
+            daemon=True,
+        )
+        heartbeat.start()
         try:
             runner = self.runner_factory(store, transport, client, lock=meeting_lock)
             with self.lock:
@@ -1816,6 +1923,8 @@ class MeetingWebService:
             else:
                 runner.start()
         finally:
+            heartbeat_stop.set()
+            self._release_driver(store)
             close = getattr(client, "close", None)
             if callable(close):
                 try:
@@ -1841,6 +1950,11 @@ class MeetingWebService:
                     terminal_only=next_terminal,
                 )
 
+    def _driver_heartbeat(self, store: MeetingStore, stop: threading.Event) -> None:
+        """驱动期间每几秒把心跳顶一下：进程卡死/被杀，声明就会过期，另一个服务能接手。"""
+        while not stop.wait(DRIVER_HEARTBEAT_SECONDS / 2):
+            self._touch_driver(store)
+
     def _ensure_capture_worker(self, store: MeetingStore) -> None:
         meeting_id = store.meeting.meeting_id
         with self.lock:
@@ -1865,6 +1979,7 @@ class MeetingWebService:
                     if store.meeting.status in TERMINAL_STATUSES:
                         return
                     if store.meeting.control_owner == "human":
+                        self._touch_driver(store)
                         try:
                             capture_workspace(store, transport)
                         except (RunnerError, TmuxError, OSError) as exc:
@@ -2070,6 +2185,7 @@ class MeetingWebService:
     def acquire(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
+            self._ensure_driver(store)
             if store.meeting.status in TERMINAL_STATUSES:
                 raise WebError(409, "meeting is already finished")
             # Refuse before touching any state: taking over a pane that no
@@ -2098,6 +2214,7 @@ class MeetingWebService:
     def release(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
+            self._ensure_driver(store)
             if store.meeting.control_owner != "human":
                 return store
             with self.lock:
@@ -2327,9 +2444,10 @@ class MeetingWebService:
         return store
 
     def stop(self, meeting_id: str) -> MeetingStore:
+        initial = self.load_store(meeting_id)
+        self._ensure_driver(initial)
         # Publish the durable interrupt before contending on meeting/state
         # locks. The typing loop checks this file at every burst boundary.
-        initial = self.load_store(meeting_id)
         if initial.meeting.session_state == "stopped" and initial.meeting.status == "interrupted":
             return initial
         if initial.meeting.status in {"completed", "failed"}:

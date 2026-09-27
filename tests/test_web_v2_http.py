@@ -1008,6 +1008,63 @@ class HTTPBoundaryTest(unittest.TestCase):
         self.assertEqual((self.root / ".meeting" / "copy-demo").resolve(),
                          self.service._open_store("copy-demo").run_dir)
 
+    def test_a_meeting_being_driven_elsewhere_refuses_local_writes(self):
+        """两个服务共享同一个工作区时：读照旧，写只有一个能写。
+
+        另一个服务正驱着这场会（pid 活着、心跳新鲜）时，这边的写要明确拒绝，
+        并报出它的地址——不然两个 CLI 会往同一个 tmux pane 里各打各的。
+        """
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "share-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+        run_dir = self.root / ".meeting" / "share-demo"
+        (run_dir / "driver.json").write_text(
+            json.dumps({"pid": 1, "url": "http://127.0.0.1:9999", "heartbeat": time.time()}),
+            encoding="utf-8",
+        )
+
+        status, payload = self.error_status("/api/meetings/share-demo/agent/resume",
+                                            method="POST", body="{}", csrf=True)
+
+        self.assertEqual(409, status)
+        self.assertIn("127.0.0.1:9999", payload["error"])
+        # 收尾前把那份"别的服务"的假声明撤掉，否则 tearDown 的停止也会被它挡住。
+        (run_dir / "driver.json").unlink()
+        self.wait_for_workers()
+
+    def test_a_stale_claim_can_be_taken_over(self):
+        """写声明的进程没了或心跳过期：声明作废，这边可以接手。"""
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "stale-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+        run_dir = self.root / ".meeting" / "stale-demo"
+        driver = run_dir / "driver.json"
+        driver.write_text(
+            json.dumps({"pid": 1, "url": "http://127.0.0.1:9999",
+                        "heartbeat": time.time() - 3600}),
+            encoding="utf-8",
+        )
+
+        response = self.request("/api/meetings/stale-demo/agent/resume",
+                                method="POST", body="{}", csrf=True)
+
+        self.assertEqual(200, response.status)
+        self.assertEqual(os.getpid(), json.loads(driver.read_text(encoding="utf-8"))["pid"])
+        self.wait_for_workers()
+
+    def test_the_claim_is_released_when_nothing_is_running(self):
+        """一轮跑完就把声明撤掉：闲着的会谁先动手谁驱。"""
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "free-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+
+        driver = self.root / ".meeting" / "free-demo" / "driver.json"
+        self.assertFalse(driver.exists())
+        self.assertEqual("", self.service.driver_url("free-demo"))
+
     def test_meetings_can_be_dragged_into_an_order(self):
         for suffix in ("a", "b", "c"):
             self.request("/api/meetings", method="POST",
