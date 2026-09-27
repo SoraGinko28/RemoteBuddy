@@ -202,9 +202,12 @@ class ModelApiConfigTest(unittest.TestCase):
         self.assertTrue(config.codex_dynamic_tools)
         self.assertEqual("", config.api_key)
 
+        # 配置里的默认后端不是 codex/trae 时它只是搁着：选中的后端在 resolve 里判。
         self.write_config('codex_dynamic_tools=true\n')
-        with self.assertRaisesRegex(ModelConfigError, "requires agent_backend"):
-            ModelApiConfig.load(self.root)
+        config = ModelApiConfig.load(self.root)
+        self.assertTrue(config.codex_dynamic_tools)
+        self.assertFalse(config.resolve("responses", "openai").codex_dynamic_tools)
+        self.assertTrue(config.resolve("trae-agent", "openai").codex_dynamic_tools)
 
     def test_existing_config_defaults_to_responses(self):
         self.write_config()

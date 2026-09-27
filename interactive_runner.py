@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
-import shutil
-import subprocess
 import sys
 import threading
 import time
 import uuid
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from agent_protocol import (
@@ -53,21 +49,6 @@ SHELL_COMMANDS = {"bash", "zsh", "sh"}
 MAX_IMAGES_PER_TURN = 4
 # 太大的图不随请求走（观察里仍然写着它在哪），免得一次请求大到发不出去。
 MAX_IMAGE_BYTES_PER_TURN = 4 * 1024 * 1024
-# 一次 `read` 最多交给模型这么多字节；超过就截断并说明（它想看更多可以再读一次）。
-READ_LIMIT_BYTES = 256 * 1024
-# 只读命令：模型爱发 `cat`/`sed -n`/`head`/`rg` 这类读命令，发它们本意只是"看一眼"。
-# 这些由 harness 自己跑、输出随下一次观察回去，不往共享终端里打字——终端那一趟要
-# 打字、等屏、抓屏，人和模型都得等，而读到的内容没有任何人需要"看着它滚过去"。
-# 名单之外的一律照旧走终端（写、跑测试、git 这些本来就该在人眼前发生）。
-READ_ONLY_COMMANDS = {
-    "cat", "bat", "sed", "head", "tail", "nl", "rg", "grep", "ls", "wc", "file",
-    "stat", "tree", "fd", "column",
-}
-READ_ONLY_OUTPUT_BYTES = 64 * 1024
-READ_ONLY_OUTPUT_LINES = 400
-READ_ONLY_TIMEOUT_SECONDS = 15.0
-# 这些字符一出现就不是"单纯看一眼"了（串联、重定向、命令替换）：交给终端。
-SHELL_METACHARACTERS = (";", "&", "|", ">", "<", "`", "$(", "\n")
 HISTORY_EVENT_LIMIT = 128
 HISTORY_BYTES_LIMIT = 96 * 1024
 MESSAGE_TYPES = ("none", "ack", "progress", "question", "final")
@@ -115,10 +96,6 @@ class InteractiveRunner:
         # 换 Skill 文本不动进程，或者把进程杀掉重开。
         self._skill_reload_requested = False
         self._backend_restart_requested = False
-        # 上一次 `read` 读到的东西：随下一次观察交给模型，然后清掉（只给一次）。
-        self._last_read: Optional[Dict[str, Any]] = None
-        # 上一次由 harness 自己跑掉的只读命令的输出：同样只给一次。
-        self._last_command_output: Optional[Dict[str, Any]] = None
 
     @property
     def agent_name(self) -> str:
@@ -778,7 +755,7 @@ class InteractiveRunner:
                 # refuse to run it, then re-observe and let the model decide
                 # again against the current screen.
                 if response.action.type in {
-                    "command", "read", "keystrokes",
+                    "command", "keystrokes",
                 }:
                     pane_id = self.store.meeting.pane_id
                     before = self._screen_before_think
@@ -876,12 +853,12 @@ class InteractiveRunner:
                 return ("chat", "done"), MESSAGE_TYPES, True
             return ("chat",), MESSAGE_TYPES, True
         if command in SHELL_COMMANDS:
-            return ("chat", "command", "read", "done", "observe", "keystrokes"), MESSAGE_TYPES, False
+            return ("chat", "command", "done", "observe", "keystrokes"), MESSAGE_TYPES, False
         if command:
             # A foreground program launched by a relaxed bash command: the
             # Agent may type into it (including C-c) or observe, keeping every
             # interaction inside the shared pane.
-            return ("chat", "read", "keystrokes", "observe"), MESSAGE_TYPES, False
+            return ("chat", "keystrokes", "observe"), MESSAGE_TYPES, False
         return ("chat", "observe"), MESSAGE_TYPES, False
 
     def _cycle_elapsed(self) -> float:
@@ -1196,12 +1173,6 @@ class InteractiveRunner:
                 "screen": screen.get("content", ""),
             },
         }
-        if self._last_read is not None:
-            packet["file"] = self._last_read
-            self._last_read = None
-        if self._last_command_output is not None:
-            packet["command_output"] = self._last_command_output
-            self._last_command_output = None
         notes = ""
         pictures = ""
         if self._images_of(unread):
@@ -1425,22 +1396,31 @@ class InteractiveRunner:
             profile = self.store.meeting.typing_profile
 
         interrupt_check = lambda: self._typing_should_interrupt(generation)
-        harness_run = False
         try:
             if action.type == "command":
                 if info["command"] not in SHELL_COMMANDS:
                     raise RunnerError("structured commands are allowed only at the shell")
-                read_only = self._read_only_argv(str(action.command or ""))
-                if read_only is not None:
-                    self._run_read_only_command(str(action.command), read_only)
-                    harness_run = True
-                else:
-                    self._type_shell_command(
-                        action, info, pane_id, action_id, profile, interrupt_check
+                typed_path = ""
+                if action.command in {"cd", "python"}:
+                    resolve_workspace_path(
+                        self.store,
+                        info["path"],
+                        action.path,
+                        action.command,
                     )
-            elif action.type == "read":
-                # 读文件不经过共享终端：harness 直接读，内容随下一次观察回去。
-                self._read_workspace_file(action)
+                    typed_path = action.path
+                send_command_with_captures(
+                    self.store,
+                    self.transport,
+                    pane_id,
+                    action.command,
+                    typed_path,
+                    self.typing_interval_seconds,
+                    meeting_id=self.store.meeting.meeting_id,
+                    action_id=action_id,
+                    profile=profile,
+                    interrupt_check=interrupt_check,
+                )
             elif action.type == "keystrokes":
                 # One low-level keystroke DSL for the whole pane. Whatever holds
                 # the foreground receives the keys verbatim -- the shell, an
@@ -1469,7 +1449,7 @@ class InteractiveRunner:
                 capture_workspace(self.store, self.transport)
                 self._complete_action(action_id)
                 if action.type in {"keystrokes"} or (
-                    action.type == "command" and action.command != "cd" and not harness_run
+                    action.type == "command" and action.command != "cd"
                 ):
                     self._last_terminal_evidence = action.type
                 self.store.update(phase="agent_thinking")
@@ -1558,169 +1538,6 @@ class InteractiveRunner:
                 or self.store.meeting.control_owner != self.agent_name
                 or self.store.meeting.status != "running"
             )
-
-    def _type_shell_command(
-        self,
-        action: AgentAction,
-        info: Dict[str, Any],
-        pane_id: str,
-        action_id: str,
-        profile: str,
-        interrupt_check: Any,
-    ) -> None:
-        """把一条 shell 命令行打进共享终端（写、跑测试、git 这些该在人眼前发生的）。"""
-        typed_path = ""
-        if action.command in {"cd", "python"}:
-            resolve_workspace_path(
-                self.store,
-                info["path"],
-                action.path,
-                action.command,
-            )
-            typed_path = action.path
-        send_command_with_captures(
-            self.store,
-            self.transport,
-            pane_id,
-            action.command,
-            typed_path,
-            self.typing_interval_seconds,
-            meeting_id=self.store.meeting.meeting_id,
-            action_id=action_id,
-            profile=profile,
-            interrupt_check=interrupt_check,
-        )
-
-    def _read_only_argv(self, line: str) -> Optional[list]:
-        """这条命令行是不是"单纯看一眼"？是就返回它的参数表，不是就 None（交给终端）。
-
-        判得保守：单个命令、名单里的读者、不许串联/重定向/命令替换、`sed -i` 不算读、
-        参数里不许指向工作区外面。任何一条不满足都退回去走终端 —— 那一趟慢，但人看得见，
-        而且写和跑测试本来就该发生在那里。
-        """
-        text = line.strip()
-        if not text or any(mark in text for mark in SHELL_METACHARACTERS):
-            return None
-        try:
-            argv = shlex.split(text)
-        except ValueError:
-            return None
-        if not argv:
-            return None
-        program = Path(argv[0]).name
-        if program not in READ_ONLY_COMMANDS:
-            return None
-        if program == "sed" and any(
-            arg == "-i" or arg.startswith("-i") or arg == "--in-place" for arg in argv[1:]
-        ):
-            return None
-        try:
-            root = self.store.workspace_path.resolve()
-        except (MeetingError, OSError):
-            return None
-        for arg in argv[1:]:
-            if arg.startswith("-"):
-                continue
-            if not (arg.startswith("/") or ".." in Path(arg).parts):
-                continue
-            candidate = Path(arg) if arg.startswith("/") else root / arg
-            try:
-                resolved = candidate.resolve()
-            except OSError:
-                return None
-            if root != resolved and root not in resolved.parents:
-                return None
-        executable = shutil.which(program)
-        if not executable:
-            return None
-        try:
-            binary = Path(executable).resolve()
-        except OSError:
-            return None
-        # 不许执行工作区里的同名程序（工作区里的 `cat` 不是系统的 cat）。
-        if root == binary or root in binary.parents:
-            return None
-        return [str(binary), *argv[1:]]
-
-    def _run_read_only_command(self, line: str, argv: Sequence[str]) -> None:
-        """自己跑掉这条只读命令，把输出留给下一次观察（不碰共享终端）。"""
-        try:
-            completed = subprocess.run(
-                list(argv),
-                cwd=str(self.store.workspace_path),
-                capture_output=True,
-                timeout=READ_ONLY_TIMEOUT_SECONDS,
-                check=False,
-            )
-            output = (completed.stdout or b"") + (completed.stderr or b"")
-            code: Optional[int] = completed.returncode
-        except subprocess.TimeoutExpired:
-            output = b""
-            code = None
-        except OSError as exc:
-            output = str(exc).encode("utf-8", "replace")
-            code = None
-        truncated = len(output) > READ_ONLY_OUTPUT_BYTES
-        text = output[:READ_ONLY_OUTPUT_BYTES].decode("utf-8", "replace")
-        lines = text.splitlines()
-        if len(lines) > READ_ONLY_OUTPUT_LINES:
-            lines = lines[:READ_ONLY_OUTPUT_LINES]
-            truncated = True
-        self._last_command_output = {
-            "command": line,
-            "exit_code": code,
-            "truncated": truncated,
-            "output": "\n".join(lines),
-            "ran_by": "harness",
-        }
-        self.store.append_event(
-            "action",
-            self.agent_name,
-            self.store.meeting.phase,
-            data={
-                "status": "completed",
-                "executed_by": "harness",
-                "command": line,
-                "exit_code": code,
-                "output_bytes": len(output),
-            },
-        )
-
-    def _read_workspace_file(self, action: AgentAction) -> None:
-        """读工作区里的一个文件，内容留给下一次观察（见 _observation 的 `file`）。
-
-        只在工作区里面读：路径先过 `resolve_workspace_path` 那套逃逸检查，
-        目录、二进制、超大都不是错，交给模型一条能改的说明。
-        """
-        relative = str(action.path or "").strip()
-        try:
-            target = resolve_workspace_path(
-                self.store, str(self.store.workspace_path), relative, "read"
-            )
-        # 这些是模型能自己改的错（路径写错、指到目录、文件不是文本）→ RunnerError，
-        # 于是它作为一条 rejected 动作回到模型手里，而不是把这轮判死。
-        except (RunnerError, OSError) as exc:
-            raise RunnerError(f"read: {exc}") from exc
-        if not target.is_file():
-            raise RunnerError(f"read: {relative} is not a file in the workspace")
-        try:
-            payload = target.read_bytes()
-        except OSError as exc:
-            raise RunnerError(f"read: {relative} could not be read: {exc}") from exc
-        truncated = len(payload) > READ_LIMIT_BYTES
-        payload = payload[:READ_LIMIT_BYTES]
-        if b"\x00" in payload:
-            raise RunnerError(f"read: {relative} looks like a binary file")
-        try:
-            content = payload.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise RunnerError(f"read: {relative} is not UTF-8 text") from exc
-        self._last_read = {
-            "path": relative,
-            "bytes": len(payload),
-            "truncated": truncated,
-            "content": content,
-        }
 
     def _pane_snapshot(self, pane_id: str) -> Optional[tuple]:
         try:

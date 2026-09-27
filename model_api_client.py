@@ -151,8 +151,9 @@ class ModelApiConfig:
             raise ModelConfigError("agent_provider is not supported")
         if not isinstance(dynamic_tools, bool):
             raise ModelConfigError("codex_dynamic_tools must be boolean")
-        if dynamic_tools and agent_backend != "codex-app-server":
-            raise ModelConfigError("codex_dynamic_tools requires agent_backend=codex-app-server")
+        # 这个开关是"给 codex/trae 用的"偏好：配置里的默认后端常常是别的
+        # （claude-code 之类），那时候它只是搁着，不报错也不生效；真正选中的
+        # 后端在 resolve() 里判。
 
         provider_profiles = values.get("provider_profiles", {})
         harness_profiles = values.get("harness_profiles", {})
@@ -238,7 +239,11 @@ class ModelApiConfig:
         api_key = _select_auth_key(self.auth_keys, auth_name)
         if (backend == "responses" or provider == "deepseek") and not api_key:
             raise ModelConfigError(f"auth.json is missing {auth_name}")
-        dynamic = self.codex_dynamic_tools if backend == "codex-app-server" else False
+        dynamic = (
+            self.codex_dynamic_tools
+            if backend in {"codex-app-server", "trae-agent"}
+            else False
+        )
         harness = self.harness_profiles.get(backend, {})
         binary = harness.get("binary", self.claude_binary if backend == "claude-code" else "claude") if isinstance(harness, Mapping) else "claude"
         return replace(
@@ -576,8 +581,9 @@ def _normalise_canonical_config(values: Dict[str, Any]) -> Dict[str, Any]:
     dynamic = values.get("codex_dynamic_tools", False)
     if not isinstance(dynamic, bool):
         raise ModelConfigError("codex_dynamic_tools must be boolean")
-    if dynamic and backend != "codex-app-server":
-        raise ModelConfigError("codex_dynamic_tools requires agent_backend=codex-app-server")
+    # 配置里的默认后端常常不是 codex/trae（比如 claude-code），那时这个偏好就搁着，
+    # 真正选中的后端在 resolve() 里再判。
+    values["codex_dynamic_tools"] = dynamic
     # Expose selected profile fields in the flattened runtime object.
     selected_profile = dict(selected)
     selected_profile.setdefault("model", model)

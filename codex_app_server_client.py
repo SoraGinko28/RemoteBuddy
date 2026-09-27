@@ -43,6 +43,13 @@ FORBIDDEN_ITEM_TYPES = {
     "enteredReviewMode",
     "exitedReviewMode",
 }
+# 审批的答复：沙箱只读，跑命令是安全的（它读得到、写不了）；改文件和提权不行。
+_APPROVAL_ANSWERS = {
+    "item/commandExecution/requestApproval": "accept",
+    "execCommandApproval": "approved",
+    "item/fileChange/requestApproval": "decline",
+    "applyPatchApproval": "denied",
+}
 SAFE_ITEM_TYPES = {
     "userMessage",
     "agentMessage",
@@ -51,6 +58,9 @@ SAFE_ITEM_TYPES = {
     "contextCompaction",
     "hookPrompt",
     "sleep",
+    # 模型自己跑命令时，app-server 会报这个（命令还在跑、模型在跟它交互）。
+    # 沙箱是 readOnly、网络关着，所以"跑起来"这件事本身改不了工作区。
+    "terminalInteraction",
 }
 
 
@@ -236,6 +246,10 @@ class CodexAppServerBackend:
                 # 线程级也要声明沙箱：不声明，CLI 就不给模型 shell 工具，
                 # 于是它只能把 cat/sed 当动作发进共享终端（慢，而且满屏）。
                 "sandbox": "read-only",
+                # 模型的 shell 工具要有"读整个盘"的授权才肯干活：不声明它，
+                # 模型手里没有可用的读命令，只能把 `cat`/`sed` 当动作发进共享终端
+                # （慢、满屏，而且本来它自己就能做）。沙箱仍是 readOnly、网络关着。
+                "config": {"sandbox_permissions": ["disk-full-read-access"]},
                 "serviceName": "remotebuddy",
                 "environments": [],
                 "runtimeWorkspaceRoots": [self._workspace] if self._workspace else [],
@@ -309,11 +323,12 @@ class CodexAppServerBackend:
             "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
             "environments": [],
             "runtimeWorkspaceRoots": [self._workspace] if self._workspace else [],
-            "outputSchema": action_json_schema(
-                None if self.config.codex_dynamic_tools else allowed_types,
-                None if self.config.codex_dynamic_tools else allowed_message_types,
-            ),
         }
+        if not self.config.codex_dynamic_tools:
+            # 结构化输出那一轮只许吐这份 JSON：模型自己的工具会被顶掉（实测 trae 因此
+            # 读不了文件，只能把 cat/sed 当动作发进共享终端，或者干脆问人）。
+            # 走动态工具时不要它 —— 动作走工具调用，模型同时留着它自己的只读工具。
+            params["outputSchema"] = action_json_schema(allowed_types, allowed_message_types)
         selected_model = model or self.config.model
         if selected_model:
             params["model"] = selected_model
@@ -539,6 +554,30 @@ class CodexAppServerBackend:
         request_id = request.get("id")
         method = request.get("method")
         params = request.get("params") if isinstance(request.get("params"), dict) else {}
+        # 模型自己要跑命令时，app-server 会来问一声。这是它"自己读文件"的必经之路：
+        # 全拒掉，它就只剩下"让 harness 把 cat 打进共享终端"这一条路（慢，而且满屏）。
+        # 沙箱是 readOnly、网络关着，所以批准一条命令改不了工作区；写文件和提权照旧拒。
+        approval = _APPROVAL_ANSWERS.get(str(method))
+        if approval is not None:
+            self._send({"id": request_id, "result": {"decision": approval}})
+            self._emit(
+                "approval_answered",
+                session_id=self._thread_id,
+                turn_id=self._turn_id,
+                status=approval,
+            )
+            return None
+        if str(method).endswith("/requestApproval") or str(method).endswith("Approval"):
+            # 剩下的审批请求（改文件、提权、网络）：拒绝，但不把它当协议错 ——
+            # 模型看到的是"这一步不行"，还能接着干别的。
+            self._send({"id": request_id, "result": {}})
+            self._emit(
+                "approval_refused",
+                session_id=self._thread_id,
+                turn_id=self._turn_id,
+                status=str(method),
+            )
+            return None
         if method != "item/tool/call" or not self.config.codex_dynamic_tools:
             self._send_error(request_id, -32601, "RemoteBuddy rejects App Server tool requests")
             self._reject_protocol(f"forbidden Codex server request: {method}")
@@ -796,7 +835,12 @@ def check_codex_protocol(
         if not required_thread <= thread_fields or not required_turn <= turn_fields or not interrupt_schema.is_file():
             raise CodexAppServerError("Codex App Server lacks required RemoteBuddy protocol fields")
         if dynamic_tools:
-            if "dynamicTools" not in thread_fields or not (root / "DynamicToolCallResponse.json").is_file():
+            # codex 把 `dynamicTools` 写在 ThreadStartParams 里；trae 的 schema 没有这个字段
+            # （它按 codex 协议实现，thread/start 接受并认这条 —— 实测它会发 dynamicToolCall），
+            # 所以对它只要求响应 schema 在。
+            has_field = "dynamicTools" in thread_fields
+            has_response = (root / "DynamicToolCallResponse.json").is_file()
+            if not has_response or not (has_field or "trae" in codex_binary):
                 raise CodexAppServerError("Codex App Server dynamic tools are not compatible")
     return version
 

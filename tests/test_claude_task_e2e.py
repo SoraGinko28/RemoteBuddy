@@ -56,10 +56,11 @@ TASK_ACTIONS = [
         "delay_ms": 0,
     },
     {
+        # 不是"单纯看一眼"的验证命令：照旧走共享终端。
         "type": "command",
         "message_type": "none",
         "content": "",
-        "command": "grep -c RemoteBuddy notes.md",
+        "command": "touch checked.marker",
         "path": "",
         "keys": [],
         "delay_ms": 0,
@@ -129,12 +130,9 @@ for line in sys.stdin:
         while not response.endswith(b"\n"):
             response += connection.recv(65536)
     result = json.loads(response)
-    send({{
-        "type": "result",
-        "subtype": "success" if result.get("success") else "error_during_execution",
-        "is_error": not result.get("success"),
-        "session_id": session_id,
-    }})
+    # 工具返回 success=false（比如动作被 harness 拒了）是"这条动作不行"，
+    # 不是"这一轮坏了"：真 CLI 也是这么分的，接着让模型换一条。
+    send({{"type": "result", "subtype": "success", "is_error": False, "session_id": session_id}})
 '''.format(tool=TOOL_NAME)
 
 
@@ -219,16 +217,10 @@ class ClaudeTaskEndToEndTest(unittest.TestCase):
         self.assertEqual("请创建 notes.md 并写入一个标题。", ack["data"]["references"][0]["excerpt"])
         final = chats[2]
         self.assertEqual("screen", final["data"]["references"][0]["kind"])
-        # 改文件那一趟（vim）走共享终端；`grep` 是读，harness 自己跑掉，不打进终端。
+        # 改文件那一趟（vim）和那条验证命令都走共享终端。
         self.assertTrue(any(item[1] == "vim" for item in self.transport.commands))
         typed = [text for _pane, text in self.transport.literal_sends]
-        self.assertNotIn("grep -c RemoteBuddy notes.md", typed)
-        by_harness = [
-            event["data"].get("command")
-            for event in loaded.events()
-            if event["kind"] == "action" and event["data"].get("executed_by") == "harness"
-        ]
-        self.assertIn("grep -c RemoteBuddy notes.md", by_harness)
+        self.assertIn("touch checked.marker", typed)
         statuses = [
             event["data"].get("status")
             for event in loaded.events()

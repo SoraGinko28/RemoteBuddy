@@ -25,7 +25,7 @@ REST_MIN_MS = 20
 REST_MAX_MS = 2000
 # The vocabulary one action may use. Kept as an ordered tuple as well: a
 # rejection has to name the choices, and that text goes back to the model.
-ACTION_TYPE_ORDER = ("chat", "command", "read", "keystrokes", "observe", "done")
+ACTION_TYPE_ORDER = ("chat", "command", "keystrokes", "observe", "done")
 ACTION_TYPES = set(ACTION_TYPE_ORDER)
 REFERENCE_KINDS = {"chat", "screen"}
 # Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
@@ -326,15 +326,6 @@ class AgentAction:
                     "command has unrelated fields: "
                     + stray_fields(("keys", bool(keys)), ("delay_ms", bool(delay_ms)))
                 )
-        elif action_type == "read":
-            # 读文件不走终端：harness 直接读工作区里的文件，内容随下一次观察回来。
-            # 这样它不必把 `cat`/`sed` 打进共享终端（慢，而且满屏）。
-            if message_type != "none" or content or command != "none" or keys or delay_ms:
-                raise AgentProtocolError(
-                    "read has unrelated fields: a read carries only `path`"
-                )
-            if not path:
-                raise AgentProtocolError("read requires the path of a file inside the workspace")
         elif action_type == "keystrokes":
             stray = stray_fields(("message_type", message_type != "none"),
                                  ("content", bool(content)),
@@ -893,7 +884,7 @@ def action_json_schema(
     allowed_message_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     action_types = list(
-        allowed_types or ACTION_TYPE_ORDER
+        allowed_types or ("chat", "command", "keystrokes", "observe", "done")
     )
     message_types = set(
         allowed_message_types or ("none", "ack", "progress", "question", "final")
@@ -1008,7 +999,6 @@ def action_json_schema(
         references: bool = False,
         command_schema: Optional[Dict[str, Any]] = None,
         message_description: str = "",
-        path_description: str = "",
     ) -> Dict[str, Any]:
         return {
             "type": "object",
@@ -1025,10 +1015,7 @@ def action_json_schema(
                 "command": command_schema or {"type": "string", "enum": list(commands)},
                 "path": {
                     "type": "string",
-                    "description": (
-                        (path_description if path_description else
-                         "A relative path inside the shared workspace.") if path else "Unused."
-                    ),
+                    "description": "A relative path inside the shared workspace." if path else "Unused.",
                     **({"minLength": 1} if path else {"enum": [""]}),
                 },
                 "keys": {
@@ -1106,30 +1093,22 @@ def action_json_schema(
                     "maxLength": MAX_SHELL_COMMAND_CHARS,
                     "pattern": r"^[^\r\n\u0000]+$",
                     "description": (
-                        "A full bash command line to run in the shared pane's foreground. "
-                        "Deletion-class commands (rm, rmdir, unlink, shred, truncate, dd, "
-                        "mkfs, find -delete, rsync --delete, git clean/rm) and anything "
-                        "leaving the shared interface (background '&' jobs, nohup, setsid, "
-                        "disown, tmux, screen, open, osascript, exec) are rejected. Any "
-                        "program started this way (an editor, a REPL, a pager) takes the "
+                        "A full bash command line typed into the SHARED terminal, which the "
+                        "human watches: every character is typed and every screenful is "
+                        "theirs to sit through. That is what makes it the right place for "
+                        "what changes the workspace -- an editor session, a build, a test "
+                        "run, git -- and the wrong place for looking at files: for reading, "
+                        "use your own read-only tools (Claude Code: Read/Glob/Grep; Codex and "
+                        "Trae: their own shell, e.g. `sed -n '1,40p' file`), which do not "
+                        "touch the pane. Deletion-class commands (rm, rmdir, unlink, shred, "
+                        "truncate, dd, mkfs, find -delete, rsync --delete, git clean/rm) and "
+                        "anything leaving the shared interface (background '&' jobs, nohup, "
+                        "setsid, disown, tmux, screen, open, osascript, exec) are rejected. "
+                        "Any program started this way (an editor, a REPL, a pager) takes the "
                         "pane's foreground; read the screen to see what is in front, then "
                         "type into it with the keystrokes action."
                     ),
                 },
-            )
-        )
-    if "read" in action_types and "none" in message_types:
-        variants.append(
-            branch(
-                "read",
-                ("none",),
-                ("none",),
-                path=True,
-                path_description=(
-                    "Path of a file inside the workspace, relative to the workspace root. "
-                    "The harness reads it and hands you the contents in the next observation; "
-                    "it does not touch the shared terminal."
-                ),
             )
         )
     if "keystrokes" in action_types and "none" in message_types:

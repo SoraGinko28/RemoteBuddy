@@ -235,7 +235,7 @@ class ShellPolicyRunnerTest(unittest.TestCase):
         loaded = MeetingStore.load(self.root, "shell-demo")
         self.assertEqual("completion_proposed", loaded.meeting.phase)
         self.assertEqual(
-            ("chat", "read", "keystrokes", "observe"),
+            ("chat", "keystrokes", "observe"),
             client.calls[2][3]["allowed_types"],
         )
         self.assertIn(("%1", [{"kind": "ctrl", "value": "C-c"}]), transport.tokens)
