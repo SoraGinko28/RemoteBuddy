@@ -608,7 +608,7 @@ function meetingItem(meeting) {
     selectMeeting(meeting.meeting_id);
   });
   // 右键按住上下拖 = 调整顺序（左键留给选字复制和打开会话）。
-  row.addEventListener("mousedown", (event) => beginDrag(event, "meeting", row));
+  row.addEventListener("pointerdown", (event) => beginDrag(event, "meeting", row));
   row.append(button, more);
   return row;
 }
@@ -645,7 +645,7 @@ function renderMeetingList() {
     section.dataset.workspace = group.path;
     const head = node("div", "meeting-group-head");
     head.title = group.path;
-    head.addEventListener("mousedown", (event) => beginDrag(event, "workspace", section));
+    head.addEventListener("pointerdown", (event) => beginDrag(event, "workspace", section));
     head.append(
       folderIcon(),
       node("span", "meeting-group-name",
@@ -3343,9 +3343,12 @@ async function deleteMeeting(meetingId) {
   renderAll();
 }
 
-// 拖动排序：在会话行或工作区标题上按住**右键**上下拖，落点画一条白线，松手才把顺序发给
-// 服务（服务记在盘上，刷新照它画）。右键是特意的：左键在标题上拖是人在选字复制。
+// 拖动排序：鼠标放在会话行（或工作区标题）上按住**右键**上下拖；左键按在这两处的
+// 非文字区也能拖。拖的时候那一行当场跟着走，落点画一条白线，松手才把顺序发给服务。
+// 左键在标题文字上是选字复制，那种情况不抢（见 beginDrag 的 onTitle）。
 const DRAG_WORKSPACES = "workspaces";
+// 手指抖一下不算拖：挪够这么多像素才开始。
+const DRAG_THRESHOLD_PX = 4;
 
 function rowNodesOf(workspacePath) {
   return [...el.meeting_list.querySelectorAll(".meeting-row")]
@@ -3360,9 +3363,13 @@ function sectionFor(workspacePath) {
   return sectionNodes().find((one) => one.dataset.workspace === workspacePath) || null;
 }
 
-// 右键按下先只记着：鼠标真的挪了（4px）才算开始拖，右键点一下不该动顺序。
 function beginDrag(event, kind, node) {
-  if (event.button !== 2 || state.drag) return;
+  if (state.drag) return;
+  if (event.button !== 0 && event.button !== 2) return;
+  // 左键落在标题文字上是在选字复制，不是拖。
+  if (event.button === 0 && event.target.closest?.(".meeting-item-title, .meeting-group-name")) {
+    return;
+  }
   event.preventDefault();
   state.drag = {
     kind,
@@ -3371,7 +3378,9 @@ function beginDrag(event, kind, node) {
     scope: kind === "meeting" ? node.dataset.workspace : DRAG_WORKSPACES,
     originY: event.clientY,
     active: false,
-    index: -1,
+    before: kind === "meeting"
+      ? rowNodesOf(node.dataset.workspace).map((row) => row.dataset.meeting)
+      : sectionNodes().map((one) => one.dataset.workspace),
   };
 }
 
@@ -3385,31 +3394,35 @@ function updateDrag(event) {
   const drag = state.drag;
   if (!drag) return;
   if (!drag.active) {
-    if (Math.abs(event.clientY - drag.originY) < 4) return;
+    if (Math.abs(event.clientY - drag.originY) < DRAG_THRESHOLD_PX) return;
     drag.active = true;
     drag.node.classList.add("dragging");
   }
-  const candidates = dragCandidates(drag);
-  let index = candidates.length;
-  for (let position = 0; position < candidates.length; position += 1) {
-    const box = candidates[position].getBoundingClientRect();
+  // 被拖的那个不参与比较，剩下的按"指针越过谁的中线"决定插到第几位。
+  const others = dragCandidates(drag).filter((one) => one !== drag.node);
+  let index = others.length;
+  for (let position = 0; position < others.length; position += 1) {
+    const box = others[position].getBoundingClientRect();
     if (event.clientY < box.top + box.height / 2) { index = position; break; }
   }
-  drag.index = index;
-  showDropLine(candidates, index);
+  const anchor = others[index] || null;
+  if (anchor) anchor.parentNode.insertBefore(drag.node, anchor);
+  else if (drag.kind === "meeting") sectionFor(drag.scope)?.append(drag.node);
+  else el.meeting_list.append(drag.node);
+  showDropLine(others, index, drag);
 }
 
-// 目的位置那条白线：画在"会插到谁前面"的那条边上；插在最后就画在最后一条的下边。
-function showDropLine(candidates, index) {
+// 目的位置那条白线：画在"会插到谁前面"的那条边；插在最后就画在最后一条的下边。
+function showDropLine(others, index, drag) {
   if (!el.drop_line) return;
-  if (!candidates.length) { hideDropLine(); return; }
-  const box = index >= candidates.length
-    ? candidates[candidates.length - 1].getBoundingClientRect()
-    : candidates[index].getBoundingClientRect();
+  const box = others.length
+    ? (others[index] || others[others.length - 1]).getBoundingClientRect()
+    : drag.node.getBoundingClientRect();
+  const atEnd = !others.length || index >= others.length;
   const listBox = el.meeting_list.getBoundingClientRect();
   el.drop_line.style.left = `${Math.round(listBox.left + 4)}px`;
   el.drop_line.style.width = `${Math.round(Math.max(0, listBox.width - 8))}px`;
-  el.drop_line.style.top = `${Math.round(index >= candidates.length ? box.bottom : box.top)}px`;
+  el.drop_line.style.top = `${Math.round(atEnd ? box.bottom : box.top)}px`;
   el.drop_line.hidden = false;
 }
 
@@ -3417,50 +3430,40 @@ function hideDropLine() {
   if (el.drop_line) el.drop_line.hidden = true;
 }
 
+// 松手：顺序真变了才发一次，再和服务对一遍。
 async function finishDrag() {
   const drag = state.drag;
   state.drag = null;
   hideDropLine();
   if (!drag) return;
   drag.node.classList.remove("dragging");
-  if (!drag.active || drag.index < 0) return;
+  if (!drag.active) return;
   const keys = dragCandidates(drag).map(
     (one) => (drag.kind === "meeting" ? one.dataset.meeting : one.dataset.workspace));
-  const from = keys.indexOf(drag.key);
-  if (from < 0) return;
-  const next = keys.filter((key) => key !== drag.key);
-  const insert = drag.index > from ? drag.index - 1 : drag.index;
-  next.splice(Math.max(0, Math.min(next.length, insert)), 0, drag.key);
-  if (next.join("|") === keys.join("|")) return;
-  await applyOrder(drag.kind, drag.scope, next);
+  if (keys.join("|") === drag.before.join("|")) return;
+  // 先按新顺序把本地那份也改了：轮询正好在这时候重画，才不会又画回旧顺序。
+  if (drag.kind === "meeting") orderLocalMeetings(drag.scope, keys);
+  else state.workspaces = keys.slice();
+  await api(
+    drag.kind === "meeting" ? "/api/meetings/order" : "/api/workspaces/order",
+    {
+      method: "POST",
+      body: JSON.stringify(drag.kind === "meeting"
+        ? { workspace: drag.scope, meetings: keys }
+        : { workspaces: keys }),
+    },
+  );
+  await loadMeetings();
 }
 
-// 顺序定下来：先把 DOM 挪成那样（立刻看得见），再把它发给服务。
-async function applyOrder(kind, scope, keys) {
-  if (kind === "meeting") {
-    const rows = new Map(rowNodesOf(scope).map((row) => [row.dataset.meeting, row]));
-    const section = sectionFor(scope);
-    if (section) {
-      for (const key of keys) {
-        const row = rows.get(key);
-        if (row) section.append(row);
-      }
-    }
-    await api("/api/meetings/order", {
-      method: "POST",
-      body: JSON.stringify({ workspace: scope, meetings: keys }),
-    });
-  } else {
-    const sections = new Map(sectionNodes().map((one) => [one.dataset.workspace, one]));
-    for (const key of keys) {
-      const section = sections.get(key);
-      if (section) el.meeting_list.append(section);
-    }
-    await api("/api/workspaces/order", {
-      method: "POST",
-      body: JSON.stringify({ workspaces: keys }),
-    });
-  }
+function orderLocalMeetings(workspacePath, keys) {
+  const mine = new Map(state.meetings
+    .filter((one) => (one.workspace_root || "") === workspacePath)
+    .map((one) => [one.meeting_id, one]));
+  const ordered = keys.map((key) => mine.get(key)).filter(Boolean);
+  let next = 0;
+  state.meetings = state.meetings.map((one) => (
+    (one.workspace_root || "") === workspacePath ? (ordered[next++] || one) : one));
 }
 
 // 重命名改的是列表里怎么叫它：目录名不动，会议一条也不挪。留空就用目录名。
@@ -3824,8 +3827,11 @@ function bind() {
     }
   });
   // 右键拖顺序：按住挪（画白线）、松手落位。右键点一下不动顺序。
-  document.addEventListener("mousemove", updateDrag);
-  document.addEventListener("mouseup", () => {
+  document.addEventListener("pointermove", updateDrag);
+  document.addEventListener("pointerup", () => {
+    if (state.drag) finishDrag().catch((error) => toast(error.message));
+  });
+  document.addEventListener("pointercancel", () => {
     if (state.drag) finishDrag().catch((error) => toast(error.message));
   });
   // 这两处右键是"拖顺序"的手势：不弹系统菜单（拖到一半弹出来更糟）。

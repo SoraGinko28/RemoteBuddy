@@ -87,7 +87,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .meeting-item-time { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
 /* 悬在这一行上时，时间让位给「···」（会话操作、删除在那个浮层里）；调顺序是右键按住
    这一行上下拖，落点用下面那条白线标出来。 */
-.meeting-row { position: relative; display: flex; align-items: center; }
+.meeting-row { position: relative; display: flex; align-items: center; cursor: grab; }
+.meeting-item { cursor: grab; }
+.meeting-item-title, .meeting-item-time { cursor: text; }
 .meeting-item-more { position: absolute; right: 6px; display: none; align-items: center; justify-content: center; width: 22px; min-height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 700; line-height: 1; }
 .meeting-row:hover .meeting-item-time, .meeting-row:focus-within .meeting-item-time { display: none; }
 .meeting-row:hover .meeting-item-more, .meeting-row:focus-within .meeting-item-more { display: inline-flex; }
