@@ -932,7 +932,7 @@ class VimStepShapeTest(unittest.TestCase):
         self.assertEqual(5, len(steps))
         self.assertEqual("vim -u NONE -N -i NONE -- a.py", steps[0].command)
         self.assertEqual([("search", "^a1$", 1)], anchor_plan_of_steps([steps[1]]))
-        self.assertEqual(["O", "A2", "Escape"], self.values(steps[2]))
+        self.assertEqual(["O", "A2", "C-c"], self.values(steps[2]))
         self.assertEqual(["4G", "1dd"], self.values(steps[3]))
         self.assertEqual(":wq", keys_of(steps[4])[:3])
 
@@ -943,7 +943,7 @@ class VimStepShapeTest(unittest.TestCase):
         )
         steps = self.file_steps(text, "a.py")
         self.assertEqual([("search", "^a1$", 1)], anchor_plan_of_steps([steps[1]]))
-        self.assertEqual(["o", "x1", "Enter", "x2", "Escape"], self.values(steps[2]))
+        self.assertEqual(["o", "x1", "Enter", "x2", "C-c"], self.values(steps[2]))
 
     def test_delete_three_lines_uses_3dd(self):
         text = self.two_file_diff(
@@ -968,7 +968,7 @@ class VimStepShapeTest(unittest.TestCase):
             "@@ -1,1 +1,2 @@\n b1\n+\n",
         )
         insert = self.file_steps(text, "a.py")[2]
-        self.assertEqual(["o", "Enter", " ", "Enter", "a2", "Escape"], self.values(insert))
+        self.assertEqual(["o", "Enter", " ", "Enter", "a2", "C-c"], self.values(insert))
         for step in self.steps_for(text):
             self.assertNotIn("", self.values(step))
 
@@ -1006,7 +1006,7 @@ class VimStepShapeTest(unittest.TestCase):
         steps = self.steps_for(text)
         self.assertEqual("vim -u NONE -N -i NONE -- pkg/fresh.py", steps[0].command)
         self.assertEqual(["pkg/fresh.py", "other.py"], paths_in(steps))
-        self.assertEqual(["i", "one", "Enter", "two", "Enter", "three", "Escape"], self.values(steps[2]))
+        self.assertEqual(["i", "one", "Enter", "two", "Enter", "three", "C-c"], self.values(steps[2]))
 
     def test_special_content_is_typed_verbatim(self):
         text = self.two_file_diff(
@@ -1039,6 +1039,7 @@ class VimStepShapeTest(unittest.TestCase):
         saves = save_steps(self.steps_for(text))
         self.assertEqual(["a.py", "b.py"], [step.path for step in saves])
         self.assertEqual([":wq", "Enter", ":wq", "Enter"], [value for step in saves for value in self.values(step)])
+        self.assertEqual(["shell", "shell"], [step.expect_foreground for step in saves])
 
 
 # ======================================================================

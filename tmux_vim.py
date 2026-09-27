@@ -488,6 +488,7 @@ def vim_steps_for(patch: FilePatch) -> List[VimStep]:
             keys=(_text(":wq"), _ctrl("Enter")),
             path=path,
             label=f"{path}: 写盘退出",
+            expect_foreground="shell",
         )
     )
     return steps
@@ -653,7 +654,10 @@ def _insert_keys(
             keys.append(_text(line))
         if offset + 1 < len(chunk) or (mode == "start" and trailing_enter):
             keys.append(_ctrl("Enter"))
-    keys.append(_ctrl("Escape"))
+    # 用 C-c 而不是 Esc 回到正常模式：Esc 是一个"前缀字节"，紧接着又来一个按键时终端和 vim
+    # 可能把它当成一个组合键吃掉，人这边看到的就是"上一步没生效、下一句写进了缓冲区"。
+    # C-c 是一个字节，没有这种歧义。
+    keys.append(_ctrl("C-c"))
     return keys
 
 
@@ -901,6 +905,12 @@ def _execute(
             _read_retcode(transport, pane_id, interrupt_check)
     else:
         transport.send_tokens(pane_id, list(step.keys))
+        if step.expect_foreground == "shell" and not _wait_for(
+            transport, pane_id, _foreground_is_shell, FOREGROUND_TIMEOUT_SECONDS
+        ):
+            # 写盘退出没成功（编辑器还开着）。先把前台收回来，文件对不对下一轮的比对会说话。
+            ready = ensure_shell(transport, pane_id, restarter=restarter)
+            pane_id = ready.pane_id
     _record(transport, store, pane_id, change_kind="vim")
     return pane_id
 
