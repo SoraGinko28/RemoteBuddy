@@ -78,8 +78,8 @@ class _Page:
 
 
 @unittest.skipUnless(Path(CHROME).exists(), "需要本机的 Google Chrome")
-class HeaderNoticeTest(unittest.TestCase):
-    """上边栏的提示跟着会议状态走，哪怕页面上正有一个选区。"""
+class _PageTestCase(unittest.TestCase):
+    """起一个真服务、一个无头 Chrome、一条 CDP 连接；具体查什么由子类说。"""
 
     def setUp(self) -> None:
         import web_v2
@@ -162,6 +162,10 @@ class HeaderNoticeTest(unittest.TestCase):
     def _store(self):
         return self.service.load_store(self.meeting_id)
 
+
+class HeaderNoticeTest(_PageTestCase):
+    """上边栏的提示跟着会议状态走，哪怕页面上正有一个选区。"""
+
     def test_the_notice_follows_the_state_while_a_selection_is_alive(self):
         self.page.wait_for(
             f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30,
@@ -192,6 +196,64 @@ class HeaderNoticeTest(unittest.TestCase):
             "document.querySelector('#phase-label').textContent.includes('思考')", 10,
             what="选区还在时阶段跟着变",
         )
+
+
+class ComposerTest(_PageTestCase):
+    """发不出去的时候，输入框里留什么。
+
+    被明确拒绝（4xx）就把话还给人家 —— 一个字都没丢；服务端出错（5xx）可能是"话已经收下了
+    才出错"，那就别塞回去，否则人会以为没发出去、再发一遍（真会里重复发了三条）。
+    """
+
+    def _send(self, status: int) -> None:
+        """把下一次发消息的响应换掉：用 CDP 在页面里替一层 fetch。"""
+        self.page.js(
+            "(() => {"
+            f"  const failing = () => Promise.resolve(new Response("
+            f"    JSON.stringify({{error: 'server said {status}'}}),"
+            f"    {{status: {status}, headers: {{'Content-Type': 'application/json'}}}}));"
+            "  const original = window.fetch;"
+            "  window.fetch = (input, init) => {"
+            "    const url = typeof input === 'string' ? input : (input && input.url) || '';"
+            "    if (String(url).includes('/messages')) { window.fetch = original; return failing(); }"
+            "    return original(input, init);"
+            "  };"
+            "  return 'stubbed';"
+            "})()"
+        )
+        self.page.js(
+            "(() => {"
+            f"  const box = document.querySelector('#message-input');"
+            f"  box.value = '这一句得有个着落 {status}';"
+            "  box.dispatchEvent(new Event('input', {bubbles: true}));"
+            "  document.querySelector('#message-form').requestSubmit();"
+            "  return 'sent';"
+            "})()"
+        )
+        self.page.wait_for(
+            "document.querySelector('#toast') && !document.querySelector('#toast').hidden",
+            10, what="出错提示出现",
+        )
+
+    def _wait_for_composer(self) -> None:
+        self.page.wait_for(
+            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30, what="页面画出这场会"
+        )
+        self.page.wait_for(
+            "!document.querySelector('#message-input').disabled", 10, what="输入框可以打字"
+        )
+
+    def test_a_refused_message_comes_back_to_the_box(self):
+        self._wait_for_composer()
+        self._send(400)
+        self.assertEqual(
+            "这一句得有个着落 400", self.page.js("document.querySelector('#message-input').value")
+        )
+
+    def test_a_server_error_does_not_put_the_message_back(self):
+        self._wait_for_composer()
+        self._send(503)
+        self.assertEqual("", self.page.js("document.querySelector('#message-input').value"))
 
 
 if __name__ == "__main__":

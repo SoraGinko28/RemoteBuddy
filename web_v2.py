@@ -2073,7 +2073,7 @@ class MeetingWebService:
             found.append({"name": name})
         return found
 
-    def message(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
+    def message(self, meeting_id: str, payload: Dict[str, Any]) -> Tuple[MeetingStore, str]:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
             if not isinstance(payload, dict) or not set(payload).issubset(
@@ -2124,7 +2124,7 @@ class MeetingWebService:
                 # instruction: hand control back AND resume the Agent with it.
                 self._ensure_terminal(store)
                 self._sync_human_pipe(store)
-                return self._resume_agent_from_human(meeting_id)
+                return self._resume_agent_from_human(meeting_id), ""
             # 2b routing: @mention summons the named non-actor member;
             # the actor is NOT woken for that message (single-writer rule).
             # If the actor is mid-turn, interrupt it and summon the
@@ -2146,16 +2146,35 @@ class MeetingWebService:
                 store.update(failure=None)
             if delivery == "interrupt":
                 self._interrupt_backend(meeting_id)
+            # 从这里往后都是"这话已经收下了"之后的事：Agent 起不来（配置读不出来、终端开不出来）
+            # 不能回一个错误 —— 前端会把刚发出去的话塞回输入框，人以为没发出去，再发一遍。
+            # 真会里就这么重复发出去了三条。起不来就照实记在会议状态里（页面上那条红字），
+            # 再把原因随响应带给前端。
+            agent_error = ""
             if wake_agent or delivery == "interrupt":
-                config = self._config_for_store(store)
-                store.update(status="running", phase="agent_thinking", control_owner=store.meeting.actor_name())
-                self._ensure_worker(
-                    store,
-                    config,
-                    resume=not starting_fresh,
-                    fresh_conversation=fresh_conversation,
-                )
-        return store
+                try:
+                    config = self._config_for_store(store)
+                    store.update(
+                        status="running",
+                        phase="agent_thinking",
+                        control_owner=store.meeting.actor_name(),
+                    )
+                    self._ensure_worker(
+                        store,
+                        config,
+                        resume=not starting_fresh,
+                        fresh_conversation=fresh_conversation,
+                    )
+                except WebError as exc:
+                    agent_error = exc.message
+                    store.update(
+                        status="running",
+                        phase="api_error",
+                        control_owner="none",
+                        failure=agent_error,
+                        recovery_required=True,
+                    )
+        return store, agent_error
 
     def score(self, meeting_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Append a validated score without waking or mutating Agent state."""
@@ -3222,8 +3241,14 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/messages", path)
             if match:
-                store = self.service.message(unquote(match.group(1)), self._read_json())
-                self._json({"meeting": _public_manifest(store)})
+                store, agent_error = self.service.message(
+                    unquote(match.group(1)), self._read_json()
+                )
+                payload = {"meeting": _public_manifest(store)}
+                if agent_error:
+                    # 消息收下了，Agent 没起来 —— 200 + 原因，让前端别再把它塞回输入框。
+                    payload["agent_error"] = agent_error
+                self._json(payload)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/effort", path)
             if match:

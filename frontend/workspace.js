@@ -3186,10 +3186,11 @@ function attachmentUrl(name) {
 }
 
 async function postMeetingAction(suffix, body = {}) {
-  if (!state.selectedId) return;
-  await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/${suffix}`, { method: "POST", body: JSON.stringify(body) });
+  if (!state.selectedId) return null;
+  const answer = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/${suffix}`, { method: "POST", body: JSON.stringify(body) });
   await refreshSelected();
   await loadMeetings();
+  return answer;
 }
 
 // 系统（Finder）的选目录框：浏览器自己的 showDirectoryPicker 拿不到绝对路径，
@@ -3714,15 +3715,24 @@ function bind() {
     setReferences([]);
     setAttachments([]);
     try {
-      await postMeetingAction("messages", payload);
+      const answer = await postMeetingAction("messages", payload);
+      if (answer && answer.agent_error) {
+        // 话已经收下了，只是 Agent 没能起来（配置读不出来之类）。不把文字塞回输入框 ——
+        // 人会以为没发出去，再发一遍，真会里就这么重复了三条。原因说一句，会议状态里也有。
+        toast(`消息收到了，但 Agent 没能起来：${answer.agent_error}`);
+      }
     }
     catch (error) {
-      // The message never made it, so give the text and the pictures back
-      // instead of losing them.
-      el.message_input.value = message;
-      growMessageInput();
-      setReferences(references);
-      setAttachments(attachments);
+      // Only hand the text back when the request was actually refused. A 5xx (or a
+      // dropped connection) can happen after the message was already stored, and
+      // putting it back in the box makes the human send it twice.
+      const refused = !error.status || (error.status >= 400 && error.status < 500);
+      if (refused) {
+        el.message_input.value = message;
+        growMessageInput();
+        setReferences(references);
+        setAttachments(attachments);
+      }
       toast(error.message);
     }
     finally { el.send_message_button.disabled = false; }

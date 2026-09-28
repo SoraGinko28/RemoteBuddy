@@ -54,11 +54,11 @@ class ModelApiConfigTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def write_config(self, extra=""):
+    def write_config(self, extra="", timeout=60):
         (self.root / "config.toml").write_text(
             'model="gpt-5.6-luna"\n'
             'base_url="https://api.openai.com/v1"\n'
-            'request_timeout_seconds=60\n'
+            f'request_timeout_seconds={timeout}\n'
             'reasoning_effort="low"\n'
             + extra,
             encoding="utf-8",
@@ -73,6 +73,20 @@ class ModelApiConfigTest(unittest.TestCase):
         self.assertEqual("gpt-5.6-luna", config.model)
         self.assertEqual(60.0, config.request_timeout_seconds)
         self.assertNotIn("secret-test-key", repr(config))
+
+    def test_request_timeout_allows_a_budget_longer_than_five_minutes(self):
+        """单次请求的安静上限放到一轮那么大（1800s）：落一份大 diff 要几分钟，300 秒不够。
+
+        真事：把 timeout 调到 900 之后，页面顶上跳出红字
+        "request_timeout_seconds must be between 1 and 300"，会议直接起不来。
+        """
+        self.write_config(timeout=900)
+        config = ModelApiConfig.load(self.root)
+        self.assertEqual(900.0, config.request_timeout_seconds)
+        for bad in (1801, 0):
+            self.write_config(timeout=bad)
+            with self.assertRaisesRegex(ModelConfigError, "between 1 and 1800"):
+                ModelApiConfig.load(self.root)
 
     def test_unknown_structure_missing_file_and_symlink_are_rejected(self):
         self.write_config("unknown=1\n")

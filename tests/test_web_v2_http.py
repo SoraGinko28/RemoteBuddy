@@ -533,7 +533,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             "human",
             MeetingStore.load_in_workspace(self.root, "control-message").meeting.control_owner,
         )
-        store = self.service.message("control-message", {"message": "接管结束，继续改 README"})
+        store, _agent_error = self.service.message("control-message", {"message": "接管结束，继续改 README"})
         self.assertEqual("actor", store.meeting.control_owner)
         loaded = MeetingStore.load_in_workspace(self.root, "control-message")
         controls = [
@@ -545,6 +545,31 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
         chats = MeetingStore.load_in_workspace(self.root, "control-message").chat_messages()
         self.assertEqual("接管结束，继续改 README", chats[-1]["content"])
+
+    def test_a_stored_message_is_not_handed_back_when_the_agent_cannot_start(self):
+        """配置坏了：话已经收下了，就别回错误。
+
+        回错误的话前端会把刚发出去的话塞回输入框，人以为没发出去，再发一遍 —— 真会里就
+        这么重复发出去了三条。这里要的是：消息留在对话里，会议进 api_error 并写着原因，
+        响应里带着 agent_error。
+        """
+        self.start_meeting("bad-config")
+        # 会开起来之后才把配置弄坏：请求预算超出允许范围。
+        (self.model_api / "config.toml").write_text(
+            'model="gpt-5.6-luna"\n'
+            'base_url="https://api.openai.com/v1"\n'
+            'request_timeout_seconds=99999\n'
+            'reasoning_effort="low"\n',
+            encoding="utf-8",
+        )
+        store, agent_error = self.service.message("bad-config", {"message": "继续"})
+        self.assertIn("request_timeout_seconds", agent_error)
+        self.assertEqual("api_error", store.meeting.phase)
+        self.assertTrue(store.meeting.recovery_required)
+        self.assertIn("request_timeout_seconds", store.meeting.failure or "")
+        chats = MeetingStore.load_in_workspace(self.root, "bad-config").chat_messages()
+        self.assertEqual("继续", chats[-1]["content"])
+        self.wait_for_workers()
 
     def test_immediate_message_wakes_a_mid_cycle_agent(self):
         """delivery=interrupt wakes the agent; the deferred mode only queues.
@@ -1169,7 +1194,7 @@ class AttachmentTest(MeetingWebServiceTest):
     def test_the_message_carries_the_image_into_the_journal(self):
         self.start_meeting("attach-demo")
         descriptor = self.upload()
-        store = self.service.message("attach-demo", {
+        store, _agent_error = self.service.message("attach-demo", {
             "message": "看这张", "attachments": [{"name": descriptor["name"]}],
         })
         chats = [e for e in store.events() if e["kind"] == "chat" and e["actor"] == "human"]
@@ -1181,7 +1206,7 @@ class AttachmentTest(MeetingWebServiceTest):
     def test_a_message_may_be_nothing_but_pictures(self):
         self.start_meeting("attach-demo")
         descriptor = self.upload()
-        store = self.service.message("attach-demo", {"message": "", "attachments": [descriptor["name"]]})
+        store, _agent_error = self.service.message("attach-demo", {"message": "", "attachments": [descriptor["name"]]})
         chats = [e for e in store.events() if e["kind"] == "chat" and e["actor"] == "human"]
         self.assertEqual("", chats[-1]["content"])
 
