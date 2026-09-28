@@ -1330,6 +1330,7 @@ class InteractiveRunner:
                 cycle_action_count=self.store.meeting.cycle_action_count + 1,
                 agent_turn_id=metadata.get("turn_id") or self.store.meeting.agent_turn_id,
             )
+        executed = False
         try:
             should_pause = self._execute(
                 action_id,
@@ -1337,6 +1338,7 @@ class InteractiveRunner:
                 budget_final,
                 generation,
             )
+            executed = True
         except (RunnerError, TmuxError, MeetingError, AgentProtocolError) as exc:
             with self.lock:
                 self.store.refresh()
@@ -1372,6 +1374,10 @@ class InteractiveRunner:
                 "success": self._last_action_success,
                 "content": json.dumps(result, ensure_ascii=False),
                 "pause": should_pause or self.store.meeting.control_owner != self.agent_name,
+                # 动作真做了（只是没做全，比如 diff 还差几个文件）：这一次工具调用就是这一枪
+                # 的动作，别让 backend 把它当成"动作被退回"而把整轮判成协议错误。结果里
+                # `status`、`action_result.retcode` 都写着没做全，模型照着补就行。
+                "executed": executed,
             }
 
     def _observation(

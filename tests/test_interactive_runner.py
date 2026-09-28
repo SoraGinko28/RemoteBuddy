@@ -1252,6 +1252,12 @@ class InteractiveRunnerTest(unittest.TestCase):
             if event["kind"] == "action" and event["data"].get("dynamic_tool")
         ]
         self.assertEqual(2, len(dynamic_received))
+        # 动作真做了就写 `executed`：backend 据此认下"这一枪的动作就是它"，不会因为结果
+        # 不成功（比如 diff 没落全）把整轮判成协议错误。
+        answers = [call for call in backend.calls if call[0] == "results"][0][1:]
+        self.assertEqual(2, len(answers))
+        for answer in answers:
+            self.assertTrue(answer["executed"], answer)
 
 
 if __name__ == "__main__":

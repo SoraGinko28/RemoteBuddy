@@ -402,6 +402,49 @@ class ClaudeCodeBackendTest(unittest.TestCase):
             release.set()
             backend.close()
 
+    def test_an_action_that_ran_but_did_not_finish_is_not_a_protocol_error(self):
+        """动作做了却没做全（diff 还差几个文件）不是协议错误：这一枪的动作就是它。
+
+        真会里出过：三份 diff 落到第三轮还有文件对不上，结果被当成"动作被退回"，
+        整场会以 api_error 收场、还要人来恢复。
+        """
+        backend = self.backend()
+        release = threading.Event()
+        try:
+            backend.start_cycle("meeting-partial", "Skill", "HANG")
+
+            def partial_handler(_action, _metadata):
+                release.wait(2)
+                return {
+                    "success": False,
+                    "content": '{"status": "rejected", "action_result": {"retcode": "1"}}',
+                    "pause": False,
+                    "executed": True,
+                }
+
+            backend._active_handler = partial_handler
+            backend._turn_id = "turn-partial"
+            request = {
+                "token": backend._bridge_token,
+                "request_id": "partial-call",
+                "action": {"action": ACK},
+            }
+            worker = threading.Thread(target=lambda: backend._handle_bridge_request(request))
+            worker.start()
+            deadline = time.monotonic() + 2
+            while backend._turn_claimed_action is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            backend._handle_stream_event(
+                {"type": "result", "subtype": "success", "is_error": False}
+            )
+            release.set()
+            worker.join(2)
+            self.assertIsNone(backend._turn_protocol_error)
+            self.assertIsNotNone(backend._turn_action)
+        finally:
+            release.set()
+            backend.close()
+
     def test_chat_only_rejections_do_not_trip_the_retry_limit(self):
         # A wrong chat message_type is a correctable mistake whose rejection
         # names the allowed options; it must not burn the retry budget that

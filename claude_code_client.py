@@ -755,11 +755,15 @@ class ClaudeCodeBackend:
             result = {"success": False, "content": f"action failed: {exc}", "pause": False}
         success = bool(result.get("success", False))
         pause = bool(result.get("pause", False))
+        # 动作做了但没做全（diff 差几个文件、命令返回码非零）和"动作被退回"是两回事：
+        # 前者这一次调用就是这一枪的动作，后者才是这一枪什么都没发生。混为一谈的话，
+        # 一次落不干净的 diff 会把整场会判成 api_error。
+        executed = bool(result.get("executed", False))
         content = self._redact(str(result.get("content", "action completed")))[:64 * 1024]
         with self._condition:
             if action is not None and self._turn_claimed_action == action:
                 self._turn_claimed_action = None
-            if action is not None and (success or pause):
+            if action is not None and (success or pause or executed):
                 self._turn_action = action
                 self._turn_response_id = request_id
                 # Extra tool calls in the same Claude turn are answered by the
