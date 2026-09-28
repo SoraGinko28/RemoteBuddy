@@ -488,6 +488,36 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertNotEqual("0", result["retcode"])
         self.assertEqual(["notes.md", "extra.md"], result["mismatched_files"])
 
+    def test_three_diffs_that_cannot_apply_switch_to_a_fresh_conversation(self):
+        """连着三版 diff 连干跑都过不去：换个干净会话重来（它上下文里那些没落上的内容要甩掉）。"""
+        broken = (
+            "--- a/notes.md\n+++ b/notes.md\n@@ -9,1 +9,1 @@\n-根本没有这一行\n+yep\n"
+            "--- a/other.md\n+++ b/other.md\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        )
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("diff", diff=broken),
+                make_action("diff", diff=broken),
+                make_action("diff", diff=broken),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Looked instead."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        fresh = [
+            event for event in loaded.events()
+            if event["kind"] == "state"
+            and (event.get("data") or {}).get("status") == "fresh_conversation"
+        ]
+        self.assertEqual(1, len(fresh))
+        self.assertIn("干跑", fresh[0]["content"])
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+
     def test_a_tool_the_harness_does_not_offer_does_not_kill_the_cycle(self):
         """模型要联网搜索这类这里没有的东西：记一笔、让它换一条，不许把整轮判死。"""
         client = FakeClient(

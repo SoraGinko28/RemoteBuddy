@@ -58,6 +58,10 @@ def _typed_command(action: AgentAction) -> str:
     return workspace_command_text(action.command, action.path)
 
 
+# 一份 diff 要落地之前先在内存里干跑。连着这么多版连干跑都过不去，说明它是在照着自己
+# 前几版里那些**从没落上**的内容写（那些 diff 的原文还在它的会话上下文里）：换个干净会话，
+# 让它重新读一遍文件再动手，比继续劝它管用。
+DIFF_REJECT_LIMIT = 3
 ACTION_LIMIT = 60
 CYCLE_LIMIT_SECONDS = 900.0
 # 交给模型看的命令输出有多长：整屏缓存可能几千行，模型要的是结果那一段。
@@ -197,6 +201,7 @@ class InteractiveRunner:
         """
         self._last_terminal_evidence = None
         self._last_action_result: Optional[Dict[str, Any]] = None
+        self._diff_reject_streak = 0
         self._include_agent_chat_once = False
         self._last_action_success = True
         self._invalid_action_streak = 0
@@ -1722,7 +1727,9 @@ class InteractiveRunner:
                     "notes": list(outcome.notes)[:4],
                     "stopped": retcode == "130",
                 }
-                if retcode != "0":
+                if retcode == "0":
+                    self._diff_reject_streak = 0
+                else:
                     # 没落全（被打断、或者还有文件对不上）：这不是一次成功的动作，
                     # 交回给模型的那个结果里会带着还差哪些文件。
                     self._last_action_success = False
@@ -1804,6 +1811,25 @@ class InteractiveRunner:
                 if isinstance(exc, TmuxError):
                     self._fail_terminal(str(exc))
                     return True
+                if isinstance(exc, (tmux_vim.DiffError, tmux_vim.DiffNotAppliable)):
+                    self._diff_reject_streak += 1
+                    if self._diff_reject_streak >= DIFF_REJECT_LIMIT:
+                        self._diff_reject_streak = 0
+                        self.store.append_event(
+                            "state",
+                            "harness",
+                            self.store.meeting.phase,
+                            content=(
+                                f"连着 {DIFF_REJECT_LIMIT} 版 diff 连干跑都过不去（多半是在照着自己"
+                                "前几版里没落上的内容写）：换一个干净会话，让它重新读文件。"
+                            ),
+                            data={"status": "fresh_conversation", "reason": "diff_rejected"},
+                        )
+                        self.store.update(agent_session_id=None)
+                        self.request_backend_restart()
+                        # 继续这一轮：下一圈开头就会带着"换进程 + 新会话"落地，
+                        # 停下来反而把这次重启挂在那儿没人执行。
+                        return False
                 if self.store.meeting.status == "running":
                     self.store.update(phase="agent_thinking")
             return False
