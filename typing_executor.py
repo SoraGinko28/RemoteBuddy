@@ -46,12 +46,11 @@ def send_tokens_with_captures(
     _send_typing_plan(store, transport, pane_id, plan, action_id, interrupt_check)
 
 
-def send_command_with_captures(
+def send_line_with_captures(
     store: MeetingStore,
     transport: TmuxTransport,
     pane_id: str,
-    command: str,
-    path: str,
+    text: str,
     typing_interval_seconds: float,
     *,
     meeting_id: str = "legacy",
@@ -59,14 +58,18 @@ def send_command_with_captures(
     profile: str = "balanced",
     interrupt_check: Optional[Any] = None,
 ) -> None:
-    text = workspace_command_text(command, path)
+    """把一整行原样敲进终端（含回车），按人的节奏。
+
+    这一行是 harness 自己生成的（一条动作命令，或者它自己拼出来的编辑器命令行），所以这里
+    不做 `workspace_command_text` 那道面向 actor 的校验；校验在生成这一行的地方已经做过了。
+    """
     if typing_interval_seconds <= 0:
         transport.send_keys(pane_id, text)
         return
     plan = plan_input(
         [
-            {"kind": "literal", "value": text},
-            {"kind": "key", "value": "Enter"},
+            {"kind": "text", "value": text},
+            {"kind": "ctrl", "value": "Enter"},
         ],
         profile,
         meeting_id,
@@ -92,10 +95,10 @@ def _send_typing_plan(
     for step_index, step in enumerate(plan.steps):
         if interrupt_check and interrupt_check():
             raise TypingInterrupted(sent, plan.total_characters - sent, submitted)
-        if step.kind == "literal":
+        if step.kind == "text":
             transport.send_literal(pane_id, step.value)
             sent += len(step.value)
-        elif step.kind == "key":
+        elif step.kind == "ctrl":
             transport.send_special(pane_id, step.value)
             submitted = submitted or (step.value == "Enter" and step.input_context == "shell")
         # A rest step sends nothing; its delay_after_ms holds the pacing below.

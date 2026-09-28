@@ -157,7 +157,7 @@ class InteractiveProgramTransport(FakeTransport):
 
     def send_tokens(self, pane_id, keys):
         if self.command == "top" and any(
-            token.get("kind") == "key" and token.get("value") == "C-c" for token in keys
+            token.get("kind") == "ctrl" and token.get("value") == "C-c" for token in keys
         ):
             self.tokens.append((pane_id, list(keys)))
             self.command = "bash"
@@ -192,7 +192,10 @@ class ShellPolicyRunnerTest(unittest.TestCase):
         transport = FakeTransport()
         # Built directly (bypassing from_dict) so the runner-side validation
         # is what rejects the deletion command.
-        deletion_action = AgentAction("command", "none", "", "rm -rf build", "", (), 0)
+        deletion_action = AgentAction(
+            type="command", message_type="none", content="", command="rm -rf build",
+            diff="", path="", delay_ms=0,
+        )
         client = FakeClient(
             [
                 make_action(),
@@ -218,27 +221,43 @@ class ShellPolicyRunnerTest(unittest.TestCase):
         self.assertIn("git status", typed)
         self.assertNotIn("rm -rf build", typed)
 
-    def test_agent_can_interrupt_a_generic_foreground_program(self):
+    def test_a_leftover_foreground_program_is_recovered_before_the_next_command(self):
+        """前台被别的程序占着（人留下的 `top`）：harness 先把终端收回来，再跑自己的命令。"""
         transport = InteractiveProgramTransport()
         client = FakeClient(
             [
                 make_action(),
-                make_action("command", command="top"),
-                make_action("terminal_keys", keys=[{"kind": "key", "value": "C-c"}]),
-                make_action("done", message_type="final", content="Checked the process list."),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Repository inspected."),
             ]
         )
         runner = InteractiveRunner(
             self.store, transport, client, action_settle_seconds=0, typing_interval_seconds=0
         )
+        # 会先把会话开出来，再把前台摆成 top（人留在那儿的东西）。
+        original = runner._ensure_pane()
+
+        def open_then_top():
+            pane_id = transport.create_workspace_session(
+                self.store.meeting.session_name, self.store.workspace_path
+            )
+            transport.command = "top"
+            return pane_id
+
+        runner._ensure_pane = open_then_top
         runner.start()
         loaded = MeetingStore.load(self.root, "shell-demo")
         self.assertEqual("completion_proposed", loaded.meeting.phase)
-        self.assertEqual(
-            ("chat", "terminal_keys", "keystrokes", "observe"),
-            client.calls[2][3]["allowed_types"],
+        reopened = [
+            event for event in loaded.events()
+            if event.get("data", {}).get("status") == "terminal_reopened"
+        ]
+        self.assertEqual(1, len(reopened))
+        self.assertTrue(
+            any("git status" in text for _pane, text in transport.literal_sends),
+            transport.literal_sends,
         )
-        self.assertIn(("%1", [{"kind": "key", "value": "C-c"}]), transport.tokens)
+        self.assertEqual("bash", transport.command)
 
 
 if __name__ == "__main__":

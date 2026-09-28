@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -95,6 +96,8 @@ class RecordingRunner:
         self.client = client
         self.lock = lock
         self.resume_modes = []
+        self.skill_reloads = 0
+        self.backend_restarts = 0
         RecordingRunner.instances.append(self)
 
     def start(self):
@@ -112,6 +115,12 @@ class RecordingRunner:
     def open(self):
         """打开工作区：终端开出来，不叫 agent（第一句话在聊天框里说）。"""
         self.start()
+
+    def request_skill_reload(self):
+        self.skill_reloads += 1
+
+    def request_backend_restart(self):
+        self.backend_restarts += 1
 
     def resume(self, fresh_conversation=False):
         self.resume_modes.append(fresh_conversation)
@@ -332,7 +341,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.service.message("cli-default", {"message": "Continue."})
         self.wait_for_workers()
         self.assertEqual("", MeetingStore.load_in_workspace(self.root, "cli-default").meeting.model)
-        with self.assertRaisesRegex(WebError, "codex-app-server"):
+        with self.assertRaisesRegex(WebError, "codex-app-server, trae-agent or trae-acp"):
             self.service.start({"message": "Bad.", "model": ""})
 
     def test_acquire_terminal_keys_and_release_human_control(self):
@@ -348,7 +357,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(self.transport.tokens)
         flattened = [token for (_pane, keys) in self.transport.tokens for token in keys]
         self.assertEqual(
-            [{"kind": "literal", "value": "git status"}, {"kind": "key", "value": "Enter"}],
+            [{"kind": "text", "value": "git status"}, {"kind": "ctrl", "value": "Enter"}],
             flattened,
         )
         events = store.events()
@@ -383,22 +392,31 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(["human", None],
                          [event["data"].get("user_name") for event in controls])
 
-    def test_takeover_is_refused_when_the_terminal_is_gone(self):
-        self.start_meeting("gone-demo")
-        before = MeetingStore.load_in_workspace(self.root, "gone-demo").meeting
-        # The tmux session was killed outside RemoteBuddy (or the machine
-        # restarted); takeover must not pretend to succeed and then fail the
-        # meeting through the capture worker.
+    def test_takeover_reopens_a_terminal_that_went_away(self):
+        self.start_meeting("reopen-demo")
+        # 终端会话在外面被杀了（tmux 被杀、机器重启）：那条路径还在，接管在原来的目录
+        # 重开一个终端，而不是把这场会卡死。
+        below = self.root / "project"
+        below.mkdir()
+        MeetingStore.load_in_workspace(self.root, "reopen-demo").update(current_path=str(below))
         self.transport.exists = False
-        with self.assertRaises(WebError) as refused:
-            self.service.acquire("gone-demo")
-        self.assertEqual(410, refused.exception.status)
-        after = MeetingStore.load_in_workspace(self.root, "gone-demo").meeting
-        self.assertEqual(before.phase, after.phase)
-        self.assertEqual(before.status, after.status)
-        self.assertEqual(before.control_owner, after.control_owner)
-        # The refusal records the discovery so the UI stops offering takeover.
-        self.assertEqual("stopped", after.session_state)
+
+        store = self.service.acquire("reopen-demo")
+
+        self.assertEqual("human", store.meeting.control_owner)
+        self.assertEqual("human_control", store.meeting.phase)
+        self.assertEqual("running", store.meeting.session_state)
+        self.assertTrue(self.transport.exists)
+        self.assertEqual(below.resolve(), Path(self.transport.path).resolve())
+        self.assertTrue(store.meeting.pane_id)
+        reopened = [
+            event for event in store.events()
+            if (event.get("data") or {}).get("status") == "terminal_reopened"
+        ]
+        self.assertEqual(1, len(reopened))
+        self.assertEqual(below.resolve(), Path(reopened[0]["data"]["path"]).resolve())
+        # 接管期间抓屏 worker 是活着的：交还之后它才停。
+        self.service.release("reopen-demo")
         self.wait_for_workers()
 
     def test_terminal_input_requires_human_control(self):
@@ -877,6 +895,54 @@ class HTTPBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(413, status)
 
+    def test_skill_reload_and_agent_restart_routes(self):
+        # 页面上那两个按钮：更新只换文本，重启要真有一个在跑的进程
+        self.request(
+            "/api/meetings",
+            method="POST",
+            body=json.dumps({"message": "写个冒泡排序", "meeting_id": "skill-demo"}),
+            csrf=True,
+        )
+        self.wait_for_workers()
+        runtime_skill = self.service.load_store("skill-demo").runtime_skill_path
+        self.skill.write_text("---\nname: workspace-collaborator\n---\n新的一句。\n", encoding="utf-8")
+
+        # 没有在跑的进程：更新照样换文本，但不假装它进了某个进程
+        response = self.request("/api/meetings/skill-demo/skill/reload", method="POST",
+                                body="{}", csrf=True)
+        payload = json.load(response)
+        self.assertTrue(payload["changed"])
+        self.assertEqual(False, payload["agent_running"])
+        self.assertEqual("新的一句。\n", runtime_skill.read_text(encoding="utf-8").split("---\n")[-1])
+        self.assertFalse(json.load(
+            self.request("/api/meetings/skill-demo/skill/reload", method="POST", body="{}",
+                         csrf=True))["changed"], "同一份文本不该说变过")
+
+        # 人握着终端的时候不许抢：重启先被挡回来
+        self.request("/api/meetings/skill-demo/control/acquire", method="POST",
+                     body="{}", csrf=True)
+        status, payload = self.error_status("/api/meetings/skill-demo/agent/restart",
+                                            method="POST", body="{}", csrf=True)
+        self.assertEqual(409, status)
+        self.assertIn("交回控制", payload["error"])
+        self.request("/api/meetings/skill-demo/control/release", method="POST",
+                     body="{}", csrf=True)
+
+        # 没有在跑的进程：按"重启"就现在起一个，用新的 Skill
+        response = self.request("/api/meetings/skill-demo/agent/restart", method="POST",
+                                body="{}", csrf=True)
+        payload = json.load(response)
+        self.assertTrue(payload["restarting"])
+        self.assertTrue(payload["started"], "空闲时按重启要真的起一个进程")
+        self.wait_for_workers()
+        self.assertIn("新的一句。",
+                      MeetingStore.load_in_workspace(self.root, "skill-demo")
+                      .runtime_skill_path.read_text(encoding="utf-8"))
+
+        reloaded = MeetingStore.load_in_workspace(self.root, "skill-demo")
+        events = [e for e in reloaded.events() if e.get("phase") == "skill_reload"]
+        self.assertTrue(events, "更新要在 journal 里留一条")
+
     def test_add_workspace_route(self):
         # 页面侧边栏那个「＋」：记下一个目录，不开会
         response = self.request(
@@ -897,6 +963,169 @@ class HTTPBoundaryTest(unittest.TestCase):
             csrf=True,
         )
         self.assertEqual(400, status)
+
+    def test_delete_meeting_route_removes_the_data_and_the_row(self):
+        """侧边栏那条会话的"删除会话"：数据、终端、列表里那一行一起走。"""
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "delete-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+        run_dir = self.root / ".meeting" / "delete-demo"
+        self.assertTrue(run_dir.is_dir())
+
+        response = self.request("/api/meetings/delete-demo/delete", method="POST",
+                                body="{}", csrf=True)
+        payload = json.load(response)
+        self.assertEqual(200, response.status)
+        self.assertTrue(payload["deleted"])
+        self.assertFalse(run_dir.exists())
+        self.assertEqual(1, self.transport.kills)
+        self.assertEqual(
+            [],
+            [one["meeting_id"] for one in json.load(self.request("/api/meetings"))["meetings"]],
+        )
+        # 已经删掉的再删一次：找不到，而不是又删一遍。
+        status, _payload = self.error_status("/api/meetings/delete-demo/delete", method="POST",
+                                             body="{}", csrf=True)
+        self.assertEqual(404, status)
+
+    def test_a_meeting_copied_into_another_workspace_is_listed_once(self):
+        """整目录拷过去的那种副本：会议号是这层接口唯一的名字，所以一个号只出现一次，
+        留下的是真正属于那个工作区的一份。"""
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "copy-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+        other = self.root / "second"
+        (other / ".meeting").mkdir(parents=True)
+        self.request("/api/workspaces", method="POST",
+                     body=json.dumps({"directory": str(other)}), csrf=True)
+        shutil.copytree(self.root / ".meeting" / "copy-demo", other / ".meeting" / "copy-demo")
+
+        listed = json.load(self.request("/api/meetings"))["meetings"]
+        self.assertEqual(["copy-demo"], [one["meeting_id"] for one in listed])
+        self.assertEqual(str(self.root.resolve()), listed[0]["workspace_root"])
+        self.assertEqual((self.root / ".meeting" / "copy-demo").resolve(),
+                         self.service._open_store("copy-demo").run_dir)
+
+    def test_a_meeting_being_driven_elsewhere_refuses_local_writes(self):
+        """两个服务共享同一个工作区时：读照旧，写只有一个能写。
+
+        另一个服务正驱着这场会（pid 活着、心跳新鲜）时，这边的写要明确拒绝，
+        并报出它的地址——不然两个 CLI 会往同一个 tmux pane 里各打各的。
+        """
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "share-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+        run_dir = self.root / ".meeting" / "share-demo"
+        (run_dir / "driver.json").write_text(
+            json.dumps({"pid": 1, "url": "http://127.0.0.1:9999", "heartbeat": time.time()}),
+            encoding="utf-8",
+        )
+
+        status, payload = self.error_status("/api/meetings/share-demo/agent/resume",
+                                            method="POST", body="{}", csrf=True)
+
+        self.assertEqual(409, status)
+        self.assertIn("127.0.0.1:9999", payload["error"])
+        # 收尾前把那份"别的服务"的假声明撤掉，否则 tearDown 的停止也会被它挡住。
+        (run_dir / "driver.json").unlink()
+        self.wait_for_workers()
+
+    def test_a_stale_claim_can_be_taken_over(self):
+        """写声明的进程没了或心跳过期：声明作废，这边可以接手。"""
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "stale-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+        run_dir = self.root / ".meeting" / "stale-demo"
+        driver = run_dir / "driver.json"
+        driver.write_text(
+            json.dumps({"pid": 1, "url": "http://127.0.0.1:9999",
+                        "heartbeat": time.time() - 3600}),
+            encoding="utf-8",
+        )
+
+        response = self.request("/api/meetings/stale-demo/agent/resume",
+                                method="POST", body="{}", csrf=True)
+
+        self.assertEqual(200, response.status)
+        self.assertEqual(os.getpid(), json.loads(driver.read_text(encoding="utf-8"))["pid"])
+        self.wait_for_workers()
+
+    def test_the_claim_is_released_when_nothing_is_running(self):
+        """一轮跑完就把声明撤掉：闲着的会谁先动手谁驱。"""
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "写个便签", "meeting_id": "free-demo"}),
+                     csrf=True)
+        self.wait_for_workers()
+
+        driver = self.root / ".meeting" / "free-demo" / "driver.json"
+        self.assertFalse(driver.exists())
+        self.assertEqual("", self.service.driver_url("free-demo"))
+
+    def test_meetings_can_be_dragged_into_an_order(self):
+        for suffix in ("a", "b", "c"):
+            self.request("/api/meetings", method="POST",
+                         body=json.dumps({"message": f"写个便签 {suffix}",
+                                          "meeting_id": f"order-{suffix}"}),
+                         csrf=True)
+        self.wait_for_workers()
+        listed = json.load(self.request("/api/meetings"))["meetings"]
+        self.assertEqual(["order-a", "order-b", "order-c"],
+                         sorted(one["meeting_id"] for one in listed))
+
+        response = self.request(
+            "/api/meetings/order",
+            method="POST",
+            body=json.dumps({"workspace": str(self.root),
+                             "meetings": ["order-a", "order-c", "order-b"]}),
+            csrf=True,
+        )
+        self.assertEqual(200, response.status)
+        self.assertEqual(
+            ["order-a", "order-c", "order-b"],
+            [one["meeting_id"] for one in json.load(self.request("/api/meetings"))["meetings"]],
+        )
+        # 拖动之后新开的会不在那份顺序里：照旧排在最上面，不会挤掉谁。
+        self.request("/api/meetings", method="POST",
+                     body=json.dumps({"message": "又一个", "meeting_id": "order-d"}), csrf=True)
+        self.wait_for_workers()
+        self.assertEqual(
+            ["order-d", "order-a", "order-c", "order-b"],
+            [one["meeting_id"] for one in json.load(self.request("/api/meetings"))["meetings"]],
+        )
+
+    def test_workspaces_can_be_dragged_into_an_order(self):
+        for name in ("alpha", "beta"):
+            (self.root / name).mkdir()
+            self.request("/api/workspaces", method="POST",
+                         body=json.dumps({"directory": str(self.root / name)}), csrf=True)
+        self.assertEqual(
+            [str(self.root.resolve()), str((self.root / "alpha").resolve()),
+             str((self.root / "beta").resolve())],
+            json.load(self.request("/api/meetings"))["workspaces"],
+        )
+
+        self.request("/api/workspaces/order", method="POST",
+                     body=json.dumps({"workspaces": [str((self.root / "beta").resolve()),
+                                                     str(self.root.resolve()),
+                                                     str((self.root / "alpha").resolve())]}),
+                     csrf=True)
+
+        self.assertEqual(
+            [str((self.root / "beta").resolve()), str(self.root.resolve()),
+             str((self.root / "alpha").resolve())],
+            json.load(self.request("/api/meetings"))["workspaces"],
+        )
+        # 名单上没点到的（后来才加的）补在后面，不会因为一次拖动就不见。
+        (self.root / "gamma").mkdir()
+        self.request("/api/workspaces", method="POST",
+                     body=json.dumps({"directory": str(self.root / "gamma")}), csrf=True)
+        workspaces = json.load(self.request("/api/meetings"))["workspaces"]
+        self.assertEqual(4, len(workspaces))
+        self.assertEqual(str((self.root / "gamma").resolve()), workspaces[-1])
 
     def test_workspace_rename_and_delete_routes(self):
         other = self.root / "elsewhere"

@@ -74,10 +74,11 @@ def _command_in_workspace_environment(arguments: Sequence[str]) -> str:
 def workspace_command_text(command: str, path: str = "") -> str:
     """Build the shell command text the shared workspace may receive.
 
-    Structured commands (pwd/cd/vim/python) keep safe quoting and a single
+    Structured commands (pwd/cd/python) keep safe quoting and a single
     validated path. Any other value is treated as a full bash command line
     under the relaxed policy: it passes through verbatim after the
-    deletion-class and shared-interface checks.
+    deletion-class and shared-interface checks. Starting an interactive
+    program (an editor, a REPL, a pager) is one of those command lines.
     """
     if command not in WORKSPACE_COMMANDS:
         if path:
@@ -93,8 +94,6 @@ def workspace_command_text(command: str, path: str = "") -> str:
         return "pwd"
     if not path or "\n" in path or "\r" in path or "\x00" in path:
         raise TmuxError(f"{command} requires one safe path")
-    if command == "vim":
-        return shlex.join(["vim", "-Nu", "NONE", "-i", "NONE", "-n", "--", path])
     executable = "python3" if command == "python" else command
     return shlex.join([executable, "--", path])
 
@@ -397,9 +396,9 @@ class TmuxTransport:
         for token in tokens:
             if not isinstance(token, dict) or set(token) != {"kind", "value"}:
                 raise TmuxError("invalid terminal input token")
-            if token["kind"] == "literal":
+            if token["kind"] == "text":
                 self.send_literal(pane_id, token["value"])
-            elif token["kind"] == "key":
+            elif token["kind"] == "ctrl":
                 self.send_special(pane_id, token["value"])
             else:
                 raise TmuxError("invalid terminal input token kind")
@@ -415,8 +414,9 @@ class TmuxTransport:
     def capture_visible(self, pane_id: str) -> str:
         pane = self._pane(pane_id)
         # Keep the viewport's physical rows intact. Joining wrapped rows makes
-        # Vim line numbers and cursor coordinates disagree with the captured
-        # image; -N also keeps trailing spaces that are part of the screen.
+        # the row and column numbers a full-screen program draws for itself
+        # disagree with the captured image; -N also keeps trailing spaces that
+        # are part of the screen.
         result = self._checked_cmd(pane, "capture-pane", "-p", "-N")
         return self._output_text(result.stdout)
 

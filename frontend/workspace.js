@@ -14,9 +14,10 @@ const el = Object.fromEntries([
   "health-message", "welcome-new-button", "meeting-list", "list-empty",
   "add-workspace-button",
   "welcome", "session-view", "agent-states", "status-badge", "owner-badge",
-  "workspace-menu",
+  "workspace-menu", "meeting-menu", "drop-line",
   "welcome-advanced-button",
   "phase-label", "backend-label", "provider-label", "model-label", "typing-profile-label", "action-label", "runtime-label", "event-count", "failure-message", "refresh-button",
+  "member-panel", "member-panel-close",
   "member-name-label", "member-role-label", "member-state-label", "member-terminal-label",
   "member-chat-label", "member-last-label",
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
@@ -29,7 +30,8 @@ const el = Object.fromEntries([
   "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
   "close-dialog", "cancel-new", "initial-message", "workspace-input", "choose-directory", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
-  "event-dialog", "event-title", "event-content", "close-event", "toast",
+  "skill-cell", "reload-skill-button", "restart-agent-button",
+  "event-dialog", "event-title", "event-content", "close-event", "toast", "welcome-toast",
   "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
   "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
@@ -42,6 +44,10 @@ const state = {
   workspaces: [],
   workspaceTitles: {},
   workspaceMenuPath: "",
+  meetingMenuId: "",
+  // 正在拖的那一样：kind（meeting/workspace）、node、scope、起点和落点（见 beginDrag）。
+  drag: null,
+  suppressClickUntil: 0,
   workspace: "",
   listed: [],
   workspaceFilled: false,
@@ -87,17 +93,20 @@ const state = {
   pointerSelecting: false,
   // Which member's details the header strip is showing; null = closed.
   detailsAgent: null,
+  // 页面上"更新/重启"按下去之后，chip 上按住这个状态几秒：服务端那一段
+  // （换文本、换进程）常常短过一次轮询，看不到就等于没有反馈。
+  agentOpHold: null,
 };
 
 const labels = {
   status: { created: "已创建", starting: "启动中", running: "协作中", completed: "已完成", failed: "失败", interrupted: "已中止" },
-  phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "{agent} 思考中", agent_acting: "{agent} 操作中", waiting_for_user: "等待你的消息", completion_proposed: "{agent} 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
+  phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "{agent} 思考中", agent_acting: "{agent} 操作中", waiting_for_user: "等待你的消息", completion_proposed: "{agent} 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", skill_reload: "正在更新 Skill", agent_restart: "正在重启 {agent} 进程", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
   owner: { agent: "{agent} 控制", human: "你在控制", none: "无人控制" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
   score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
-  agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常" },
+  agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常", updating: "更新", restarting: "重启" },
   role: { actor: "行动者", assistant: "助理", critic: "批判者" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
@@ -120,6 +129,8 @@ const AGENT_STATE_PHASES = {
   starting: "thinking",
   agent_thinking: "thinking",
   agent_acting: "acting",
+  skill_reload: "updating",
+  agent_restart: "restarting",
   api_error: "error",
   cycle_timeout: "error",
   failed: "error",
@@ -171,6 +182,14 @@ function latestBandTime(actor) {
 function memberState(actor, meeting) {
   const terminal = ["completed", "failed", "interrupted"].includes(meeting.status);
   if (terminal) return "idle";
+  const hold = state.agentOpHold;
+  if (hold && hold.member === actor && Date.now() < hold.until) return hold.state;
+  // 更新 / 重启 是页面上那两个按钮的状态：agent 进程此刻正在被换掉，
+  // 所以它不属于"谁占着终端"那套判断，任何时候都直接显示。
+  if (meeting.phase === "skill_reload" || meeting.phase === "agent_restart") {
+    if (memberRoles(meeting)[actor] === "actor") return agentStateForPhase(meeting.phase);
+    return "idle";
+  }
   if (meeting.control_owner === actor) {
     const stateName = agentStateForPhase(meeting.phase);
     if ((stateName === "thinking" || stateName === "acting")
@@ -204,6 +223,20 @@ function memberState(actor, meeting) {
   return "idle";
 }
 
+// 这场会里扮演 actor 的那个成员（多成员会议上就是名字叫 actor 的那个）。
+function actorMemberName(meeting) {
+  const roles = memberRoles(meeting);
+  return Object.keys(roles).find((name) => roles[name] === "actor") || null;
+}
+
+// 按住一个状态给 chip 看：按下去的人要立刻看到它落地，服务端的阶段随后会接上。
+function holdMemberState(stateName, ms = 3000) {
+  const member = actorMemberName(state.snapshot?.meeting);
+  if (!member) return;
+  state.agentOpHold = { member, state: stateName, until: Date.now() + ms };
+  renderMemberStates(state.snapshot.meeting);
+}
+
 function renderMemberStates(meeting) {
   if (!el.agent_states) return;
   const roles = memberRoles(meeting);
@@ -235,12 +268,12 @@ function memberRoles(meeting) {
   return (roles && Object.keys(roles).length) ? roles : { agent: "actor" };
 }
 
-// The member panel behaves like a popover: it closes from anywhere that is not
-// the chip that opened it or the panel itself.
+// 成员详情是从上边栏右侧滑下来的浮层：点别处、按 Esc、点那个叉都关得掉，
+// 它不夺焦点、不压暗画面，终端也不会因此重排。
 function closeMemberDetails() {
+  el.member_panel?.classList.remove("open");
   if (!state.detailsAgent) return;
   state.detailsAgent = null;
-  document.getElementById("session-view")?.classList.remove("details-open");
   document.querySelectorAll(".agent-state").forEach((chip) => {
     chip.setAttribute("aria-expanded", "false");
   });
@@ -263,10 +296,9 @@ function memberStats(actor) {
 
 function renderMemberDetails(meeting) {
   const actor = state.detailsAgent;
-  const view = document.getElementById("session-view");
   if (!actor || !memberRoles(meeting)[actor]) {
     state.detailsAgent = null;
-    if (view) view.classList.remove("details-open");
+    el.member_panel?.classList.remove("open");
     return;
   }
   const role = memberRoles(meeting)[actor];
@@ -278,7 +310,10 @@ function renderMemberDetails(meeting) {
   el.member_terminal_label.textContent = role === "actor" ? "可写" : "只读";
   el.member_chat_label.textContent = `${stats.count} 条`;
   el.member_last_label.textContent = stats.last ? fmtTime(stats.last) : "—";
-  if (view) view.classList.add("details-open");
+  // Skill 那两个按钮只对 actor 有意义：这场会的那份 Skill 是它的说明书，
+  // 助理和批判者跑在各自的过程里，不读它。
+  if (el.skill_cell) el.skill_cell.hidden = role !== "actor";
+  el.member_panel?.classList.add("open");
 }
 
 function eventDelay(event, queueLength = 0) {
@@ -352,11 +387,20 @@ async function apiConditional(path, etag) {
   return { notModified: false, etag: response.headers.get("ETag") || "", payload };
 }
 
-function toast(message) {
+// `kind` 决定颜色：报错是红的，办成了是绿的，其余（"没变"、"已复制"这种）
+// 是中性色——把"Skill 没变"画成红色会让人以为出事了。
+function toast(message, kind = "error") {
   clearTimeout(state.toastTimer);
-  el.toast.textContent = message;
-  el.toast.hidden = false;
-  state.toastTimer = setTimeout(() => { el.toast.hidden = true; }, 5000);
+  // 两个位置同一句话：会话里那个在上边栏靠左，欢迎卡片上那个没有上边栏，贴左上角。
+  const visible = [el.toast, el.welcome_toast].filter(Boolean);
+  for (const node of visible) {
+    node.textContent = message;
+    node.dataset.kind = kind;
+    node.hidden = false;
+  }
+  state.toastTimer = setTimeout(() => {
+    for (const node of visible) node.hidden = true;
+  }, 5000);
 }
 
 function fmtTime(value) {
@@ -535,8 +579,12 @@ function meetingLabel(meeting) {
 }
 
 // 一条会话就一行：标题 + 相对时间。会议号、provider、阶段都不占地方（会议号在悬停
-// 的提示里，header 也一样）。
+// 的提示里，header 也一样）。鼠标悬在这一行上时时间让位给「···」（会话操作、删除在
+// 那个浮层里）；调顺序是右键按住这一行上下拖，见 beginDrag。
 function meetingItem(meeting) {
+  const row = node("div", "meeting-row");
+  row.dataset.meeting = meeting.meeting_id;
+  row.dataset.workspace = meeting.workspace_root || state.workspace || "";
   const button = node("button", `meeting-item${meeting.meeting_id === state.selectedId ? " selected" : ""}`);
   button.type = "button";
   button.title = meeting.meeting_id;
@@ -544,15 +592,27 @@ function meetingItem(meeting) {
     node("span", "meeting-item-title", meetingLabel(meeting)),
     node("span", "meeting-item-time", fmtAgo(meeting.updated_at)),
   );
+  const more = node("button", "meeting-item-more", "···");
+  more.type = "button";
+  more.title = "会话操作";
+  more.setAttribute("aria-label", "会话操作");
+  more.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleMeetingMenu(meeting, more);
+  });
   // A drag across the title is the human selecting it to copy, not a command
   // to open the meeting: a click that ends with a selection inside this item
   // must not navigate, which would also rebuild the list and drop it.
   button.addEventListener("click", () => {
+    if (Date.now() < (state.suppressClickUntil || 0)) return;   // 刚拖完，别打开
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed && button.contains(selection.anchorNode)) return;
     selectMeeting(meeting.meeting_id);
   });
-  return button;
+  // 右键按住上下拖 = 调整顺序（左键留给选字复制和打开会话）。
+  row.addEventListener("pointerdown", (event) => beginDrag(event, "meeting", row));
+  row.append(button, more);
+  return row;
 }
 
 // 工作区那一行前面那个文件夹图标（内联 SVG，跟着文字颜色走）。
@@ -572,9 +632,11 @@ function folderIcon() {
 function renderMeetingList() {
   // Rebuilding the items drops any selection inside them, so stand down while
   // the human is selecting something in the list (the next render, after the
-  // selection is cleared, picks the change up).
+  // selection is cleared, picks the change up). A drag in progress is the same
+  // case: a redraw would take the row out from under the pointer.
   const live = window.getSelection();
   if (live && !live.isCollapsed && el.meeting_list.contains(live.anchorNode)) return;
+  if (state.drag) return;
   el.meeting_list.replaceChildren();
   const groups = meetingGroups();
   // "No v2 session yet" is for having no workspace at all: a workspace that has
@@ -582,8 +644,10 @@ function renderMeetingList() {
   el.list_empty.hidden = groups.length > 0;
   for (const group of groups) {
     const section = node("section", "meeting-group");
+    section.dataset.workspace = group.path;
     const head = node("div", "meeting-group-head");
     head.title = group.path;
+    head.addEventListener("pointerdown", (event) => beginDrag(event, "workspace", section));
     head.append(
       folderIcon(),
       node("span", "meeting-group-name",
@@ -697,16 +761,16 @@ function renderHeader() {
   el.resume_button.textContent = meeting.phase === "completion_proposed" ? "继续工作" : `继续 ${agentName(meeting)}`;
   const takeoverLive = meeting.control_owner === "human" && meeting.phase === "human_control";
   const waitingHandoff = meeting.control_requested === "human" && meeting.control_owner !== "human";
-  // A meeting can outlive its tmux session; the server refuses takeover then,
-  // so the button says why instead of failing after the click.
+  // 终端会话没了（tmux 被杀、机器重启）也能接管：服务会在同一个工作区里重开一个，
+  // 所以这里只提示会发生什么，不把按钮关掉。
   const sessionGone = meeting.session_state === "stopped";
-  const canAcquire = !terminalState && !sessionGone && meeting.status === "running"
+  const canAcquire = !terminalState && meeting.status === "running"
     && ["agent_thinking", "agent_acting", "waiting_for_user", "completion_proposed", "api_error", "cycle_timeout"].includes(meeting.phase);
   el.acquire_button.hidden = terminalState || takeoverLive;
   el.acquire_button.disabled = !canAcquire;
   el.acquire_button.textContent = waitingHandoff ? "等待交权…" : "接管";
   el.acquire_button.title = sessionGone
-    ? "终端会话已结束，无法接管"
+    ? "终端会话已结束：接管会在这个工作区里重开一个终端"
     : (canAcquire ? `打断 ${agentName(meeting)} 并接管共享终端` : "");
   el.release_button.hidden = !takeoverLive;
   const terminalReadonly = el.terminal_readonly;
@@ -1157,7 +1221,7 @@ function legacyCopy(text) {
 
 function copyTextToClipboard(text) {
   if (!text) {
-    toast("没有可复制的内容");
+    toast("没有可复制的内容", "info");
     return false;
   }
   if (navigator.clipboard && window.isSecureContext) {
@@ -1208,7 +1272,7 @@ function installTerminalClipboard() {
       const position = typeof term.getSelectionPosition === "function" ? term.getSelectionPosition() : null;
       const selected = term.getSelection();
       if (position && selected) {
-        toast(`已选中 ${selected.length} 字符 · ⌘/Ctrl+C 复制`);
+        toast(`已选中 ${selected.length} 字符 · ⌘/Ctrl+C 复制`, "info");
       }
     }, 30);
   });
@@ -2244,14 +2308,15 @@ function setReferences(references) {
   el.reference_card.replaceChildren();
   unique.forEach((reference, index) => {
     const item = node("div", "reference-item");
-    item.append(
-      node("span", "reference-kind", referenceKindLabel(reference.kind)),
-      node("span", "reference-excerpt", reference.excerpt || ""),
-    );
-    const remove = node("button", "icon-button", "×");
+    // 引的是哪一类，不占一行字：它是给悬浮提示的（聊天、终端画面、接管记录）。
+    item.title = referenceKindLabel(reference.kind);
+    item.append(node("span", "reference-excerpt", reference.excerpt || ""));
+    // 右上角一个圆圈叉：悬浮在引文上方，不占版面。
+    const remove = node("button", "reference-remove");
     remove.type = "button";
     remove.title = `移除第 ${index + 1} 个引用`;
     remove.setAttribute("aria-label", remove.title);
+    remove.append(closeCrossIcon());
     remove.addEventListener("click", () => setReferences(state.references.filter((_item, itemIndex) => itemIndex !== index)));
     item.append(remove);
     el.reference_card.append(item);
@@ -2682,7 +2747,7 @@ async function submitEvaluation(event) {
     renderAll();
     try {
       await refreshSelected();
-      toast(`已记录${labels.score[tag]}评价`);
+      toast(`已记录${labels.score[tag]}评价`, "success");
     } catch (refreshError) {
       toast(`评价已保存，页面刷新失败：${refreshError.message}`);
     }
@@ -2702,7 +2767,7 @@ async function handleSelectionAction(action) {
   if (!selected || state.selectionBusy || state.evaluationSelection) return;
   if (action === "evaluate") {
     if (selectionIsHumanChat(selected)) {
-      toast("人类消息不能被评价");
+      toast("人类消息不能被评价", "info");
       return;
     }
     openEvaluationPanel(selected);
@@ -2721,7 +2786,7 @@ async function handleSelectionAction(action) {
     el.message_input.focus();
     // The reference card above the composer already shows the quote; a toast
     // on top of it only covers the controls the user is about to use.
-    if (!added) toast("这个引用已经添加");
+    if (!added) toast("这个引用已经添加", "info");
     return;
   }
 }
@@ -2837,6 +2902,29 @@ function updateCredentialFields() {
   }
 }
 
+// 上次打开的是哪一场：刷新之后要回到它，而不是按"最近活动"跳到别的会上去。
+// 私密模式下 localStorage 会抛，读不到就当没记过。
+const SELECTED_MEETING_KEY = "remotebuddy.selected-meeting";
+
+function rememberMeeting(meetingId) {
+  try {
+    window.localStorage.setItem(SELECTED_MEETING_KEY, String(meetingId || ""));
+  } catch (_error) { /* 记不住也不影响用 */ }
+}
+
+function rememberedMeeting() {
+  try {
+    return window.localStorage.getItem(SELECTED_MEETING_KEY) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+// 列表按工作区分组，上次那场可能在屏幕外：刷新之后要能一眼看见它。
+function revealSelectedMeeting() {
+  el.meeting_list?.querySelector(".meeting-item.selected")?.scrollIntoView({ block: "nearest" });
+}
+
 async function loadMeetings() {
   const payload = await api("/api/meetings");
   state.meetings = payload.meetings || [];
@@ -2878,12 +2966,14 @@ async function selectMeeting(meetingId) {
   // The member panel belongs to the meeting that was open: another meeting
   // opens with it closed.
   state.detailsAgent = null;
-  document.getElementById("session-view")?.classList.remove("details-open");
+  state.agentOpHold = null;
+  el.member_panel?.classList.remove("open");
   const [snapshot, eventPayload] = await Promise.all([
     api(`/api/meetings/${encodeURIComponent(meetingId)}/snapshot`),
     api(`/api/meetings/${encodeURIComponent(meetingId)}/events?after=0`),
   ]);
   if (meetingId !== state.selectedId) return;
+  rememberMeeting(meetingId);
   state.snapshot = snapshot;
   state.timeline = eventPayload.events || [];
   state.cursor = eventPayload.cursor || 0;
@@ -3015,9 +3105,11 @@ function renderAttachments() {
     const image = node("img", "attachment-thumb");
     image.src = attachmentUrl(attachment.name);
     image.alt = attachment.name;
-    const remove = node("button", "attachment-remove", "×");
+    const remove = node("button", "attachment-remove");
     remove.type = "button";
     remove.title = "去掉这张图";
+    remove.setAttribute("aria-label", remove.title);
+    remove.append(closeCrossIcon());
     remove.addEventListener("click", () => {
       state.pendingAttachments.splice(index, 1);
       renderAttachments();
@@ -3030,6 +3122,21 @@ function renderAttachments() {
 function setAttachments(list) {
   state.pendingAttachments = Array.isArray(list) ? list.slice() : [];
   renderAttachments();
+}
+
+// 一个圆里画出来的叉：字符 × 有基线，在圆里看着偏。
+function closeCrossIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2.6");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M6 6l12 12M18 6L6 18");
+  svg.append(path);
+  return svg;
 }
 
 // 点开一张图：弹一层盖住页面，点图以外的任何地方（或按 Esc）关掉。
@@ -3193,6 +3300,188 @@ function toggleWorkspaceMenu(path, anchor) {
   el.workspace_menu.style.top = `${top}px`;
 }
 
+// 会话那一行的「···」：浮层里就一件事——删除会话。它跟工作区那个菜单是一套长相。
+function hideMeetingMenu() {
+  if (!el.meeting_menu) return;
+  el.meeting_menu.hidden = true;
+  state.meetingMenuId = "";
+}
+
+function toggleMeetingMenu(meeting, anchor) {
+  if (!el.meeting_menu || !meeting) return;
+  if (!el.meeting_menu.hidden && state.meetingMenuId === meeting.meeting_id) {
+    hideMeetingMenu();
+    return;
+  }
+  state.meetingMenuId = meeting.meeting_id;
+  el.meeting_menu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const box = el.meeting_menu.getBoundingClientRect();
+  const gutter = 8;
+  const left = Math.max(gutter,
+    Math.min(window.innerWidth - box.width - gutter, rect.right - box.width));
+  const top = Math.max(gutter,
+    Math.min(window.innerHeight - box.height - gutter, rect.bottom + 6));
+  el.meeting_menu.style.left = `${left}px`;
+  el.meeting_menu.style.top = `${top}px`;
+}
+
+// 删除会话：数据、终端、那一行一起走。删除按钮在浮层里，问一句再动手。
+async function deleteMeeting(meetingId) {
+  hideMeetingMenu();
+  const summary = state.meetings.find((one) => one.meeting_id === meetingId);
+  const name = summary ? meetingLabel(summary) : meetingId;
+  if (!window.confirm(`删除会话「${name}」？它的对话、终端和数据都会删掉。`)) return;
+  await api(`/api/meetings/${encodeURIComponent(meetingId)}/delete`, { method: "POST" });
+  if (state.selectedId === meetingId) {
+    // 删掉的正是打开着的那一场：回到"没开会"的样子，而不是继续轮询一个不存在的会。
+    state.selectedId = null;
+    state.snapshot = null;
+    state.tickets = null;
+    state.timeline = [];
+    rememberMeeting("");
+  }
+  await loadMeetings();
+  renderAll();
+}
+
+// 拖动排序：鼠标放在会话行（或工作区标题）上**按住左键上下拖**——拖拽就是这个手势。
+// 拖的过程中列表**不动**，只有一条白线标出落点；松手才把那一行插过去、发给服务。
+// 左键要拖成拖、要选成选：没挪够 4px 之前什么都不动（单击打开、双击选词照旧），
+// 真拖起来了才把刚开始的那点选字清掉。右键不参与，系统菜单照旧。
+const DRAG_WORKSPACES = "workspaces";
+// 手指抖一下不算拖：挪够这么多像素才开始。
+const DRAG_THRESHOLD_PX = 4;
+
+function rowNodesOf(workspacePath) {
+  return [...el.meeting_list.querySelectorAll(".meeting-row")]
+    .filter((row) => row.dataset.workspace === workspacePath);
+}
+
+function sectionNodes() {
+  return [...el.meeting_list.querySelectorAll(".meeting-group")];
+}
+
+function sectionFor(workspacePath) {
+  return sectionNodes().find((one) => one.dataset.workspace === workspacePath) || null;
+}
+
+function beginDrag(event, kind, node) {
+  if (state.drag) return;
+  if (event.button !== 0) return;
+  // 这里不动 preventDefault：按下去什么都不发生，双击选词、单击打开都还照旧；
+  // 真拖起来之后（updateDrag）才把刚开始的那点选字清掉。
+  state.drag = {
+    kind,
+    node,
+    key: kind === "meeting" ? node.dataset.meeting : node.dataset.workspace,
+    scope: kind === "meeting" ? node.dataset.workspace : DRAG_WORKSPACES,
+    originY: event.clientY,
+    active: false,
+    before: kind === "meeting"
+      ? rowNodesOf(node.dataset.workspace).map((row) => row.dataset.meeting)
+      : sectionNodes().map((one) => one.dataset.workspace),
+  };
+}
+
+// 能插到谁旁边：会话只看它自己那个工作区里的行，工作区只看整段。所以会话出不了组，
+// 工作区也不会插到另一个工作区的两条会话中间。
+function dragCandidates(drag) {
+  return drag.kind === "meeting" ? rowNodesOf(drag.scope) : sectionNodes();
+}
+
+function updateDrag(event) {
+  const drag = state.drag;
+  if (!drag) return;
+  if (!drag.active) {
+    if (Math.abs(event.clientY - drag.originY) < DRAG_THRESHOLD_PX) return;
+    drag.active = true;
+    drag.node.classList.add("dragging");
+    // 到这里才抓住指针：松开时人可能在窗口外，没这一下就收不到 pointerup，这一枪会一直
+    // 挂着。按下时就抓不行——那会把 click 也改投到这一行上，行里"打开会话"的按钮就收
+    // 不到点击，等于点不动会话。
+    try {
+      drag.node.setPointerCapture?.(event.pointerId);
+    } catch (_error) { /* 抓不住也照旧 */ }
+    // 鼠标动这几下可能已经拉出一点选区了：拖起来了就把它清掉，免得半行字亮着。
+    clearBrowserSelection();
+  }
+  // 被拖的那个不参与比较，剩下的按"指针越过谁的中线"决定插到第几位。这里只算、不挪：
+  // 拖的时候列表不动，只有白线在走（落位在 finishDrag 里一次做完）。
+  const others = dragCandidates(drag).filter((one) => one !== drag.node);
+  let index = others.length;
+  for (let position = 0; position < others.length; position += 1) {
+    const box = others[position].getBoundingClientRect();
+    if (event.clientY < box.top + box.height / 2) { index = position; break; }
+  }
+  drag.index = index;
+  showDropLine(others, index, drag);
+}
+
+// 目的位置那条白线：画在"会插到谁前面"的那条边；插在最后就画在最后一条的下边。
+function showDropLine(others, index, drag) {
+  if (!el.drop_line) return;
+  const box = others.length
+    ? (others[index] || others[others.length - 1]).getBoundingClientRect()
+    : drag.node.getBoundingClientRect();
+  const atEnd = !others.length || index >= others.length;
+  const listBox = el.meeting_list.getBoundingClientRect();
+  el.drop_line.style.left = `${Math.round(listBox.left + 4)}px`;
+  el.drop_line.style.width = `${Math.round(Math.max(0, listBox.width - 8))}px`;
+  el.drop_line.style.top = `${Math.round(atEnd ? box.bottom : box.top)}px`;
+  el.drop_line.hidden = false;
+}
+
+function hideDropLine() {
+  if (el.drop_line) el.drop_line.hidden = true;
+}
+
+// 松手：到这里才动列表——把那一行插到白线画的地方——顺序真变了才发一次，再和服务对一遍。
+async function finishDrag() {
+  const drag = state.drag;
+  state.drag = null;
+  hideDropLine();
+  if (!drag) return;
+  drag.node.classList.remove("dragging");
+  if (!drag.active || drag.index < 0) return;
+  const others = dragCandidates(drag).filter((one) => one !== drag.node);
+  const next = others.slice();
+  const insert = Math.max(0, Math.min(next.length, drag.index));
+  next.splice(insert, 0, drag.node);
+  const keys = next.map(
+    (one) => (drag.kind === "meeting" ? one.dataset.meeting : one.dataset.workspace));
+  if (keys.join("|") === drag.before.join("|")) return;    // 落点就是原位：不动
+  const anchor = others[insert] || null;
+  if (anchor) anchor.parentNode.insertBefore(drag.node, anchor);
+  else if (drag.kind === "meeting") sectionFor(drag.scope)?.append(drag.node);
+  else el.meeting_list.append(drag.node);
+  // 拖完之后浏览器还会补一个 click：刚拖过这一行的人不是想打开它。
+  state.suppressClickUntil = Date.now() + 400;
+  // 先按新顺序把本地那份也改了：轮询正好在这时候重画，才不会又画回旧顺序。
+  if (drag.kind === "meeting") orderLocalMeetings(drag.scope, keys);
+  else state.workspaces = keys.slice();
+  await api(
+    drag.kind === "meeting" ? "/api/meetings/order" : "/api/workspaces/order",
+    {
+      method: "POST",
+      body: JSON.stringify(drag.kind === "meeting"
+        ? { workspace: drag.scope, meetings: keys }
+        : { workspaces: keys }),
+    },
+  );
+  await loadMeetings();
+}
+
+function orderLocalMeetings(workspacePath, keys) {
+  const mine = new Map(state.meetings
+    .filter((one) => (one.workspace_root || "") === workspacePath)
+    .map((one) => [one.meeting_id, one]));
+  const ordered = keys.map((key) => mine.get(key)).filter(Boolean);
+  let next = 0;
+  state.meetings = state.meetings.map((one) => (
+    (one.workspace_root || "") === workspacePath ? (ordered[next++] || one) : one));
+}
+
 // 重命名改的是列表里怎么叫它：目录名不动，会议一条也不挪。留空就用目录名。
 async function renameWorkspace(path) {
   hideWorkspaceMenu();
@@ -3249,7 +3538,7 @@ async function addWorkspace() {
       body: JSON.stringify({ directory }),
     });
     // 已经在名单上（或者就是默认那一个）时说一句：不然"点了没反应"看着像坏了。
-    if (answer.added === false) toast(`${basename(directory)} 已经在工作区列表里`);
+    if (answer.added === false) toast(`${basename(directory)} 已经在工作区列表里`, "info");
     await loadMeetings();
   } catch (error) {
     toast(error.message);
@@ -3283,6 +3572,9 @@ function bind() {
   });
   el.workspace_menu?.querySelector('[data-workspace-action="delete"]')?.addEventListener("click", () => {
     deleteWorkspace(state.workspaceMenuPath).catch((error) => toast(error.message));
+  });
+  el.meeting_menu?.querySelector('[data-meeting-action="delete"]')?.addEventListener("click", () => {
+    deleteMeeting(state.meetingMenuId).catch((error) => toast(error.message));
   });
   el.welcome_new_button.addEventListener("click", openWorkspace);
   el.welcome_advanced_button?.addEventListener("click", openNewDialog);
@@ -3351,6 +3643,7 @@ function bind() {
   });
   // 也可以直接点右上角那个圆圈：不知道"点外围"的人也有个去处。
   el.image_lightbox_close?.addEventListener("click", () => el.image_lightbox.close());
+  el.member_panel_close?.addEventListener("click", () => closeMemberDetails());
   el.image_input?.addEventListener("change", async () => {
     const files = Array.from(el.image_input.files || []);
     el.image_input.value = "";                       // 同一张图可以再选一次
@@ -3424,8 +3717,45 @@ function bind() {
   el.effort_live_select?.addEventListener("change", async () => {
     try {
       await postMeetingAction("effort", { reasoning_effort: el.effort_live_select.value || null });
-      toast("推理力度已更新，下一个工作周期生效");
+      toast("推理力度已更新，下一个工作周期生效", "success");
     } catch (error) { toast(error.message); }
+  });
+  // 更新：只换 Skill 文本，进程不动。指令按请求传的 harness 下一句就用上；
+  // 把指令写在自己进程里的（Claude Code / Codex）要等下一次开工。
+  el.reload_skill_button?.addEventListener("click", async () => {
+    if (!state.selectedId) return;
+    el.reload_skill_button.disabled = true;
+    try {
+      const answer = await api(
+        `/api/meetings/${encodeURIComponent(state.selectedId)}/skill/reload`,
+        { method: "POST", body: "{}" });
+      if (!answer.changed) toast("Skill 没变", "info");
+      else if (!answer.agent_running) toast("Skill 已更新：没有在跑的进程，下一轮开工就用新的", "success");
+      else if (answer.applies_to_next_request) toast("Skill 已更新：下一句就用新的", "success");
+      else toast("Skill 已更新：这个后端把指令写在进程里，下次开工生效；要立刻生效就点\"重启\"", "success");
+      if (answer.changed) holdMemberState("updating");
+      closeMemberDetails();          // 按完就收起来，跟重启一样：面板挡着终端
+      await refreshSelected();
+      await loadMeetings();
+    } catch (error) { toast(error.message); }
+    finally { el.reload_skill_button.disabled = false; }
+  });
+  // 重启：把 agent 进程杀掉，用现在的 Skill 重开一个；同一轮继续，历史照给。
+  el.restart_agent_button?.addEventListener("click", async () => {
+    if (!state.selectedId) return;
+    if (!confirm("杀掉当前 agent 进程，用最新的 Skill 重开一个？这一轮会从进程启动重新开始。")) return;
+    el.restart_agent_button.disabled = true;
+    try {
+      const answer = await api(
+        `/api/meetings/${encodeURIComponent(state.selectedId)}/agent/restart`,
+        { method: "POST", body: "{}" });
+      toast(answer.started ? "没有在跑的进程，已经用新 Skill 起了一个" : "已重启，进程马上换一个", "info");
+      holdMemberState("restarting");
+      closeMemberDetails();          // 按完就收起来：面板挡着终端，没别的用处了
+      await refreshSelected();
+      await loadMeetings();
+    } catch (error) { toast(error.message); }
+    finally { el.restart_agent_button.disabled = false; }
   });
   el.acquire_button.addEventListener("click", () => postMeetingAction("control/acquire").catch((error) => toast(error.message)));
   el.release_button.addEventListener("click", () => postMeetingAction("control/release").catch((error) => toast(error.message)));
@@ -3466,19 +3796,21 @@ function bind() {
   });
   document.addEventListener("pointercancel", () => { state.pointerSelecting = false; });
   document.addEventListener("selectionchange", scheduleSelectionMenu);
+  // 浮层是 chip 弹出来的：点别处（chip 和浮层本身以外）就收回去。走捕获阶段，
+  // 终端和别处那些 pointerdown 处理吞不掉它，不然面板会关不上。
   document.addEventListener("pointerdown", (event) => {
-    // The member panel is a popover: anything that is not its chip or the
-    // panel itself dismisses it.
-    if (
-      state.detailsAgent
-      && !event.target.closest?.(".agent-state")
-      && !event.target.closest?.("#session-details")
-    ) {
-      closeMemberDetails();
-    }
+    if (!state.detailsAgent) return;
+    if (event.target.closest?.(".agent-state") || event.target.closest?.("#member-panel")) return;
+    closeMemberDetails();
+  }, true);
+  document.addEventListener("pointerdown", (event) => {
     if (el.workspace_menu && !el.workspace_menu.hidden
         && !el.workspace_menu.contains(event.target)) {
       hideWorkspaceMenu();
+    }
+    if (el.meeting_menu && !el.meeting_menu.hidden
+        && !el.meeting_menu.contains(event.target)) {
+      hideMeetingMenu();
     }
     if (el.selection_menu.contains(event.target)) return;
     hideSelectionMenu();
@@ -3510,6 +3842,14 @@ function bind() {
       clearBrowserSelection();
     }
   });
+  // 右键拖顺序：按住挪（画白线）、松手落位。右键点一下不动顺序。
+  document.addEventListener("pointermove", updateDrag);
+  document.addEventListener("pointerup", () => {
+    if (state.drag) finishDrag().catch((error) => toast(error.message));
+  });
+  document.addEventListener("pointercancel", () => {
+    if (state.drag) finishDrag().catch((error) => toast(error.message));
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (state.evaluationSelection && !state.evaluationBusy) {
@@ -3518,6 +3858,7 @@ function bind() {
       closeMemberDetails();
       hideSelectionMenu();
       hideWorkspaceMenu();
+      hideMeetingMenu();
       clearBrowserSelection();
       state.keyboardSelection = null;
     }
@@ -3698,12 +4039,19 @@ async function boot() {
     // up opening a meeting: start it and let it land whenever it lands.
     loadHealth().catch((error) => toast(error.message));
     await Promise.all([loadMeetings(), loadSettings()]);
-    // The list is ordered by last activity, so its first entry is the meeting
-    // the human was most recently in. A reload always lands there; with nothing
-    // to reopen the welcome card stands, and the human picks a workspace when
-    // they open a session (no more phantom meeting in a `runs/` pile).
-    if (state.meetings.length) await selectMeeting(state.meetings[0].meeting_id);
-    else renderAll();
+    // 刷新回到上次打开的那一场（存在浏览器里）；它要是没了，才退回"最近活动的第一场"。
+    // 一场都没有的时候欢迎卡片留着，人来选工作区。
+    const known = new Set(state.meetings.map((one) => one.meeting_id));
+    const remembered = rememberedMeeting();
+    const target = known.has(remembered)
+      ? remembered
+      : (state.meetings.length ? state.meetings[0].meeting_id : "");
+    if (target) {
+      await selectMeeting(target);
+      revealSelectedMeeting();
+    } else {
+      renderAll();
+    }
   } catch (error) {
     // Only a genuine failure (service down, meeting unreadable) leaves the
     // welcome card on screen.

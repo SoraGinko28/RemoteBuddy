@@ -40,6 +40,7 @@ from claude_code_client import (
     ClaudeCodeError,
     probe_claude_backend,
 )
+from acp_client import AcpBackend
 from interactive_runner import (
     InteractiveRunner,
     RunnerError,
@@ -86,6 +87,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # 服务默认就用项目根，`--workspace DIR` 换一个。
 WORKSPACE_INDEX = "workspaces"
 WORKSPACE_NAMES = "workspace_names"
+# 拖出来的顺序：工作区那份放在默认工作区的 `.meeting/` 里，一行一个目录；会话那份放在
+# 它自己工作区的 `.meeting/` 里，一行一个会议号（见 order_workspaces / order_meetings）。
+WORKSPACE_ORDER = "workspace_order"
+MEETING_ORDER = "order"
+# 同一场会同时只能有一个服务在驱。声明写在这场会自己的目录里（谁在跑就写谁 + 心跳），
+# 因为两个服务共享的正是这个目录；数据共享、驱动不共享。
+DRIVER_STATE = "driver.json"
+DRIVER_HEARTBEAT_SECONDS = 20.0
 # 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
 CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
@@ -128,6 +137,7 @@ BACKEND_COMBINATIONS = {
     ("responses", "openai"): "Responses API",
     ("codex-app-server", "openai"): "Codex App Server",
     ("trae-agent", "openai"): "Trae Agent",
+    ("trae-acp", "openai"): "Trae ACP",
     ("claude-code", "deepseek"): "Claude Code + DeepSeek",
 }
 OVERRIDES_FILENAME = "overrides.json"
@@ -449,6 +459,9 @@ class MeetingWebService:
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
+        # 正在跑的 runner（一场会同时最多一个）：页面上"更新 / 重启"两个按钮
+        # 要能戳到它，见 reload_skill / restart_agent。
+        self.active_runners: Dict[str, Any] = {}
         self.human_pipes: Dict[str, bool] = {}
         self.human_geometry: Dict[str, Dict[str, int]] = {}
         # Whether the Agent was mid-work when the human took over; only then
@@ -533,17 +546,47 @@ class MeetingWebService:
         except (TmuxError, OSError):
             return False
 
-    def _require_terminal(self, store: MeetingStore, action: str) -> None:
-        """Refuse an action that needs a terminal the meeting no longer has.
+    def _ensure_terminal(self, store: MeetingStore) -> None:
+        """要用终端之前先保证它在；没有就在同一个目录上重开一个。
 
-        The refusal also records what the probe just learned: the session is
-        gone, so the meeting must stop offering terminal operations.
+        tmux 会话没了（tmux 服务被杀、机器重启、清理时误伤）不是这场会的结局：那条路径
+        还在，就在那儿再开一个同名会话，人就又能接管、agent 又能接着跑。开在哪儿按原来的
+        位置来：终端当时在哪个目录（`current_path`）就回哪个目录，那个目录不在了才回工作区根。
+        两处都不在了（工作区被删/搬走）才拦下来。
         """
         if self._terminal_alive(store):
             return
-        if store.meeting.session_state != "stopped":
-            store.mark_session_stopped()
-        raise WebError(410, f"terminal session is gone; cannot {action}")
+        workspace = store.workspace_path
+        home: Optional[Path] = None
+        for candidate in (store.meeting.current_path, str(workspace)):
+            text = str(candidate or "").strip()
+            if not text:
+                continue
+            path = Path(text)
+            if path.is_dir():
+                home = path
+                break
+        if home is None:
+            raise WebError(
+                409, "the workspace directory is gone: this meeting cannot get a terminal"
+            )
+        transport = self._transport()
+        # 会话名还在、只是里面的 pane 死了：先把这个空壳收掉，再开新的。
+        try:
+            if transport.session_exists(store.meeting.session_name):
+                transport.kill_session(store.meeting.session_name)
+        except (TmuxError, OSError):
+            pass
+        pane_id = transport.create_workspace_session(store.meeting.session_name, home)
+        store.set_session(pane_id)
+        capture_workspace(store, transport)
+        store.append_event(
+            "state",
+            "harness",
+            store.meeting.phase,
+            content="终端会话已重开（原来的没了）。",
+            data={"status": "terminal_reopened", "pane_id": pane_id, "path": str(home)},
+        )
 
     def _make_backend(self, config: ModelApiConfig) -> AgentBackend:
         if self.client_factory is not None:
@@ -552,6 +595,8 @@ class MeetingWebService:
             return CodexAppServerBackend(config)
         if config.agent_backend == "trae-agent":
             return TraeAgentBackend(config)
+        if config.agent_backend == "trae-acp":
+            return AcpBackend(config)
         if config.agent_backend == "claude-code":
             return ClaudeCodeBackend(config)
         return OpenAIResponsesClient(config)
@@ -764,12 +809,36 @@ class MeetingWebService:
                 self._store_cache.pop(next(iter(self._store_cache)))
         return store
 
+    def _meeting_dir(self, meeting_id: str) -> Optional[Path]:
+        """这场会的数据目录。
+
+        同一个会议号可能出现在两个工作区里（有人把工作区连 `.meeting/` 一起拷了一份）。
+        真正属于某个工作区的那一份，manifest 里写的 `workspace_root` 就是它所在的目录；
+        拷贝出来的那一份写的是原来那个目录。所以先认这一份，认不出来才用先碰到的。
+        """
+        fallback: Optional[Path] = None
+        for directory in self._meeting_dirs():
+            if directory.name != meeting_id:
+                continue
+            if fallback is None:
+                fallback = directory
+            manifest_path = directory / "meeting.json"
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if str(manifest.get("workspace_root") or "") == str(directory.parent.parent):
+                return directory
+        return fallback
+
     def _open_store(self, meeting_id: str) -> MeetingStore:
         """这场会在哪个工作区的 `.meeting/` 下，就按那条数据路径读回来。"""
-        for directory in self._meeting_dirs():
-            if directory.name == meeting_id:
-                return MeetingStore.load_at(directory, meeting_id)
-        raise MeetingError(f"meeting not found: {meeting_id}")
+        directory = self._meeting_dir(meeting_id)
+        if directory is None:
+            raise MeetingError(f"meeting not found: {meeting_id}")
+        return MeetingStore.load_at(directory, meeting_id)
 
     def revision(self, meeting_id: str) -> str:
         """Stat-only change marker used to answer conditional GETs early."""
@@ -1040,7 +1109,7 @@ class MeetingWebService:
         return self.workspace / MeetingStore.WORKSPACE_DIR / WORKSPACE_INDEX
 
     def _known_workspaces(self) -> List[Path]:
-        """默认那一个，加上以前用过、现在还在的那些目录。"""
+        """默认那一个，加上以前用过、现在还在的那些目录；人拖过序就按他拖的来。"""
         found = [self.workspace]
         try:
             lines = self._workspace_index().read_text(encoding="utf-8").splitlines()
@@ -1050,7 +1119,41 @@ class MeetingWebService:
             path = Path(line.strip()).expanduser()
             if line.strip() and path.is_dir() and path not in found:
                 found.append(path.resolve())
+        order = self._workspace_order()
+        if not order:
+            return found
+        ordered = [path for path in order if path in found]
+        return ordered + [path for path in found if path not in ordered]
+
+    def _workspace_order_index(self) -> Path:
+        """人拖出来的工作区顺序：默认工作区里的一行行目录。"""
+        return self.workspace / MeetingStore.WORKSPACE_DIR / WORKSPACE_ORDER
+
+    def _workspace_order(self) -> List[Path]:
+        try:
+            lines = self._workspace_order_index().read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        found: List[Path] = []
+        for line in lines:
+            text = line.strip()
+            if not text:
+                continue
+            path = Path(text).expanduser()
+            if path.is_dir() and path not in found:
+                found.append(path.resolve())
         return found
+
+    def _meeting_order_index(self, workspace: Path) -> Path:
+        """那个工作区里人拖出来的会话顺序：`.meeting/order`，一行一个会议号。"""
+        return workspace / MeetingStore.WORKSPACE_DIR / MEETING_ORDER
+
+    def _meeting_order(self, workspace: Path) -> List[str]:
+        try:
+            lines = self._meeting_order_index(workspace).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        return [line.strip() for line in lines if line.strip()]
 
     def _listed_workspaces(self) -> List[Path]:
         """名单上明着记着的目录：索引里的一行行，目录还在的那些。
@@ -1147,6 +1250,9 @@ class MeetingWebService:
     def list_meetings(self) -> Dict[str, Any]:
         summaries: List[Dict[str, Any]] = []
         warnings: List[str] = []
+        # 会议号是这层接口里唯一的名字（每条路由都只有 id），所以列表里一个号只能出现一次。
+        # 同一个号被拷到两个工作区时留真正属于那个目录的一份（判据见 _meeting_dir）。
+        chosen: Dict[str, Tuple[Dict[str, Any], bool]] = {}
         for directory in self._meeting_dirs():
             if not MEETING_ID_RE.fullmatch(directory.name):
                 continue
@@ -1155,10 +1261,32 @@ class MeetingWebService:
                 continue
             try:
                 store = MeetingStore.load_at(directory, directory.name)
-                summaries.append(_public_manifest(store))
+                summary = _public_manifest(store)
             except (MeetingError, OSError, ValueError) as exc:
                 warnings.append(f"{directory.name}: {exc}")
-        summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+                continue
+            at_home = str(summary.get("workspace_root") or "") == str(directory.parent.parent)
+            existing = chosen.get(summary["meeting_id"])
+            if existing is None or (at_home and not existing[1]):
+                chosen[summary["meeting_id"]] = (summary, at_home)
+        summaries = [item[0] for item in chosen.values()]
+        # 顺序：先按工作区（人在侧边栏拖出来的那个次序），工作区里面按人拖出来的会话次序；
+        # 没拖过序的会话排在最上面（新的在上），跟没拖过时一样。这样页面只是照着这份顺序画。
+        workspaces = self._known_workspaces()
+        workspace_rank = {str(path): index for index, path in enumerate(workspaces)}
+        meeting_rank: Dict[Tuple[str, str], int] = {}
+        for path in workspaces:
+            for index, meeting_id in enumerate(self._meeting_order(path)):
+                meeting_rank[(str(path), meeting_id)] = index
+        # 两次稳定排序：先按时间（新的在前），再按（工作区次序，会话次序）——
+        # 没拖过序的那些（次序为 -1）就保留时间那一遍的结果。
+        summaries.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        summaries.sort(key=lambda item: (
+            workspace_rank.get(str(item.get("workspace_root") or ""), len(workspaces)),
+            meeting_rank.get(
+                (str(item.get("workspace_root") or ""), str(item.get("meeting_id") or "")), -1
+            ),
+        ))
         return {"meetings": summaries, "warnings": warnings,
                 **self._workspaces_payload(self.workspace)}
 
@@ -1204,8 +1332,12 @@ class MeetingWebService:
         return self._workspaces_payload(self.workspace)
 
     def _asked_workspace(self, payload: Dict[str, Any]) -> Path:
-        """payload 里那个目录：必须是已经记着的工作区。"""
-        workspace = _as_workspace(payload.get("directory"), self.workspace)
+        """payload 里那个目录：必须是已经记着的工作区。
+
+        两个字段名都收：老的那几处写 `directory`，拖动排序写 `workspace`。
+        """
+        asked = payload.get("directory") or payload.get("workspace")
+        workspace = _as_workspace(asked, self.workspace)
         if workspace not in self._known_workspaces():
             raise WebError(400, f"不是已记着的工作区：{workspace}")
         return workspace
@@ -1220,6 +1352,55 @@ class MeetingWebService:
                 "workspaces": [str(one) for one in self._known_workspaces()],
                 "listed": [str(one) for one in self._listed_workspaces()],
                 "workspace_titles": self._workspace_names()}
+
+    def order_workspaces(self, payload: Any = None) -> Dict[str, Any]:
+        """人把工作区拖出来的次序记下来（默认工作区的 `.meeting/workspace_order`）。
+
+        只认已经记着的目录；名单上没点到的那些按原来的次序补在后面，所以一次拖动不会让
+        谁从列表里消失（新加的工作区也一样）。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        asked = payload.get("workspaces")
+        if not isinstance(asked, list) or not all(isinstance(one, str) for one in asked):
+            raise WebError(400, "workspaces must be an array of directories")
+        known = self._known_workspaces()
+        ordered: List[Path] = []
+        for text in asked:
+            path = Path(text).expanduser()
+            if not path.is_dir():
+                continue
+            resolved = path.resolve()
+            if resolved in known and resolved not in ordered:
+                ordered.append(resolved)
+        ordered.extend(path for path in known if path not in ordered)
+        index = self._workspace_order_index()
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(f"{path}\n" for path in ordered), encoding="utf-8")
+        return self._workspaces_payload(self.workspace)
+
+    def order_meetings(self, payload: Any = None) -> Dict[str, Any]:
+        """人把一个工作区里的会话拖出来的次序记下来（那个工作区的 `.meeting/order`）。
+
+        只认这个工作区里真有的会议号；没点到的（比如拖动之后新开的会）留着不写，
+        列表里它们照旧按时间排在最上面。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace = self._asked_workspace(payload)
+        asked = payload.get("meetings")
+        if not isinstance(asked, list) or not all(isinstance(one, str) for one in asked):
+            raise WebError(400, "meetings must be an array of meeting ids")
+        folder = workspace / MeetingStore.WORKSPACE_DIR
+        ordered: List[str] = []
+        for meeting_id in asked:
+            if not MEETING_ID_RE.fullmatch(meeting_id) or meeting_id in ordered:
+                continue
+            if (folder / meeting_id).is_dir():
+                ordered.append(meeting_id)
+        index = self._meeting_order_index(workspace)
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(f"{meeting_id}\n" for meeting_id in ordered), encoding="utf-8")
+        return {"workspace": str(workspace), "meetings": ordered,
+                **self._workspaces_payload(self.workspace)}
 
     def _open_terminal_if_needed(self, store: MeetingStore) -> None:
         """只开了工作区、终端还没开出来的会：被看上一眼就把终端补上。
@@ -1516,8 +1697,11 @@ class MeetingWebService:
             if model == "":
                 # Empty string = "let the CLI use its own default model"
                 # (subscription logins); only the app-server CLIs support it.
-                if backend not in {"codex-app-server", "trae-agent"}:
-                    raise WebError(400, "empty model is only supported for codex-app-server or trae-agent")
+                if backend not in {"codex-app-server", "trae-agent", "trae-acp"}:
+                    raise WebError(
+                        400,
+                        "empty model is only supported for codex-app-server, trae-agent or trae-acp",
+                    )
             elif not MODEL_RE.fullmatch(model):
                 raise WebError(400, "model must be a short string")
         config = self._resolve_config(config, backend, provider, model)
@@ -1530,7 +1714,7 @@ class MeetingWebService:
         model = config.model
         if not isinstance(model, str) or not (
             MODEL_RE.fullmatch(model)
-            or (model == "" and config.agent_backend in {"codex-app-server", "trae-agent"})
+            or (model == "" and config.agent_backend in {"codex-app-server", "trae-agent", "trae-acp"})
         ):
             raise WebError(400, "model must be a short string")
         typing_profile = payload.get("typing_profile", "balanced")
@@ -1571,6 +1755,100 @@ class MeetingWebService:
         )
         return store
 
+    # ------------------------------------------------------------------
+    # 谁在驱这场会：两个服务共享同一个工作区时，只有一个能动
+    # ------------------------------------------------------------------
+
+    def _driver_path(self, store: MeetingStore) -> Path:
+        return Path(store.run_dir) / DRIVER_STATE
+
+    def _driver_state(self, store: MeetingStore) -> Optional[Dict[str, Any]]:
+        try:
+            payload = json.loads(self._driver_path(store).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _process_alive(pid: Any) -> bool:
+        if not isinstance(pid, int) or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def _driver_alive(self, state: Dict[str, Any]) -> bool:
+        """这份声明还算数吗：写它的进程活着，而且心跳还新。"""
+        if not self._process_alive(state.get("pid")):
+            return False
+        beat = state.get("heartbeat")
+        if not isinstance(beat, (int, float)):
+            return False
+        return (time.time() - float(beat)) <= DRIVER_HEARTBEAT_SECONDS * 3
+
+    def _write_driver(self, store: MeetingStore, state: Dict[str, Any]) -> None:
+        path = self._driver_path(store)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _claim_driver(self, store: MeetingStore) -> None:
+        self._write_driver(store, {
+            "pid": os.getpid(),
+            "url": self.public_url or "",
+            "workspace": str(self.workspace),
+            "meeting_id": store.meeting.meeting_id,
+            "heartbeat": time.time(),
+        })
+
+    def _touch_driver(self, store: MeetingStore) -> None:
+        state = self._driver_state(store)
+        if state and state.get("pid") == os.getpid():
+            state["heartbeat"] = time.time()
+            self._write_driver(store, state)
+
+    def _release_driver(self, store: MeetingStore) -> None:
+        state = self._driver_state(store)
+        if state and state.get("pid") == os.getpid():
+            try:
+                self._driver_path(store).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def driver_url(self, meeting_id: str) -> str:
+        """这场会现在归哪个服务驱；没人驱（或声明过期）就是空串。"""
+        try:
+            store = self.load_store(meeting_id)
+        except WebError:
+            return ""
+        state = self._driver_state(store)
+        if not state or not self._driver_alive(state):
+            return ""
+        if state.get("pid") == os.getpid():
+            return ""
+        return str(state.get("url") or "")
+
+    def _ensure_driver(self, store: MeetingStore) -> None:
+        """要驱这场会之前先拿声明；别的服务握着就明确拒绝，并报出它的地址。
+
+        两个服务共享同一个工作区（同一份会议目录、同一个 tmux 会话名）时，读是天然一致的，
+        但写只能有一个：否则两个模型会各起一个 CLI、往同一个 pane 里各打各的。
+        """
+        state = self._driver_state(store)
+        if state and state.get("pid") != os.getpid() and self._driver_alive(state):
+            url = str(state.get("url") or "")
+            where = f"（它在 {url}）" if url else ""
+            raise WebError(409, f"这场会正由另一个服务驱动{where}：请到那边操作，或先停掉它")
+        self._claim_driver(store)
+
     def _ensure_worker(
         self,
         store: MeetingStore,
@@ -1581,6 +1859,7 @@ class MeetingWebService:
         terminal_only: bool = False,
     ) -> None:
         meeting_id = store.meeting.meeting_id
+        self._ensure_driver(store)
         try:
             config = config.resolve(
                 store.meeting.agent_backend,
@@ -1623,8 +1902,19 @@ class MeetingWebService:
         terminal_only: bool = False,
     ) -> None:
         pending: Optional[Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = None
+        runner: Optional[Any] = None
+        heartbeat_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._driver_heartbeat,
+            args=(store, heartbeat_stop),
+            name=f"remotebuddy-driver-{store.meeting.meeting_id}",
+            daemon=True,
+        )
+        heartbeat.start()
         try:
             runner = self.runner_factory(store, transport, client, lock=meeting_lock)
+            with self.lock:
+                self.active_runners[store.meeting.meeting_id] = runner
             if terminal_only:
                 # 只看工作区：把终端开出来，不叫 agent（第一句话在聊天框里说）。
                 runner.open()
@@ -1633,6 +1923,8 @@ class MeetingWebService:
             else:
                 runner.start()
         finally:
+            heartbeat_stop.set()
+            self._release_driver(store)
             close = getattr(client, "close", None)
             if callable(close):
                 try:
@@ -1643,6 +1935,8 @@ class MeetingWebService:
                 meeting_id = store.meeting.meeting_id
                 if self.active_backends.get(meeting_id) is client:
                     self.active_backends.pop(meeting_id, None)
+                if self.active_runners.get(meeting_id) is runner:
+                    self.active_runners.pop(meeting_id, None)
                 if self.jobs.get(meeting_id) is threading.current_thread():
                     self.jobs.pop(meeting_id, None)
                 pending = self.queued_jobs.pop(meeting_id, None)
@@ -1655,6 +1949,11 @@ class MeetingWebService:
                     fresh_conversation=next_fresh,
                     terminal_only=next_terminal,
                 )
+
+    def _driver_heartbeat(self, store: MeetingStore, stop: threading.Event) -> None:
+        """驱动期间每几秒把心跳顶一下：进程卡死/被杀，声明就会过期，另一个服务能接手。"""
+        while not stop.wait(DRIVER_HEARTBEAT_SECONDS / 2):
+            self._touch_driver(store)
 
     def _ensure_capture_worker(self, store: MeetingStore) -> None:
         meeting_id = store.meeting.meeting_id
@@ -1680,6 +1979,7 @@ class MeetingWebService:
                     if store.meeting.status in TERMINAL_STATUSES:
                         return
                     if store.meeting.control_owner == "human":
+                        self._touch_driver(store)
                         try:
                             capture_workspace(store, transport)
                         except (RunnerError, TmuxError, OSError) as exc:
@@ -1819,7 +2119,7 @@ class MeetingWebService:
             if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
                 # A chat while the human holds the terminal is an explicit
                 # instruction: hand control back AND resume the Agent with it.
-                self._require_terminal(store, "hand control back")
+                self._ensure_terminal(store)
                 self._sync_human_pipe(store)
                 return self._resume_agent_from_human(meeting_id)
             # 2b routing: @mention summons the named non-actor member;
@@ -1833,7 +2133,7 @@ class MeetingWebService:
             # rather than the actor.
             mentioned_agent_names(message, store.meeting.effective_role_map)
             if delivery == "interrupt" or wake_agent:
-                self._require_terminal(store, "run the agent")
+                self._ensure_terminal(store)
                 store.bump_request_generation(
                     failure=None,
                     cycle_action_count=0,
@@ -1885,11 +2185,12 @@ class MeetingWebService:
     def acquire(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
+            self._ensure_driver(store)
             if store.meeting.status in TERMINAL_STATUSES:
                 raise WebError(409, "meeting is already finished")
             # Refuse before touching any state: taking over a pane that no
             # longer exists used to fail the whole meeting afterwards.
-            self._require_terminal(store, "take over")
+            self._ensure_terminal(store)
             if store.meeting.control_owner == "human":
                 return store
             orphaned_agent = self._orphaned_agent(store, meeting_id)
@@ -1913,6 +2214,7 @@ class MeetingWebService:
     def release(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
+            self._ensure_driver(store)
             if store.meeting.control_owner != "human":
                 return store
             with self.lock:
@@ -1976,8 +2278,8 @@ class MeetingWebService:
           ``$ctrl`` / ``$rest`` plus bare literal strings), retained for
           programmatic callers and tests.
 
-        The human is deliberately free to type anywhere -- shell, Vim, a
-        REPL, or any foreground program -- so no process whitelist is
+        The human is deliberately free to type anywhere -- the shell, an
+        editor, a REPL, or any foreground program -- so no process whitelist is
         enforced. Input re-checks ownership before sending, so a burst stops
         the moment the human releases, chats, or stops the meeting.
         """
@@ -2142,9 +2444,10 @@ class MeetingWebService:
         return store
 
     def stop(self, meeting_id: str) -> MeetingStore:
+        initial = self.load_store(meeting_id)
+        self._ensure_driver(initial)
         # Publish the durable interrupt before contending on meeting/state
         # locks. The typing loop checks this file at every burst boundary.
-        initial = self.load_store(meeting_id)
         if initial.meeting.session_state == "stopped" and initial.meeting.status == "interrupted":
             return initial
         if initial.meeting.status in {"completed", "failed"}:
@@ -2198,7 +2501,135 @@ class MeetingWebService:
             store.append_event("control", "human", store.meeting.phase, data={"status": "cleaned"})
         return store
 
-    def resume(self, meeting_id: str) -> MeetingStore:
+    def delete_meeting(self, meeting_id: str) -> Dict[str, Any]:
+        """把一场会从列表和磁盘上删掉（页面上那条会话的"删除会话"）。
+
+        先照停止那套把在跑的 worker 和它的终端收掉，再删数据目录。目录先改名、再删：
+        列表是按目录名扫出来的，改完名字它立刻不在了，哪怕删到一半也不会有半场会留在列表上。
+        """
+        store = self.load_store(meeting_id)
+        if store.meeting.status not in TERMINAL_STATUSES:
+            self.stop(meeting_id)
+        elif store.meeting.session_state != "stopped":
+            self.cleanup(meeting_id)
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            run_dir = Path(store.run_dir)
+            folder = run_dir.parent
+            if (folder.name != MeetingStore.WORKSPACE_DIR or run_dir.name != meeting_id
+                    or not run_dir.is_dir()):
+                raise WebError(500, "meeting data path looks wrong")
+            workspace = folder.parent
+            graveyard = folder / f".deleting-{meeting_id}-{secrets.token_hex(4)}"
+            try:
+                os.replace(run_dir, graveyard)
+            except OSError as exc:
+                raise WebError(502, f"meeting data could not be moved aside: {exc}") from exc
+            shutil.rmtree(graveyard, ignore_errors=True)
+            with self.lock:
+                self.jobs.pop(meeting_id, None)
+                self.queued_jobs.pop(meeting_id, None)
+                self.capture_jobs.pop(meeting_id, None)
+                self.active_backends.pop(meeting_id, None)
+                self.active_runners.pop(meeting_id, None)
+                self.human_pipes.pop(meeting_id, None)
+                self.human_geometry.pop(meeting_id, None)
+                self.human_resume.pop(meeting_id, None)
+                self._store_cache.pop(meeting_id, None)
+        return {"meeting_id": meeting_id, "deleted": True, "workspace": str(workspace)}
+
+    # ------------------------------------------------------------------
+    # Skill 那一侧：更新（不动进程）与重启（换一个进程）
+    # ------------------------------------------------------------------
+
+    def _install_project_skill(self, store: MeetingStore) -> Tuple[str, int, bool]:
+        """把仓库里那份 Skill 覆盖到这场会，返回（摘要, 字节数, 有没有变）。"""
+        source = self.skill_path
+        if not source.is_file():
+            raise WebError(500, f"project skill is missing: {source}")
+        text = source.read_text(encoding="utf-8")
+        target = store.runtime_skill_path
+        previous = target.read_text(encoding="utf-8") if target.is_file() else ""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        payload = text.encode("utf-8")
+        return hashlib.sha256(payload).hexdigest(), len(payload), previous != text
+
+    def _live_agent(self, meeting_id: str) -> Tuple[Optional[Any], Optional[AgentBackend]]:
+        """正在跑的 runner 和它的 backend；没有就是 (None, None)。"""
+        with self.lock:
+            job = self.jobs.get(meeting_id)
+            if job is None or not job.is_alive():
+                return None, None
+            return self.active_runners.get(meeting_id), self.active_backends.get(meeting_id)
+
+    def reload_skill(self, meeting_id: str) -> Dict[str, Any]:
+        """页面上的"更新"：换掉 Skill 文本，进程不动。
+
+        指令按请求传的 harness（responses / DeepSeek）下一句就用上；把指令写在
+        自己进程里的（Claude Code、Codex App Server）要等下一次开工才换 —— 想
+        立刻换，用 restart_agent。
+        """
+        store = self.load_store(meeting_id)
+        if store.meeting.status in TERMINAL_STATUSES:
+            raise WebError(409, "meeting is already finished")
+        digest, size, changed = self._install_project_skill(store)
+        runner, client = self._live_agent(meeting_id)
+        per_request = callable(getattr(client, "update_instructions", None))
+        if runner is None:
+            store.append_event(
+                "state",
+                "harness",
+                "skill_reload",
+                data={"status": "completed", "sha256": digest, "bytes": size,
+                      "changed": changed, "agent_running": False},
+            )
+        else:
+            # 从这一刻起到 agent 真的读到新文本，状态就是"更新"。
+            # 没有在跑的进程时不该这么标：那没有人会把它摘下来。
+            with self._meeting_lock(meeting_id):
+                store.update(phase="skill_reload")
+            runner.request_skill_reload()
+        return {
+            "meeting_id": meeting_id,
+            "sha256": digest,
+            "bytes": size,
+            "changed": changed,
+            "agent_running": runner is not None,
+            "applies_to_next_request": per_request,
+        }
+
+    def restart_agent(self, meeting_id: str) -> Dict[str, Any]:
+        """页面上的"重启"：杀掉当前 agent 进程，用现在的 Skill 重开一个。
+
+        没有在跑的进程就没有可重启的东西 —— 下一次开工本来就是一个新进程。
+        """
+        store = self.load_store(meeting_id)
+        if store.meeting.status in TERMINAL_STATUSES:
+            raise WebError(409, "meeting is already finished")
+        digest, size, changed = self._install_project_skill(store)
+        runner, _client = self._live_agent(meeting_id)
+        answer = {"meeting_id": meeting_id, "sha256": digest, "bytes": size,
+                  "changed": changed, "restarting": True}
+        if runner is not None:
+            # 有进程：杀掉、用新 Skill 重开一个，同一轮继续。
+            with self._meeting_lock(meeting_id):
+                store.update(phase="agent_restart")
+            runner.request_backend_restart()
+            return {**answer, "started": False}
+        # 没有进程：那就现在起一个 —— 按"重启"的人要的就是一个换过 Skill 的新进程，
+        # 而不是一句"没有在跑的进程"。由人握着终端的时候不许抢。
+        if store.meeting.control_owner == "human" or store.meeting.phase in {"created", "starting", "human_control"}:
+            raise WebError(409, "agent 没在跑，而且这会儿不该起：先交回控制（或说一句话）再重启")
+        self.resume(meeting_id, starting_phase="agent_restart")
+        return {**answer, "started": True}
+
+    def resume(self, meeting_id: str, starting_phase: Optional[str] = None) -> MeetingStore:
+        """叫醒 agent 干这一轮。
+
+        `starting_phase` 是进程起来之前那段的状态：页面上按"重启"时给 `agent_restart`，
+        这样换进程的这段时间 chip 上看得见；默认还是 `agent_thinking`。
+        """
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
             if store.meeting.status in TERMINAL_STATUSES:
@@ -2206,7 +2637,7 @@ class MeetingWebService:
             orphaned_agent = self._orphaned_agent(store, meeting_id)
             if store.meeting.phase not in RESUMABLE_PHASES and not orphaned_agent:
                 raise WebError(409, "Agent can resume only while waiting or after an API error")
-            self._require_terminal(store, "resume the agent")
+            self._ensure_terminal(store)
             config = self._config_for_store(store)
             fresh_conversation = (
                 store.meeting.phase in {"api_error", "cycle_timeout", "completion_proposed"}
@@ -2215,7 +2646,7 @@ class MeetingWebService:
             )
             store.bump_request_generation(
                 status="running",
-                phase="agent_thinking",
+                phase=starting_phase or "agent_thinking",
                 control_owner=store.meeting.actor_name(),
                 failure=None,
                 cycle_action_count=0,
@@ -2276,7 +2707,7 @@ class MeetingWebService:
                     ok, detail = True, resolved.model
                     if backend == "codex-app-server":
                         ok, detail = self._probe_codex_config(resolved)
-                    elif backend == "trae-agent":
+                    elif backend in {"trae-agent", "trae-acp"}:
                         ok, detail = self._probe_trae_config(resolved)
                     elif backend == "claude-code":
                         ok, detail = self._probe_claude_config(resolved)
@@ -2292,7 +2723,8 @@ class MeetingWebService:
                         "has_api_key": has_api_key,
                         # codex-app-server authenticates via the local CLI
                         # login and never needs a stored key.
-                        "needs_api_key": not has_api_key and backend not in {"codex-app-server", "trae-agent"},
+                        "needs_api_key": not has_api_key
+                        and backend not in {"codex-app-server", "trae-agent", "trae-acp"},
                         "required": key == selected_key,
                     }
                 except (ModelConfigError, ClaudeCodeError, CodexAppServerError) as exc:
@@ -2719,8 +3151,14 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 store = self.service.start(self._read_json())
                 self._json({"meeting_id": store.meeting.meeting_id, "meeting": _public_manifest(store)}, status=201)
                 return
+            if path == "/api/meetings/order":
+                self._json(self.service.order_meetings(self._read_json()))
+                return
             if path == "/api/workspaces":
                 self._json(self.service.add_workspace(self._read_json()))
+                return
+            if path == "/api/workspaces/order":
+                self._json(self.service.order_workspaces(self._read_json()))
                 return
             if path == "/api/workspaces/rename":
                 self._json(self.service.rename_workspace(self._read_json()))
@@ -2743,6 +3181,14 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 payload = self._read_bytes()
                 self._json({"attachment": self.service.save_attachment(
                     unquote(match.group(1)), media_type, payload)}, status=201)
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/skill/reload", path)
+            if match:
+                self._json(self.service.reload_skill(unquote(match.group(1))))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/agent/restart", path)
+            if match:
+                self._json(self.service.restart_agent(unquote(match.group(1))))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/sdk/([A-Za-z_][A-Za-z0-9_]*)", path)
             if match:
@@ -2776,6 +3222,11 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 self._read_json()
                 self._json(self.service.issue_ticket(unquote(match.group(1)),
                                                      unquote(match.group(2))))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/delete", path)
+            if match:
+                self._read_empty_json()
+                self._json(self.service.delete_meeting(unquote(match.group(1))))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/(control/acquire|control/release|agent/resume|complete|stop|cleanup)", path)
             if match:
@@ -2841,6 +3292,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "codex-app-server": ("codex-app-server", "openai"),
             "trae": ("trae-agent", "openai"),
             "trae-agent": ("trae-agent", "openai"),
+            "trae-acp": ("trae-acp", "openai"),
         }
         pair = aliases.get(args.harness)
         if pair is None:

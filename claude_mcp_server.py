@@ -88,8 +88,12 @@ async def run() -> None:
                 types.Tool(
                     name=TOOL_NAME,
                     description=(
-                        "Submit exactly one validated action to RemoteBuddy's shared terminal. "
-                        "RemoteBuddy, not Claude Code, executes the action."
+                        "Submit exactly one validated action to RemoteBuddy's shared terminal, "
+                        "which RemoteBuddy -- not you -- executes. That terminal is the pane the "
+                        "human watches: use it to change things (edit, build, test, git). To "
+                        "look at a file, use your own read tools instead; a plain reader "
+                        "(cat, sed, head, tail, nl, rg, grep, ls, wc, file, stat, tree) is "
+                        "refused here."
                     ),
                     input_schema=action_json_schema(),
                 )
@@ -107,7 +111,6 @@ async def run() -> None:
         try:
             action = AgentAction.from_dict(payload)
             normalized_action = asdict(action)
-            normalized_action["keys"] = list(action.keys)
             if action.references:
                 normalized_action["references"] = [dict(item) for item in action.references]
             else:

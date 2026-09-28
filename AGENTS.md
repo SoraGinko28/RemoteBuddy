@@ -31,3 +31,12 @@
 ## 本地那个页面（教训，长期有效）
 - 8765 的页面是**长驻进程**，内存里是它启动那一刻的代码：改角色名、改 manifest 字段这类东西之后必须重启它，否则它拿旧校验把新数据判成非法——列表里会凭空少掉一批会议（这次把角色改成 `actor`，77 场会议就从列表里消失了）。
 - 重启：`kill <旧 PID>`，仓库根下 `nohup .venv/bin/python web_v2.py --harness=trae > /tmp/web_v2_page.log 2>&1 &`，再确认 `curl -s localhost:8765/api/meetings` 的 `warnings` 是空的。
+
+## 提交前先分辨这是不是 actor 改的（教训，长期有效）
+- 会有时候就开在这个仓库里，**actor 改的就是当前这棵工作树**。`git add -A` / `git add .` 会把它的改动一起提交——2026-09-26 就这么把 actor 改坏的 `frontend/workspace.css` 提交进了 `8606a6a`（文件开头的 `/*` 被删、`.toast` 整条没了、`.app-shell` 被挪出 980px 的媒体查询）。
+- 提交前逐条看 `git status` 和 `git diff`，**只 `git add` 自己动过的那几个文件**，不要用 `-A`。有会正在跑的时候尤其如此。
+- 拿不准就对着那场会的 journal 核一下：`<会议目录>/streams/events.jsonl` 里的 `action` 事件是 actor 干过的事，`git diff` 里的改动对得上就是它改的，不该进我的提交。
+
+## 页面上有话说放哪（用户明确要求，长期有效）
+- 提示、报错、debug 这类临时信息**只放上边栏里、靠左对齐**：`#toast` 是上边栏 `.session-identity` 里的一块（会议标题那一侧），不是浮在内容上的方块。**不许放右下角**（挡住输入框），**也不许悬在上边栏下面**（压住对话和终端）——两种都被用户骂过一次了。没有会议时（欢迎卡片）用 `#welcome-toast`，贴左上角。
+- 给用户看的提示里**不许带内部标识**：sha256、session id、事件号、字节数这类要看就去 journal 里看，提示里只说人话（"Skill 没变"、"Skill 已更新：下一句就用新的"）。

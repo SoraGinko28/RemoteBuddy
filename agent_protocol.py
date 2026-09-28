@@ -23,13 +23,18 @@ SPECIAL_KEYS = {
 # rest; the bounds keep a model from stalling the shared pane indefinitely.
 REST_MIN_MS = 20
 REST_MAX_MS = 2000
-ACTION_TYPES = {"chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done"}
+# The vocabulary one action may use. Kept as an ordered tuple as well: a
+# rejection has to name the choices, and that text goes back to the model.
+ACTION_TYPE_ORDER = ("chat", "command", "diff", "observe", "done")
+ACTION_TYPES = set(ACTION_TYPE_ORDER)
 REFERENCE_KINDS = {"chat", "screen"}
 # Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
 MAX_ACTION_REFERENCES = 32
 # Structured commands keep workspace path resolution and safe quoting.
-STRUCTURED_COMMANDS = {"pwd", "cd", "vim", "python"}
+STRUCTURED_COMMANDS = {"pwd", "cd", "python"}
 MAX_SHELL_COMMAND_CHARS = 2000
+# 一份 diff 能有多长：多文件多行的改动也要装得下，但不能让一条动作把一轮撑爆。
+MAX_DIFF_CHARS = 256 * 1024
 # The relaxed shell policy allows general bash and restricts only the
 # deletion/destruction family. Tokens are matched against every whitespace-
 # or metacharacter-separated word, so chained commands, pipelines, xargs,
@@ -72,6 +77,49 @@ FORBIDDEN_INTERFACE_BASENAMES = {
 # policy cannot see: reading a pipeline/stdin (bare, no script argument) or an
 # inline -c command string. Running an existing script file stays allowed.
 SHELL_INTERPRETER_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+# 会一直等着人敲键盘的程序。harness 跑一条命令是无人值守的：这类命令只会把共享终端占住，
+# 占用者的活永远干不完。要改文件就交 diff，要看东西就用自己那只读的那套。
+INTERACTIVE_PROGRAM_BASENAMES = {
+    "vim",
+    "vi",
+    "nvim",
+    "nano",
+    "pico",
+    "emacs",
+    "less",
+    "more",
+    "most",
+    "man",
+    "top",
+    "htop",
+    "watch",
+    "screen",
+    "tmux",
+}
+# 交互式解释器：不带参数起就是等人输入，带了脚本或 -c 才算一条会结束的命令。
+REPL_BASENAMES = {
+    "python",
+    "python2",
+    "python3",
+    "ipython",
+    "ipython3",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "irb",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "julia",
+    "Rscript",
+    "psql",
+    "mysql",
+    "sqlite3",
+    "ghci",
+    "iex",
+}
 # git options before the subcommand that consume the following word.
 _GIT_VALUE_OPTIONS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 # Punctuation tokens produced by the shlex lexer that end a command segment.
@@ -121,6 +169,110 @@ class AgentActionError(AgentProtocolError):
 
     Unlike a hard protocol violation, this is correctable: the runner may
     feed the error text back to the model and retry within the same cycle.
+    The text the model wrote is kept on the error (``source``), so a rejection
+    can be diagnosed from the journal alone.
+    """
+
+    def __init__(self, message: str, source: str = "") -> None:
+        super().__init__(message)
+        self.source = _snippet(source)
+
+
+MESSAGE_TYPE_ORDER = ("none", "ack", "progress", "question", "final")
+# 每一次请求都属于两步之一。调查步：只许用自己的读工具，共享终端整个关掉，结论用文字说。
+# 行动步：只许改东西，文件读取已经在上一次请求的调查步里做完了。这两段话是 prompt 里
+# 唯一告诉模型"现在是哪一步"的地方，harness 那边另有硬拦（调查步的动作工具一律退回）。
+INVESTIGATE_STEP_TEXT = (
+    "Investigation step. The shared terminal is closed for this turn: do not call "
+    "`remotebuddy_action`, and do not run anything there -- a call is refused. If you need to "
+    "know something that is in a file, read it with your own tools (Claude Code has "
+    "Read/Glob/Grep, Trae has its own read tools and a read-only shell). Then answer with what "
+    "you found, in one or two lines, and only when the action step needs it: a path, a value, "
+    "the exact lines you are about to change. You are not reporting to the human here and you "
+    "are not narrating your plan. If you found nothing worth carrying into the next step, "
+    "answer with nothing at all -- an empty answer is normal, and the action step starts right "
+    "after it. Anything the human is waiting to hear -- the answer to their question, the file "
+    "contents they asked to see -- is said in the action step, not here."
+)
+# 行动步的正文分两种：一种给"它自己有读工具、并且共享终端拒收只读命令"的 backend
+# （Claude Code / ACP），另一种给"它手里没有读工具"的 backend（结构化 app-server、
+# Responses）——后者共享终端就是它唯一能看东西的地方，再跟它说"这里不许读"它就只能去问人。
+ACT_STEP_BODY_REFUSED = (
+    "Action step. Reading is over: whatever you needed was read in the investigation step that "
+    "just ended, so read nothing here. Two moves change things, and neither of them is typing: a "
+    "`command` is one bash line the harness runs for you in the shared terminal, and a `diff` is a "
+    "unified diff the harness lands with vim, file by file, in that same pane. You never open an "
+    "editor and you never send keys. A plain reader (cat, sed, head, tail, nl, rg, grep, ls, wc, "
+    "file, stat, tree) sent as a `command` is refused; a file the human asked to see in the "
+    "terminal is the exception. If the human asked you to find something out or to show something, "
+    "this step is where they hear it -- your investigation answer was not shown to them, so a short "
+    "`chat` saying it is part of the work, not an extra message. "
+)
+ACT_STEP_BODY_OPEN = (
+    "Action step. You have no read tools of your own, so the shared terminal -- the pane the "
+    "human watches -- is also where you look: `cat`, `sed`, `head`, `tail`, `nl`, `rg`, `grep`, "
+    "`ls`, `wc`, `git diff` all work as `command` lines. Look first (one or two commands, not a "
+    "tour of the repository), then change what the request asks for -- a `diff` for file contents, "
+    "a `command` for everything else. Never ask the human for a path you can find yourself: the "
+    "pane's working directory is the workspace, and `ls`/`git ls-files` show what is in it. If the "
+    "human asked you to find something out or to show something, say it in a short `chat` in this "
+    "step -- they do not see your reasoning, only your actions and what you say. "
+)
+# 走一个真的工具（Claude Code 的 MCP、ACP 的 MCP、app-server 的动态工具）。
+ACTION_BY_TOOL_TEXT = (
+    "Send it by calling the `remotebuddy_action` tool (MCP server `remotebuddy`) exactly once "
+    "-- an action written as text is not an action."
+)
+# 把动作当 JSON 交（结构化 Responses、app-server 的 outputSchema）：这些 backend 手里
+# 根本没有工具，跟它们说"去调某个工具"只会让它回一句"没有这个工具"然后什么都不做。
+ACTION_BY_JSON_TEXT = (
+    "Send it as the single JSON object the response schema asks for: that object is the action, "
+    "and prose is not."
+)
+ACT_STEP_TEXT = ACT_STEP_BODY_REFUSED + ACTION_BY_TOOL_TEXT
+ACT_STEP_JSON_TEXT = ACT_STEP_BODY_REFUSED + ACTION_BY_JSON_TEXT
+ACT_STEP_OPEN_TEXT = ACT_STEP_BODY_OPEN + ACTION_BY_TOOL_TEXT
+ACT_STEP_OPEN_JSON_TEXT = ACT_STEP_BODY_OPEN + ACTION_BY_JSON_TEXT
+
+
+def act_step_text(action_submission: str = "tool", readers_refused: bool = True) -> str:
+    """行动步那段话：按 backend 的两件事选——动作怎么交、共享终端让不让读。"""
+    by_json = str(action_submission or "").lower() == "json"
+    if readers_refused:
+        return ACT_STEP_JSON_TEXT if by_json else ACT_STEP_TEXT
+    return ACT_STEP_OPEN_JSON_TEXT if by_json else ACT_STEP_OPEN_TEXT
+
+
+INVESTIGATION_CLOSED_MESSAGE = (
+    "The shared terminal is closed in the investigation step, so the action tool is not "
+    "available here. Read what you need with your own tools and answer in plain text; the action "
+    "step asks you to act right after this answer."
+)
+
+
+def _name_list(names: Sequence[str]) -> str:
+    """The choices, written the way a person lists them: a, b, or c."""
+    items = [str(name) for name in names]
+    if not items:
+        return "nothing"
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + ", or " + items[-1]
+
+
+def _snippet(text: str, limit: int = 600) -> str:
+    """One line of what the model wrote, for a journal entry that has to stay small."""
+    flat = " ".join(str(text or "").split())
+    return flat[:limit]
+
+
+class AgentRefused(AgentActionError):
+    """The model asked for something this harness does not give.
+
+    A web search, a sub-agent, a file change outside the shared pane: the model
+    may pick one of these on its own, and that is a mistake it can correct. The
+    runner says so in the journal and lets it try again within the same cycle,
+    instead of failing the meeting over a tool that was never on offer.
     """
 
 
@@ -130,8 +282,8 @@ class AgentAction:
     message_type: str
     content: str
     command: str
+    diff: str
     path: str
-    keys: Sequence[Dict[str, str]]
     delay_ms: int
     references: Sequence[Dict[str, Any]] = ()
     # Model-declared: when False the action's output is not needed for the
@@ -162,7 +314,7 @@ class AgentAction:
         allowed_types: Optional[Sequence[str]] = None,
         allowed_message_types: Optional[Sequence[str]] = None,
     ) -> "AgentAction":
-        optional = {"message_type", "content", "command", "path", "keys", "delay_ms"}
+        optional = {"message_type", "content", "command", "diff", "path", "delay_ms"}
         allowed = {"type", "references", "result_needed"} | optional
         payload = unwrap_action_envelope(payload)
         if not isinstance(payload, dict):
@@ -170,6 +322,12 @@ class AgentAction:
         # Name the offending fields: this text goes back to the model as a
         # correction hint, and different model families invent different keys.
         unknown = sorted(set(payload) - allowed)
+        if "keys" in unknown:
+            raise AgentProtocolError(
+                "the keystrokes action is gone: the harness does the typing now. Hand over a "
+                "`diff` (a unified diff of the file contents) or a `command` (one bash line) "
+                "instead of `keys`."
+            )
         if unknown:
             raise AgentProtocolError("model action has unexpected fields: " + ", ".join(unknown))
         # Every action but chat and done carries message_type "none", so an
@@ -185,14 +343,33 @@ class AgentAction:
         payload = {
             "content": "",
             "command": "none",
+            "diff": "",
             "path": "",
-            "keys": [],
             "delay_ms": 0,
             **payload,
         }
+        # `""` 和 `null` 是"这个字段没用"的另一种写法，不是"我想用这个字段"。结构化输出
+        # 常把没用到的字段填成空值；在这里先归一，后面按类型的检查才不会把它当成多余的
+        # 字段拒掉 —— 那种拒绝说不清是哪一项，模型只能猜，猜不中就在同一个错上转到整轮
+        # 以 api_error 收场（20260926-213214-3dbedc 的三次 `keystrokes has unrelated
+        # fields` 就是这么死的）。
+        for field, neutral in (("message_type", "none"), ("command", "none"), ("diff", ""),
+                               ("content", ""), ("path", ""), ("delay_ms", 0)):
+            if payload.get(field) is None:
+                payload[field] = neutral
+        if payload.get("message_type") == "":
+            payload["message_type"] = "none"
+        if payload.get("command") == "":
+            payload["command"] = "none"
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
-            raise AgentProtocolError("model action type is invalid")
+            raise AgentProtocolError(
+                "model action type is invalid: expected "
+                + _name_list(allowed_types or ACTION_TYPE_ORDER))
+        if allowed_types is not None and action_type not in set(allowed_types):
+            raise AgentProtocolError(
+                "model action is not allowed in the current phase: expected "
+                + _name_list(allowed_types))
         # Models say "final" in the two ways the schema separates: `done` with a
         # final message, or `chat` with message_type "final" (some also write
         # "done" there, swapping the two). That means one thing and nothing
@@ -202,30 +379,27 @@ class AgentAction:
                 and str(payload.get("content") or "").strip():
             action_type = "done"
             payload = {**payload, "type": "done", "message_type": "final"}
-        if allowed_types is not None and action_type not in set(allowed_types):
-            raise AgentProtocolError("model action is not allowed in the current phase")
         message_type = payload["message_type"]
-        if message_type not in {"none", "ack", "progress", "question", "final"}:
+        if message_type not in MESSAGE_TYPE_ORDER:
             raise AgentProtocolError(
-                "model message type is invalid: expected none, ack, progress, "
-                "question, or final"
-            )
+                "model message type is invalid: expected " + _name_list(MESSAGE_TYPE_ORDER))
         if allowed_message_types is not None and message_type not in set(allowed_message_types):
-            raise AgentProtocolError("model message type is not allowed in the current phase")
+            raise AgentProtocolError(
+                "model message type is not allowed in the current phase: expected "
+                + _name_list(allowed_message_types))
         content = payload["content"]
         command = payload["command"]
+        diff = payload["diff"]
         path = payload["path"]
-        keys = payload["keys"]
         delay_ms = payload["delay_ms"]
-        if not all(isinstance(value, str) for value in (content, command, path)):
+        if not all(isinstance(value, str) for value in (content, command, diff, path)):
             raise AgentProtocolError("model action strings are invalid")
         if len(content.encode("utf-8")) > 64 * 1024 or len(path.encode("utf-8")) > 4096:
             raise AgentProtocolError("model action text is too large")
+        if len(diff.encode("utf-8")) > MAX_DIFF_CHARS:
+            raise AgentProtocolError(f"diff is larger than {MAX_DIFF_CHARS} bytes")
         if isinstance(delay_ms, bool) or not isinstance(delay_ms, int):
             raise AgentProtocolError("delay_ms must be an integer")
-        if not isinstance(keys, list):
-            raise AgentProtocolError("keys must be an array")
-        keys = normalize_model_key_tokens(keys)
         references = normalize_reference_tokens(payload.get("references", []))
         raw_result_needed = payload.get("result_needed", True)
         if isinstance(raw_result_needed, bool):
@@ -240,20 +414,30 @@ class AgentAction:
         if action_type == "chat":
             if message_type not in {"ack", "progress", "question"} or not content.strip():
                 raise AgentProtocolError("chat requires ack, progress, or question content")
-            _require_unused(command, path, keys, delay_ms)
+            _require_unused(command, diff, path, delay_ms)
         elif action_type == "done":
             if message_type != "final" or not content.strip():
                 raise AgentProtocolError("done requires final content")
-            _require_unused(command, path, keys, delay_ms)
+            _require_unused(command, diff, path, delay_ms)
         elif references:
             raise AgentProtocolError("only chat and done actions may carry references")
+        def stray_fields(*candidates: tuple) -> str:
+            """多余字段点名：这条文本是模型改错用的提示，说不清它只能瞎猜。"""
+            names = [name for name, present in candidates if present]
+            return ", ".join(names)
+
         if action_type == "command":
             if message_type != "none" or content:
-                raise AgentProtocolError("command action is invalid")
+                raise AgentProtocolError(
+                    "command action is invalid: "
+                    + stray_fields(("message_type", message_type != "none"),
+                                   ("content", bool(content)))
+                    + " is not used by a shell command line; leave it at none/empty"
+                )
             if command in STRUCTURED_COMMANDS:
                 if command == "pwd" and path:
                     raise AgentProtocolError("pwd does not accept a path")
-                if command in {"cd", "vim", "python"} and not path:
+                if command in {"cd", "python"} and not path:
                     raise AgentProtocolError(f"{command} requires a path")
             else:
                 # Relaxed policy: any bash command line is accepted except the
@@ -266,15 +450,44 @@ class AgentAction:
                 validate_shell_command(command)
                 if path:
                     raise AgentProtocolError("a bash command line does not accept a separate path")
-            if keys or delay_ms:
-                raise AgentProtocolError("command has unrelated fields")
-        elif action_type in {"vim_keys", "terminal_keys", "keystrokes"}:
-            if message_type != "none" or content or command != "none" or path or delay_ms:
-                raise AgentProtocolError(f"{action_type} has unrelated fields")
-            validate_key_tokens(keys)
+            if diff or delay_ms:
+                raise AgentProtocolError(
+                    "command has unrelated fields: "
+                    + stray_fields(("diff", bool(diff)), ("delay_ms", bool(delay_ms)))
+                )
+        elif action_type == "diff":
+            stray = stray_fields(("message_type", message_type != "none"),
+                                 ("content", bool(content)),
+                                 ("command", command != "none"),
+                                 ("path", bool(path)),
+                                 ("delay_ms", bool(delay_ms)))
+            if stray:
+                raise AgentProtocolError(
+                    "diff has unrelated fields: " + stray
+                    + "; a diff action carries only the unified diff"
+                )
+            if not diff.strip():
+                raise AgentProtocolError("diff action requires a unified diff")
+            if "\x00" in diff or "\r" in diff:
+                raise AgentProtocolError("diff must be plain text with unix line endings")
+            from tmux_vim import DiffError, parse_unified_diff
+
+            try:
+                patches = parse_unified_diff(diff)
+            except DiffError as exc:
+                raise AgentProtocolError(f"diff action is not a unified diff: {exc}") from exc
+            if not patches:
+                raise AgentProtocolError("diff action carries no file changes")
         elif action_type == "observe":
-            if message_type != "none" or content or command != "none" or path or keys:
-                raise AgentProtocolError("observe has unrelated fields")
+            if message_type != "none" or content or command != "none" or diff or path:
+                raise AgentProtocolError(
+                    "observe has unrelated fields: "
+                    + stray_fields(("message_type", message_type != "none"),
+                                   ("content", bool(content)),
+                                   ("command", command != "none"),
+                                   ("diff", bool(diff)),
+                                   ("path", bool(path)))
+                )
             if delay_ms < 100 or delay_ms > 2000:
                 raise AgentProtocolError("observe delay must be between 100 and 2000 ms")
         return cls(
@@ -282,8 +495,8 @@ class AgentAction:
             message_type,
             content,
             command,
+            diff,
             path,
-            tuple(keys),
             delay_ms,
             tuple(references),
             result_needed,
@@ -384,6 +597,24 @@ def _validate_command_word(word: str, words: Sequence[str], index: int) -> None:
         raise AgentProtocolError(f"command would leave the shared terminal interface: {base}")
     if base == "eval":
         raise AgentProtocolError("eval would execute content outside the policy's view")
+    if base in INTERACTIVE_PROGRAM_BASENAMES:
+        raise AgentProtocolError(
+            f"{base} is an interactive program, and the harness runs commands unattended: it "
+            "would sit there waiting for a keyboard and the terminal would never come back. "
+            "To change a file, hand over a `diff`; to read one, use your own read-only tools "
+            "(or a reader command, if you have none)."
+        )
+    if base in REPL_BASENAMES:
+        followers = [
+            follower
+            for follower in words[index + 1 :]
+            if follower != "&" and follower not in _SEGMENT_BREAKS and not _is_shell_punctuation(follower)
+        ]
+        if not followers:
+            raise AgentProtocolError(
+                f"{base} with no arguments is an interactive session: the harness runs commands "
+                "unattended, so it would wait for input forever. Give it a script or a `-c` one-liner."
+            )
     if base in SHELL_INTERPRETER_BASENAMES:
         followers = []
         for follower in words[index + 1 :]:
@@ -488,8 +719,8 @@ def _substitution_bodies(line: str) -> list:
     return bodies
 
 
-def _require_unused(command: str, path: str, keys: Sequence[Any], delay_ms: int) -> None:
-    if command != "none" or path or keys or delay_ms:
+def _require_unused(command: str, diff: str, path: str, delay_ms: int) -> None:
+    if command != "none" or diff or path or delay_ms:
         raise AgentProtocolError("chat action has unrelated fields")
 
 
@@ -545,21 +776,21 @@ def normalize_reference_tokens(raw: Any) -> list:
 
 def validate_key_tokens(tokens: Sequence[Any]) -> None:
     if not tokens or len(tokens) > 128:
-        raise AgentProtocolError("vim_keys must contain 1 to 128 tokens")
+        raise AgentProtocolError("keystrokes must contain 1 to 128 tokens")
     total = 0
     for token in tokens:
         if not isinstance(token, dict) or set(token) != {"kind", "value"}:
             raise AgentProtocolError("invalid key token")
         kind, value = token["kind"], token["value"]
-        if kind == "literal":
+        if kind == "text":
             if not isinstance(value, str) or not value or any(
                 ord(character) < 32 or ord(character) == 127 for character in value
             ):
                 raise AgentProtocolError(
-                    "literal key text must be one non-empty line without control characters"
+                    "a text keystroke must be one non-empty line without control characters"
                 )
             total += len(value.encode("utf-8"))
-        elif kind == "key":
+        elif kind == "ctrl":
             if not isinstance(value, str) or value not in SPECIAL_KEYS:
                 raise AgentProtocolError(f"special key is not allowed: {value}")
         elif kind == "rest":
@@ -572,7 +803,7 @@ def validate_key_tokens(tokens: Sequence[Any]) -> None:
         else:
             raise AgentProtocolError("key token kind is invalid")
     if total > 8192:
-        raise AgentProtocolError("literal key input exceeds 8192 bytes")
+        raise AgentProtocolError("text keystroke input exceeds 8192 bytes")
 
 
 def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
@@ -592,11 +823,11 @@ def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
             if token.startswith("$text "):
                 text = token[len("$text "):]
                 if text:
-                    normalized.append({"kind": "literal", "value": text})
+                    normalized.append({"kind": "text", "value": text})
                 continue
             if token.startswith("$ctrl "):
                 key = token[len("$ctrl "):]
-                normalized.append({"kind": "key", "value": key})
+                normalized.append({"kind": "ctrl", "value": key})
                 continue
             if token.startswith("$rest "):
                 rest_text = token[len("$rest "):]
@@ -608,23 +839,28 @@ def normalize_model_key_tokens(tokens: Sequence[Any]) -> list:
                 continue
             # A bare string is still convenient for plain text.
             if token:
-                normalized.append({"kind": "literal", "value": token})
+                normalized.append({"kind": "text", "value": token})
             continue
         if not isinstance(token, dict):
             normalized.append(token)
             continue
         candidate = dict(token)
+        # ADT 里这两个 kind 叫 text / ctrl；模型在历史里看到自己以前发的
+        # `literal` / `key` 会照抄，所以旧名照样收，只是统一成 ADT 的名字。
+        legacy = {"literal": "text", "key": "ctrl"}
+        if candidate.get("kind") in legacy:
+            candidate["kind"] = legacy[candidate["kind"]]
         value = candidate.get("value")
         if (
-            candidate.get("kind") == "key"
+            candidate.get("kind") == "ctrl"
             and isinstance(value, str)
             and value not in SPECIAL_KEYS
             and len(value) == 1
             and value.isprintable()
             and value not in {"\n", "\r", "\x00"}
         ):
-            candidate["kind"] = "literal"
-        if candidate.get("kind") == "literal" and isinstance(candidate.get("value"), str):
+            candidate["kind"] = "text"
+        if candidate.get("kind") == "text" and isinstance(candidate.get("value"), str):
             normalized.extend(_expand_escaped_newlines(candidate))
         else:
             normalized.append(candidate)
@@ -642,9 +878,9 @@ def _expand_escaped_newlines(token: Dict[str, Any]) -> list:
 
     def line_break() -> None:
         if buffer:
-            expanded.append({"kind": "literal", "value": "".join(buffer)})
+            expanded.append({"kind": "text", "value": "".join(buffer)})
             buffer.clear()
-        expanded.append({"kind": "key", "value": "Enter"})
+        expanded.append({"kind": "ctrl", "value": "Enter"})
 
     while index < len(value):
         if value.startswith("\r\n", index):
@@ -687,7 +923,7 @@ def _expand_escaped_newlines(token: Dict[str, Any]) -> list:
         index += 1
 
     if buffer:
-        expanded.append({"kind": "literal", "value": "".join(buffer)})
+        expanded.append({"kind": "text", "value": "".join(buffer)})
     return expanded or [token]
 
 
@@ -708,10 +944,12 @@ def decode_action_text(
     """Decode exactly one schema action, allowing identical gateway duplication."""
     try:
         return _decode_action_text(text, allowed_types, allowed_message_types)
-    except AgentActionError:
+    except AgentActionError as exc:
+        if not exc.source:
+            exc.source = _snippet(text)
         raise
     except AgentProtocolError as exc:
-        raise AgentActionError(str(exc)) from exc
+        raise AgentActionError(str(exc), source=text) from exc
 
 
 def unwrap_action_envelope(payload: Any) -> Any:
@@ -792,6 +1030,22 @@ class AgentBackend(Protocol):
     ) -> AgentResponse:
         ...
 
+    def investigate(
+        self,
+        session_id: str,
+        observation: str,
+        *,
+        model: Optional[str] = None,
+        request_timeout_seconds: Optional[float] = None,
+        action_handler: Optional[DynamicActionHandler] = None,
+    ) -> str:
+        """调查步：这一次请求不碰共享终端，返回模型用文字说的结论。
+
+        有自己读工具的 backend 实现它；没有的（纯对话、结构化 app-server）返回空串——
+        它们的终端就是唯一那条读路，两步拆不开。
+        """
+        ...
+
     def interrupt(self) -> None:
         ...
 
@@ -803,66 +1057,13 @@ def action_json_schema(
     allowed_types: Optional[Sequence[str]] = None,
     allowed_message_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    action_types = list(
-        allowed_types or ("chat", "command", "vim_keys", "terminal_keys", "keystrokes", "observe", "done")
-    )
+    action_types = list(allowed_types or ACTION_TYPE_ORDER)
     message_types = set(
         allowed_message_types or ("none", "ack", "progress", "question", "final")
     )
     if set(action_types) - ACTION_TYPES:
         raise ValueError("unsupported action schema type")
 
-    key_item = {
-        "anyOf": [
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["kind", "value"],
-                "properties": {
-                    "kind": {"type": "string", "enum": ["literal"]},
-                    "value": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": r"^[^\r\n\u0000]+$",
-                    },
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["kind", "value"],
-                "properties": {
-                    "kind": {"type": "string", "enum": ["key"]},
-                    "value": {"type": "string", "enum": sorted(SPECIAL_KEYS)},
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["kind", "value"],
-                "properties": {
-                    "kind": {"type": "string", "enum": ["rest"]},
-                    "value": {
-                        "type": "integer",
-                        "minimum": REST_MIN_MS,
-                        "maximum": REST_MAX_MS,
-                    },
-                },
-            },
-            {
-                "type": "string",
-                "pattern": (
-                    r"^\$text [^\r\n\u0000]+$|^\$ctrl "
-                    r"(?:Enter|Escape|Tab|Up|Down|Left|Right|Backspace|Delete|C-c)$"
-                    rf"|^\$rest [0-9]+$"
-                ),
-                "description": (
-                    "Keystroke DSL: $text sends literal text, $ctrl sends a named key, "
-                    "$rest pauses N milliseconds without typing."
-                ),
-            },
-        ]
-    }
     reference_item = {
         "type": "object",
         "additionalProperties": False,
@@ -894,7 +1095,6 @@ def action_json_schema(
             },
         },
     }
-    required = ["type", "message_type", "content", "command", "path", "keys", "delay_ms", "references"]
 
     def branch(
         action_type: str,
@@ -903,12 +1103,14 @@ def action_json_schema(
         *,
         content: bool = False,
         path: bool = False,
-        keys: bool = False,
+        diff: bool = False,
         delay: Optional[Dict[str, Any]] = None,
         references: bool = False,
         command_schema: Optional[Dict[str, Any]] = None,
         message_description: str = "",
     ) -> Dict[str, Any]:
+        required = ["type", "message_type", "content", "command", "diff", "path", "delay_ms",
+                    "references"]
         return {
             "type": "object",
             "additionalProperties": False,
@@ -927,10 +1129,22 @@ def action_json_schema(
                     "description": "A relative path inside the shared workspace." if path else "Unused.",
                     **({"minLength": 1} if path else {"enum": [""]}),
                 },
-                "keys": {
-                    "type": "array",
-                    "items": key_item,
-                    **({"minItems": 1, "maxItems": 128} if keys else {"maxItems": 0}),
+                "diff": {
+                    "type": "string",
+                    "description": (
+                        "A unified diff to land in the workspace. It is checked first (it must "
+                        "apply to the files as they are right now), then the harness opens each "
+                        "file in vim and makes the change for you, one step at a time, saving "
+                        "after each file; afterwards it compares the files with the change you "
+                        "asked for and redoes only what still differs. Write `--- a/<path>` and "
+                        "`+++ b/<path>` headers with `@@ -start,count +start,count @@` hunks, "
+                        "paths relative to the workspace root, one or more files. Never hand "
+                        "over a diff you have not seen applied: for your own reading, use your "
+                        "read-only tools (or `git diff` as a command)."
+                        if diff
+                        else "Unused; must stay empty."
+                    ),
+                    **({"minLength": 1} if diff else {"enum": [""]}),
                 },
                 "delay_ms": delay or {"type": "integer", "enum": [0]},
                 "references": {
@@ -974,7 +1188,7 @@ def action_json_schema(
         variants.append(branch("done", ("final",), ("none",), content=True, references=True))
     if "command" in action_types and "none" in message_types:
         variants.append(branch("command", ("none",), ("pwd",)))
-        for command in ("cd", "vim", "python"):
+        for command in ("cd", "python"):
             variants.append(branch("command", ("none",), (command,), path=True))
         variants.append(
             branch(
@@ -987,21 +1201,29 @@ def action_json_schema(
                     "maxLength": MAX_SHELL_COMMAND_CHARS,
                     "pattern": r"^[^\r\n\u0000]+$",
                     "description": (
-                        "A full bash command line to run in the shared pane's foreground. "
-                        "Deletion-class commands (rm, rmdir, unlink, shred, truncate, dd, "
-                        "mkfs, find -delete, rsync --delete, git clean/rm) and anything "
-                        "leaving the shared interface (background '&' jobs, nohup, setsid, "
-                        "disown, tmux, screen, open, osascript, exec) are rejected."
+                        "A full bash command line typed into the SHARED terminal, which the "
+                        "human watches: every character is typed and every screenful is "
+                        "theirs to sit through. That is what makes it the right place for "
+                        "what changes the workspace -- an editor session, a build, a test "
+                        "run, git -- and the wrong place for looking at files: for reading, "
+                        "use your own read-only tools (Claude Code: Read/Glob/Grep; Codex and "
+                        "Trae: their own shell, e.g. `sed -n '1,40p' file`), which do not "
+                        "touch the pane. Deletion-class commands (rm, rmdir, unlink, shred, "
+                        "truncate, dd, mkfs, find -delete, rsync --delete, git clean/rm) and "
+                        "anything leaving the shared interface (background '&' jobs, nohup, "
+                        "setsid, disown, tmux, screen, open, osascript, exec) are rejected. "
+                        "The harness runs this line for you, waits for it to finish and hands "
+                        "back its return code and the whole buffer, so the command must be "
+                        "non-interactive and must terminate on its own: a program that waits "
+                        "for input at a prompt is a mistake, and it is stopped when the wait "
+                        "runs out. Changing file contents is the `diff` action's job, not an "
+                        "editor session."
                     ),
                 },
             )
         )
-    if "vim_keys" in action_types and "none" in message_types:
-        variants.append(branch("vim_keys", ("none",), ("none",), keys=True))
-    if "terminal_keys" in action_types and "none" in message_types:
-        variants.append(branch("terminal_keys", ("none",), ("none",), keys=True))
-    if "keystrokes" in action_types and "none" in message_types:
-        variants.append(branch("keystrokes", ("none",), ("none",), keys=True))
+    if "diff" in action_types and "none" in message_types:
+        variants.append(branch("diff", ("none",), ("none",), diff=True))
     if "observe" in action_types and "none" in message_types:
         variants.append(
             branch(

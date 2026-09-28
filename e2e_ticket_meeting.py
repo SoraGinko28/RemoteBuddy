@@ -34,6 +34,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -59,20 +60,30 @@ class MeetingService:
 
     def __init__(self, project_root: Path, message: str, *, meeting_id: Optional[str] = None,
                  backend: Optional[str] = None, provider: Optional[str] = None,
-                 workspace: Optional[Path] = None):
-        import web_v2
-
+                 workspace: Optional[Path] = None, attach: Optional[str] = None):
         self.project_root = Path(project_root).resolve()
         self.message = message
         self.workspace_root = (Path(workspace).expanduser().resolve() if workspace
                                else self.project_root)
-        self.service = web_v2.MeetingWebService(
-            project_root=self.project_root,
-            workspace=self.workspace_root,
-        )
-        self.server = web_v2.build_server("127.0.0.1", free_port(), service=self.service)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.port = self.server.server_address[1]
+        # `attach` 指着一个已经在跑的服务（页面那个）：这场会就开在它的工作区里，
+        # 页面上立刻看得到，也只有它一个在驱这场会。不给就自己起一个。
+        self.server = None
+        if attach:
+            parsed = urlparse(attach)
+            self.host = parsed.hostname or "127.0.0.1"
+            self.port = parsed.port or 80
+            self.service = None
+        else:
+            import web_v2
+
+            self.host = "127.0.0.1"
+            self.service = web_v2.MeetingWebService(
+                project_root=self.project_root,
+                workspace=self.workspace_root,
+            )
+            self.server = web_v2.build_server("127.0.0.1", free_port(), service=self.service)
+            threading.Thread(target=self.server.serve_forever, daemon=True).start()
+            self.port = self.server.server_address[1]
         self.csrf = ""
         self.meeting_id = meeting_id or f"ticket-{uuid.uuid4().hex[:8]}"
         self.backend = backend
@@ -80,7 +91,7 @@ class MeetingService:
         self.stopped = False
 
     def _request(self, method: str, path: str, payload=None, timeout: float = 60) -> dict:
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=timeout)
         body = b"" if payload is None else json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
         if method == "POST":
@@ -134,7 +145,8 @@ class MeetingService:
             pass
 
     def shutdown(self) -> None:
-        self.server.shutdown()
+        if self.server is not None:
+            self.server.shutdown()
 
     @property
     def run_dir(self) -> Path:
@@ -207,16 +219,19 @@ def main(argv=None) -> int:
     parser.add_argument("--expect", default="quick_sort(items, key=None, reverse=False)",
                         help="交出来的文件里必须有的那行接口")
     parser.add_argument("--turn-timeout", type=float, default=900.0, help="一份包等多久")
+    parser.add_argument("--attach", default=None, metavar="URL",
+                        help="用已经在跑的那个服务（例如 http://127.0.0.1:8765），"
+                             "不再自己起一个：会开在它的工作区里，页面上直接看得到")
     parser.add_argument("--finish", choices=("leave", "complete", "stop"), default="leave",
                         help="跑完怎么处置这场会：留着（默认，页面上还能接管、聊天、发下一张）、"
                              "收掉（照页面的结束并保留）还是停掉")
     args = parser.parse_args(argv)
-    human = args.task + "\n结果写进 quicksort.py（就地写文件），写完回复 DONE，不要问我问题。"
+    human = args.task + f"\n结果写进 {args.target}（就地写文件），写完回复 DONE，不要问我问题。"
 
     workflow = load_workflow(project_root=REPO_ROOT)
     service = MeetingService(REPO_ROOT, human, meeting_id=args.meeting_id,
                              backend=args.backend, provider=args.provider,
-                             workspace=args.workspace)
+                             workspace=args.workspace, attach=args.attach)
     print(f"会议：{service.meeting_id}（服务在 {service.url}）", flush=True)
     print(f"数据：{service.run_dir}", flush=True)
     print(f"工作区：{service.workspace}", flush=True)
@@ -228,7 +243,7 @@ def main(argv=None) -> int:
     meeting = Meeting(ticket_root, workflow)
     for name in ("actor", "assistant", "critic"):
         meeting.join(Member(name, name, {}))            # 能力表在成员自己的进程里
-    case = meeting.case("quicksort")
+    case = meeting.case(Path(args.target).stem or "quicksort")
 
     issued: List[str] = []
     try:
@@ -288,8 +303,8 @@ def _summary(service: MeetingService, workflow, meeting: Meeting, case: str, iss
 
     if issued != FLOW:
         failures.append(f"五张工单没按流程发完：{issued}")
-    if "def quick_sort" not in written:
-        failures.append(f"{args.target} 里没有 quick_sort：{target}")
+    if not written:
+        failures.append(f"{args.target} 没写出来：{target}")
     if verdicts["judged_revision"] is not True:
         failures.append(f"最后那版没被判合格：judged_revision={verdicts['judged_revision']}")
     if args.expect not in written:

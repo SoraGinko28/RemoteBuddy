@@ -1,4 +1,5 @@
 import shlex
+import subprocess
 import tempfile
 import threading
 import time
@@ -6,21 +7,23 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from agent_protocol import AgentActionError, AgentBackendError, AgentRefused
 from interactive_runner import (
     MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
     RunnerError,
     TypingInterrupted,
     resolve_workspace_path,
-    send_command_with_captures,
+    send_line_with_captures,
     send_tokens_with_captures,
-    validate_agent_vim_keys,
 )
 from typing_executor import _send_typing_plan
 from meeting_v2 import MeetingStore, utc_now
 from agent_protocol import AgentActionError
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
+from agent_protocol import (ACT_STEP_JSON_TEXT, ACT_STEP_OPEN_JSON_TEXT, ACT_STEP_TEXT,
+                            INVESTIGATE_STEP_TEXT)
 
 
 def make_action(action_type="chat", **changes):
@@ -30,7 +33,6 @@ def make_action(action_type="chat", **changes):
         "content": "I will inspect the shared workspace." if action_type == "chat" else "",
         "command": "none",
         "path": "",
-        "keys": [],
         "delay_ms": 0,
     }
     payload.update(changes)
@@ -48,6 +50,15 @@ class FakeClient:
         self.conversations = []
         self.config = FakeConfig()
         self.last_images = None
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+    def update_instructions(self, instructions):
+        """指令是按请求传的那一类后端：换掉就算数。"""
+        self.instructions = instructions
+        return True
 
     def create_conversation(self, meeting_id):
         value = f"conv-{len(self.conversations) + 1}"
@@ -133,12 +144,21 @@ class FakeTransport:
         self.tokens = []
         self.literal_sends = []
         self.pending_input = ""
+        # 壳里真的发生过什么：harness 跑完一条命令会从整屏缓存里找返回码标记。
+        self.console = ""
+        self.retcode = "0"
 
     def create_workspace_session(self, session_name, workdir):
         self.exists = True
+        self.command = "bash"          # 新会话起来就是一个干净的壳
+        self.pending_input = ""
         self.path = str(workdir.resolve())
         self.commands.append(("create", session_name, self.path))
         return self.pane_id
+
+    def kill_session(self, _session_name):
+        self.exists = False
+        return True
 
     def session_exists(self, _session_name):
         return self.exists
@@ -154,17 +174,20 @@ class FakeTransport:
             "cursor_x": "0", "cursor_y": "0", "pane_width": "120", "pane_height": "36",
         }
 
+    def capture(self, _pane_id):
+        return self.capture_visible(_pane_id)
+
     def capture_visible(self, _pane_id):
         return (
             f"workspace screen {self.screen_revision}\n"
-            f"{self.command} {self.path}\n{self.pending_input}\n"
+            f"{self.command} {self.path}\n{self.pending_input}\n{self.console}"
             "PROJECT TESTS PASSED"
         )
 
     def send_literal(self, pane_id, text):
         self.literal_sends.append((pane_id, text))
         if self.command in {"vim", "vi"} or self.command.startswith("python"):
-            self.tokens.append((pane_id, [{"kind": "literal", "value": text}]))
+            self.tokens.append((pane_id, [{"kind": "text", "value": text}]))
         self.pending_input += text
         self.screen_revision += 1
 
@@ -173,19 +196,27 @@ class FakeTransport:
         self.send_enter(pane_id)
 
     def send_special(self, pane_id, key):
+        if key == "C-c" and self.command not in {"bash", "zsh", "sh"}:
+            # 交互式解释器（python 之类）收到 C-c 就回到 shell：harness 靠它把前台收回来。
+            self.tokens.append((pane_id, [{"kind": "ctrl", "value": key}]))
+            self.command = "bash"
+            self.pending_input = ""
+            self.screen_revision += 1
+            return
         if key == "C-c" and self.command in {"bash", "zsh", "sh"}:
-            self.tokens.append((pane_id, [{"kind": "key", "value": key}]))
+            self.tokens.append((pane_id, [{"kind": "ctrl", "value": key}]))
             self.pending_input = ""
             self.screen_revision += 1
             return
         if key == "Enter" and self.command in {"bash", "zsh", "sh"}:
             self.send_enter(pane_id)
             return
-        self.tokens.append((pane_id, [{"kind": "key", "value": key}]))
+        self.tokens.append((pane_id, [{"kind": "ctrl", "value": key}]))
         self.screen_revision += 1
 
     def send_enter(self, pane_id):
-        parts = shlex.split(self.pending_input)
+        line = self.pending_input
+        parts = shlex.split(line)
         if parts:
             executable = parts[0]
             command = "python" if executable == "python3" else executable
@@ -197,6 +228,11 @@ class FakeTransport:
                 self.command = "vim"
             elif command == "python":
                 self.command = "python3"
+            # harness 用一行带随机标记的 echo 读返回码：把那一行也演出来。
+            if executable == "echo" and len(parts) > 1 and parts[1].startswith("remotebuddy-retcode-"):
+                self.console += f"{parts[1]} {self.retcode}\n"
+            else:
+                self.console += line + "\n"
         self.pending_input = ""
         self.screen_revision += 1
 
@@ -209,35 +245,153 @@ class FakeTransport:
             self.command = "vim"
 
     def send_tokens(self, pane_id, keys):
+        """记账用的假编辑器：只认得出"写盘退出"，好让前台回到 shell。
+
+        普通模式的动作（`1G`、`dd`）发完就完；只有 `:` 开头的 ex 命令会攒到回车。
+        """
         self.tokens.append((pane_id, list(keys)))
         for token in keys:
             if self.command not in {"vim", "vi"}:
                 continue
-            if token.get("kind") == "key" and token.get("value") == "Escape":
+            kind = token.get("kind")
+            value = str(token.get("value", ""))
+            if kind == "ctrl" and value in {"Escape", "C-c"}:
                 self.pending_input = ""
-            elif token.get("kind") == "literal":
-                self.pending_input += token.get("value", "")
-            elif token.get("kind") == "key" and token.get("value") == "Enter":
+            elif kind == "text" and value.startswith(":"):
+                self.pending_input = value
+            elif kind == "text":
+                self.pending_input += value
+            elif kind == "ctrl" and value == "Enter":
                 if self.pending_input in {":q", ":q!", ":wq", ":wq!", ":x", ":x!"}:
                     self.command = "bash"
                 self.pending_input = ""
         self.screen_revision += 1
 
 
-class DelayedVimTransport(FakeTransport):
-    """Mimic Vim drawing after the command echo has already been captured."""
+class JsonActionClient(FakeClient):
+    """手里没有工具的 backend（结构化 app-server、Responses）：动作按 schema 交 JSON。"""
 
-    def __init__(self):
-        super().__init__()
-        self.vim_captures = 0
+    action_submission = "json"
 
-    def capture_visible(self, _pane_id):
-        if self.command != "vim":
-            return super().capture_visible(_pane_id)
-        self.vim_captures += 1
-        if self.vim_captures <= 2:
-            return "bash-3.2$ vim -- notes.md"
-        return '~\n~\n"notes.md" [New] 0L, 0B'
+
+class RecordingCycleClient(FakeClient):
+    """记下每一轮 start_cycle 拿到的 resume_session_id 和初始上下文。"""
+
+    # trae-acp：能续会话（claude-code 要求 deepseek provider，这里用默认的 openai）。
+    backend_name = "trae-acp"
+    stateful = True
+
+    def __init__(self, outcomes):
+        super().__init__(outcomes)
+        self.cycles = []
+
+    def start_cycle(self, meeting_id, instructions, initial_context, **kwargs):
+        self.cycles.append({"resume": kwargs.get("resume_session_id"),
+                            "context": initial_context, "instructions": instructions})
+        return f"session-{len(self.cycles)}"
+
+
+class InvestigatingClient(FakeClient):
+    """有自己读工具的 backend：每个动作之前，harness 都会先要一次调查。"""
+
+    backend_name = "trae-acp"
+
+    def __init__(self, outcomes, findings="我看了 notes.md：里面还是空的。"):
+        super().__init__(outcomes)
+        self.findings = findings
+        self.investigations = []
+
+    def investigate(self, session_id, observation, **kwargs):
+        self.investigations.append(observation)
+        return self.findings
+
+
+class StuckInvestigationClient(InvestigatingClient):
+    """调查步超时的 backend：这一步可选，超了也要接着干，不能把整轮判死。"""
+
+    def investigate(self, session_id, observation, **kwargs):
+        self.investigations.append(observation)
+        raise AgentBackendError("Claude Code investigation turn timed out")
+
+
+class AskingClient(FakeClient):
+    """第一次请求飞着的时候按下页面那个按钮。
+
+    页面上就是"请求在路上、人按下去"这个时序；用真线程去卡这个窗口是碰运气，
+    所以让前端自己在下第一次请求时按。
+    """
+
+    def __init__(self, outcomes, ask):
+        super().__init__(outcomes)
+        self.ask = ask
+        self.asked = False
+
+    def create_action(self, conversation_id, instructions, observation, **kwargs):
+        if not self.asked:
+            self.asked = True
+            self.ask()
+        return super().create_action(conversation_id, instructions, observation, **kwargs)
+
+
+class BackendRequestTest(unittest.TestCase):
+    """页面上那两个按钮：更新（不动进程）与重启（换一个进程）。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.skill = self.root / "SKILL.md"
+        self.skill.write_text(
+            "---\nname: workspace-collaborator\ndescription: Test.\n---\n旧的一句。",
+            encoding="utf-8",
+        )
+        self.store = MeetingStore.create(
+            self.root, "backend-demo", "Create notes.md.", self.skill,
+            "remotebuddy-backend-demo", "test-model",
+        )
+        self.transport = FakeTransport()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_skill_reload_swaps_the_text_without_touching_the_process(self):
+        holder = {}
+        client = AskingClient(
+            [make_action("command", command="pwd")],
+            lambda: (self.store.runtime_skill_path.write_text(
+                "---\nname: workspace-collaborator\n---\n新的一句。", encoding="utf-8"),
+                holder["runner"].request_skill_reload()),
+        )
+        runner = InteractiveRunner(self.store, self.transport, client,
+                                   action_settle_seconds=0, typing_interval_seconds=0)
+        holder["runner"] = runner
+        runner.start()
+
+        self.assertEqual(0, client.closed, "更新不该关掉进程")
+        self.assertEqual(1, len(client.conversations), "更新不该重开会话")
+        self.assertTrue(client.calls[1][1].endswith("新的一句。"), client.calls[1][1][-40:])
+        events = [e for e in MeetingStore.load(self.root, "backend-demo").events()
+                  if e.get("phase") == "skill_reload"]
+        self.assertTrue(events)
+        self.assertEqual("completed", events[0]["data"]["status"])
+
+    def test_backend_restart_closes_the_process_and_starts_a_new_cycle(self):
+        holder = {}
+        client = AskingClient(
+            [make_action("command", command="pwd")],
+            lambda: holder["runner"].request_backend_restart(),
+        )
+        runner = InteractiveRunner(self.store, self.transport, client,
+                                   action_settle_seconds=0, typing_interval_seconds=0)
+        holder["runner"] = runner
+        runner.start()
+
+        self.assertEqual(1, client.closed, "重启要关掉旧进程")
+        self.assertEqual(2, len(client.conversations), "重启要重开一个新会话")
+        loaded = MeetingStore.load(self.root, "backend-demo")
+        restarts = [e for e in loaded.events() if e.get("phase") == "agent_restart"]
+        self.assertEqual(["started", "completed"], [e["data"]["status"] for e in restarts])
+        session_ids = [e["data"]["session_id"] for e in restarts if e["data"].get("session_id")]
+        self.assertEqual(1, len(session_ids))
 
 
 class InteractiveRunnerTest(unittest.TestCase):
@@ -262,33 +416,159 @@ class InteractiveRunnerTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def test_literal_and_safe_command_fast_path_preserves_input(self):
-        pane_id = self.transport.create_workspace_session(
-            self.store.meeting.session_name,
-            self.store.workspace_path,
+    def test_a_command_action_comes_back_with_its_return_code_and_output(self):
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("command", command="python3 -m pytest -q"),
+                make_action("done", message_type="final", content="Tests printed."),
+            ]
         )
-        self.store.set_session(pane_id)
-        send_command_with_captures(
-            self.store,
-            self.transport,
-            pane_id,
-            "vim",
-            str(self.store.workspace_path / "notes file.md"),
-            0,
-        )
-        send_tokens_with_captures(
-            self.store,
-            self.transport,
-            pane_id,
-            [{"kind": "literal", "value": "alpha  beta gamma"}],
-            typing_interval_seconds=0,
-        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
 
-        self.assertTrue(any(item[1] == "vim" for item in self.transport.commands))
         self.assertEqual(
-            "alpha  beta gamma",
-            self.transport.tokens[-1][1][0]["value"],
+            "python",
+            [item[1] for item in self.transport.commands if item[0] != "create"][0],
         )
+        self.assertTrue(
+            any("python3 -m pytest -q" in value for _pane, value in self.transport.literal_sends)
+        )
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        results = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "result"
+        ]
+        self.assertEqual(1, len(results))
+        result = results[0]["data"]["result"]
+        self.assertEqual("cmd", result["kind"])
+        self.assertEqual("0", result["retcode"])
+        self.assertEqual("python3 -m pytest -q", result["cmd"])
+
+    def test_a_diff_action_goes_through_vim_in_the_shared_pane(self):
+        """共享终端是真的在动 vim：这里只验管道——动作交给了落盘那条路，结果记下来了。"""
+        workspace = self.store.workspace_path
+        subprocess.run(["git", "init", "-q", "."], cwd=workspace, check=True)
+        subprocess.run(["git", "config", "user.email", "runner@example.com"], cwd=workspace, check=True)
+        subprocess.run(["git", "config", "user.name", "runner"], cwd=workspace, check=True)
+        (workspace / "notes.md").write_text("title\nbody\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=workspace, check=True)
+        client = FakeClient(
+            [
+                make_action(),
+                make_action(
+                    "diff",
+                    diff=(
+                        "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n-title\n+TITLE\n body\n"
+                        "--- a/extra.md\n+++ b/extra.md\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+                    ),
+                ),
+                make_action("done", message_type="final", content="Notes updated."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        opened = [value for _pane, value in self.transport.literal_sends if "notes.md" in value]
+        self.assertTrue(any("vim" in value for value in opened), self.transport.literal_sends)
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        results = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "result"
+        ]
+        self.assertEqual(1, len(results))
+        result = results[0]["data"]["result"]
+        self.assertEqual("diff", result["kind"])
+        self.assertEqual(["notes.md", "extra.md"], result["files"])
+        self.assertTrue(result["rounds"] >= 1)
+        # 假终端不会真的改文件，所以落盘一定对不上：比对这条路也在记账。
+        self.assertNotEqual("0", result["retcode"])
+        self.assertEqual(["notes.md", "extra.md"], result["mismatched_files"])
+
+    def test_three_diffs_that_cannot_apply_switch_to_a_fresh_conversation(self):
+        """连着三版 diff 连干跑都过不去：换个干净会话重来（它上下文里那些没落上的内容要甩掉）。"""
+        broken = (
+            "--- a/notes.md\n+++ b/notes.md\n@@ -9,1 +9,1 @@\n-根本没有这一行\n+yep\n"
+            "--- a/other.md\n+++ b/other.md\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        )
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("diff", diff=broken),
+                make_action("diff", diff=broken),
+                make_action("diff", diff=broken),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Looked instead."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        fresh = [
+            event for event in loaded.events()
+            if event["kind"] == "state"
+            and (event.get("data") or {}).get("status") == "fresh_conversation"
+        ]
+        self.assertEqual(1, len(fresh))
+        self.assertIn("干跑", fresh[0]["content"])
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+
+    def test_a_tool_the_harness_does_not_offer_does_not_kill_the_cycle(self):
+        """模型要联网搜索这类这里没有的东西：记一笔、让它换一条，不许把整轮判死。"""
+        client = FakeClient(
+            [
+                make_action(),
+                AgentRefused("forbidden Codex item type: webSearch"),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Looked instead."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        refusals = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "refused"
+        ]
+        self.assertEqual(1, len(refusals))
+        self.assertIn("webSearch", refusals[0]["content"])
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
+
+    def test_an_interactive_command_is_refused_with_something_the_model_can_act_on(self):
+        # 模型真的会这么发：客户端在造动作那一步就把它退回去（`vim` 会一直等人敲键盘）。
+        client = FakeClient(
+            [
+                make_action(),
+                AgentActionError(
+                    "vim is an interactive program: hand over a `diff` or a `command` instead"
+                ),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Looked instead."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        rejected = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "rejected"
+        ]
+        self.assertTrue(rejected)
+        self.assertIn("interactive program", rejected[0]["content"])
+        self.assertIn("hand over a `diff`", rejected[0]["content"])
+        # 被退回之后它换了条能跑的命令，这一轮没死。
+        self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
 
     def test_rule_plan_uses_deadlines_and_persists_screen_metadata(self):
         pane_id = self.transport.create_workspace_session(
@@ -297,7 +577,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         self.store.set_session(pane_id)
         plan = plan_input(
-            [{"kind": "literal", "value": "print(alpha + beta)"}],
+            [{"kind": "text", "value": "print(alpha + beta)"}],
             "balanced",
             "runner-demo",
             "paced-action",
@@ -341,9 +621,9 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.store.set_session(pane_id)
         plan = plan_input(
             [
-                {"kind": "literal", "value": "echo hi"},
+                {"kind": "text", "value": "echo hi"},
                 {"kind": "rest", "value": 200},
-                {"kind": "key", "value": "Enter"},
+                {"kind": "ctrl", "value": "Enter"},
             ],
             "balanced",
             "runner-demo",
@@ -375,91 +655,6 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         self.assertAlmostEqual(plan.planned_duration_ms / 1000.0, clock[0] - 100.0, places=6)
 
-    def test_keystrokes_rest_dsl_pauses_before_enter_in_shell(self):
-        client = FakeClient(
-            [
-                make_action(),
-                make_action(
-                    "keystrokes",
-                    keys=["$text echo hi", "$rest 200", "$ctrl Enter"],
-                ),
-                make_action("done", message_type="final", content="Finished: PROJECT TESTS PASSED"),
-            ]
-        )
-        sleeps = []
-        with mock.patch(
-            "interactive_runner.time.sleep", side_effect=lambda seconds: sleeps.append(seconds)
-        ):
-            InteractiveRunner(
-                self.store, self.transport, client, action_settle_seconds=0,
-                typing_interval_seconds=0,
-            ).start()
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        rejected = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "action" and event["data"].get("status") == "rejected"
-        ]
-        self.assertEqual([], rejected)
-        self.assertTrue(any(abs(value - 0.2) < 1e-9 for value in sleeps))
-        typed = [
-            item[1]
-            for item in self.transport.tokens
-            if any(
-                token.get("kind") == "literal" and token.get("value") == "echo hi"
-                for token in item[1]
-            )
-        ]
-        self.assertTrue(typed)
-
-    def test_multiline_keystrokes_at_shell_are_rejected(self):
-        # Regression for the vim-state confusion failure: a model typed a whole
-        # Python file (framed by Vim `i` ... `:wq`) as keystrokes while bash was
-        # still the foreground program, executing every line as a command.
-        client = FakeClient(
-            [
-                make_action(),
-                make_action(
-                    "keystrokes",
-                    keys=[
-                        "$text i",
-                        "$text import socket",
-                        "$ctrl Enter",
-                        "$text HOST = \"127.0.0.1\"",
-                        "$ctrl Enter",
-                        "$text :wq",
-                        "$ctrl Enter",
-                    ],
-                ),
-                make_action("command", command="pwd"),
-                make_action(
-                    "chat",
-                    message_type="question",
-                    content="I will open the file with the structured vim command instead.",
-                ),
-            ]
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0,
-            typing_interval_seconds=0,
-        ).start()
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual("waiting_for_user", loaded.meeting.phase)
-        rejected = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "action" and event["data"].get("status") == "rejected"
-        ]
-        self.assertEqual(1, len(rejected))
-        self.assertIn("at most one input line", rejected[0]["content"])
-        typed = [
-            token.get("value")
-            for _pane, tokens in self.transport.tokens
-            for token in tokens
-            if token.get("kind") == "literal"
-        ]
-        self.assertNotIn("import socket", typed)
-
     def test_rule_plan_can_interrupt_between_lines(self):
         pane_id = self.transport.create_workspace_session(
             self.store.meeting.session_name,
@@ -468,11 +663,11 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.store.set_session(pane_id)
         plan = plan_input(
             [
-                {"kind": "literal", "value": "alpha"},
-                {"kind": "key", "value": "Enter"},
-                {"kind": "literal", "value": "beta"},
-                {"kind": "key", "value": "Enter"},
-                {"kind": "literal", "value": "gamma"},
+                {"kind": "text", "value": "alpha"},
+                {"kind": "ctrl", "value": "Enter"},
+                {"kind": "text", "value": "beta"},
+                {"kind": "ctrl", "value": "Enter"},
+                {"kind": "text", "value": "gamma"},
             ],
             "demo",
             "runner-demo",
@@ -500,67 +695,6 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertGreater(raised.exception.sent, 0)
         self.assertGreater(raised.exception.remaining, 0)
 
-    def test_control_request_interrupts_partial_shell_command_and_clears_it(self):
-        self.store.update(typing_profile="demo")
-        client = FakeClient(
-            [
-                make_action(),
-                make_action("command", command="vim", path="notes.md"),
-            ]
-        )
-        shared_lock = threading.RLock()
-        runner = InteractiveRunner(
-            self.store,
-            self.transport,
-            client,
-            lock=shared_lock,
-            action_settle_seconds=0,
-        )
-        worker = threading.Thread(target=runner.start)
-        worker.start()
-        deadline = time.monotonic() + 2
-        while not self.transport.pending_input and time.monotonic() < deadline:
-            time.sleep(0.005)
-        self.assertTrue(self.transport.pending_input)
-
-        requested_at = time.monotonic()
-        with shared_lock:
-            external = MeetingStore.load(self.root, "runner-demo")
-            external.update(
-                control_requested="human",
-                request_generation=external.meeting.request_generation + 1,
-            )
-        worker.join(1)
-
-        self.assertFalse(worker.is_alive())
-        # The 50 ms typing sleep loop notices the request almost immediately;
-        # the remainder of this window is interrupt bookkeeping (C-c, screen
-        # capture, journal appends), each an fsync that can stall under disk
-        # load. Bound the full worker exit accordingly, not at the UX-facing
-        # stop-typing latency.
-        self.assertLess(time.monotonic() - requested_at, 0.5)
-        self.assertEqual("", self.transport.pending_input)
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual("human_control", loaded.meeting.phase)
-        self.assertEqual("human", loaded.meeting.control_owner)
-        self.assertTrue(
-            any(
-                event["kind"] == "action"
-                and event["data"].get("status") == "interrupted"
-                and event["data"].get("partial") is True
-                for event in loaded.events()
-            )
-        )
-        self.assertTrue(
-            any(
-                event["kind"] == "control"
-                and event.get("data", {}).get("status") == "terminal_control"
-                and event.get("data", {}).get("user_name") == "human"
-                for event in loaded.events()
-            ),
-            "deferred human takeover must record a terminal_control start",
-        )
-
     def test_screen_change_guard_rejects_stale_terminal_action(self):
         pane_id = self.transport.create_workspace_session(
             self.store.meeting.session_name,
@@ -573,7 +707,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         runner._screen_before_think = before
         # The screen changes while the model "thinks" (simulate by emitting
         # pane output that changes the captured text).
-        self.transport.send_tokens(pane_id, [{"kind": "literal", "value": "change"}])
+        self.transport.send_tokens(pane_id, [{"kind": "text", "value": "change"}])
         now = runner._pane_snapshot(pane_id)
         self.assertNotEqual(before, now)
         action = make_action("command", command="pwd", path="")
@@ -596,178 +730,6 @@ class InteractiveRunnerTest(unittest.TestCase):
         ]
         self.assertIn("screen_changed_repeatedly", reasons)
 
-    def test_agent_uses_one_pane_and_done_waits_for_user(self):
-        client = FakeClient(
-            [
-                make_action(),
-                make_action("command", command="vim", path="notes.md"),
-                make_action(
-                    "vim_keys",
-                    keys=[
-                        {"kind": "literal", "value": "i"},
-                        {"kind": "literal", "value": "# Notes"},
-                        {"kind": "key", "value": "Escape"},
-                        {"kind": "literal", "value": ":wq"},
-                        {"kind": "key", "value": "Enter"},
-                    ],
-                ),
-                make_action(
-                    "done",
-                    message_type="final",
-                    content="Created the title in notes.md.",
-                ),
-            ]
-        )
-        runner = InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        )
-        runner.start()
-
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual("running", loaded.meeting.status)
-        self.assertEqual("completion_proposed", loaded.meeting.phase)
-        self.assertEqual("none", loaded.meeting.control_owner)
-        self.assertEqual(1, len([item for item in self.transport.commands if item[0] == "create"]))
-        self.assertTrue(any(item[1] == "vim" for item in self.transport.commands if item[0] != "create"))
-        self.assertTrue(self.transport.tokens)
-        self.assertEqual(
-            ("chat", "command", "done", "observe", "keystrokes"),
-            client.calls[0][3]["allowed_types"],
-        )
-        self.assertEqual(
-            ("chat", "vim_keys", "keystrokes", "observe"),
-            client.calls[2][3]["allowed_types"],
-        )
-        self.assertIn("Be specific.", client.calls[0][1])
-        chat_types = [event["message_type"] for event in loaded.chat_messages()]
-        self.assertEqual(["request", "ack", "final"], chat_types)
-        statuses = [
-            event["data"].get("status")
-            for event in loaded.events()
-            if event["kind"] == "action"
-        ]
-        self.assertIn("received", statuses)
-        self.assertIn("started", statuses)
-        self.assertIn("completed", statuses)
-        self.assertTrue(loaded.latest_screen()["content"])
-
-    def test_phase_mismatch_is_rejected_and_agent_replans(self):
-        client = FakeClient(
-            [
-                make_action(),
-                make_action("command", command="vim", path="notes.md"),
-                # This is structurally valid, but invalid once Vim owns the pane.
-                make_action("command", command="pwd"),
-                make_action(
-                    "vim_keys",
-                    keys=[
-                        {"kind": "literal", "value": ":wq"},
-                        {"kind": "key", "value": "Enter"},
-                    ],
-                ),
-                make_action(
-                    "done",
-                    message_type="final",
-                    content="I noticed the stale action and exited Vim safely.",
-                ),
-            ]
-        )
-        runner = InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        )
-
-        runner.start()
-
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual("running", loaded.meeting.status)
-        self.assertEqual("completion_proposed", loaded.meeting.phase)
-        self.assertIsNone(loaded.meeting.failure)
-        rejected = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "action"
-            and event["data"].get("status") == "rejected"
-            and event["data"].get("reason") == "phase_mismatch"
-        ]
-        self.assertEqual(1, len(rejected))
-        self.assertIn("current_command=vim", rejected[0]["content"])
-        self.assertEqual("command", rejected[0]["data"]["action"]["type"])
-        self.assertEqual(5, len(client.calls))
-        self.assertEqual(
-            ("chat", "vim_keys", "keystrokes", "observe"),
-            client.calls[3][3]["allowed_types"],
-        )
-
-    def test_progress_does_not_block_the_next_chat_or_terminal_action(self):
-        client = FakeClient(
-            [
-                make_action(),
-                make_action("command", command="vim", path="notes.md"),
-                make_action(
-                    "vim_keys",
-                    keys=[
-                        {"kind": "literal", "value": "i"},
-                        {"kind": "literal", "value": "draft"},
-                    ],
-                ),
-                make_action("chat", message_type="progress", content="Vim is now visibly open."),
-                make_action(
-                    "vim_keys",
-                    keys=[
-                        {"kind": "literal", "value": ":wq"},
-                        {"kind": "key", "value": "Enter"},
-                    ],
-                ),
-                make_action("done", message_type="final", content="Stopped after checking constraints."),
-            ]
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        ).start()
-        self.assertEqual(
-            ("chat", "vim_keys", "keystrokes", "observe"),
-            client.calls[4][3]["allowed_types"],
-        )
-        self.assertEqual(
-            ("none", "ack", "progress", "question", "final"),
-            client.calls[4][3]["allowed_message_types"],
-        )
-
-    def test_progress_allowed_after_completed_keystrokes_in_shell(self):
-        # Regression: an echo demo typed with the keystrokes DSL (the channel
-        # the human asked for) must count as terminal evidence, so the follow-up
-        # progress message is accepted instead of killing the session.
-        client = FakeClient(
-            [
-                make_action(),
-                make_action(
-                    "keystrokes",
-                    keys=[
-                        {"kind": "literal", "value": 'echo "hi"'},
-                        {"kind": "key", "value": "Enter"},
-                    ],
-                ),
-                make_action(
-                    "chat", message_type="progress", content='echo "hi" is visible on screen.'
-                ),
-                make_action("done", message_type="final", content="Finished: PROJECT TESTS PASSED"),
-            ]
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        ).start()
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        rejected = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "action" and event["data"].get("status") == "rejected"
-        ]
-        self.assertEqual([], rejected)
-        progress = [
-            event for event in loaded.chat_messages() if event["message_type"] == "progress"
-        ]
-        self.assertEqual(1, len(progress))
-
     def test_progress_rejection_points_at_a_plain_chat(self):
         runner = InteractiveRunner(
             self.store, self.transport, FakeClient([]), action_settle_seconds=0,
@@ -777,259 +739,6 @@ class InteractiveRunnerTest(unittest.TestCase):
         claimed = make_action("chat", message_type="progress", content="still checking")
         with self.assertRaisesRegex(AgentProtocolError, "send a plain chat or observe"):
             runner._validate_action_for_current_phase(claimed)
-
-    def test_agent_capture_pump_records_delayed_vim_redraw(self):
-        self.transport = DelayedVimTransport()
-        client = PauseOnThirdClient(
-            [
-                make_action(),
-                make_action("command", command="vim", path="notes.md"),
-                make_action(
-                    "chat",
-                    message_type="question",
-                    content="Vim is visibly open. Shall I continue editing?",
-                ),
-            ]
-        )
-        InteractiveRunner(
-            self.store,
-            self.transport,
-            client,
-            action_settle_seconds=0,
-            agent_capture_interval_seconds=0.01,
-            typing_interval_seconds=0,
-        ).start()
-
-        screens = [
-            event["content"]
-            for event in MeetingStore.load(self.root, "runner-demo").events()
-            if event["kind"] == "screen"
-        ]
-        self.assertIn('~\n~\n"notes.md" [New] 0L, 0B', screens)
-        self.assertGreaterEqual(self.transport.vim_captures, 3)
-
-    def test_agent_literalizes_single_printable_key_from_model(self):
-        client = FakeClient(
-            [
-                make_action(),
-                make_action("command", command="vim", path="notes.md"),
-                make_action(
-                    "vim_keys",
-                    keys=[{"kind": "key", "value": "i"}],
-                ),
-                make_action("done", message_type="final", content="Inserted text."),
-            ]
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        ).start()
-        self.assertEqual(
-            [{"kind": "literal", "value": "i"}],
-            self.transport.tokens[-1][1],
-        )
-
-    def test_vim_normal_mode_rejects_shell_text_and_accepts_explicit_insert(self):
-        with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
-            validate_agent_vim_keys(
-                [{"kind": "literal", "value": "python bubble_sort.py"}],
-                '~\n"bubble_sort.py" [New]',
-            )
-        validate_agent_vim_keys(
-            [
-                {"kind": "literal", "value": "i"},
-                {"kind": "literal", "value": "print('ok')"},
-                {"kind": "key", "value": "Escape"},
-                {"kind": "literal", "value": ":wq"},
-                {"kind": "key", "value": "Enter"},
-            ],
-            '~\n"bubble_sort.py" [New]',
-        )
-
-    def test_vim_insert_screen_accepts_document_text_but_ex_command_is_restricted(self):
-        validate_agent_vim_keys(
-            [{"kind": "literal", "value": "python bubble_sort.py"}],
-            "python\n-- INSERT --",
-        )
-        with self.assertRaisesRegex(RunnerError, "already in insert mode"):
-            validate_agent_vim_keys(
-                [{"kind": "literal", "value": "i"}],
-                "python\n-- INSERT --",
-            )
-        with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
-            validate_agent_vim_keys(
-                [{"kind": "literal", "value": ":edit ~/.codex/config.toml"}],
-                '~\n"notes.md"',
-            )
-
-    def test_vim_safe_recovery_and_split_ex_commands_are_allowed(self):
-        validate_agent_vim_keys(
-            [
-                {"kind": "literal", "value": "ggdG"},
-                {"kind": "literal", "value": "i"},
-                {"kind": "literal", "value": "replacement"},
-                {"kind": "key", "value": "Escape"},
-                {"kind": "literal", "value": ":"},
-                {"kind": "literal", "value": "wq"},
-                {"kind": "key", "value": "Enter"},
-            ],
-            '~\n"notes.md"',
-        )
-        with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
-            validate_agent_vim_keys(
-                [{"kind": "literal", "value": "d:!sh"}],
-                '~\n"notes.md"',
-            )
-        validate_agent_vim_keys(
-            [
-                {"kind": "literal", "value": ":%s/) order/); order/"},
-                {"kind": "key", "value": "Enter"},
-            ],
-            '~\n"notes.md"',
-        )
-        validate_agent_vim_keys(
-            [
-                {"kind": "literal", "value": ":81s/addBig/addSigned/"},
-                {"kind": "key", "value": "Enter"},
-            ],
-            '~\n"bigint_add.cpp"',
-        )
-        for unsafe in (":%s/x/\\=system('id')/", ":%s/x/y/|q", ":%s/.*/x/"):
-            with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
-                validate_agent_vim_keys(
-                    [{"kind": "literal", "value": unsafe}],
-                    '~\n"notes.md"',
-                )
-        with self.assertRaisesRegex(RunnerError, "safe allowlist"):
-            validate_agent_vim_keys(
-                [
-                    {"kind": "literal", "value": ":"},
-                    {"kind": "literal", "value": "edit ~/.codex/config.toml"},
-                    {"kind": "key", "value": "Enter"},
-                ],
-                '~\n"notes.md"',
-            )
-        validate_agent_vim_keys(
-            [{"kind": "literal", "value": "32G0dd"}],
-            '~\n"notes.md"',
-        )
-        with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
-            validate_agent_vim_keys(
-                [{"kind": "literal", "value": "4G0dd;:!sh"}],
-                '~\n"notes.md"',
-            )
-
-    def test_vim_forward_search_is_allowed_but_control_text_is_not(self):
-        validate_agent_vim_keys(
-            [
-                {"kind": "literal", "value": "/parse_line"},
-                {"kind": "key", "value": "Enter"},
-            ],
-            '~\n"notes.md"',
-        )
-        with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
-            validate_agent_vim_keys(
-                [{"kind": "literal", "value": "/parse_line\n:!sh"}],
-                '~\n"notes.md"',
-            )
-
-    def test_vim_ctrl_c_leaves_insert_mode_and_cannot_smuggle_ex_commands(self):
-        # C-c returns Vim to normal mode; the following text must be validated
-        # as normal-mode input, not skipped as insert-mode document text.
-        with self.assertRaisesRegex(RunnerError, "unsafe Vim normal-mode literal"):
-            validate_agent_vim_keys(
-                [
-                    {"kind": "literal", "value": "i"},
-                    {"kind": "key", "value": "C-c"},
-                    {"kind": "literal", "value": ":!bash"},
-                    {"kind": "key", "value": "Enter"},
-                ],
-                '~\n"notes.md"',
-            )
-        # C-c cancels a pending Ex command, so a safe sequence still passes.
-        validate_agent_vim_keys(
-            [
-                {"kind": "literal", "value": ":"},
-                {"kind": "key", "value": "C-c"},
-                {"kind": "literal", "value": "i"},
-                {"kind": "literal", "value": "document text"},
-                {"kind": "key", "value": "Escape"},
-                {"kind": "literal", "value": ":wq"},
-                {"kind": "key", "value": "Enter"},
-            ],
-            '~\n"notes.md"',
-        )
-
-    def test_vim_history_recall_keys_are_rejected_inside_ex_commands(self):
-        for key in ("Up", "Tab", "Backspace"):
-            with self.assertRaisesRegex(RunnerError, "only Enter or Escape"):
-                validate_agent_vim_keys(
-                    [
-                        {"kind": "literal", "value": ":w"},
-                        {"kind": "key", "value": key},
-                        {"kind": "key", "value": "Enter"},
-                    ],
-                    '~\n"notes.md"',
-                )
-
-    def test_runner_rejects_shell_text_in_vim_normal_mode_without_sending_keys(self):
-        client = FakeClient(
-            [
-                make_action(),
-                make_action("command", command="vim", path="bubble_sort.py"),
-                make_action(
-                    "vim_keys",
-                    keys=[{"kind": "literal", "value": "python bubble_sort.py"}],
-                ),
-                make_action(
-                    "chat",
-                    message_type="question",
-                    content="The unsafe Vim input was rejected. Shall I exit the editor?",
-                ),
-            ]
-        )
-        InteractiveRunner(
-            self.store,
-            self.transport,
-            client,
-            action_settle_seconds=0,
-            typing_interval_seconds=0,
-        ).start()
-
-        self.assertEqual([], self.transport.tokens)
-        rejected = [
-            event
-            for event in MeetingStore.load(self.root, "runner-demo").events()
-            if event["kind"] == "action" and event["data"].get("status") == "rejected"
-        ]
-        self.assertEqual(1, len(rejected))
-        self.assertIn("unsafe Vim normal-mode literal", rejected[0]["content"])
-
-    def test_each_vim_token_is_captured_as_a_separate_change(self):
-        client = FakeClient(
-            [
-                make_action(),
-                make_action("command", command="vim", path="notes.md"),
-                make_action(
-                    "vim_keys",
-                    keys=[
-                        {"kind": "key", "value": "Escape"},
-                        {"kind": "literal", "value": ":w"},
-                        {"kind": "key", "value": "Enter"},
-                    ],
-                ),
-                make_action("done", message_type="final", content="Saved the file."),
-            ]
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        ).start()
-        self.assertEqual(3, len(self.transport.tokens))
-        screen_events = [
-            event
-            for event in MeetingStore.load(self.root, "runner-demo").events()
-            if event["kind"] == "screen"
-        ]
-        self.assertGreaterEqual(len(screen_events), 5)
 
     def test_new_message_supersedes_model_result_without_executing_it(self):
         stale_command = make_action("command", command="pwd")
@@ -1202,7 +911,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         with mock.patch("interactive_runner.time.monotonic", return_value=101.0):
             allowed_types, _, budget_final = runner._phase_constraints()
-        self.assertEqual(("chat", "command", "done", "observe", "keystrokes"), allowed_types)
+        self.assertEqual(("chat", "command", "diff", "done", "observe"), allowed_types)
         self.assertFalse(budget_final)
 
     def test_first_cycle_action_is_not_pinned_to_an_acknowledgement(self):
@@ -1214,7 +923,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         )
         self.store.append_screen("bash-3.2$", "bash", str(self.store.workspace_path))
         allowed_types, allowed_messages, _ = runner._phase_constraints()
-        self.assertEqual(("chat", "command", "done", "observe", "keystrokes"), allowed_types)
+        self.assertEqual(("chat", "command", "diff", "done", "observe"), allowed_types)
         self.assertEqual(("none", "ack", "progress", "question", "final"), allowed_messages)
 
     def test_done_is_the_agents_call_even_without_a_screen_marker(self):
@@ -1244,9 +953,9 @@ class InteractiveRunnerTest(unittest.TestCase):
     def test_workspace_paths_cannot_escape(self):
         current = str(self.store.workspace_path)
         with self.assertRaises(RunnerError):
-            resolve_workspace_path(self.store, current, "../outside", "vim")
+            resolve_workspace_path(self.store, current, "../outside", "cd")
         with self.assertRaises(RunnerError):
-            resolve_workspace_path(self.store, current, "/tmp/outside", "vim")
+            resolve_workspace_path(self.store, current, "/tmp/outside", "cd")
         with self.assertRaises(RunnerError):
             resolve_workspace_path(self.store, current, "missing.py", "python")
         script = self.store.workspace_path / "snake.py"
@@ -1255,6 +964,258 @@ class InteractiveRunnerTest(unittest.TestCase):
             script.resolve(),
             resolve_workspace_path(self.store, current, "snake.py", "python"),
         )
+
+    def _typed_for_command(self, name, line, backend="trae-acp"):
+        """让 actor 只发这一条 `command`，返回真正打进了共享终端的那几行程序名。"""
+        store = MeetingStore.create(
+            self.root,
+            name,
+            "Read notes.md and tell me what changed.",
+            self.skill,
+            f"remotebuddy-{name}",
+            "test-model",
+            agent_backend=backend,
+            agent_provider="deepseek" if backend == "claude-code" else "openai",
+        )
+        transport = FakeTransport()
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("command", command=line),
+                make_action("done", message_type="final", content="Said what changed."),
+            ]
+        )
+        client.backend_name = backend
+        InteractiveRunner(
+            store, transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+        self.typed = [item[1] for item in transport.commands if item[0] != "create"]
+        self.last_observation = client.calls[2][2]
+        return self.typed
+
+    def test_plain_readers_never_reach_the_shared_terminal(self):
+        typed = self._typed_for_command("runner-reader", "sed -n '1,40p' notes.md")
+
+        self.assertNotIn("sed", typed)
+        self.assertIn("for changes, not for reading", self.last_observation)
+        self.assertIn("Read/Glob/Grep", self.last_observation)
+
+    def test_commands_that_change_something_still_reach_the_shared_terminal(self):
+        for name, line, program in (
+            ("runner-git", "git diff notes.md", "git"),
+            ("runner-edit", "sed -i 's/a/b/' notes.md", "sed"),
+            ("runner-pipeline", "cat notes.md | wc -l", "cat"),
+            ("runner-outside", "cat /etc/hosts", "cat"),
+        ):
+            with self.subTest(line=line):
+                typed = self._typed_for_command(name, line)
+                self.assertIn(program, typed)
+
+    def test_a_reader_of_a_file_outside_the_workspace_is_still_allowed(self):
+        """外面的东西 backend 自己的工具本来就够不着，终端是唯一那条路。"""
+        typed = self._typed_for_command("runner-reader-outside", "sed -n '1,20p' /etc/hosts")
+
+        self.assertIn("sed", typed)
+
+    def test_a_python_one_liner_that_opens_a_file_is_a_reader_too(self):
+        typed = self._typed_for_command(
+            "runner-reader-python", "python -c \"print(open('notes.md').read())\""
+        )
+
+        self.assertNotIn("python", typed)
+        self.assertIn("for changes, not for reading", self.last_observation)
+
+    def test_a_backend_without_read_tools_still_reads_through_the_terminal(self):
+        """纯对话的 backend 没有自己的读工具：终端是它唯一那条路，不许挡。"""
+        typed = self._typed_for_command(
+            "runner-reader-fallback", "sed -n '1,40p' notes.md", backend="responses"
+        )
+
+        self.assertIn("sed", typed)
+
+    def test_every_action_is_preceded_by_an_investigation_step(self):
+        client = InvestigatingClient(
+            [
+                make_action(),
+                make_action("command", command="pwd"),
+                make_action("done", message_type="final", content="Done."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual(3, len(client.investigations))
+        self.assertIn(INVESTIGATE_STEP_TEXT, client.investigations[0])
+        # 行动那一次请求：明说这一步不读，而且带着上一次请求调查的结论。
+        self.assertIn(ACT_STEP_TEXT, client.calls[0][2])
+        self.assertIn("我看了 notes.md", client.calls[1][2])
+        started = [
+            event["data"].get("step")
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "request_started"
+        ]
+        self.assertEqual(["investigate", "act", "investigate", "act", "investigate", "act"], started)
+        findings = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "state" and event["data"].get("step") == "investigate"
+        ]
+        self.assertEqual(3, len(findings))
+        self.assertEqual("我看了 notes.md：里面还是空的。", findings[0]["content"])
+
+    def test_a_silent_investigation_leaves_no_record(self):
+        """没什么可查的它会静默：那一刻不留空记录，行动步照样接着走。"""
+        client = InvestigatingClient(
+            [make_action("done", message_type="final", content="Done.")], findings=""
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual(1, len(client.investigations))
+        findings = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "state" and event["data"].get("step") == "investigate"
+        ]
+        self.assertEqual([], findings)
+        self.assertEqual(
+            ["investigate", "act"],
+            [
+                event["data"].get("step")
+                for event in loaded.events()
+                if event["kind"] == "action" and event["data"].get("status") == "request_started"
+            ],
+        )
+
+    def test_an_action_written_as_text_is_not_a_finding(self):
+        """它在调查步把动作写成文字：那不是结论，别记下来当"我做过了"。"""
+        client = InvestigatingClient(
+            [make_action("command", command="git status")],
+            findings='{"action":"command","command":"git status","path":""}',
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        findings = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "state" and event["data"].get("step") == "investigate"
+        ]
+        self.assertEqual([], findings)
+        self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
+
+    def test_the_next_cycle_resumes_the_session_and_does_not_replay_history(self):
+        """第二轮带上上一轮的 agent_session_id，而且不再把整段历史重发一遍。"""
+        client = RecordingCycleClient([
+            make_action("done", message_type="final", content="Done."),
+            make_action("done", message_type="final", content="Done again."),
+        ])
+        runner = InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        )
+        runner.start()
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        first_session = loaded.meeting.agent_session_id
+        self.assertTrue(first_session)
+
+        runner.resume()
+
+        self.assertEqual("", client.cycles[0]["resume"])
+        self.assertEqual(first_session, client.cycles[1]["resume"])
+        # 续会话那一轮的初始上下文里不该再出现第一次那句人类请求。
+        self.assertIn("Create notes.md", client.cycles[0]["context"])
+        self.assertNotIn("Create notes.md", client.cycles[1]["context"])
+
+    def test_a_backend_without_tools_is_asked_for_json_and_may_read_in_the_pane(self):
+        """没工具的 backend：既不能叫它去调工具，也不能叫它"这里不许读"。
+
+        它手里没有读工具，共享终端就是它唯一能看东西的地方；跟它说"读已经结束"它就只能
+        去问人要路径（20260927-193126-f896ad 就是这么卡住的）。
+        """
+        client = JsonActionClient([make_action("done", message_type="final", content="Done.")])
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        observation = client.calls[0][2]
+        self.assertIn(ACT_STEP_OPEN_JSON_TEXT, observation)
+        self.assertNotIn("remotebuddy_action", observation)
+        self.assertIn("the response schema asks for", observation)
+        self.assertIn("is also where you look", observation)
+        # 自己有读工具的 backend 仍然是原来那句（共享终端拒收只读命令）。
+        self.assertNotIn("Reading is over", observation)
+
+    def test_a_backend_with_tools_is_still_asked_to_call_the_tool(self):
+        """有工具的还是原来那句：调 `remotebuddy_action`。"""
+        client = InvestigatingClient([make_action("done", message_type="final", content="Done.")])
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        observation = client.calls[0][2]
+        self.assertIn("`remotebuddy_action` tool", observation)
+        self.assertNotIn("the response schema asks for", observation)
+
+    def test_a_failed_investigation_does_not_kill_the_cycle(self):
+        """调查步超时/断掉：记一笔就进行动步，别把整轮弄成 api_error。"""
+        client = StuckInvestigationClient([make_action("done", message_type="final", content="Done.")])
+        runner = InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        )
+        runner.start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        failed = [
+            event for event in loaded.events()
+            if event["kind"] == "state" and event["data"].get("status") == "failed"
+            and event["data"].get("step") == "investigate"
+        ]
+        self.assertEqual(1, len(failed))
+        self.assertIn("直接进行动步", failed[0]["content"])
+        self.assertTrue(self.transport.commands or client.calls)
+
+    def test_the_investigation_step_refuses_every_action(self):
+        runner = InteractiveRunner(
+            self.store, self.transport, InvestigatingClient([]),
+            action_settle_seconds=0, typing_interval_seconds=0,
+        )
+        answer = runner._investigation_refusal(make_action("command", command="pwd"), {})
+
+        self.assertFalse(answer["success"])
+        # pause 必须是 False：True 会让 Claude Code 把这次退回当成"这一次请求的动作"。
+        self.assertFalse(answer["pause"])
+        self.assertIn("closed in the investigation step", answer["content"])
+        rejected = [
+            event
+            for event in self.store.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "investigation_step"
+        ]
+        self.assertEqual(1, len(rejected))
+        self.assertEqual(0, self.store.meeting.cycle_action_count)
+
+    def test_a_backend_without_read_tools_has_no_investigation_step(self):
+        """没有自己读工具的 backend：终端就是它唯一的读路，两步拆不开，每一次请求都是行动步。"""
+        client = FakeClient([make_action("done", message_type="final", content="Done.")])
+        Runner = InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        )
+        Runner.start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("responses", loaded.meeting.agent_backend)
+        started = [
+            event["data"].get("step")
+            for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "request_started"
+        ]
+        self.assertEqual(["act"], started)
 
     def test_dynamic_backend_actions_still_pass_through_runner_and_one_pane(self):
         backend = DynamicBackend()

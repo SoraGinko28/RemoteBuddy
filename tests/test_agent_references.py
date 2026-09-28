@@ -23,7 +23,6 @@ def chat_payload(**changes):
         "content": "Looking at the earlier request now.",
         "command": "none",
         "path": "",
-        "keys": [],
         "delay_ms": 0,
         "references": [],
     }
@@ -255,7 +254,6 @@ class AgentActionToleranceTest(unittest.TestCase):
                     "content": "Looking at the directory now.",
                     "command": "none",
                     "path": "",
-                    "keys": [],
                     "delay_ms": 0,
                 },
                 "references": [],
@@ -273,13 +271,13 @@ class AgentActionToleranceTest(unittest.TestCase):
             {"type": "command", "message_type": "none", "command": "ls -la"}
         )
         self.assertEqual("ls -la", action.command)
-        self.assertEqual([], list(action.keys))
+        self.assertEqual("", action.diff)
         self.assertEqual(0, action.delay_ms)
         self.assertEqual("", action.content)
 
     def test_non_chat_action_defaults_message_type_to_none(self):
         action = AgentAction.from_dict(
-            {"type": "keystrokes", "keys": [{"kind": "literal", "value": "ls -la"}]}
+            {"type": "diff", "diff": "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+b\n"}
         )
         self.assertEqual("none", action.message_type)
 
@@ -301,3 +299,26 @@ class AgentActionToleranceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentActionRejectionHintTest(unittest.TestCase):
+    """拒绝理由就是模型改错用的提示：要说清楚它该写哪几种。"""
+
+    def test_an_unknown_type_is_told_which_types_exist(self):
+        with self.assertRaisesRegex(
+                AgentActionError,
+                "model action type is invalid: expected chat, command, diff, "
+                "observe, or done"):
+            decode_action_text(json.dumps({"type": "write", "message_type": "none"}))
+
+    def test_a_type_the_phase_forbids_is_told_what_the_phase_allows(self):
+        with self.assertRaisesRegex(
+                AgentActionError, "not allowed in the current phase: expected chat, or done"):
+            AgentAction.from_dict({"type": "command", "message_type": "none", "command": "ls"},
+                                  allowed_types=["chat", "done"])
+
+    def test_the_rejection_carries_what_the_model_wrote(self):
+        text = json.dumps({"type": "write", "path": "a.py", "message_type": "none"})
+        with self.assertRaises(AgentActionError) as caught:
+            decode_action_text(text)
+        self.assertEqual(text, caught.exception.source)

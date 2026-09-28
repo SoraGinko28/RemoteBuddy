@@ -33,17 +33,12 @@ audit_path = sys.argv[1]
 thread_id = "thread-scenario"
 turn_count = 0
 
-def act(a_type, message_type="none", content="", command="none", path="", keys=None, delay_ms=0):
+def act(a_type, message_type="none", content="", command="none", path="", diff="", delay_ms=0):
     return {"type": a_type, "message_type": message_type, "content": content,
-            "command": command, "path": path, "keys": keys or [], "delay_ms": delay_ms}
+            "command": command, "diff": diff, "path": path, "delay_ms": delay_ms}
 
-VIM_KEYS = [
-    {"kind": "literal", "value": "i"},
-    {"kind": "literal", "value": "Machine Notes: benchmark plan"},
-    {"kind": "key", "value": "Escape"},
-    {"kind": "literal", "value": ":wq"},
-    {"kind": "key", "value": "Enter"},
-]
+
+BAD_DIFF = "把这两行改掉就行"
 
 SCRIPT = {
     1: act("chat", "ack", "收到任务，我先查看当前目录。"),
@@ -51,15 +46,15 @@ SCRIPT = {
     3: act("command", command="ls -la"),
     4: act("command", command="rm -rf build"),
     5: act("command", command="mkdir -p build"),
-    6: act("command", command="vim", path="notes.md"),
-    7: act("vim_keys", keys=VIM_KEYS),
-    8: act("command", command="none"),
-    9: act("chat", "progress", "已在 notes.md 里写入了基准计划。"),
+    6: act("diff", diff=BAD_DIFF),
+    7: act("command", command="git status --porcelain"),
+    8: act("chat", "progress", "目录已经建好了。"),
+    9: act("command", command="python", path="analysis.py"),
     10: act("command", command="python", path="analysis.py"),
-    11: act("terminal_keys", keys=[{"kind": "key", "value": "C-c"}]),
-    12: act("chat", "progress", "analysis.py 已运行完毕，输出正常。"),
-    13: act("vim_keys", keys=[{"kind": "literal", "value": "i"}]),  # no editor is open
-    14: act("command", command="git status"),
+    11: act("command", command="git status --porcelain"),
+    12: act("command", command="python", path="analysis.py"),
+    13: act("command", command="git status --porcelain"),
+    14: act("chat", "progress", "分析脚本跑过了，没有异常输出。"),
     15: act("done", "final", "笔记与分析脚本均已就绪，任务完成。"),
 }
 
@@ -67,10 +62,12 @@ SCRIPT = {
 # human message), proving the correction loop feeds errors back to the model.
 FEEDBACK_CHECKS = {
     5: "deletion-class command is not allowed",
-    9: "requires a real bash command line",
+    7: "unified diff",
     11: "analysis.py 的输出没有异常",
-    14: "not allowed in the current phase",
 }
+
+# Turns whose observation must carry the previous rejection (or the injected
+# human message), proving the correction loop feeds errors back to the model.
 
 def send(value):
     sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
@@ -127,34 +124,6 @@ for line in sys.stdin:
 '''
 
 
-class ScenarioTransport(FakeTransport):
-    """FakeTransport plus C-c exiting a foreground python process.
-
-    The zero-interval typing path delivers keys via send_tokens, so the
-    python-exit behavior must live there.
-    """
-
-    def _python_interrupt(self, keys):
-        return self.command.startswith("python") and any(
-            token.get("kind") == "key" and token.get("value") == "C-c" for token in keys
-        )
-
-    def send_tokens(self, pane_id, keys):
-        if self._python_interrupt(keys):
-            self.tokens.append((pane_id, list(keys)))
-            self.command = "bash"
-            self.pending_input = ""
-            self.screen_revision += 1
-            return
-        super().send_tokens(pane_id, keys)
-
-    def send_special(self, pane_id, key):
-        if self._python_interrupt([{"kind": "key", "value": key}]):
-            self.send_tokens(pane_id, [{"kind": "key", "value": key}])
-            return
-        super().send_special(pane_id, key)
-
-
 class CodexTaskEndToEndTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -207,7 +176,7 @@ class CodexTaskEndToEndTest(unittest.TestCase):
         backend = CodexAppServerBackend(
             self.config, codex_binary="fake-codex", process_factory=self.process_factory
         )
-        transport = ScenarioTransport()
+        transport = FakeTransport()
         injector = threading.Thread(target=self.inject_human_message, daemon=True)
         injector.start()
         try:
@@ -232,12 +201,12 @@ class CodexTaskEndToEndTest(unittest.TestCase):
             event for event in events
             if event["kind"] == "action" and event.get("data", {}).get("reason") == "phase_mismatch"
         ]
-        self.assertEqual(2, len(invalid))  # rm -rf build, command:"none"
-        self.assertEqual(1, len(mismatch))  # vim keys while the shell owns the pane
+        self.assertEqual(2, len(invalid))  # rm -rf build, a diff that is not a diff
+        self.assertEqual(0, len(mismatch))
 
         records = self.audit_records()
         feedback = {r["turn"]: r["feedback_seen"] for r in records if "feedback_seen" in r}
-        for turn in (5, 9, 11, 14):
+        for turn in (5, 7, 11):
             self.assertTrue(feedback.get(turn), f"turn {turn} observation lacked the feedback")
         self.assertEqual(15, max(r["turn"] for r in records))
 
@@ -245,9 +214,17 @@ class CodexTaskEndToEndTest(unittest.TestCase):
         self.assertEqual(sequences, list(range(1, len(events) + 1)))
 
         typed = [entry[1] for entry in transport.commands]
-        self.assertLessEqual({"pwd", "vim", "python"}, set(typed))
+        self.assertLessEqual({"pwd", "git", "python"}, set(typed))
         self.assertNotIn("rm", typed)
-        self.assertTrue(any(":wq" in str(tokens) for _pane, tokens in transport.tokens))
+        # 动作里没有按键：终端里出现的按键只有 harness 自己的返回码探针，以及把前台
+        # 从一个解释器手里收回来的 C-c。
+        for _pane, keys in transport.tokens:
+            for token in keys:
+                value = str(token.get("value", ""))
+                self.assertTrue(
+                    "remotebuddy-retcode-" in value or value == "C-c",
+                    transport.tokens,
+                )
 
         conversation = (loaded.run_dir / "conversation.md").read_text(encoding="utf-8")
         self.assertIn(HUMAN_MESSAGE, conversation)

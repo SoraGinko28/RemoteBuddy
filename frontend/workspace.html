@@ -33,11 +33,14 @@
         <p>你的消息和终端画面会共同成为 Agent 的工作上下文。</p>
         <button id="welcome-new-button" class="primary-command compact" type="button">打开工作区</button>
         <button id="welcome-advanced-button" class="link-button" type="button">高级设置（后端、模型、密钥）…</button>
+        <!-- 没有会议时消息没地方挂：这里给同一个提示留个位置，跟会话里一样在右上。 -->
+        <div id="welcome-toast" class="toast welcome-toast" hidden></div>
       </section>
 
       <section id="session-view" class="session-view" hidden>
         <header class="session-header">
           <div class="session-identity">
+            <div id="toast" class="toast" hidden></div>
             <p id="failure-message" class="failure-message" hidden></p>
           </div>
           <div class="header-actions">
@@ -51,30 +54,43 @@
           </div>
         </header>
 
-        <div class="presence-strip session-details" id="session-details">
-          <div><span>成员</span><strong id="member-name-label">—</strong></div>
-          <div><span>角色</span><strong id="member-role-label">—</strong></div>
-          <div><span>状态</span><strong id="member-state-label">—</strong></div>
-          <div><span>终端</span><strong id="member-terminal-label">—</strong></div>
-          <div><span>发言</span><strong id="member-chat-label">0</strong></div>
-          <div><span>最近</span><strong id="member-last-label">—</strong></div>
-          <div><span>阶段</span><strong id="phase-label">—</strong></div>
-          <div><span>后端</span><strong id="backend-label">—</strong></div>
-          <div><span>Provider</span><strong id="provider-label">—</strong></div>
-          <div><span>模型</span><strong id="model-label">—</strong></div>
-          <div><span>输入</span><strong id="typing-profile-label">平衡</strong></div>
-          <div><span>推理</span>
-            <select id="effort-live-select" class="effort-live-select" title="修改后在下一个工作周期生效">
-              <option value="">默认</option>
-              <option value="none">无</option>
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
-            </select>
+        <div id="member-panel" class="member-panel" role="dialog" aria-label="成员详情">
+          <header class="member-panel-header">
+            <strong id="member-name-label">—</strong>
+            <span id="member-role-label">—</span>
+            <button id="member-panel-close" class="member-panel-close" type="button" aria-label="关闭">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
+            </button>
+          </header>
+          <div class="presence-strip">
+            <div><span>状态</span><strong id="member-state-label">—</strong></div>
+            <div><span>终端</span><strong id="member-terminal-label">—</strong></div>
+            <div><span>发言</span><strong id="member-chat-label">0</strong></div>
+            <div><span>最近</span><strong id="member-last-label">—</strong></div>
+            <div><span>阶段</span><strong id="phase-label">—</strong></div>
+            <div><span>后端</span><strong id="backend-label">—</strong></div>
+            <div><span>Provider</span><strong id="provider-label">—</strong></div>
+            <div><span>模型</span><strong id="model-label">—</strong></div>
+            <div><span>输入</span><strong id="typing-profile-label">平衡</strong></div>
+            <div><span>推理</span>
+              <select id="effort-live-select" class="effort-live-select" title="修改后在下一个工作周期生效">
+                <option value="">默认</option>
+                <option value="none">无</option>
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+            </div>
+            <div id="skill-cell" hidden><span>Skill</span>
+              <span class="skill-actions">
+                <button id="reload-skill-button" class="command-button compact" type="button" title="不重启进程，让它在下一个请求用新的 Skill">更新</button>
+                <button id="restart-agent-button" class="command-button compact" type="button" title="杀掉当前 agent 进程，用新的 Skill 重开一个">重启</button>
+              </span>
+            </div>
+            <div><span>动作</span><strong id="action-label">0 / 60</strong></div>
+            <div><span>运行</span><strong id="runtime-label">00:00</strong></div>
+            <div><span>事件</span><strong id="event-count">0</strong></div>
           </div>
-          <div><span>动作</span><strong id="action-label">0 / 60</strong></div>
-          <div><span>运行</span><strong id="runtime-label">00:00</strong></div>
-          <div><span>事件</span><strong id="event-count">0</strong></div>
         </div>
 
         <div class="work-grid">
@@ -90,8 +106,8 @@
             <div id="composer-shell" class="composer-shell">
               <form id="message-form" class="message-form">
                 <label class="sr-only" for="message-input">发送消息</label>
-                <div id="attachment-strip" class="attachment-strip" hidden></div>
                 <textarea id="message-input" rows="3" maxlength="1048576" placeholder="继续说明、纠正或打断 Agent…"></textarea>
+                <div id="attachment-strip" class="attachment-strip" hidden></div>
                 <div id="reference-card" class="reference-card" hidden></div>
                 <div class="composer-footer">
                   <button id="attach-image-button" class="icon-button" type="button" title="加图片（也可以直接粘贴）" aria-label="加图片">
@@ -274,6 +290,12 @@
     <button type="button" data-workspace-action="delete" role="menuitem">删除工作区</button>
   </div>
 
+  <div id="drop-line" class="drop-line" hidden aria-hidden="true"></div>
+
+  <div id="meeting-menu" class="meeting-menu" hidden role="menu" aria-label="会话操作">
+    <button type="button" data-meeting-action="delete" role="menuitem">删除会话</button>
+  </div>
+
   <div id="selection-menu" class="selection-menu" hidden role="toolbar" aria-label="选区操作">
     <button type="button" data-selection-action="evaluate" class="score-action evaluate">评价</button>
     <button type="button" data-selection-action="add-to-conversation" class="score-action add-to-conversation">添加到对话</button>
@@ -298,7 +320,6 @@
     <img id="image-lightbox-image" alt="">
   </dialog>
 
-  <div id="toast" class="toast" hidden></div>
   <script src="/assets/vendor/xterm/xterm.js"></script>
   <script src="/assets/workspace.js" defer></script>
 </body>

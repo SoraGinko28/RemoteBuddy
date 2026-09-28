@@ -82,7 +82,7 @@ CANONICAL_PROVIDER_KEYS = {
     "requires_openai_auth",
 }
 CANONICAL_HARNESS_KEYS = {"binary", "min_version", "restricted"}
-SUPPORTED_BACKENDS = {"responses", "codex-app-server", "claude-code", "trae-agent"}
+SUPPORTED_BACKENDS = {"responses", "codex-app-server", "claude-code", "trae-agent", "trae-acp"}
 SUPPORTED_PROVIDERS = {"openai", "deepseek"}
 # DeepSeek's long-context model uses a literal ``[1m]`` suffix.
 MODEL_RE = re.compile(r"^(?=.{1,200}$)[A-Za-z0-9][A-Za-z0-9._-]*(?:\[1m\])?$")
@@ -151,8 +151,9 @@ class ModelApiConfig:
             raise ModelConfigError("agent_provider is not supported")
         if not isinstance(dynamic_tools, bool):
             raise ModelConfigError("codex_dynamic_tools must be boolean")
-        if dynamic_tools and agent_backend != "codex-app-server":
-            raise ModelConfigError("codex_dynamic_tools requires agent_backend=codex-app-server")
+        # 这个开关是"给 codex/trae 用的"偏好：配置里的默认后端常常是别的
+        # （claude-code 之类），那时候它只是搁着，不报错也不生效；真正选中的
+        # 后端在 resolve() 里判。
 
         provider_profiles = values.get("provider_profiles", {})
         harness_profiles = values.get("harness_profiles", {})
@@ -212,15 +213,15 @@ class ModelApiConfig:
             raise ModelConfigError("agent_provider is not supported")
         if backend == "claude-code" and provider != "deepseek":
             raise ModelConfigError("claude-code currently requires agent_provider=deepseek")
-        if backend == "trae-agent" and provider != "openai":
-            raise ModelConfigError("trae-agent currently requires agent_provider=openai")
+        if backend in {"trae-agent", "trae-acp"} and provider != "openai":
+            raise ModelConfigError(f"{backend} currently requires agent_provider=openai")
         profile = self.provider_profiles.get(provider, {})
         if not isinstance(profile, Mapping):
             profile = {}
         # An explicit empty model on an app-server backend means "let the CLI
         # use its own configured default" — required for subscription logins
         # (ChatGPT plan, Trae account) without access to a hard-coded model id.
-        if backend in {"codex-app-server", "trae-agent"} and model == "":
+        if backend in {"codex-app-server", "trae-agent", "trae-acp"} and model == "":
             selected_model = ""
         else:
             selected_model = model or profile.get("model") or (self.model if provider == self.agent_provider else None)
@@ -228,7 +229,7 @@ class ModelApiConfig:
         if provider == "deepseek":
             selected_model = selected_model or "deepseek-v4-pro[1m]"
             selected_base_url = selected_base_url or "https://api.deepseek.com/anthropic"
-        if not (backend in {"codex-app-server", "trae-agent"} and selected_model == ""):
+        if not (backend in {"codex-app-server", "trae-agent", "trae-acp"} and selected_model == ""):
             if not isinstance(selected_model, str) or not MODEL_RE.fullmatch(selected_model):
                 raise ModelConfigError("model must be a short model identifier")
         if not isinstance(selected_base_url, str):
@@ -238,7 +239,11 @@ class ModelApiConfig:
         api_key = _select_auth_key(self.auth_keys, auth_name)
         if (backend == "responses" or provider == "deepseek") and not api_key:
             raise ModelConfigError(f"auth.json is missing {auth_name}")
-        dynamic = self.codex_dynamic_tools if backend == "codex-app-server" else False
+        dynamic = (
+            self.codex_dynamic_tools
+            if backend in {"codex-app-server", "trae-agent"}
+            else False
+        )
         harness = self.harness_profiles.get(backend, {})
         binary = harness.get("binary", self.claude_binary if backend == "claude-code" else "claude") if isinstance(harness, Mapping) else "claude"
         return replace(
@@ -576,8 +581,9 @@ def _normalise_canonical_config(values: Dict[str, Any]) -> Dict[str, Any]:
     dynamic = values.get("codex_dynamic_tools", False)
     if not isinstance(dynamic, bool):
         raise ModelConfigError("codex_dynamic_tools must be boolean")
-    if dynamic and backend != "codex-app-server":
-        raise ModelConfigError("codex_dynamic_tools requires agent_backend=codex-app-server")
+    # 配置里的默认后端常常不是 codex/trae（比如 claude-code），那时这个偏好就搁着，
+    # 真正选中的后端在 resolve() 里再判。
+    values["codex_dynamic_tools"] = dynamic
     # Expose selected profile fields in the flattened runtime object.
     selected_profile = dict(selected)
     selected_profile.setdefault("model", model)
@@ -651,6 +657,8 @@ _EFFORT_OUTPUT_BUDGET = {
 class OpenAIResponsesClient:
     backend_name = "responses"
     stateful = False
+    # 手里没有工具：动作就是它按 schema 返回的那个 JSON 对象。
+    action_submission = "json"
 
     # HTTP statuses worth a bounded retry: throttling and gateway hiccups.
     RETRYABLE_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
@@ -769,8 +777,13 @@ class OpenAIResponsesClient:
         model: Optional[str] = None,
         images: Optional[Sequence[Dict[str, Any]]] = None,
         event_callback: Any = None,
+        workspace: Optional[str] = None,
+        resume_session_id: Optional[str] = None,
     ) -> str:
-        del initial_context, model, images
+        # Responses 是无状态的：动作和上下文每次都随请求带上，没有会话可续。
+        del resume_session_id
+
+        del initial_context, model, images, workspace
         self._cycle_instructions = instructions
         session_id = self.create_conversation(meeting_id)
         if event_callback:
@@ -783,6 +796,16 @@ class OpenAIResponsesClient:
                 }
             )
         return session_id
+
+    def update_instructions(self, instructions: str) -> bool:
+        """这个 backend 的指令是随每个请求发出去的：换掉就算数，下一句就用新的。
+
+        页面上那个"更新"按钮（`/skill/reload`）走这里；把指令写在自己进程里的
+        backend（Claude Code、Codex App Server）没有这个方法，那个按钮对它们
+        只换文件、下一次开工才生效。
+        """
+        self._cycle_instructions = instructions
+        return True
 
     def next_action(
         self,

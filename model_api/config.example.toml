@@ -1,7 +1,7 @@
 # Harness and provider are stored independently in each meeting.
 default_backend = "responses"
 default_provider = "openai"
-request_timeout_seconds = 120
+request_timeout_seconds = 300
 reasoning_effort = "low"
 store_responses = false
 codex_dynamic_tools = false
@@ -24,3 +24,7 @@ fast_model = "deepseek-v4-flash"
 [harnesses.claude-code]
 binary = "claude"
 restricted = true
+
+[harnesses.trae-acp]
+# 同一个 CLI，走 ACP：它自己的只读工具留着，动作还是从我们的 MCP 工具回来。
+binary = "traecli"

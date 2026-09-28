@@ -7,7 +7,7 @@ import time
 import unittest
 from pathlib import Path
 
-from agent_protocol import AgentProtocolError
+from agent_protocol import AgentProtocolError, AgentRefused
 from codex_app_server_client import CodexAppServerBackend
 from model_api_client import ModelApiConfig
 
@@ -18,7 +18,6 @@ ACK = {
     "content": "I will inspect the shared terminal first.",
     "command": "none",
     "path": "",
-    "keys": [],
     "delay_ms": 0,
 }
 PWD = {
@@ -27,7 +26,6 @@ PWD = {
     "content": "",
     "command": "pwd",
     "path": "",
-    "keys": [],
     "delay_ms": 0,
 }
 DONE = {
@@ -36,7 +34,6 @@ DONE = {
     "content": "The shared-terminal task is complete.",
     "command": "none",
     "path": "",
-    "keys": [],
     "delay_ms": 0,
 }
 
@@ -100,6 +97,17 @@ for line in sys.stdin:
         text = value["params"]["input"][0]["text"]
         send({{"id": request_id, "result": {{"turn": {{"id": turn_id, "status": "inProgress", "items": []}}}}}})
         if "WAIT_FOR_INTERRUPT" in text:
+            continue
+        if "FORBIDDEN_ITEM" in text:
+            send({{
+                "method": "item/started",
+                "params": {{
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "startedAtMs": 1,
+                    "item": {{"type": "webSearch", "id": "bad-item"}},
+                }},
+            }})
             continue
         if "FORBIDDEN_COMMAND" in text:
             send({{
@@ -278,6 +286,29 @@ class CodexAppServerBackendTest(unittest.TestCase):
         self.assertIn("outputSchema", turn["params"])
         self.assertFalse(any("text" in item for item in self.telemetry))
 
+    def test_a_closed_backend_can_start_another_cycle(self):
+        """页面上那个"重启"就是在同一个对象上 close 完再 start_cycle 一次。
+
+        close() 会把进程失败标记钉成 "closed"；不清掉它，新 cycle 的第一个
+        请求就会立刻报 "Codex App Server process exited"。
+        """
+        backend = self.backend()
+        try:
+            first = backend.start_cycle("meeting-one", "Skill", "context")
+            backend.close()
+            second = backend.start_cycle("meeting-one", "Skill v2", "context again")
+            response = backend.next_action(
+                second,
+                "later delta",
+                allowed_types=("chat",),
+                allowed_message_types=("ack",),
+            )
+        finally:
+            backend.close()
+        self.assertEqual("thread-test", first)
+        self.assertEqual("thread-test", second)
+        self.assertEqual("ack", response.action.message_type)
+
     def test_empty_model_defers_to_cli_default(self):
         from dataclasses import replace
 
@@ -319,6 +350,18 @@ class CodexAppServerBackendTest(unittest.TestCase):
                 backend.next_action(session, "ignored")
             methods = [value.get("method") for value in self.wire()]
             self.assertIn("turn/interrupt", methods)
+        finally:
+            backend.close()
+
+    def test_a_tool_this_harness_does_not_offer_is_a_refusal_not_a_dead_cycle(self):
+        """它自己挑了联网搜索：退回让它换一条，不能把整场会判死。"""
+        backend = self.backend()
+        try:
+            session = backend.start_cycle("meeting", "Skill", "FORBIDDEN_ITEM")
+            with self.assertRaisesRegex(AgentRefused, "webSearch"):
+                backend.next_action(session, "ignored")
+            events = [value for value in self.wire() if value.get("method") == "turn/interrupt"]
+            self.assertTrue(events)
         finally:
             backend.close()
 
