@@ -1518,18 +1518,72 @@ def repo_with_case(test: unittest.TestCase, case: Case) -> Path:
 
 
 class SnapshotTest(unittest.TestCase):
-    """快照按文件拍：只读工作区，不要求这里是 git 仓库，也不留东西。"""
+    """快照：项目是仓库就开一棵 git worktree，不是就只读文件；两种情况收尾都不留东西。"""
 
-    def test_a_snapshot_only_reads_the_workspace(self):
+    @staticmethod
+    def _files_of(work):
+        """工作区里的文件，`.git` 不算：快照要在 `.git` 里开分支、登记工作树，收尾会摘干净。"""
+        return sorted(
+            path.relative_to(work).as_posix()
+            for path in work.rglob("*")
+            if path.is_file() and ".git" not in path.relative_to(work).parts
+        )
+
+    @staticmethod
+    def _loose_objects(work):
+        done = subprocess.run(
+            ["git", "-C", str(work), "count-objects", "-v"], capture_output=True, text=True
+        )
+        return int(done.stdout.splitlines()[0].split(":")[1])
+
+    def test_a_snapshot_in_a_repository_is_a_worktree_and_leaves_nothing_behind(self):
         case = _case_by_name("3files_1hunks_replace")
         work = repo_with_case(self, case)
-        before = sorted(path.relative_to(work).as_posix() for path in work.rglob("*"))
+        before = self._files_of(work)
+        loose_before = self._loose_objects(work)
         files = {name: case.base_text(name) for name in case.paths()}
         snapshot = tmux_vim.snapshot_workspace(work, tmux_vim.parse_unified_diff(diff_text(case)))
         self.assertEqual(files, {name: text for name, text in snapshot.contents.items()})
+        # 项目是仓库：快照是从快照提交上开出来的那棵工作树，工作区里的文件一个都不动
+        self.assertIsNotNone(snapshot.worktree)
+        self.assertTrue(snapshot.worktree.is_dir())
+        self.assertTrue(snapshot.branch.startswith("snapshot-"))
+        self.assertEqual(before, self._files_of(work), "拍快照不该动工作区里的文件")
+        # 快照的对象写在临时对象库：项目自己的对象库一个都没有多
+        self.assertEqual(loose_before, self._loose_objects(work))
+
+        root, branch = snapshot.root, snapshot.branch
+        tmux_vim.cleanup_snapshot(snapshot)
+        self.assertFalse(root.exists(), "临时目录要整个删掉")
+        self.assertEqual(before, self._files_of(work))
+        worktrees = subprocess.run(
+            ["git", "-C", str(work), "worktree", "list"], capture_output=True, text=True
+        )
+        self.assertEqual(1, len(worktrees.stdout.strip().splitlines()), worktrees.stdout)
+        branches = subprocess.run(
+            ["git", "-C", str(work), "branch", "--list", branch], capture_output=True, text=True
+        )
+        self.assertEqual("", branches.stdout.strip(), "快照挂的分支要删掉")
+        self.assertEqual(loose_before, self._loose_objects(work), "项目自己的对象库要一个不多")
+
+    def test_a_snapshot_of_a_subdirectory_falls_back_to_reading_files(self):
+        """工作区是仓库里的一个子目录：拍不成整棵 worktree，退回只读这几个文件。"""
+        case = _case_by_name("3files_1hunks_replace")
+        work = repo_with_case(self, case)
+        inside = work / "inside"
+        inside.mkdir()
+        (inside / "notes.md").write_text("one\ntwo\n", encoding="utf-8")
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n"
+        )
+        notes = []
+        snapshot = tmux_vim.snapshot_workspace(inside, patches, notes)
+        self.assertIsNone(snapshot.worktree)
+        self.assertEqual({"notes.md": "one\ntwo\n"}, dict(snapshot.contents))
+        self.assertTrue(any("子目录" in note for note in notes), notes)
         self.assertEqual(
-            before, sorted(path.relative_to(work).as_posix() for path in work.rglob("*")),
-            "拍快照不该在工作区里留下任何东西",
+            "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n",
+            tmux_vim.workspace_diff(snapshot, {"notes.md": "ONE\ntwo\n"}),
         )
 
     def test_a_snapshot_works_in_a_directory_that_is_not_a_repository(self):
@@ -1544,11 +1598,26 @@ class SnapshotTest(unittest.TestCase):
         snapshot = tmux_vim.snapshot_workspace(work, patches)
         self.assertEqual({"a.py": "one\ntwo\n", "b.py": None}, dict(snapshot.contents))
 
+    def test_the_new_diff_is_taken_from_the_worktree_side(self):
+        """有那棵快照工作树时，新 diff 是 git 从那棵树上取出来的，不是 harness 自己拼的。"""
+        case = _case_by_name("3files_2hunks_mixed")
+        work = repo_with_case(self, case)
+        patches = tmux_vim.parse_unified_diff(diff_text(case))
+        snapshot = tmux_vim.snapshot_workspace(work, patches)
+        self.addCleanup(tmux_vim.cleanup_snapshot, snapshot)
+        write_case_target(case, work)
+        got = tmux_vim.workspace_diff(
+            snapshot, tmux_vim._read_contents(work, [p for one in patches for p in one.paths])
+        )
+        self.assertIn("diff --git ", got, "新 diff 该带着 git 自己的头")
+        self.assertTrue(tmux_vim.diffs_match(diff_text(case), got), got)
+
     def test_the_workspace_diff_says_what_changed_and_nothing_else(self):
         case = _case_by_name("3files_2hunks_mixed")
         work = repo_with_case(self, case)
         patches = tmux_vim.parse_unified_diff(diff_text(case))
         snapshot = tmux_vim.snapshot_workspace(work, patches)
+        self.addCleanup(tmux_vim.cleanup_snapshot, snapshot)
         write_case_target(case, work)
         got = tmux_vim.workspace_diff(
             snapshot, tmux_vim._read_contents(work, [p for one in patches for p in one.paths])
@@ -1565,6 +1634,7 @@ class SnapshotTest(unittest.TestCase):
         work = repo_with_case(self, case)
         patches = tmux_vim.parse_unified_diff(diff_text(case))
         snapshot = tmux_vim.snapshot_workspace(work, patches)
+        self.addCleanup(tmux_vim.cleanup_snapshot, snapshot)
         write_case_target(case, work)
         paths = [path for one in patches for path in one.paths]
         got = tmux_vim.workspace_diff(snapshot, tmux_vim._read_contents(work, paths))

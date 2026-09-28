@@ -8,11 +8,11 @@
   vim 动作，逐步执行（每步之间可以被打断、要问过 actor 才继续），落盘之后再核对
   "工作区现在是什么样"和"这份 diff 要求的什么样"是否一致，不一致就再来一轮。
 
-核对不比对 diff 文本，而是比对文件树：动手前用一份**临时索引**把整个工作区写成一棵树
-（`Snapshot`），再用另一份临时索引把 actor 要的那份 diff 应用到这棵树上，得到"要求的样子"
-（`expected tree`）。每轮结束把工作区现状也写成一棵树，两者只在这份 diff 涉及的文件上比较，
-差出来的那一小节就是下一轮要补的改动。这样上下文行的多少、hunk 怎么分组、行号是不是对的
-都不影响判断，判据始终是文件里的内容。
+核对不比对 diff 文本，而是比对文件内容：动手前拍一份快照（`Snapshot`）——这些文件现在是
+什么，外加一棵 git worktree 快照（项目是仓库时，见"工作区快照与比对"那一节）；把 actor 要的
+这份 diff 在内存里应用一遍，得到"要求的样子"。每轮结束把这几个文件再读一遍，和"要求的样子"
+逐文件比，差出来的那一小节就是下一轮要补的改动；新 diff 从 worktree 那边取。这样上下文行的
+多少、hunk 怎么分组、行号是不是对的都不影响判断，判据始终是文件里的内容。
 
 这份文件里的 vim 只做这几件事：定位（`{n}G` 或按上下文行搜索）、删若干行、插若干行、
 保存退出。一次 vim 动作最多写 `MAX_LINES_PER_STEP` 行，为的是每步之间都能被人打断。
@@ -20,8 +20,12 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
 import shlex
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -35,6 +39,10 @@ Runner = Callable[..., Any]
 
 # 每一步写几行文本。一行一行的：人在屏上看得见每一行的到来，也能在两行之间叫停。
 MAX_LINES_PER_STEP = 1
+
+# 拍快照、取新 diff 这些 git 命令最多跑多久。整个项目写进临时对象库对大项目要几秒，
+# 但不能没有上限：卡住了这一份 diff 就该退回去自己算，不能把这场会拖着。
+GIT_TIMEOUT_SECONDS = 120
 
 # vim 用一套干净的配置跑：不读用户的 vimrc（autoindent/expandtab 这类设置会把写进去的
 # 行改样），不写 viminfo，nocompatible，也不写 swap 文件 —— 一次编辑被掐断（人叫停、会话
@@ -1059,25 +1067,43 @@ def _wait_for(
 
 
 # ----------------------------------------------------------------------
-# 工作区快照与比对：harness 自己读文件、自己算，不占共享终端，也不要求这里是 git 仓库
+# 工作区快照与比对：动手之前拍一份，落盘之后从它那边取"这次编辑到底改了什么"
 # ----------------------------------------------------------------------
 #
-# 判据是"文件里的内容"，不是 diff 文本：动手之前把这份 diff 牵到的文件先读下来
-# （`Snapshot`），把这份 diff 在内存里应用一遍得到"要求的样子"，落盘之后再把同样的文件
-# 读一遍，逐文件比。差出来的那一小节（`difflib` 出来的 unified diff）就是下一轮要补的改动。
-# 全程不用 git：`git apply` 比我们严（行数写错、上下文行少一个空格就"补丁损坏"），报错
-# 也没法照着改；而模型手写的 diff 恰恰常常是那样。
+# 判据是"文件里的内容"，不是 diff 文本：动手之前给这份 diff 牵到的文件先拍一张快照
+# （`Snapshot`），把这份 diff 在内存里应用一遍得到"要求的样子"，落盘之后把同样的文件
+# 再读一遍，逐文件比。差出来的那一小节就是下一轮要补的改动。
+#
+# 快照走 ADT 里那段 recipe：项目是 git 仓库、工作区就是它的根，就用一棵 git worktree
+# 快照把整个项目（被忽略的文件也算）记下来 —— 临时索引 read-tree/add -A -f/write-tree/
+# commit-tree，再从那个提交上开一棵 worktree。快照的对象写进临时对象目录（alternates
+# 指回项目的对象库），项目自己的 `.git` 只多一条分支和一个 worktree 登记，收尾都删掉；
+# 不然每拍一次都会往项目的对象库里塞进整个工作区的内容。
+#
+# 落盘之后把现在这些文件同步进那棵工作树，让 git 说这轮改了什么 —— 新 diff 从 worktree
+# 那边取。工作区不是仓库、只是仓库里的一个子目录、或者是个空仓库时拍不成，退回自己读
+# 文件拼 diff（`difflib`）：拍不成不能把这份 diff 判死。
+#
+# 可应用性（`check_appliable`）不走 `git apply --check`：它比我们严（行数写错、上下文行少
+# 一个空格就"补丁损坏"），报错也没法照着改，而模型手写的 diff 恰恰常常是那样。这一步本来
+# 就不必在共享终端里做，把它读到的那份文件和补丁摆在一起比，报"哪一行、补丁要什么、文件
+# 里是什么"，它照着改就行。
 
 
 @dataclass(frozen=True)
 class Snapshot:
     """动手之前给这份 diff 牵到的文件拍的那张快照。
 
-    `contents` 是每个文件当时的内容（None = 那时还不存在），比对照着它算。
+    `contents` 是每个文件当时的内容（None = 那时还不存在），干跑和比对都照着它算。
+    `worktree` 是 git 那边那棵快照工作树，`branch` 是它挂的分支，`root` 是这一轮快照的
+    临时目录（工作树、对象库、临时索引都在里面）。没拍成时它们是 None。
     """
 
     workspace: Path
     contents: Dict[str, Optional[str]]
+    worktree: Optional[Path] = None
+    branch: Optional[str] = None
+    root: Optional[Path] = None
 
 
 def _read_contents(workspace: Path, paths: Sequence[str]) -> Dict[str, Optional[str]]:
@@ -1093,13 +1119,124 @@ def _read_contents(workspace: Path, paths: Sequence[str]) -> Dict[str, Optional[
     return contents
 
 
-def snapshot_workspace(workspace: Path, patches: Sequence[FilePatch]) -> Snapshot:
-    """动手之前给这份 diff 牵到的文件拍一张快照（连没被跟踪、被忽略的文件一起）。"""
+def _git(
+    path: Path, *args: str, env: Optional[Dict[str, str]] = None
+) -> Optional[subprocess.CompletedProcess]:
+    """在 `path` 里跑一句 git；git 不在、跑不起来、超时都算没跑成（返回 None）。"""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _snapshot_objects_dir(workspace: Path) -> Optional[Path]:
+    """这个项目的对象库在哪（快照要拿它当 alternates）。"""
+    result = _git(workspace, "rev-parse", "--absolute-git-dir")
+    if result is None or result.returncode != 0:
+        return None
+    return Path(result.stdout.strip()) / "objects"
+
+
+def _snapshot_env(root: Path, objects: Path) -> Dict[str, str]:
+    """这一轮快照用的环境：新的对象写进临时对象库，项目的对象库挂在 alternates 上。
+
+    提交、树、这一轮新写的文件内容全都落在临时对象库里，收尾一起删掉 —— 项目自己的
+    `.git` 不会因为拍快照而长胖。
+    """
+    env = dict(os.environ)
+    env["GIT_OBJECT_DIRECTORY"] = str(root / "objects")
+    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(objects)
+    return env
+
+
+def _worktree_snapshot(
+    workspace: Path, notes: Optional[List[str]] = None
+) -> Tuple[Optional[Path], Optional[str], Optional[Path]]:
+    """按 ADT 里那段 recipe 给整个项目拍一棵 git worktree 快照；拍不成返回三个 None。
+
+    拍不成的原因写进 `notes`：这不是错误，只是这一轮的新 diff 由 harness 自己按内容拼。
+    """
+
+    def give_up(reason: str) -> Tuple[None, None, None]:
+        if notes is not None:
+            notes.append(f"没拍成 git 快照（{reason}），这一轮新 diff 按文件内容自己算")
+        return None, None, None
+
+    toplevel = _git(workspace, "rev-parse", "--show-toplevel")
+    if toplevel is None or toplevel.returncode != 0:
+        return None, None, None  # 不是仓库：正常情况，不用解释
+    if Path(toplevel.stdout.strip()).resolve() != workspace:
+        return give_up("工作区是仓库里的一个子目录")
+    head = _git(workspace, "rev-parse", "--verify", "HEAD")
+    if head is None or head.returncode != 0:
+        return give_up("这个仓库还没有提交")
+    objects = _snapshot_objects_dir(workspace)
+    if objects is None:
+        return give_up("找不到项目的对象库")
+
+    root = Path(tempfile.mkdtemp(prefix="remotebuddy-snapshot-"))
+    (root / "objects").mkdir()
+    worktree = root / "tree"
+    branch = f"snapshot-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+    index = root / "index"
+    env = _snapshot_env(root, objects)
+    recipe = "\n".join(
+        [
+            "set -e",
+            'GIT_INDEX_FILE={index} git read-tree HEAD',
+            'GIT_INDEX_FILE={index} git add -A -f .',
+            'tree=$(GIT_INDEX_FILE={index} git write-tree)',
+            'commit=$(git commit-tree "$tree" -p HEAD -m {message})',
+            'git worktree add --no-checkout -b {branch} {worktree} "$commit"',
+        ]
+    ).format(
+        index=shlex.quote(str(index)),
+        message=shlex.quote(f"snapshot {branch}"),
+        branch=shlex.quote(branch),
+        worktree=shlex.quote(str(worktree)),
+    )
+    try:
+        done = subprocess.run(
+            ["bash", "-c", recipe],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        return give_up(f"git 没跑起来：{exc}")
+    if done.returncode != 0:
+        reason = (done.stderr or done.stdout or "").strip().splitlines()
+        shutil.rmtree(root, ignore_errors=True)
+        return give_up(reason[0] if reason else f"git 退出码 {done.returncode}")
+    return worktree, branch, root
+
+
+def snapshot_workspace(
+    workspace: Path, patches: Sequence[FilePatch], notes: Optional[List[str]] = None
+) -> Snapshot:
+    """动手之前拍一份快照：这些文件现在是什么内容，外加整个项目的那棵 git 工作树（拍得成的话）。"""
     resolved = Path(workspace).expanduser().resolve()
     if not resolved.is_dir():
         raise DiffNotAppliable(f"工作区目录不在了: {resolved}")
     paths = [path for patch in patches for path in patch.paths]
-    return Snapshot(workspace=resolved, contents=_read_contents(resolved, paths))
+    contents = _read_contents(resolved, paths)
+    worktree, branch, root = _worktree_snapshot(resolved, notes)
+    return Snapshot(
+        workspace=resolved,
+        contents=contents,
+        worktree=worktree,
+        branch=branch,
+        root=root,
+    )
 
 
 def _snippet(lines: Sequence[str], around: int, span: int = 3) -> str:
@@ -1238,8 +1375,48 @@ def _unified_diff(before: Optional[str], after: Optional[str], path: str) -> str
     return f"--- {old_name}\n+++ {new_name}\n" + "".join(body)
 
 
+def _worktree_diff(snapshot: Snapshot, contents: Dict[str, Optional[str]]) -> Optional[str]:
+    """把现在这些文件同步进那棵快照工作树，让 git 说这轮改了什么；没跑成就返回 None。"""
+    if snapshot.worktree is None or snapshot.root is None:
+        return None
+    objects = _snapshot_objects_dir(snapshot.workspace)
+    if objects is None:
+        return None
+    env = _snapshot_env(snapshot.root, objects)
+    for path, body in contents.items():
+        target = snapshot.worktree / path
+        try:
+            if body is None:
+                target.unlink(missing_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body.encode("utf-8", "surrogateescape"))
+        except OSError:
+            return None
+    if not contents:
+        return ""
+    paths = list(contents)
+    staged = _git(snapshot.worktree, "add", "-A", "-f", "--", *paths, env=env)
+    if staged is None or staged.returncode != 0:
+        return None
+    # 工作树是从快照提交上开的、开始时一个文件都没检出，索引里只有上面同步进去的这些
+    # 文件；所以 diff 也只取这些文件（`-- paths`）—— 其余文件在两边的差别是"还没检出"，
+    # 不是这轮编辑改出来的东西。
+    result = _git(snapshot.worktree, "diff", "--cached", "--", *paths, env=env)
+    if result is None or result.returncode != 0:
+        return None
+    return result.stdout
+
+
 def workspace_diff(snapshot: Snapshot, contents: Dict[str, Optional[str]]) -> str:
-    """从快照那边取"这次编辑对这些文件做了什么"。"""
+    """从快照那边取"这次编辑对这些文件做了什么"。
+
+    有那棵 git 工作树就从它那边取（这才是这轮编辑对文件系统造成的实际改动）；没有
+    （不是仓库、或快照没拍成）就自己按快照里的内容和现在的内容拼一份。
+    """
+    from_worktree = _worktree_diff(snapshot, contents)
+    if from_worktree is not None:
+        return from_worktree
     return "".join(
         _unified_diff(snapshot.contents.get(path), contents.get(path), path)
         for path in snapshot.contents
@@ -1272,8 +1449,22 @@ def check_appliable(workspace: Path, diff: str, *, run: Optional[Runner] = None)
 
 
 def cleanup_snapshot(snapshot: Snapshot) -> None:
-    """按文件拍的快照没有临时目录要收，留着这个函数是为了调用方那句话读得通。"""
-    del snapshot
+    """收掉这一轮快照：摘掉那棵工作树、删掉它挂的分支、把临时目录（连对象库）整个删了。"""
+    if snapshot.worktree is not None:
+        objects = _snapshot_objects_dir(snapshot.workspace)
+        env = _snapshot_env(snapshot.root, objects) if snapshot.root and objects else None
+        _git(
+            snapshot.workspace,
+            "worktree",
+            "remove",
+            "--force",
+            str(snapshot.worktree),
+            env=env,
+        )
+        if snapshot.branch:
+            _git(snapshot.workspace, "branch", "-D", snapshot.branch, env=env)
+    if snapshot.root is not None:
+        shutil.rmtree(snapshot.root, ignore_errors=True)
 
 
 def diffs_match(wanted: str, got: str) -> bool:
@@ -1317,8 +1508,8 @@ def tmux_apply_diff_by_vim(
     if not patches:
         raise DiffError("这份 diff 里没有文件改动")
     workspace = _workspace_of(store, transport, pane_id)
-    snapshot = snapshot_workspace(workspace, patches)
     notes: List[str] = []
+    snapshot = snapshot_workspace(workspace, patches, notes)
     try:
         expected = _apply_patches(patches, snapshot.contents, notes)
     except DiffNotAppliable as exc:
