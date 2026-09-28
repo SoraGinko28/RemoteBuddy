@@ -256,5 +256,74 @@ class ComposerTest(_PageTestCase):
         self.assertEqual("", self.page.js("document.querySelector('#message-input').value"))
 
 
+# 会话行上那颗「···」：先在行里找它，点开菜单，「重命名」才会出现。
+OPEN_MEETING_MENU = """
+(() => {
+  if (document.querySelector('#meeting-menu') && !document.querySelector('#meeting-menu').hidden) return 'already-open';
+  const row = document.querySelector('.meeting-row');
+  if (!row) return 'no-row';
+  const nodes = [...row.querySelectorAll('button, [role="button"]')];
+  const trigger = nodes.find((n) =>
+      /menu|more|更多|菜单/i.test((n.getAttribute('aria-label') || '') + n.className))
+    || nodes.find((n) => /^[.\u00b7\u22ef\u2026]+$/.test((n.textContent || '').trim()))
+    || nodes[nodes.length - 1];
+  if (!trigger) return 'no-trigger';
+  trigger.click();
+  return 'clicked:' + (trigger.getAttribute('aria-label') || trigger.className || '');
+})()
+"""
+
+
+class RenameDialogTest(_PageTestCase):
+    """改名走页面里的 modal，不走浏览器原生 prompt（原生框跟暗色界面不是一套）。"""
+
+    def test_the_rename_dialog_replaces_the_native_prompt(self):
+        self.page.wait_for(
+            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30, what="页面画出这场会"
+        )
+        # 原生 prompt 一旦被调用就炸：这条用例就是查"没走原生框"。
+        self.page.js(
+            "window.prompt = () => { throw new Error('native prompt was used'); }; 'stubbed'"
+        )
+        self.page.js(OPEN_MEETING_MENU)
+        self.page.wait_for(
+            "(() => { const menu = document.querySelector('#meeting-menu');"
+            " return !!menu && !menu.hidden"
+            " && !!menu.querySelector('[data-meeting-action=\"rename\"]'); })()",
+            10, what="菜单里有「重命名」",
+        )
+        self.page.js(
+            "document.querySelector('[data-meeting-action=\"rename\"]').click(); 'ok'"
+        )
+        self.page.wait_for(
+            "document.querySelector('#rename-dialog')?.open === true", 10, what="弹框打开"
+        )
+        self.assertEqual(
+            "重命名会话",
+            self.page.js("document.querySelector('#rename-dialog h2').textContent.trim()"),
+        )
+        # 不预填：没改过名时那一行的 label 就是首消息全文，预填等于把整段请求塞进框里。
+        self.assertEqual("", self.page.js("document.querySelector('#rename-input').value"))
+        self.assertTrue(
+            self.page.js(
+                "document.activeElement && document.activeElement.id === 'rename-input'"
+            ),
+            "光标该落在输入框里",
+        )
+        self.page.js(
+            "(() => { const box = document.querySelector('#rename-input');"
+            " box.value = '改过的会话名';"
+            " box.dispatchEvent(new Event('input', {bubbles: true}));"
+            " document.querySelector('#rename-submit').click(); return 'submitted'; })()"
+        )
+        self.page.wait_for(
+            "document.querySelector('#rename-dialog')?.open !== true", 10, what="提交后弹框关掉"
+        )
+        self.page.wait_for(
+            "document.body.innerText.includes('改过的会话名')", 10, what="列表里出现新名字"
+        )
+        self.assertEqual("改过的会话名", self._store().meeting.name)
+
+
 if __name__ == "__main__":
     unittest.main()

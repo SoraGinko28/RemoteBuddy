@@ -285,6 +285,23 @@
     </form>
   </dialog>
 
+  <dialog id="rename-dialog" class="rename-dialog">
+    <form id="rename-form">
+      <header>
+        <div>
+          <h2>重命名会话</h2>
+        </div>
+        <button id="rename-close" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <input id="rename-input" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="给这一场会起个名字">
+      <p id="rename-error" class="form-error" hidden></p>
+      <footer>
+        <button id="rename-cancel" class="command-button" type="button">取消</button>
+        <button id="rename-submit" class="primary-command" type="submit">重命名</button>
+      </footer>
+    </form>
+  </dialog>
+
   <div id="workspace-menu" class="workspace-menu" hidden role="menu" aria-label="工作区操作">
     <button type="button" data-workspace-action="rename" role="menuitem">重命名</button>
     <button type="button" data-workspace-action="delete" role="menuitem">删除工作区</button>

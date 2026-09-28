@@ -34,6 +34,7 @@ const el = Object.fromEntries([
   "event-dialog", "event-title", "event-content", "close-event", "toast", "welcome-toast",
   "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
   "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
+  "rename-dialog", "rename-form", "rename-input", "rename-error", "rename-close", "rename-cancel", "rename-submit",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
 const state = {
@@ -45,6 +46,9 @@ const state = {
   workspaceTitles: {},
   workspaceMenuPath: "",
   meetingMenuId: "",
+  // 正开着重命名弹框的那场会（空串 = 没开）；renameBound 是弹框按钮只接一次线的开关。
+  renameMeetingId: "",
+  renameBound: false,
   // 正在拖的那一样：kind（meeting/workspace）、node、scope、起点和落点（见 beginDrag）。
   drag: null,
   suppressClickUntil: 0,
@@ -3357,18 +3361,56 @@ async function deleteMeeting(meetingId) {
   renderAll();
 }
 
-async function renameMeeting(meetingId) {
+// 重命名会话：弹页面里的 modal，不用原生 prompt——原生框套在暗色界面外面，标题、按钮、
+// 底色都是它自己的，跟这个工作区对不上。
+// 输入框不预填：没改过名时会话那一行的 label 就是首消息全文，预填等于把整段请求塞进去。
+function renameMeeting(meetingId) {
   hideMeetingMenu();
-  const summary = state.meetings.find((one) => one.meeting_id === meetingId);
-  const current = summary ? meetingLabel(summary) : "";
-  const name = window.prompt("会话名称", current);
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  await api(`/api/meetings/${encodeURIComponent(meetingId)}/rename`, {
-    method: "POST",
-    body: JSON.stringify({ name: trimmed }),
+  if (!el.rename_dialog) return;
+  state.renameMeetingId = meetingId;
+  if (el.rename_error) { el.rename_error.hidden = true; el.rename_error.textContent = ""; }
+  el.rename_input.value = "";
+  bindRenameDialog();
+  el.rename_dialog.showModal();
+  el.rename_input.focus();
+}
+
+// 弹框上那几颗只接一次线：dialog 是常驻元素，每开一次重接一遍监听会越叠越多。
+function bindRenameDialog() {
+  if (state.renameBound) return;
+  state.renameBound = true;
+  el.rename_close?.addEventListener("click", closeRenameDialog);
+  el.rename_cancel?.addEventListener("click", closeRenameDialog);
+  el.rename_form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitRename().catch((error) => toast(error.message));
   });
+  el.rename_dialog?.addEventListener("close", () => { state.renameMeetingId = ""; });
+}
+
+function closeRenameDialog() {
+  state.renameMeetingId = "";
+  if (el.rename_dialog?.open) el.rename_dialog.close();
+}
+
+async function submitRename() {
+  const meetingId = state.renameMeetingId;
+  if (!meetingId) { closeRenameDialog(); return; }
+  const name = (el.rename_input?.value || "").trim();
+  if (!name) {
+    if (el.rename_error) { el.rename_error.textContent = "名字不能是空的"; el.rename_error.hidden = false; }
+    return;
+  }
+  try {
+    await api(`/api/meetings/${encodeURIComponent(meetingId)}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  } catch (error) {
+    if (el.rename_error) { el.rename_error.textContent = error.message || String(error); el.rename_error.hidden = false; }
+    return;
+  }
+  closeRenameDialog();
   await loadMeetings();
   renderAll();
 }
