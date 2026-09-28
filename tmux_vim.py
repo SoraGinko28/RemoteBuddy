@@ -1209,9 +1209,14 @@ def _apply_patches(
             continue
         body = after.get(name)
         lines = body.splitlines() if body is not None else []
-        if patch.hunks and body is None and not patch.is_new:
+        expects_content = any(
+            raw[:1] in {" ", "-"} for hunk in patch.hunks for raw in hunk.lines
+        )
+        if body is None and not patch.is_new and expects_content:
+            # 头里没写 /dev/null、可又要拿已有行来对上下文：那它想改的是个不存在的文件。
+            # （纯 `@@ -0,0 +1,n @@` 那种创建，头写成 `a/<路径>` 也是创建，别为难。）
             raise DiffNotAppliable(
-                f"{name}: 这个文件不存在，补丁却是按「改一个已有文件」写的"
+                f"{name}: 这个文件不存在 —— 要新建就写成 `--- /dev/null`，要改就把文件读准了再交"
             )
         result: List[str] = []
         cursor = 0
