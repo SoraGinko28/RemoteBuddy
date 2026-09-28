@@ -290,6 +290,7 @@ class Meeting:
     cycle_started_at: Optional[str] = None
     pending_action_id: Optional[str] = None
     recovery_required: bool = False
+    name: str = ""
     current_command: str = ""
     current_path: str = ""
     hashes: Dict[str, str] = field(default_factory=dict)

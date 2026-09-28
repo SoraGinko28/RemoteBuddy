@@ -372,6 +372,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .workspace-menu [data-workspace-action="delete"]:hover:not(:disabled), .workspace-menu [data-workspace-action="delete"]:focus-visible { color: var(--red); background: var(--red-soft); }
 
 /* 会话那一行的「···」弹出来的：跟工作区菜单一套长相，目前只有删除会话。 */
+.workspace-menu[hidden], .meeting-menu[hidden] { display: none; }
 .meeting-menu { position: fixed; z-index: 45; display: flex; flex-direction: column; gap: 3px; min-width: 132px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-2); box-shadow: 0 10px 32px rgb(0 0 0 / .55); }
 .meeting-menu button { min-height: 31px; border: 0; border-radius: 4px; padding: 0 10px; color: var(--ink); background: transparent; font-size: 11px; font-weight: 700; text-align: left; }
 .meeting-menu button:hover:not(:disabled), .meeting-menu button:focus-visible { outline: 2px solid var(--line-strong); outline-offset: -2px; }
