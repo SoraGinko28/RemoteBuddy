@@ -687,9 +687,20 @@ function hasLiveSelection() {
   return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
 }
 
+function selectionInside(node) {
+  const selection = window.getSelection && window.getSelection();
+  if (!selection || !selection.rangeCount || selection.isCollapsed || !node) return false;
+  const anchor = selection.anchorNode;
+  const element = anchor && anchor.nodeType === 1 ? anchor : anchor && anchor.parentNode;
+  return Boolean(element && node.contains(element));
+}
+
 function renderHeader() {
   if (!state.snapshot) return;
-  if (state.pointerSelecting || hasLiveSelection()) return;
+  if (state.pointerSelecting) return;
+  // 只在上边栏自己被选中时让路。整页只要有一个选区就把 header 冻住是错的：人在对话里选一段
+  // 文字看，会那边已经又跑起来了，上边栏还挂着上一条错误提示（阶段、状态、提示全是旧的）。
+  if (selectionInside(document.querySelector(".session-header"))) return;
   const meeting = state.snapshot.meeting;
   if (el.agent_states) {
     renderMemberStates(meeting);
