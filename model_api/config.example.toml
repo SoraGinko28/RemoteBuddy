@@ -1,7 +1,7 @@
 # Harness and provider are stored independently in each meeting.
 default_backend = "responses"
 default_provider = "openai"
-request_timeout_seconds = 120
+request_timeout_seconds = 300
 reasoning_effort = "low"
 store_responses = false
 codex_dynamic_tools = false

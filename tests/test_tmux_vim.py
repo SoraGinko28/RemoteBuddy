@@ -1924,6 +1924,30 @@ class RealTmuxEdgeTest(unittest.TestCase):
         kwargs.setdefault("ask", lambda question: "continue")
         return tmux_vim.tmux_apply_diff_by_vim(transport, None, pane, diff, **kwargs)
 
+    def test_a_drifted_line_number_is_landed_by_context_and_reported(self):
+        """行号写偏但上下文对得上：照样落对，并且告诉它偏了多少。"""
+        case = _case_by_name("2files_1hunks_replace")
+        work = repo_with_case(self, case)
+        diff = git_diff_for_case(case, work, context=3)
+        shifted = []
+        for line in diff.splitlines(keepends=True):
+            if line.startswith("@@"):
+                head, _, tail = line.partition("@@")
+                parts = tail.split()
+                numbers = []
+                for part in parts[:2]:
+                    sign, body = part[0], part[1:]
+                    start, _, count = body.partition(",")
+                    numbers.append(f"{sign}{int(start) + 2}{',' + count if count else ''}")
+                shifted.append(f"{head}@@ {numbers[0]} {numbers[1]} @@\n")
+                continue
+            shifted.append(line)
+        outcome = self.apply(work, "".join(shifted))
+        self.assertEqual("0", outcome.result.retcode, outcome.got_diff[-2000:])
+        self.assertTrue(outcome.notes, "行号偏了要说一声")
+        self.assertIn("偏", " ".join(outcome.notes))
+        assert_case_target(self, case, work)
+
     def test_wrong_line_numbers_are_repaired_in_a_second_round(self):
         case = _case_by_name("2files_1hunks_replace")
         work = repo_with_case(self, case)

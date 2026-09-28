@@ -1719,6 +1719,7 @@ class InteractiveRunner:
                     "retcode": retcode,
                     "files": [patch.path for patch in tmux_vim.parse_unified_diff(action.diff)],
                     "mismatched_files": list(outcome.mismatched_files),
+                    "notes": list(outcome.notes)[:4],
                     "stopped": retcode == "130",
                 }
                 if retcode != "0":

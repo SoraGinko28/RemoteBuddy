@@ -203,6 +203,8 @@ class ApplyOutcome:
     rounds: int = 0
     steps_taken: List[VimStep] = field(default_factory=list)
     mismatched_files: List[str] = field(default_factory=list)
+    # 干跑时发现的小事（行号写偏了多少…）：跟着结果一起交给模型，免得它照幻想写下一版。
+    notes: List[str] = field(default_factory=list)
 
 
 # ----------------------------------------------------------------------
@@ -1099,6 +1101,13 @@ def snapshot_workspace(workspace: Path, patches: Sequence[FilePatch]) -> Snapsho
     return Snapshot(workspace=resolved, contents=_read_contents(resolved, paths))
 
 
+def _snippet(lines: Sequence[str], around: int, span: int = 3) -> str:
+    """文件里那一段的真内容，带行号 —— 退回给模型时它就照着这个改，不用再猜。"""
+    start = max(0, around - span)
+    end = min(len(lines), around + span + 1)
+    return "\n".join(f"{number + 1:>6}  {lines[number]}" for number in range(start, end))
+
+
 def _locate(lines: Sequence[str], block: Sequence[str], start: int) -> Optional[int]:
     """这个 hunk 要改的那一段在文件的哪一行。
 
@@ -1124,7 +1133,9 @@ def _locate(lines: Sequence[str], block: Sequence[str], start: int) -> Optional[
 
 
 def _apply_patches(
-    patches: Sequence[FilePatch], contents: Dict[str, Optional[str]]
+    patches: Sequence[FilePatch],
+    contents: Dict[str, Optional[str]],
+    notes: Optional[List[str]] = None,
 ) -> Dict[str, Optional[str]]:
     """把补丁应用在这些内容上；对不上就抛 `DiffNotAppliable`，并说清"补丁要什么、文件里是什么"。
 
@@ -1160,10 +1171,19 @@ def _apply_patches(
                 wanted = block[0] if block else "（空 hunk）"
                 raise DiffNotAppliable(
                     f"{name}: 找不到这个 hunk 要改的那一段 —— 补丁的第一行是 {wanted!r}，"
-                    f"文件里没有。重新读一遍这个文件再交一次。"
+                    f"文件里没有。这个文件现在（第 {max(start + 1, 1)} 行附近）是这样：\n"
+                    f"{_snippet(lines, start)}\n"
+                    f"照这些行重写这一版，别照你上一版补丁里的行写。"
                 )
             if located < cursor:
                 raise DiffNotAppliable(f"{name}: 这一份 diff 里两个 hunk 叠在一起了")
+            if notes is not None and block and located != start:
+                # 干跑通过了，但它把行号写偏了：告诉它偏了多少、我按上下文放到了哪一行 ——
+                # 不说的话它以为自己那一版原样落进去了，下一版就会对着幻想出来的内容写。
+                notes.append(
+                    f"{name}: 补丁说改动在第 {start + 1} 行，按上下文实际落在第 {located + 1} 行"
+                    f"（偏 {located - start:+d} 行）"
+                )
             result.extend(lines[cursor:located])
             position = located
             for raw in hunk.lines:
@@ -1175,7 +1195,8 @@ def _apply_patches(
                         actual = lines[position] if position < len(lines) else "（文件到头了）"
                         raise DiffNotAppliable(
                             f"{name}: 第 {position + 1} 行的上下文对不上 —— 补丁写的是 {text!r}，"
-                            f"文件里是 {actual!r}。重新读一遍这个文件再交一次。"
+                            f"文件里是 {actual!r}。这一段现在是：\n{_snippet(lines, position)}\n"
+                            f"照这些行重写这一版，别照你上一版补丁里的行写。"
                         )
                     result.append(text)
                     position += 1
@@ -1184,7 +1205,8 @@ def _apply_patches(
                         actual = lines[position] if position < len(lines) else "（文件到头了）"
                         raise DiffNotAppliable(
                             f"{name}: 要删的第 {position + 1} 行对不上 —— 补丁写的是 {text!r}，"
-                            f"文件里是 {actual!r}。重新读一遍这个文件再交一次。"
+                            f"文件里是 {actual!r}。这一段现在是：\n{_snippet(lines, position)}\n"
+                            f"照这些行重写这一版，别照你上一版补丁里的行写。"
                         )
                     position += 1
                 else:
@@ -1295,13 +1317,14 @@ def tmux_apply_diff_by_vim(
         raise DiffError("这份 diff 里没有文件改动")
     workspace = _workspace_of(store, transport, pane_id)
     snapshot = snapshot_workspace(workspace, patches)
+    notes: List[str] = []
     try:
-        expected = _apply_patches(patches, snapshot.contents)
+        expected = _apply_patches(patches, snapshot.contents, notes)
     except DiffNotAppliable as exc:
         cleanup_snapshot(snapshot)
         raise DiffNotAppliable(str(exc)) from exc
     paths = _ordered_paths(patches)
-    outcome = ApplyOutcome(wanted_diff=diff, mismatched_files=[])
+    outcome = ApplyOutcome(wanted_diff=diff, mismatched_files=[], notes=notes)
     pending = diff
     try:
         while True:
