@@ -63,7 +63,9 @@ def _typed_command(action: AgentAction) -> str:
 # 让它重新读一遍文件再动手，比继续劝它管用。
 DIFF_REJECT_LIMIT = 3
 ACTION_LIMIT = 60
-CYCLE_LIMIT_SECONDS = 900.0
+# 一轮最多跑多久：请求预算（`model_api/config.toml` 的 `request_timeout_seconds`）是
+# 单次安静的上限，这里是一整轮的上限，得比它大一截 —— 否则一次大落盘刚敲完就撞上本轮超时。
+CYCLE_LIMIT_SECONDS = 1800.0
 # 交给模型看的命令输出有多长：整屏缓存可能几千行，模型要的是结果那一段。
 COMMAND_RESULT_LINES = 120
 # Consecutive undecodable/invalid model actions tolerated before the cycle
