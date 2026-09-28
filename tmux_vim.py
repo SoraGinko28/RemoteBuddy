@@ -37,8 +37,9 @@ Runner = Callable[..., Any]
 MAX_LINES_PER_STEP = 1
 
 # vim 用一套干净的配置跑：不读用户的 vimrc（autoindent/expandtab 这类设置会把写进去的
-# 行改样），不写 viminfo，nocompatible。
-VIM_PROGRAM = ("vim", "-u", "NONE", "-N", "-i", "NONE")
+# 行改样），不写 viminfo，nocompatible，也不写 swap 文件 —— 一次编辑被掐断（人叫停、会话
+# 重开）之后，留下的 swap 会让下一次打开同一个文件停在 "Swap file exists" 提示上等人按键。
+VIM_PROGRAM = ("vim", "-u", "NONE", "-N", "-i", "NONE", "-n")
 
 SHELL_PROGRAMS = {"bash", "zsh", "sh", "dash", "ksh", "fish", "csh", "tcsh"}
 VIM_PROGRAMS = {"vim", "vi", "nvim", "vim.basic", "vim.tiny"}

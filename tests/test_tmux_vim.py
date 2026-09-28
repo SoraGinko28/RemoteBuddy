@@ -974,7 +974,7 @@ class VimStepShapeTest(unittest.TestCase):
         )
         steps = self.file_steps(text, "a.py")
         self.assertEqual(5, len(steps))
-        self.assertEqual("vim -u NONE -N -i NONE -- a.py", steps[0].command)
+        self.assertEqual("vim -u NONE -N -i NONE -n -- a.py", steps[0].command)
         self.assertEqual([("search", "^a1$", 1)], anchor_plan_of_steps([steps[1]]))
         self.assertEqual(["O", "A2", "C-c"], self.values(steps[2]))
         self.assertEqual(["4G", "1dd"], self.values(steps[3]))
@@ -1040,7 +1040,7 @@ class VimStepShapeTest(unittest.TestCase):
         )
         steps = self.steps_for(text)
         shells = [step for step in steps if step.kind == "shell"]
-        self.assertEqual(["rm -f -- gone.py", "vim -u NONE -N -i NONE -- keep.py"], [step.command for step in shells])
+        self.assertEqual(["rm -f -- gone.py", "vim -u NONE -N -i NONE -n -- keep.py"], [step.command for step in shells])
 
     def test_rename_file_is_a_shell_step_before_the_edit(self):
         text = (
@@ -1058,7 +1058,7 @@ class VimStepShapeTest(unittest.TestCase):
             "--- a/other.py\n+++ b/other.py\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n"
         )
         steps = self.steps_for(text)
-        self.assertEqual("vim -u NONE -N -i NONE -- pkg/fresh.py", steps[0].command)
+        self.assertEqual("vim -u NONE -N -i NONE -n -- pkg/fresh.py", steps[0].command)
         self.assertEqual(["pkg/fresh.py", "other.py"], paths_in(steps))
         self.assertEqual(["1G"], self.values(steps[1]))
         self.assertEqual(["i", "one", "Enter", "C-c"], self.values(steps[2]))
@@ -1733,8 +1733,8 @@ class FlowTest(unittest.TestCase):
             pane, None, pane.pane_id, diff, max_rounds=3, ask=lambda question: "continue"
         )
         opened = pane.opened()
-        self.assertEqual(3, opened.count("vim -u NONE -N -i NONE -- f1.py"), opened)
-        self.assertEqual(3, opened.count("vim -u NONE -N -i NONE -- f2.py"), opened)
+        self.assertEqual(3, opened.count("vim -u NONE -N -i NONE -n -- f1.py"), opened)
+        self.assertEqual(3, opened.count("vim -u NONE -N -i NONE -n -- f2.py"), opened)
 
     def test_steps_taken_are_recorded(self):
         case = _case_by_name("2files_1hunks_replace")
@@ -2022,7 +2022,7 @@ class RealTmuxEdgeTest(unittest.TestCase):
         work = repo_with_case(self, case)
         transport, _session, pane = self.open_session(work)
         # harness 自己敲编辑器用的是直接送键这条路（不是 actor 交上来的命令行）。
-        transport.send_keys(pane, "vim -u NONE -N -i NONE -- a-does-not-matter.txt")
+        transport.send_keys(pane, "vim -u NONE -N -i NONE -n -- a-does-not-matter.txt")
         for _ in range(40):
             if transport.pane_info(pane)["command"] in {"vim", "vi"}:
                 break
