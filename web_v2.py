@@ -247,11 +247,14 @@ def _applescript_string(value: str) -> str:
 
 
 def meeting_title(store: MeetingStore) -> str:
-    """A meeting's one-line title: the human's first message.
+    """A meeting's one-line title: the name it was given, else the human's first message.
 
-    `conversation.md` starts with it, so the list does not parse a journal for
-    every meeting just to name it.
+    `conversation.md` starts with the first message, so the list does not parse
+    a journal for every meeting just to name it.
     """
+    name = (store.meeting.name or "").strip()
+    if name:
+        return name
     try:
         head = (store.run_dir / "conversation.md").read_text(encoding="utf-8")[:4096]
     except OSError:
@@ -2538,6 +2541,21 @@ class MeetingWebService:
                 self._store_cache.pop(meeting_id, None)
         return {"meeting_id": meeting_id, "deleted": True, "workspace": str(workspace)}
 
+    def rename_meeting(self, meeting_id: str, payload: Any = None) -> Dict[str, Any]:
+        """更新会话名称并持久化到 meeting.json。"""
+        payload = payload if isinstance(payload, dict) else {}
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise WebError(400, "meeting name must not be empty")
+        if len(name) > 200:
+            raise WebError(400, "meeting name is too long")
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            # 走 update 这一条：它在状态锁里重读 manifest 再落盘，两个服务同时改这场会时
+            # 不会把对方的改动盖掉。
+            store.update(name=name)
+            return _public_manifest(store)
+
     # ------------------------------------------------------------------
     # Skill 那一侧：更新（不动进程）与重启（换一个进程）
     # ------------------------------------------------------------------
@@ -3227,6 +3245,10 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             if match:
                 self._read_empty_json()
                 self._json(self.service.delete_meeting(unquote(match.group(1))))
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/rename", path)
+            if match:
+                self._json(self.service.rename_meeting(unquote(match.group(1)), self._read_json()))
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/(control/acquire|control/release|agent/resume|complete|stop|cleanup)", path)
             if match:

@@ -3345,6 +3345,22 @@ async function deleteMeeting(meetingId) {
   renderAll();
 }
 
+async function renameMeeting(meetingId) {
+  hideMeetingMenu();
+  const summary = state.meetings.find((one) => one.meeting_id === meetingId);
+  const current = summary ? meetingLabel(summary) : "";
+  const name = window.prompt("会话名称", current);
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  await api(`/api/meetings/${encodeURIComponent(meetingId)}/rename`, {
+    method: "POST",
+    body: JSON.stringify({ name: trimmed }),
+  });
+  await loadMeetings();
+  renderAll();
+}
+
 // 拖动排序：鼠标放在会话行（或工作区标题）上**按住左键上下拖**——拖拽就是这个手势。
 // 拖的过程中列表**不动**，只有一条白线标出落点；松手才把那一行插过去、发给服务。
 // 左键要拖成拖、要选成选：没挪够 4px 之前什么都不动（单击打开、双击选词照旧），
@@ -3572,6 +3588,9 @@ function bind() {
   });
   el.workspace_menu?.querySelector('[data-workspace-action="delete"]')?.addEventListener("click", () => {
     deleteWorkspace(state.workspaceMenuPath).catch((error) => toast(error.message));
+  });
+  el.meeting_menu?.querySelector('[data-meeting-action="rename"]')?.addEventListener("click", () => {
+    renameMeeting(state.meetingMenuId).catch((error) => toast(error.message));
   });
   el.meeting_menu?.querySelector('[data-meeting-action="delete"]')?.addEventListener("click", () => {
     deleteMeeting(state.meetingMenuId).catch((error) => toast(error.message));
