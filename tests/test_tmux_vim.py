@@ -1518,55 +1518,70 @@ def repo_with_case(test: unittest.TestCase, case: Case) -> Path:
 
 
 class SnapshotTest(unittest.TestCase):
-    """快照必须不碰用户的索引和 HEAD，而且真的能当"动手前"的基准。"""
+    """快照按文件拍：只读工作区，不要求这里是 git 仓库，也不留东西。"""
 
-    def test_snapshot_leaves_the_repository_alone(self):
+    def test_a_snapshot_only_reads_the_workspace(self):
         case = _case_by_name("3files_1hunks_replace")
         work = repo_with_case(self, case)
-        head = git("rev-parse", "HEAD", cwd=work).stdout
-        before = git("status", "--porcelain", cwd=work).stdout
-        snapshot = tmux_vim.snapshot_worktree(work)
-        self.addCleanup(lambda: tmux_vim.cleanup_snapshot(snapshot))
-        self.assertEqual(head, git("rev-parse", "HEAD", cwd=work).stdout)
-        self.assertEqual(before, git("status", "--porcelain", cwd=work).stdout)
-        self.assertEqual("", git("stash", "list", cwd=work).stdout)
-        self.assertTrue(snapshot.commit)
+        before = sorted(path.relative_to(work).as_posix() for path in work.rglob("*"))
+        files = {name: case.base_text(name) for name in case.paths()}
+        snapshot = tmux_vim.snapshot_workspace(work, tmux_vim.parse_unified_diff(diff_text(case)))
+        self.assertEqual(files, {name: text for name, text in snapshot.contents.items()})
+        self.assertEqual(
+            before, sorted(path.relative_to(work).as_posix() for path in work.rglob("*")),
+            "拍快照不该在工作区里留下任何东西",
+        )
 
-    def test_the_worktree_diff_matches_what_git_records(self):
-        case = _case_by_name("3files_2hunks_mixed")
-        work = repo_with_case(self, case)
-        snapshot = tmux_vim.snapshot_worktree(work)
-        self.addCleanup(lambda: tmux_vim.cleanup_snapshot(snapshot))
-        write_case_target(case, work)
-        got = tmux_vim.worktree_diff(snapshot)
-        git("add", "-A", cwd=work)
-        recorded = git("diff", "--cached", "-M", "--no-color", cwd=work).stdout
-        self.assertEqual(without_index_lines(recorded), without_index_lines(got))
-
-    def test_untracked_files_are_part_of_the_snapshot(self):
-        case = _case_by_name("3files_1hunks_replace")
-        work = repo_with_case(self, case)
-        (work / "extra.txt").write_text("还没提交的内容\n", encoding="utf-8")
-        snapshot = tmux_vim.snapshot_worktree(work)
-        self.addCleanup(lambda: tmux_vim.cleanup_snapshot(snapshot))
-        (work / "extra.txt").unlink()
-        diff = tmux_vim.worktree_diff(snapshot)
-        self.assertIn("extra.txt", diff)
-        self.assertIn("-还没提交的内容", diff)
-
-    def test_cleanup_removes_the_temporary_index(self):
-        case = _case_by_name("3files_1hunks_replace")
-        work = repo_with_case(self, case)
-        snapshot = tmux_vim.snapshot_worktree(work)
-        self.assertTrue(snapshot.scratch.exists())
-        tmux_vim.cleanup_snapshot(snapshot)
-        self.assertFalse(snapshot.scratch.exists())
-
-    def test_a_directory_that_is_not_a_repository_is_reported(self):
+    def test_a_snapshot_works_in_a_directory_that_is_not_a_repository(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        with self.assertRaises(DiffNotAppliable):
-            tmux_vim.snapshot_worktree(Path(temporary.name))
+        work = Path(temporary.name)
+        (work / "a.py").write_text("one\ntwo\n", encoding="utf-8")
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n"
+            "--- a/b.py\n+++ b/b.py\n@@ -0,0 +1,2 @@\n+x\n+y\n"
+        )
+        snapshot = tmux_vim.snapshot_workspace(work, patches)
+        self.assertEqual({"a.py": "one\ntwo\n", "b.py": None}, dict(snapshot.contents))
+
+    def test_the_workspace_diff_says_what_changed_and_nothing_else(self):
+        case = _case_by_name("3files_2hunks_mixed")
+        work = repo_with_case(self, case)
+        patches = tmux_vim.parse_unified_diff(diff_text(case))
+        snapshot = tmux_vim.snapshot_workspace(work, patches)
+        write_case_target(case, work)
+        got = tmux_vim.workspace_diff(
+            snapshot, tmux_vim._read_contents(work, [p for one in patches for p in one.paths])
+        )
+        self.assertIn("a/", got)
+        for name, _base, edits in case.files:
+            for edit in edits:
+                for line in edit.lines:
+                    if line:
+                        self.assertIn("+" + line, got)
+
+    def test_a_file_created_after_the_snapshot_shows_up_as_a_creation(self):
+        case = _case_by_name("fresh_and_edited")
+        work = repo_with_case(self, case)
+        patches = tmux_vim.parse_unified_diff(diff_text(case))
+        snapshot = tmux_vim.snapshot_workspace(work, patches)
+        write_case_target(case, work)
+        paths = [path for one in patches for path in one.paths]
+        got = tmux_vim.workspace_diff(snapshot, tmux_vim._read_contents(work, paths))
+        self.assertIn("fresh.py", got)
+        self.assertIn("/dev/null", got)
+        self.assertIn("+fresh-1", got)
+
+    def test_cleanup_touches_nothing(self):
+        case = _case_by_name("3files_1hunks_replace")
+        work = repo_with_case(self, case)
+        snapshot = tmux_vim.snapshot_workspace(
+            work, tmux_vim.parse_unified_diff(diff_text(case))
+        )
+        before = {name: (work / name).read_text(encoding="utf-8") for name in case.paths()}
+        tmux_vim.cleanup_snapshot(snapshot)
+        self.assertEqual(before, {name: (work / name).read_text(encoding="utf-8")
+                                  for name in case.paths()})
 
 
 def _check_case_appliable(self, case: Case) -> None:
@@ -1775,7 +1790,7 @@ class FlowTest(unittest.TestCase):
             return pane.pane_id
 
         outcome = tmux_vim.tmux_apply_diff_by_vim(
-            pane, None, pane.pane_id, diff, run=None, restarter=restarter,
+            pane, None, pane.pane_id, diff, restarter=restarter,
             max_rounds=1, ask=lambda question: "continue",
         )
         self.assertGreaterEqual(pane.created, 1)

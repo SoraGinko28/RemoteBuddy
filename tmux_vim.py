@@ -19,12 +19,9 @@
 """
 from __future__ import annotations
 
-import os
+import difflib
 import re
 import shlex
-import shutil
-import subprocess
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -36,7 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 KeyToken = Dict[str, Any]
 Runner = Callable[..., Any]
 
-# 一个步骤里写几行文本。一行一行的：人在屏上看得见每一行的到来，也能在两行之间叫停。
+# 每一步写几行文本。一行一行的：人在屏上看得见每一行的到来，也能在两行之间叫停。
 MAX_LINES_PER_STEP = 1
 
 # vim 用一套干净的配置跑：不读用户的 vimrc（autoindent/expandtab 这类设置会把写进去的
@@ -186,19 +183,6 @@ class VimStep:
     @property
     def kind(self) -> str:
         return "shell" if self.command else "keys"
-
-
-@dataclass(frozen=True)
-class Snapshot:
-    """动手之前给整个工作区拍的那张快照。
-
-    `commit` 是一棵有主（可 `git show`、可 `git diff`）的提交，里面是这个工作区当时所有
-    未被忽略的文件；`scratch` 是这次用的临时索引目录，收尾要删掉。
-    """
-
-    workspace: Path
-    commit: str
-    scratch: Path
 
 
 @dataclass(frozen=True)
@@ -1072,99 +1056,47 @@ def _wait_for(
 
 
 # ----------------------------------------------------------------------
-# 工作区快照与比对（都走 harness 自己的 git，不占共享终端）
+# 工作区快照与比对：harness 自己读文件、自己算，不占共享终端，也不要求这里是 git 仓库
 # ----------------------------------------------------------------------
+#
+# 判据是"文件里的内容"，不是 diff 文本：动手之前把这份 diff 牵到的文件先读下来
+# （`Snapshot`），把这份 diff 在内存里应用一遍得到"要求的样子"，落盘之后再把同样的文件
+# 读一遍，逐文件比。差出来的那一小节（`difflib` 出来的 unified diff）就是下一轮要补的改动。
+# 全程不用 git：`git apply` 比我们严（行数写错、上下文行少一个空格就"补丁损坏"），报错
+# 也没法照着改；而模型手写的 diff 恰恰常常是那样。
 
 
-def _default_run(argv: Sequence[str], **kwargs: Any) -> Any:
-    return subprocess.run(
-        list(argv),
-        cwd=None if kwargs.get("cwd") is None else str(kwargs["cwd"]),
-        env=kwargs.get("env"),
-        input=kwargs.get("input"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
+@dataclass(frozen=True)
+class Snapshot:
+    """动手之前给这份 diff 牵到的文件拍的那张快照。
 
-
-def _index_environment(index: Path) -> Dict[str, str]:
-    environment = dict(os.environ)
-    environment["GIT_INDEX_FILE"] = str(index)
-    environment.setdefault("GIT_AUTHOR_NAME", "remotebuddy")
-    environment.setdefault("GIT_AUTHOR_EMAIL", "remotebuddy@localhost")
-    environment.setdefault("GIT_COMMITTER_NAME", "remotebuddy")
-    environment.setdefault("GIT_COMMITTER_EMAIL", "remotebuddy@localhost")
-    return environment
-
-
-def _temp_index(prefix: str) -> Tuple[Path, Path, Dict[str, str]]:
-    scratch = Path(tempfile.mkdtemp(prefix=prefix))
-    index = scratch / "index"
-    return scratch, index, _index_environment(index)
-
-
-def _git(run: Runner, arguments: Sequence[str], *, cwd: Path, env: Optional[Dict[str, str]] = None,
-         input_text: Optional[str] = None) -> Any:
-    kwargs: Dict[str, Any] = {"cwd": cwd}
-    if env is not None:
-        kwargs["env"] = env
-    if input_text is not None:
-        kwargs["input"] = input_text
-    return run(["git", *arguments], **kwargs)
-
-
-def snapshot_worktree(workspace: Path, *, run: Optional[Runner] = None) -> Snapshot:
-    """`git worktree` 给整个工作区拍快照（连未跟踪的文件一起，忽略的不算）。
-
-    做法是用一份**临时索引**装下当时的工作区（`add -A`），写成树、提交成一条悬挂的
-    提交；这样后面既能 `git diff` 出"实际改了什么"，也能 `git show <提交>:<路径>`
-    把某个文件原来的内容取回来。用户自己的索引和 HEAD 一动不动。
+    `contents` 是每个文件当时的内容（None = 那时还不存在），比对照着它算。
     """
-    runner = run or _default_run
-    workspace = Path(workspace).expanduser().resolve()
-    scratch, _index, environment = _temp_index("remotebuddy-snapshot-")
-    _git(runner, ["read-tree", "HEAD"], cwd=workspace, env=environment)
-    _git(runner, ["add", "-A"], cwd=workspace, env=environment)
-    tree = _git(runner, ["write-tree"], cwd=workspace, env=environment)
-    if _returncode(tree) != 0 or not tree.stdout.strip():
-        _cleanup(scratch)
-        raise DiffNotAppliable(
-            f"拍不下工作区快照（{workspace} 是 git 仓库吗）: {_failure_text(tree)}"
-        )
-    commit = _git(
-        runner,
-        ["commit-tree", tree.stdout.strip(), "-m", "remotebuddy snapshot"],
-        cwd=workspace,
-        env=environment,
-    )
-    if _returncode(commit) != 0 or not commit.stdout.strip():
-        _cleanup(scratch)
-        raise DiffNotAppliable(f"拍不下工作区快照: {_failure_text(commit)}")
-    return Snapshot(workspace=workspace, commit=commit.stdout.strip(), scratch=scratch)
 
-
-def worktree_diff(snapshot: Snapshot, *, run: Optional[Runner] = None) -> str:
-    """从快照那边取"这次编辑对文件系统造成的新 diff"。"""
-    runner = run or _default_run
-    tree, scratch = _current_tree(snapshot.workspace, runner)
-    try:
-        result = _git(runner, ["diff", snapshot.commit, tree], cwd=snapshot.workspace)
-        return result.stdout
-    finally:
-        _cleanup(scratch)
+    workspace: Path
+    contents: Dict[str, Optional[str]]
 
 
 def _read_contents(workspace: Path, paths: Sequence[str]) -> Dict[str, Optional[str]]:
     """读下这些文件现在是什么；不存在的记 None（新文件就是这样）。"""
     contents: Dict[str, Optional[str]] = {}
     for path in paths:
-        target = workspace / path
         try:
-            contents[path] = target.read_text(encoding="utf-8", errors="surrogateescape")
+            contents[path] = (workspace / path).read_text(
+                encoding="utf-8", errors="surrogateescape"
+            )
         except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
             contents[path] = None
     return contents
+
+
+def snapshot_workspace(workspace: Path, patches: Sequence[FilePatch]) -> Snapshot:
+    """动手之前给这份 diff 牵到的文件拍一张快照（连没被跟踪、被忽略的文件一起）。"""
+    resolved = Path(workspace).expanduser().resolve()
+    if not resolved.is_dir():
+        raise DiffNotAppliable(f"工作区目录不在了: {resolved}")
+    paths = [path for patch in patches for path in patch.paths]
+    return Snapshot(workspace=resolved, contents=_read_contents(resolved, paths))
 
 
 def _locate(lines: Sequence[str], block: Sequence[str], start: int) -> Optional[int]:
@@ -1263,6 +1195,34 @@ def _apply_patches(
     return after
 
 
+def _unified_diff(before: Optional[str], after: Optional[str], path: str) -> str:
+    """两个内容之间的 unified diff；哪边没有就是新建/删除。"""
+    if before == after:
+        return ""
+    old_lines = (before or "").splitlines(keepends=True)
+    new_lines = (after or "").splitlines(keepends=True)
+    old_name = "/dev/null" if before is None else f"a/{path}"
+    new_name = "/dev/null" if after is None else f"b/{path}"
+    body = [
+        line
+        for line in difflib.unified_diff(
+            old_lines, new_lines, fromfile=old_name, tofile=new_name, n=3
+        )
+        if not line.startswith(("--- ", "+++ "))
+    ]
+    if not body:
+        return ""
+    return f"--- {old_name}\n+++ {new_name}\n" + "".join(body)
+
+
+def workspace_diff(snapshot: Snapshot, contents: Dict[str, Optional[str]]) -> str:
+    """从快照那边取"这次编辑对这些文件做了什么"。"""
+    return "".join(
+        _unified_diff(snapshot.contents.get(path), contents.get(path), path)
+        for path in snapshot.contents
+    )
+
+
 def check_appliable(workspace: Path, diff: str, *, run: Optional[Runner] = None) -> ShellCmdResult:
     """这份 diff 能不能应用：用我们自己的读法和落盘算法在内存里试一遍。
 
@@ -1289,78 +1249,14 @@ def check_appliable(workspace: Path, diff: str, *, run: Optional[Runner] = None)
 
 
 def cleanup_snapshot(snapshot: Snapshot) -> None:
-    _cleanup(snapshot.scratch)
-
-
-def _cleanup(path: Path) -> None:
-    if path is None:
-        return
-    shutil.rmtree(path, ignore_errors=True)
-
-
-def _returncode(result: Any) -> int:
-    code = getattr(result, "returncode", 0)
-    return 0 if code is None else int(code)
-
-
-def _failure_text(result: Any) -> str:
-    err = (getattr(result, "stderr", "") or "").strip()
-    out = (getattr(result, "stdout", "") or "").strip()
-    return err or out or "没有输出"
-
-
-def _current_tree(workspace: Path, run: Runner) -> Tuple[str, Path]:
-    """把工作区现在的样子写成一棵树（临时索引，不碰用户的索引）。"""
-    scratch, _index, environment = _temp_index("remotebuddy-current-")
-    _git(run, ["add", "-A"], cwd=workspace, env=environment)
-    tree = _git(run, ["write-tree"], cwd=workspace, env=environment)
-    if _returncode(tree) != 0 or not tree.stdout.strip():
-        _cleanup(scratch)
-        raise DiffNotAppliable(f"写不出工作区现在的树: {_failure_text(tree)}")
-    return tree.stdout.strip(), scratch
-
-
-def _expected_tree(snapshot: Snapshot, diff: str, run: Runner) -> Tuple[str, Path]:
-    """把 actor 要的这份 diff 应用到快照那棵树上，得到"要求的样子"。"""
-    scratch, _index, environment = _temp_index("remotebuddy-expected-")
-    _git(run, ["read-tree", snapshot.commit], cwd=snapshot.workspace, env=environment)
-    applied = _git(
-        run,
-        ["apply", "--cached", "--unidiff-zero", "-"],
-        cwd=snapshot.workspace,
-        env=environment,
-        input_text=diff,
-    )
-    if _returncode(applied) != 0:
-        _cleanup(scratch)
-        raise DiffNotAppliable(_failure_text(applied))
-    tree = _git(run, ["write-tree"], cwd=snapshot.workspace, env=environment)
-    if _returncode(tree) != 0 or not tree.stdout.strip():
-        _cleanup(scratch)
-        raise DiffNotAppliable(f"写不出要求的那棵树: {_failure_text(tree)}")
-    return tree.stdout.strip(), scratch
-
-
-def _pending_diff(
-    workspace: Path,
-    current: str,
-    expected: str,
-    paths: Sequence[str],
-    run: Runner,
-) -> str:
-    """还差多少：现状那棵树和要求那棵树，只在这份 diff 牵到的文件上比。"""
-    result = _git(
-        run,
-        ["diff", current, expected, "--", *paths],
-        cwd=workspace,
-    )
-    return result.stdout or ""
+    """按文件拍的快照没有临时目录要收，留着这个函数是为了调用方那句话读得通。"""
+    del snapshot
 
 
 def diffs_match(wanted: str, got: str) -> bool:
     """两份 diff 说的是不是同一件事：按文件里改了哪些行比，不看 hunk 头和上下文行。
 
-    落地成功与否的正式判据是文件树的比较（`tmux_apply_diff_by_vim` 里用两棵树比）；
+    落地成功与否的正式判据是文件内容的比较（`tmux_apply_diff_by_vim` 里逐文件比）；
     这个函数给 journal、提示和调试用：说清"这两份 diff 的改动是不是一回事"。
     """
     return _changes_of(wanted) == _changes_of(got)
@@ -1390,26 +1286,24 @@ def tmux_apply_diff_by_vim(
     ask: Optional[Callable[[str], str]] = None,
     interrupt_check: Optional[Callable[[], bool]] = None,
     max_rounds: int = 3,
-    run: Optional[Runner] = None,
     restarter: Optional[Callable[[], str]] = None,
     type_tokens: Optional[Callable[[str, Sequence[KeyToken]], None]] = None,
 ) -> ApplyOutcome:
-    """一份 diff 通过 tmux 里的 vim 落到工作区，然后核对新 diff 是否与要求的一致。"""
-    runner = run or _default_run
+    """一份 diff 通过 tmux 里的 vim 落到工作区，然后核对文件内容是否与要求的一致。"""
     patches = parse_unified_diff(diff)
     if not patches:
         raise DiffError("这份 diff 里没有文件改动")
     workspace = _workspace_of(store, transport, pane_id)
-    checked = check_appliable(workspace, diff, run=runner)
-    if checked.retcode != "0":
-        raise DiffNotAppliable(checked.stderr.strip() or checked.stdout.strip() or "git apply 不接受这份 diff")
-    snapshot = snapshot_worktree(workspace, run=runner)
-    expected_scratch: Optional[Path] = None
-    outcome = ApplyOutcome(wanted_diff=diff, mismatched_files=[])
+    snapshot = snapshot_workspace(workspace, patches)
     try:
-        expected, expected_scratch = _expected_tree(snapshot, diff, run=runner)
-        wanted_paths = [path for patch in patches for path in patch.paths]
-        pending = diff
+        expected = _apply_patches(patches, snapshot.contents)
+    except DiffNotAppliable as exc:
+        cleanup_snapshot(snapshot)
+        raise DiffNotAppliable(str(exc)) from exc
+    paths = _ordered_paths(patches)
+    outcome = ApplyOutcome(wanted_diff=diff, mismatched_files=[])
+    pending = diff
+    try:
         while True:
             outcome.rounds += 1
             steps = vim_steps_for_diff(pending)
@@ -1424,36 +1318,34 @@ def tmux_apply_diff_by_vim(
                 type_tokens=type_tokens,
             )
             outcome.steps_taken.extend(executed)
-            current, current_scratch = _current_tree(snapshot.workspace, runner)
-            try:
-                outcome.got_diff = _git(
-                    runner, ["diff", snapshot.commit, current], cwd=snapshot.workspace
-                ).stdout
-                left = (
-                    ""
-                    if len(executed) < len(steps)
-                    else _pending_diff(snapshot.workspace, current, expected, wanted_paths, runner)
-                )
-            finally:
-                _cleanup(current_scratch)
+            current = _read_contents(workspace, paths)
+            outcome.got_diff = workspace_diff(snapshot, current)
             if len(executed) < len(steps):
-                outcome.result = TmuxCmdResult(retcode="130", output_on_screen=transport.capture(pane_id))
+                outcome.mismatched_files = [
+                    path for path in paths if current.get(path) != expected.get(path)
+                ]
+                outcome.result = TmuxCmdResult(
+                    retcode="130", output_on_screen=transport.capture(pane_id)
+                )
                 return outcome
-            if not left.strip():
+            mismatched = [path for path in paths if current.get(path) != expected.get(path)]
+            if not mismatched:
                 outcome.mismatched_files = []
-                outcome.result = TmuxCmdResult(retcode="0", output_on_screen=transport.capture(pane_id))
+                outcome.result = TmuxCmdResult(
+                    retcode="0", output_on_screen=transport.capture(pane_id)
+                )
                 return outcome
-            outcome.mismatched_files = [
-                path for path in _ordered_paths(patches) if _diff_touches(left, path)
-            ]
+            outcome.mismatched_files = mismatched
             if outcome.rounds >= max_rounds:
-                outcome.result = TmuxCmdResult(retcode="1", output_on_screen=transport.capture(pane_id))
+                outcome.result = TmuxCmdResult(
+                    retcode="1", output_on_screen=transport.capture(pane_id)
+                )
                 return outcome
-            pending = left
+            pending = "".join(
+                _unified_diff(current.get(path), expected.get(path), path) for path in mismatched
+            )
     finally:
         cleanup_snapshot(snapshot)
-        if expected_scratch is not None:
-            _cleanup(expected_scratch)
 
 
 def _workspace_of(store: Any, transport: Any, pane_id: str) -> Path:
