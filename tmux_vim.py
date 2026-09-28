@@ -121,10 +121,15 @@ class CommandTimeout(RuntimeError):
 
 @dataclass(frozen=True)
 class TmuxCmdResult:
-    """在共享终端里跑一条命令的结果。"""
+    """在共享终端里跑一条命令的结果。
+
+    `truncated` 说明这条命令的输出比 tmux 的历史缓存还长：前置标记那一行已经被顶掉了，
+    `output_on_screen` 里是裁剩的尾巴，不是全部。
+    """
 
     retcode: str
     output_on_screen: str
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -911,31 +916,46 @@ def run_command(
     if interrupt_check is not None and interrupt_check():
         raise Interrupted("还没开始跑命令就被打断了")
     token = uuid.uuid4().hex[:12]
-    line = retcode_line(command, token)
-    typed = line or command
+    typed, folded = command_line(command, token)
     if type_line is not None:
         type_line(pane_id, typed)
     else:
         transport.send_keys(pane_id, typed)
-    if line:
+    if folded:
         retcode = _await_retcode(transport, pane_id, interrupt_check, token, timeout=timeout)
     else:
-        # 合不了（尾巴是 `&`、续行、管道）：老样子，读返回码那句单独敲一行。
+        # 合不了（尾巴是 `&`、续行、管道）：读返回码那句单独敲一行。
         retcode = _read_retcode(transport, pane_id, interrupt_check, timeout=timeout)
     screen = transport.capture(pane_id)
     _record(transport, store, pane_id, change_kind="command")
-    return TmuxCmdResult(retcode=retcode, output_on_screen=screen)
+    # 交回去的是这一条命令自己的输出（两个标记之间那一段），不是整屏缓存：模型要的是这次跑
+    # 出来的东西，不是上一条命令留下的、人屏幕上的历史。切不出来时宁多勿错，整屏兜底；
+    # 切出来是空的就交空的（"这条命令没打印东西"也是结论）。
+    output, truncated = command_output(screen, token)
+    return TmuxCmdResult(
+        retcode=retcode,
+        output_on_screen=screen if output is None else output,
+        truncated=truncated,
+    )
 
 
-RETCODE_MARKER = "remotebuddy-retcode-"
+# 一枪命令的两个标记，随 token 一起把"这条命令的输出"夹在中间：
+#   echo cmd-remotebuddy-<token> > /dev/null; <命令>; echo retcode-remotebuddy-<token> $?
+# 前置那个 echo 重定向到 /dev/null、自己不打印，只用来在屏上标出这一行的开头；后面那句
+# 打印返回码，同时是输出的结尾。`command_output` 就照这两个标记切（见它的说明）。
+CMD_MARKER = "cmd-remotebuddy-"
+RETCODE_MARKER = "retcode-remotebuddy-"
+# actor 自己写过的拼法（上一版 harness 用的就是它）：剥尾巴时照样认。
+LEGACY_RETCODE_MARKER = "remotebuddy-retcode-"
 
-# actor 也可能自己在命令尾巴上接一句 `echo remotebuddy-retcode-xxx $?`（它知道 harness 要读
-# 返回码）。那句话归 harness 写：这里把它剥掉、换成我们自己这一枪的标记，跟命令合成同一行
-# —— 一个回车就够，屏上也不会出现两条标记。它写没写、写成什么样都不影响。
+# actor 也可能自己在命令尾巴上接一句 `echo …-retcode-xxx $?`（它知道 harness 要读返回码）。
+# 那句话归 harness 写：这里把它剥掉、换成我们自己这一枪的标记。它写没写、写成什么样都不影响。
 _RETCODE_TAIL = re.compile(
-    r"\s*(?:;|&&|\|\|)?\s*echo\s+(?:-n\s+)?[\"']?"
+    r"\s*(?:;|&&|\|\|)?\s*echo\s+(?:-n\s+)?[\"']?(?:"
     + re.escape(RETCODE_MARKER)
-    + r"[A-Za-z0-9_-]*[\"']?\s+\$?\?[\"']?\s*$"
+    + "|"
+    + re.escape(LEGACY_RETCODE_MARKER)
+    + r")[A-Za-z0-9_-]*[\"']?\s+\$?\?[\"']?\s*$"
 )
 
 
@@ -946,21 +966,81 @@ def strip_retcode_tail(command: str) -> str:
     return stripped or text
 
 
+def _marker_command(token: str) -> str:
+    """标出这一行开头的那个 echo：自己不打印。"""
+    return f"echo {CMD_MARKER}{token} > /dev/null"
+
+
 def _retcode_command(token: str) -> str:
     return f"echo {RETCODE_MARKER}{token} $?"
 
 
-def retcode_line(command: str, token: str) -> str:
-    """把一条命令和"读返回码的那句 echo"合成一行；合不了（尾巴是后台/续行/管道）返回空串。"""
+def command_line(command: str, token: str) -> Tuple[str, bool]:
+    """敲进共享终端的那一行：前置标记 + 命令（能合就带上读返回码的那句）。
+
+    返回第二项是"返回码那句合进来了吗"：合不了（命令尾巴是 `&`、续行、管道）就只敲前置标记
+    加命令，探针另起一行（`_read_retcode`）。
+    """
     body = strip_retcode_tail(command)
+    head = f"{_marker_command(token)}; "
     if not body.strip():
-        return _retcode_command(token)
+        return head + _retcode_command(token), True
+    if body[-1] in "&|\\":
+        return head + body, False
     if body.endswith(";"):
         # 本来就以 `;` 收尾，再补一个分号是语法错误：接一个空格就够。
-        return f"{body} {_retcode_command(token)}"
-    if body[-1] in "&|\\":
-        return ""
-    return f"{body}; {_retcode_command(token)}"
+        return f"{head}{body} {_retcode_command(token)}", True
+    return f"{head}{body}; {_retcode_command(token)}", True
+
+
+def command_output(screen: str, token: str) -> Tuple[Optional[str], bool]:
+    """把这一枪命令的输出从整屏缓存里切出来：返回（输出, 是不是被缓存截剩了尾巴）。
+
+    区间是"前置标记那一行之后"到"带返回码的那一行之前"。合不成一行时中间会多出读返回码的
+    那次探针（连它前面那个提示符一起剔掉）；命令自己的输出原样留着。
+
+    前置标记那一行不在了、带返回码那行还在：说明输出把 tmux 的历史缓存顶穿了，最早那几行
+    （连标记）已经被丢掉，手上只剩尾巴 —— `truncated` 置真，并且把第一行剔掉（那多半是被
+    截断的半行，上半截已经掉出去了）。切不出来（连返回码那行都没有）返回 (None, False)，
+    调用方拿整屏兜底。
+    """
+    last = None
+    for match in re.finditer(
+        rf"(?m)^{re.escape(RETCODE_MARKER)}{re.escape(token)}\s+-?\d+", screen
+    ):
+        last = match
+    if last is None:
+        return None, False
+    head = screen.rfind(f"{CMD_MARKER}{token}", 0, last.start())
+    truncated = False
+    if head < 0:
+        truncated = True
+        body = screen[: last.start()]
+    else:
+        line_end = screen.find("\n", head)
+        if line_end < 0 or line_end >= last.start():
+            truncated = True
+            body = screen[: last.start()]
+        else:
+            body = screen[line_end + 1 : last.start()]
+    probe = f"{RETCODE_MARKER}{token} $?"
+    cut = body.rfind(probe)
+    if cut >= 0:
+        line_start = body.rfind("\n", 0, cut)
+        body = body[: line_start if line_start >= 0 else 0]
+    lines = body.split("\n")
+    if truncated and lines:
+        # 缓存顶穿时留下的第一行是半截（上面那半已经掉出去了）。
+        lines.pop(0)
+    while lines and not lines[0].strip():
+        # 敲回车在屏上留下的那个空行，不是命令的输出。
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and re.fullmatch(r"\S*[$#>]\s*", lines[-1]):
+        # 命令跑完、探针还没敲下去之间的那个提示符。
+        lines.pop()
+    return "\n".join(lines), truncated
 
 
 def _await_retcode(

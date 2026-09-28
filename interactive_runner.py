@@ -1711,6 +1711,9 @@ class InteractiveRunner:
                     "kind": "cmd",
                     "cmd": action.command,
                     "retcode": result.retcode,
+                    # 输出比 tmux 的缓存还长时只给了尾巴：这一项让模型知道自己看的不是全部，
+                    # 别拿"没看见"当成"没发生"。
+                    "truncated": bool(getattr(result, "truncated", False)),
                     "output_lines": len(result.output_on_screen.splitlines()),
                     "output_tail": _tail_lines(result.output_on_screen, COMMAND_RESULT_LINES),
                 }

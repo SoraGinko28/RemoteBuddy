@@ -18,6 +18,7 @@ from interactive_runner import (
     send_line_with_captures,
     send_tokens_with_captures,
 )
+import tmux_vim
 from typing_executor import _send_typing_plan
 from meeting_v2 import MeetingStore, utc_now
 from agent_protocol import AgentActionError
@@ -217,12 +218,22 @@ class FakeTransport:
 
     def send_enter(self, pane_id):
         line = self.pending_input
-        # harness 把"读返回码的那句 echo"接在命令尾巴上（同一行）；actor 自己写的那句会被换掉。
-        folded = re.search(r";\s*echo\s+(remotebuddy-retcode-[A-Za-z0-9_-]*)\s+\$\?\s*$", line)
-        marker = folded.group(1) if folded else None
-        command_line = line[: folded.start()] if folded else line
-        if not marker and line.strip().startswith("echo remotebuddy-retcode-"):
-            marker = line.strip().split()[1]
+        # harness 在这一行两端加标记：`echo cmd-<tok> > /dev/null; <命令>; echo retcode-<tok> $?`
+        # （合不成一行时后半句单独一行）；actor 自己写的返回码 echo 会被换掉。
+        command_line = line
+        marker = None
+        cmd_marker = re.escape(tmux_vim.CMD_MARKER)
+        retcode_marker = re.escape(tmux_vim.RETCODE_MARKER)
+        head = re.match(rf"echo\s+{cmd_marker}([A-Za-z0-9_-]*)\s*>\s*/dev/null\s*;\s*", command_line)
+        if head is not None:
+            marker = head.group(1)
+            command_line = command_line[head.end() :]
+        folded = re.search(rf";\s*echo\s+{retcode_marker}([A-Za-z0-9_-]*)\s+\$\?\s*$", command_line)
+        if folded is not None:
+            marker = folded.group(1)
+            command_line = command_line[: folded.start()]
+        elif marker is None and command_line.strip().startswith(f"echo {tmux_vim.RETCODE_MARKER}"):
+            marker = command_line.strip().split()[1]
             command_line = ""
         parts = shlex.split(command_line)
         if parts:
@@ -236,9 +247,10 @@ class FakeTransport:
                 self.command = "vim"
             elif command == "python":
                 self.command = "python3"
-            self.console += command_line + "\n"
+            # 真终端会把敲进去的那一整行回显出来（连两个标记），harness 就是靠前置标记切输出的。
+            self.console += line + "\n"
         if marker:
-            self.console += f"{marker} {self.retcode}\n"
+            self.console += f"{tmux_vim.RETCODE_MARKER}{marker} {self.retcode}\n"
         self.pending_input = ""
         self.screen_revision += 1
 
@@ -1264,6 +1276,17 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(2, len(answers))
         for answer in answers:
             self.assertTrue(answer["executed"], answer)
+        # 命令那条结果里带着"输出是不是被 tmux 缓存裁过"这一项：模型据此知道自己看的是不是全部。
+        cmd_results = [
+            event["data"]["result"]
+            for event in loaded.events()
+            if event["kind"] == "action"
+            and (event.get("data") or {}).get("status") == "result"
+            and ((event.get("data") or {}).get("result") or {}).get("kind") == "cmd"
+        ]
+        self.assertTrue(cmd_results, loaded.events())
+        self.assertIn("truncated", cmd_results[0])
+        self.assertFalse(cmd_results[0]["truncated"])
 
 
 if __name__ == "__main__":

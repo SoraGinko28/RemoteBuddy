@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 from claude_code_client import ClaudeCodeBackend, TOOL_NAME
+import tmux_vim
 from interactive_runner import InteractiveRunner
 from meeting_v2 import MeetingStore
 from model_api_client import ModelApiConfig
@@ -269,9 +270,9 @@ class ClaudeTaskEndToEndTest(unittest.TestCase):
         self.assertEqual("screen", final["data"]["references"][0]["kind"])
         # 两条命令都由 harness 在共享终端里敲进去：动作本身不再带按键。
         typed = [text for _pane, text in self.transport.literal_sends]
-        # 命令和"读返回码的那句 echo"是同一行，所以按开头比。
-        self.assertTrue(any(text.startswith("mkdir -p build; echo ") for text in typed), typed)
-        self.assertTrue(any(text.startswith("touch checked.marker; echo ") for text in typed), typed)
+        # 敲进去的是"前置标记 + 命令 + 返回码标记"一整行，所以按中间那一段比。
+        self.assertTrue(any("mkdir -p build; echo " + tmux_vim.RETCODE_MARKER in text for text in typed), typed)
+        self.assertTrue(any("touch checked.marker; echo " + tmux_vim.RETCODE_MARKER in text for text in typed), typed)
         self.assertEqual([], self.transport.tokens)
         statuses = [
             event["data"].get("status")

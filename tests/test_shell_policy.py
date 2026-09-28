@@ -9,6 +9,7 @@ from agent_protocol import (
     action_json_schema,
     validate_shell_command,
 )
+import tmux_vim
 from interactive_runner import InteractiveRunner
 from meeting_v2 import MeetingStore
 from tests.test_interactive_runner import FakeClient, FakeTransport, make_action
@@ -218,9 +219,9 @@ class ShellPolicyRunnerTest(unittest.TestCase):
         self.assertEqual(1, len(rejected))
         self.assertIn("deletion-class command is not allowed: rm", rejected[0]["content"])
         typed = [text for _pane, text in transport.literal_sends]
-        # 命令和"读返回码的那句 echo"合成一行敲进去，所以这里按开头比。
+        # 敲进去的是"前置标记 + 命令 + 返回码标记"一整行，所以按中间那一段比。
         self.assertTrue(
-            any(text.startswith("git status; echo remotebuddy-retcode-") for text in typed), typed
+            any("git status; echo " + tmux_vim.RETCODE_MARKER in text for text in typed), typed
         )
         self.assertFalse(any("rm -rf build" in text for text in typed), typed)
 

@@ -786,11 +786,13 @@ AgentCmdResult =
   | $tmux_cmd_result TmuxCmdResult
   | $shell_cmd_result ShellCmdResult
 
-# 共享终端里的结果：返回码 + 整屏缓存（整条历史，不是可见的那几行）
+# 共享终端里的结果：返回码 + 这条命令自己的输出。$truncated 为真表示这条命令的输出比 tmux 的
+# 历史缓存还长，$output_on_screen 里是裁剩的尾巴，不是全部。
 TmuxCmdResult =
     Object
   * $retcode str
   * $output_on_screen str
+  * $truncated bool
 
 # harness 自己在工作区里跑出来的结果
 ShellCmdResult =
@@ -801,8 +803,13 @@ ShellCmdResult =
 
 ApplyCmd = $ret TmuxCmdResult <- $cmd str <- {
 	首先，确认 tmux 的屏幕是 bash 环境（比如悄悄地回车一下），如果不是，要退出来，实在不行重启 tmux 会话。
-	其次，执行 $cmd。截屏获取当前屏幕结果，放到 ret.output_on_screen，这里要用那种一下子把整个缓存截下来的方式。
-	最后，echo $?，看看结果，放到 ret.retcode 里。取数据简单地看两个 PS1 之间的数据就行。
+	其次，执行 $cmd：在它前面打印一个只属于这一枪的标记（`echo cmd-remotebuddy-<token> > /dev/null`，
+	它自己不打印东西），在它后面接上读返回码的那一句（`echo retcode-remotebuddy-<token> $?`），
+	能接就接成同一行 —— 一个回车跑完，也少一次等待。
+	然后截屏获取当前屏幕结果，要用那种一下子把整个缓存截下来的方式；按这两个标记把这条命令自己的
+	输出切出来放到 ret.output_on_screen（前置标记那一行不在了、带返回码那行还在，就说明输出把缓存
+	顶穿了，ret.truncated 置真，交回去的是裁剩的尾巴）。
+	最后从带返回码那句话里读 ret.retcode。
 }
 
 ApplyDiff = $ret AgentCmdResult <- $appliable_diff str <- {

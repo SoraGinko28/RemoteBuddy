@@ -387,6 +387,9 @@ class FakePane:
         self.vim_quits = True
         self.in_insert = False
         self.answer_marker = True
+        # 给个数字就当成 tmux 的历史缓存只有这么多行：超出的（最旧的）先掉出去，
+        # 用来演"输出把缓存顶穿"的那种情况。None = 不设限。
+        self.history_limit: Optional[int] = None
 
     # --- 编排 ---------------------------------------------------------
     def answer(self, command: str, output: str = "", retcode: str = "0") -> "FakePane":
@@ -428,7 +431,10 @@ class FakePane:
 
     def capture(self, _pane_id: str) -> str:
         self.captures += 1
-        return self.scrollback
+        if self.history_limit is None:
+            return self.scrollback
+        lines = self.scrollback.split("\n")
+        return "\n".join(lines[-self.history_limit :])
 
     def capture_visible(self, _pane_id: str) -> str:
         self.visible_captures += 1
@@ -506,17 +512,28 @@ class FakePane:
 
     # --- 内部 ---------------------------------------------------------
     def _folded(self, line: str):
-        """把 harness 接在尾巴上的返回码 echo 切下来：(命令行, 标记 token 或 None)。"""
-        marker = re.escape(tmux_vim.RETCODE_MARKER)
-        match = None
-        for found in re.finditer(rf";\s*echo\s+{marker}([A-Za-z0-9_-]*)\s+\$\?", line):
-            match = found
-        if match is not None:
-            return line[: match.start()], match.group(1)
-        pure = re.fullmatch(rf"echo\s+{marker}([A-Za-z0-9_-]*)\s+\$\?", line.strip())
-        if pure is not None:
-            return "", pure.group(1)
-        return line, None
+        """把 harness 加的两个标记切下来：(命令行, 标记 token 或 None)。
+
+        敲进去的样子是 `echo cmd-<tok> > /dev/null; <命令>; echo retcode-<tok> $?`；合不成
+        一行时后面那句没有，探针另起一行（那种单独一行的 `echo retcode-<tok> $?` 也认）。
+        """
+        cmd_marker = re.escape(tmux_vim.CMD_MARKER)
+        retcode_marker = re.escape(tmux_vim.RETCODE_MARKER)
+        token = None
+        body = line
+        head = re.match(rf"echo\s+{cmd_marker}([A-Za-z0-9_-]*)\s+>\s*/dev/null\s*;\s*", line)
+        if head is not None:
+            token = head.group(1)
+            body = line[head.end() :]
+        tail = re.search(rf";\s*echo\s+{retcode_marker}([A-Za-z0-9_-]*)\s+\$\?\s*$", body)
+        if tail is not None:
+            token = tail.group(1)
+            body = body[: tail.start()]
+        elif token is None:
+            pure = re.fullmatch(rf"echo\s+{retcode_marker}([A-Za-z0-9_-]*)\s+\$\?", body.strip())
+            if pure is not None:
+                return "", pure.group(1)
+        return body, token
 
     def _run_line(self, line: str) -> None:
         """壳里执行一行：命令本身已经在打字时回显过了，这里只补输出和返回码。
@@ -1293,15 +1310,58 @@ class RunCommandTest(unittest.TestCase):
     def case(self, name="4files_2hunks_mixed") -> Case:
         return _case_by_name(name)
 
-    def test_output_comes_from_the_whole_scrollback_not_the_viewport(self):
+    # 敲进去的那一行：前置标记 + 命令 + 返回码标记，两个标记同一个 token。
+    FOLDED = re.compile(
+        r"^echo cmd-remotebuddy-(?P<token>[0-9a-z]+) > /dev/null; (?P<command>.*); "
+        r"echo retcode-remotebuddy-(?P=token) \$\?$"
+    )
+
+    def assert_folded(self, typed: str, command: str) -> str:
+        match = self.FOLDED.fullmatch(typed)
+        self.assertIsNotNone(match, typed)
+        self.assertEqual(command, match.group("command"))
+        return match.group("token")
+
+    def test_output_longer_than_the_buffer_comes_back_as_a_truncated_tail(self):
+        """输出把 tmux 的历史缓存顶穿：交回去的是尾巴，并且说清它是尾巴。"""
+        pane = self.pane()
+        pane.answer("build everything", "\n".join(f"line {number}" for number in range(50)))
+        pane.history_limit = 5
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "build everything")
+        self.assertEqual("0", result.retcode)
+        self.assertTrue(result.truncated)
+        self.assertIn("line 49", result.output_on_screen)
+        self.assertNotIn("line 0\n", result.output_on_screen)
+        # 被截断的第一行是半截，剔掉；剩下的每一行都完整。
+        for line in result.output_on_screen.splitlines():
+            self.assertRegex(line, r"^line \d+$")
+
+    def test_a_short_output_is_not_flagged_as_truncated(self):
+        pane = self.pane()
+        pane.answer("pwd", "/w/proj")
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "pwd")
+        self.assertFalse(result.truncated)
+        self.assertEqual("/w/proj", result.output_on_screen)
+
+    def test_only_this_command_output_is_handed_back(self):
+        """整屏缓存是拿来切边界的：交回模型的是这一条命令自己的输出，不是上一条留下的历史。"""
         pane = self.pane()
         pane.show("很远以前的一行\n" * 40)
         pane.answer("git diff --stat", " a.py | 3 +++\n b.py | 2 +-\n")
         result = tmux_vim.run_command(pane, None, pane.pane_id, "git diff --stat")
         self.assertIsInstance(result, TmuxCmdResult)
-        self.assertIn("很远以前的一行", result.output_on_screen)
-        self.assertIn("a.py | 3 +++", result.output_on_screen)
+        self.assertNotIn("很远以前的一行", result.output_on_screen)
+        self.assertEqual(" a.py | 3 +++\n b.py | 2 +-", result.output_on_screen)
         self.assertEqual("0", result.retcode)
+
+    def test_output_comes_from_the_whole_scrollback_not_the_viewport(self):
+        """输出被切出来，但切的是整屏缓存里的那一段：滚出可视区的那几行也还在。"""
+        pane = self.pane()
+        pane.answer("git diff", "\n".join(f"line {number}" for number in range(40)))
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "git diff")
+        self.assertIn("line 0", result.output_on_screen)
+        self.assertIn("line 39", result.output_on_screen)
+        self.assertNotIn("line 0", pane.capture_visible(pane.pane_id))
 
     def test_a_non_zero_retcode_is_reported(self):
         pane = self.pane()
@@ -1317,19 +1377,19 @@ class RunCommandTest(unittest.TestCase):
         for path in case.paths():
             self.assertIn(path, result.output_on_screen)
 
-    def test_the_return_code_echo_rides_on_the_same_line(self):
-        """命令和"读返回码的那句 echo"是同一行：一个回车，屏上不会出现两条标记。"""
+    def test_the_two_markers_and_the_command_are_one_line(self):
+        """一个回车：前置标记 + 命令 + 返回码标记；屏上不会出现两条标记。"""
         pane = self.pane()
         pane.answer("git status --porcelain", " M a.py\n M b.py\n")
         result = tmux_vim.run_command(pane, None, pane.pane_id, "git status --porcelain")
         self.assertEqual(["git status --porcelain"], pane.commands)
         self.assertEqual("0", result.retcode)
-        typed = [step for step in pane.sent_lines if tmux_vim.RETCODE_MARKER in step]
-        self.assertEqual(1, len(typed), pane.sent_lines)
-        self.assertTrue(typed[0].startswith("git status --porcelain; echo "), typed)
+        self.assertEqual(" M a.py\n M b.py", result.output_on_screen)
+        self.assert_folded(pane.sent_lines[0], "git status --porcelain")
+        self.assertEqual(1, len(pane.sent_lines), pane.sent_lines)
 
     def test_a_return_code_echo_the_actor_wrote_itself_is_replaced(self):
-        """actor 自己接的那句 `echo remotebuddy-retcode-xxx $?` 是换掉，不是再接一句。"""
+        """actor 自己接的那句 `echo …retcode… $?` 是换掉，不是再接一句。"""
         pane = self.pane()
         pane.answer(".venv/bin/python check_rename_ui.py", "OK\n")
         result = tmux_vim.run_command(
@@ -1338,20 +1398,24 @@ class RunCommandTest(unittest.TestCase):
             pane.pane_id,
             ".venv/bin/python check_rename_ui.py; echo remotebuddy-retcode-ui $?",
         )
-        self.assertEqual(["0"], [result.retcode])
-        typed = [step for step in pane.sent_lines if tmux_vim.RETCODE_MARKER in step]
-        self.assertEqual(1, len(typed), pane.sent_lines)
-        self.assertEqual(1, typed[0].count(tmux_vim.RETCODE_MARKER), typed[0])
-        self.assertNotIn("remotebuddy-retcode-ui", typed[0])
-        self.assertTrue(typed[0].startswith(".venv/bin/python check_rename_ui.py; echo "), typed)
+        self.assertEqual("0", result.retcode)
+        self.assertEqual("OK", result.output_on_screen)
+        self.assertEqual(1, len(pane.sent_lines), pane.sent_lines)
+        self.assert_folded(pane.sent_lines[0], ".venv/bin/python check_rename_ui.py")
+        self.assertNotIn("remotebuddy-retcode-ui", pane.sent_lines[0])
+        self.assertEqual(1, pane.sent_lines[0].count(tmux_vim.CMD_MARKER), pane.sent_lines[0])
+        self.assertEqual(1, pane.sent_lines[0].count(tmux_vim.RETCODE_MARKER), pane.sent_lines[0])
 
     def test_a_trailing_ampersand_still_gets_its_own_echo_line(self):
-        """尾巴是后台/续行时合不成一行：命令照敲，返回码那句另起一行（老路）。"""
+        """尾巴是后台/续行时合不成一行：前置标记照加，返回码那句另起一行。"""
         pane = self.pane()
         pane.answer("sleep 1 &", "")
         result = tmux_vim.run_command(pane, None, pane.pane_id, "sleep 1 &")
         self.assertEqual("0", result.retcode)
-        self.assertEqual("sleep 1 &", pane.sent_lines[0])
+        self.assertEqual(
+            f"echo {tmux_vim.CMD_MARKER}", pane.sent_lines[0][: len(tmux_vim.CMD_MARKER) + 5]
+        )
+        self.assertTrue(pane.sent_lines[0].endswith("; sleep 1 &"), pane.sent_lines)
         self.assertTrue(
             pane.sent_lines[1].startswith(f"echo {tmux_vim.RETCODE_MARKER}"), pane.sent_lines
         )
