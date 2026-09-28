@@ -824,6 +824,15 @@ class ParseEdgeTest(unittest.TestCase):
         )
         self.assertTrue(added[0].is_new)
 
+    def test_a_new_side_header_written_with_two_minuses_is_understood(self):
+        """`--- b/x.py` 是 `+++ b/x.py` 写错了：位置就摆在那儿，认它。"""
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n--- b/a.py\n@@ -1,2 +1,2 @@\n one\n+two\n"
+            "--- a/b.py\n+++ b/b.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        )
+        self.assertEqual(["a.py", "b.py"], [patch.path for patch in patches])
+        self.assertEqual(("-x", "+y"), patches[1].hunks[0].lines)
+
     def test_prose_without_a_file_header_is_still_an_error(self):
         with self.assertRaises(DiffError):
             tmux_vim.parse_unified_diff(
@@ -2021,10 +2030,19 @@ class RealTmuxEdgeTest(unittest.TestCase):
         case = _case_by_name("2files_1hunks_replace")
         work = repo_with_case(self, case)
         diff = git_diff_for_case(case, work)
-        before = sorted(Path(tempfile.gettempdir()).glob("remotebuddy-*"))
+        # 只看这个模块自己开的那三种临时目录：别的进程（跑着的会议、backend 的临时目录）
+        # 也在同一个临时目录下过日子，把它们算进来就成了并发噪声。
+        prefixes = ("remotebuddy-snapshot-*", "remotebuddy-expected-*", "remotebuddy-current-*")
+
+        def leftovers():
+            found = []
+            for pattern in prefixes:
+                found.extend(Path(tempfile.gettempdir()).glob(pattern))
+            return sorted(found)
+
+        before = leftovers()
         self.apply(work, diff)
-        after = sorted(Path(tempfile.gettempdir()).glob("remotebuddy-*"))
-        self.assertEqual(before, after)
+        self.assertEqual(before, leftovers())
 
     def test_a_rename_in_a_real_repository_lands(self):
         work = repo_workdir(self)

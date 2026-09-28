@@ -309,8 +309,10 @@ def parse_unified_diff(text: str) -> List[FilePatch]:
             continue
         if line.startswith("--- "):
             old_raw = line[4:]
-            if index + 1 >= len(lines) or not lines[index + 1].startswith("+++ "):
+            if index + 1 >= len(lines) or not lines[index + 1].startswith(("+++ ", "--- ")):
                 raise DiffError(f"文件头后面不是 +++ 那一行: {line!r}")
+            # 手写的 diff 里常见的一种走样：新侧那一行也写成 `---`（`--- b/x.py`）。
+            # 位置都摆在那儿了，一眼就知道它是新侧头，不必为难。
             new_raw = lines[index + 1][4:]
             index += 2
             hunks: List[Hunk] = []
@@ -1153,25 +1155,132 @@ def worktree_diff(snapshot: Snapshot, *, run: Optional[Runner] = None) -> str:
         _cleanup(scratch)
 
 
-def check_appliable(workspace: Path, diff: str, *, run: Optional[Runner] = None) -> ShellCmdResult:
-    """这份 diff 能不能应用（`git apply --check`，不用进终端）。
+def _read_contents(workspace: Path, paths: Sequence[str]) -> Dict[str, Optional[str]]:
+    """读下这些文件现在是什么；不存在的记 None（新文件就是这样）。"""
+    contents: Dict[str, Optional[str]] = {}
+    for path in paths:
+        target = workspace / path
+        try:
+            contents[path] = target.read_text(encoding="utf-8", errors="surrogateescape")
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+            contents[path] = None
+    return contents
 
-    `--unidiff-zero` 是给不带上下文行的 diff 留的：git 默认要求每个 hunk 至少有一行
-    上下文，`-U0` 那种纯行号定位的 diff 会被它直接拒掉。落地对不对仍然由文件树的比较
-    兜底，所以放宽这一条不会让错误的改动混过去。
+
+def _locate(lines: Sequence[str], block: Sequence[str], start: int) -> Optional[int]:
+    """这个 hunk 要改的那一段在文件的哪一行。
+
+    先看它自己说的位置；对不上就按上下文找最近的一处 —— 模型手写的行号常偏，上下文才是真的，
+    落盘那一步（vim 里也是按上下文行搜索）就是这么找的，预检不该比它更严。
     """
-    runner = run or _default_run
-    result = _git(
-        runner,
-        ["apply", "--check", "--unidiff-zero", "-"],
-        cwd=Path(workspace).expanduser().resolve(),
-        input_text=diff,
-    )
-    return ShellCmdResult(
-        retcode=str(_returncode(result)),
-        stdout=result.stdout or "",
-        stderr=result.stderr or "",
-    )
+    if not block:
+        return start if 0 <= start <= len(lines) else None
+
+    def matches(at: int) -> bool:
+        return (
+            0 <= at
+            and at + len(block) <= len(lines)
+            and all(lines[at + offset] == text for offset, text in enumerate(block))
+        )
+
+    if matches(start):
+        return start
+    candidates = [at for at in range(len(lines) - len(block) + 1) if matches(at)]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda at: (abs(at - start), at))
+
+
+def _apply_patches(
+    patches: Sequence[FilePatch], contents: Dict[str, Optional[str]]
+) -> Dict[str, Optional[str]]:
+    """把补丁应用在这些内容上；对不上就抛 `DiffNotAppliable`，并说清"补丁要什么、文件里是什么"。
+
+    报错要能照着改：模型手上只有这份 diff 和它刚才读过的文件，光说"损坏"它只能再猜一遍。
+    """
+    after = dict(contents)
+    for patch in patches:
+        if patch.is_rename:
+            after[patch.new_path] = after.get(patch.old_path)
+            after[patch.old_path] = None
+        name = patch.path
+        if patch.is_delete:
+            after[name] = None
+            continue
+        body = after.get(name)
+        lines = body.splitlines() if body is not None else []
+        if patch.hunks and body is None and not patch.is_new:
+            raise DiffNotAppliable(
+                f"{name}: 这个文件不存在，补丁却是按「改一个已有文件」写的"
+            )
+        result: List[str] = []
+        cursor = 0
+        for hunk in patch.hunks:
+            start = hunk.old_start if hunk.old_count == 0 else hunk.old_start - 1
+            block = [raw[1:] for raw in hunk.lines if raw[:1] in {" ", "-"}]
+            located = _locate(lines, block, start)
+            if located is None:
+                wanted = block[0] if block else "（空 hunk）"
+                raise DiffNotAppliable(
+                    f"{name}: 找不到这个 hunk 要改的那一段 —— 补丁的第一行是 {wanted!r}，"
+                    f"文件里没有。重新读一遍这个文件再交一次。"
+                )
+            if located < cursor:
+                raise DiffNotAppliable(f"{name}: 这一份 diff 里两个 hunk 叠在一起了")
+            result.extend(lines[cursor:located])
+            position = located
+            for raw in hunk.lines:
+                if raw.startswith("\\"):
+                    continue
+                prefix, text = raw[0], raw[1:]
+                if prefix == " ":
+                    if position >= len(lines) or lines[position] != text:
+                        actual = lines[position] if position < len(lines) else "（文件到头了）"
+                        raise DiffNotAppliable(
+                            f"{name}: 第 {position + 1} 行的上下文对不上 —— 补丁写的是 {text!r}，"
+                            f"文件里是 {actual!r}。重新读一遍这个文件再交一次。"
+                        )
+                    result.append(text)
+                    position += 1
+                elif prefix == "-":
+                    if position >= len(lines) or lines[position] != text:
+                        actual = lines[position] if position < len(lines) else "（文件到头了）"
+                        raise DiffNotAppliable(
+                            f"{name}: 要删的第 {position + 1} 行对不上 —— 补丁写的是 {text!r}，"
+                            f"文件里是 {actual!r}。重新读一遍这个文件再交一次。"
+                        )
+                    position += 1
+                else:
+                    result.append(text)
+            cursor = position
+        result.extend(lines[cursor:])
+        after[name] = "".join(line + "\n" for line in result)
+    return after
+
+
+def check_appliable(workspace: Path, diff: str, *, run: Optional[Runner] = None) -> ShellCmdResult:
+    """这份 diff 能不能应用：用我们自己的读法和落盘算法在内存里试一遍。
+
+    不走 `git apply --check`：它比我们严（没有上下文行的、行数对不上的、手写走样的一律毙掉），
+    报错还是它那套（"补丁在 <stdin>:8 损坏"），模型拿着没法改。这里把它读到的那份文件和补丁
+    摆在一起比，报"哪一行、补丁要什么、文件里是什么"，它照着改就行。
+    """
+    del run
+    workspace = Path(workspace).expanduser().resolve()
+    if not workspace.is_dir():
+        return ShellCmdResult(retcode="1", stdout="", stderr=f"工作区目录不在了: {workspace}")
+    try:
+        patches = parse_unified_diff(diff)
+    except DiffError as exc:
+        return ShellCmdResult(retcode="1", stdout="", stderr=str(exc))
+    if not patches:
+        return ShellCmdResult(retcode="1", stdout="", stderr="这份 diff 里没有文件改动")
+    paths = [path for patch in patches for path in patch.paths]
+    try:
+        _apply_patches(patches, _read_contents(workspace, paths))
+    except DiffNotAppliable as exc:
+        return ShellCmdResult(retcode="1", stdout="", stderr=str(exc))
+    return ShellCmdResult(retcode="0", stdout="", stderr="")
 
 
 def cleanup_snapshot(snapshot: Snapshot) -> None:
