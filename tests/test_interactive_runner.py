@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_protocol import AgentActionError, AgentBackendError
+from agent_protocol import AgentActionError, AgentBackendError, AgentRefused
 from interactive_runner import (
     MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
@@ -487,6 +487,30 @@ class InteractiveRunnerTest(unittest.TestCase):
         # 假终端不会真的改文件，所以落盘一定对不上：比对这条路也在记账。
         self.assertNotEqual("0", result["retcode"])
         self.assertEqual(["notes.md", "extra.md"], result["mismatched_files"])
+
+    def test_a_tool_the_harness_does_not_offer_does_not_kill_the_cycle(self):
+        """模型要联网搜索这类这里没有的东西：记一笔、让它换一条，不许把整轮判死。"""
+        client = FakeClient(
+            [
+                make_action(),
+                AgentRefused("forbidden Codex item type: webSearch"),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Looked instead."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        refusals = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "refused"
+        ]
+        self.assertEqual(1, len(refusals))
+        self.assertIn("webSearch", refusals[0]["content"])
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
 
     def test_an_interactive_command_is_refused_with_something_the_model_can_act_on(self):
         # 模型真的会这么发：客户端在造动作那一步就把它退回去（`vim` 会一直等人敲键盘）。

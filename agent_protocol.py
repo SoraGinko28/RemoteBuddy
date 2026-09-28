@@ -266,6 +266,16 @@ def _snippet(text: str, limit: int = 600) -> str:
     return flat[:limit]
 
 
+class AgentRefused(AgentActionError):
+    """The model asked for something this harness does not give.
+
+    A web search, a sub-agent, a file change outside the shared pane: the model
+    may pick one of these on its own, and that is a mistake it can correct. The
+    runner says so in the journal and lets it try again within the same cycle,
+    instead of failing the meeting over a tool that was never on offer.
+    """
+
+
 @dataclass(frozen=True)
 class AgentAction:
     type: str

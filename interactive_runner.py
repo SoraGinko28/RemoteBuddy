@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 from agent_protocol import (
     ACTION_TYPES,
+    AgentRefused,
     act_step_text,
     INVESTIGATE_STEP_TEXT,
     INVESTIGATION_CLOSED_MESSAGE,
@@ -750,6 +751,36 @@ class InteractiveRunner:
                 if self._cycle_elapsed() >= CYCLE_LIMIT_SECONDS - self._request_overhead_seconds():
                     self._cycle_timeout(request_id)
                     return
+                if isinstance(exc, AgentRefused):
+                    # 它要了个这里没有的东西（联网搜索、子任务…）：记下来说清为什么，
+                    # 下一步它自己换一条路，这一轮不算死。
+                    with self.lock:
+                        self.store.refresh()
+                        self._check_stop()
+                        self._last_action_success = False
+                        self._invalid_action_streak += 1
+                        next_count = self.store.meeting.cycle_action_count + 1
+                        self.store.append_event(
+                            "action",
+                            "harness",
+                            "agent_thinking",
+                            content=str(exc),
+                            data={
+                                "action_id": request_id,
+                                "status": "rejected",
+                                "reason": "refused",
+                            },
+                        )
+                        self.store.update(
+                            phase="agent_thinking",
+                            pending_action_id=None,
+                            cycle_action_count=next_count,
+                        )
+                        if next_count >= ACTION_LIMIT:
+                            self._wait_for_user("action_budget_exhausted")
+                            return
+                    if self._invalid_action_streak < MAX_INVALID_ACTION_RETRIES:
+                        continue
                 if isinstance(exc, AgentActionError):
                     # The model produced an invalid action (for example
                     # ``type=command, command="none"``). That is correctable:

@@ -301,11 +301,19 @@ class AgentActionTest(unittest.TestCase):
             )
         )
         self.assertIn("-nope", far_away.diff)
+        # 手写的走样（上下文行漏了空格）能读就读：落地对不对另有内容比对那一关。
+        tolerant = AgentAction.from_dict(
+            action_payload(
+                type="diff", message_type="none", content="", command="none",
+                diff="--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n上下文行\n+a2\n",
+            )
+        )
+        self.assertIn("+a2", tolerant.diff)
         with self.assertRaisesRegex(ModelResponseError, "unified diff"):
             AgentAction.from_dict(
                 action_payload(
                     type="diff", message_type="none", content="", command="none",
-                    diff="--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n只有一行没有前缀\n",
+                    diff="把这两行改掉就行",
                 )
             )
         with self.assertRaisesRegex(ModelResponseError, "keystrokes action is gone"):

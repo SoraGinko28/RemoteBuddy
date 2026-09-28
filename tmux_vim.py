@@ -243,15 +243,46 @@ _METADATA_PREFIXES = (
 )
 
 
+_CODEX_WRAPPERS = ("*** Begin Patch", "*** End Patch")
+_CODEX_FILE = re.compile(r"^\*\*\* (Update|Add|Delete) File: (.+)$")
+
+
+def _normalize_diff_lines(text: str) -> List[str]:
+    """把常见的手写变体归一到标准 unified diff，再交给下面那段严格的读法。
+
+    - Codex 的 `*** Begin Patch` / `*** End Patch` 包裹，和 `*** Update File: <路径>` /
+      `*** Add File:` / `*** Delete File:` 这样的文件头：换成 `---` / `+++` 那两行。
+    """
+    lines: List[str] = []
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        if line.strip() in _CODEX_WRAPPERS:
+            continue
+        match = _CODEX_FILE.match(line)
+        if match:
+            kind, path = match.group(1), _strip_path_prefix(match.group(2).strip())
+            if kind == "Update":
+                lines.extend([f"--- a/{path}", f"+++ b/{path}"])
+            elif kind == "Add":
+                lines.extend(["--- /dev/null", f"+++ b/{path}"])
+            else:
+                lines.extend([f"--- a/{path}", "+++ /dev/null"])
+            continue
+        lines.append(line)
+    return lines
+
+
 def parse_unified_diff(text: str) -> List[FilePatch]:
     """把一份 unified diff 读成 `[FilePatch]`；读不出来就抛 `DiffError`。
 
     路径按 git 的习惯去掉 `a/`、`b/` 前缀（`--no-prefix` 的 diff 本来就没有前缀），
-    `/dev/null` 原样留着，表示这个文件是新建或删掉。
+    `/dev/null` 原样留着，表示这个文件是新建或删掉。手写 diff 常有的几处走样（上下文行
+    漏了开头那个空格、空行写成彻底的空行、hunk 头的行数数错）都会被顺着 hunk 头的计数
+    补回来 —— 落地对不对最终由"文件内容"那一关说了算，这里不必替它把关。
     """
     if text is None:
         raise DiffError("diff 是空的")
-    lines = text.splitlines()
+    lines = _normalize_diff_lines(text)
     patches: List[FilePatch] = []
     index = 0
     rename_from = ""
@@ -326,6 +357,15 @@ def _rename_patch(old_raw: str, new_raw: str) -> FilePatch:
     )
 
 
+def _recount(body: Sequence[str], old_count: int, new_count: int) -> Tuple[int, int]:
+    """hunk 头的行数按正文重数：手写的 diff 里这个数常错，正文才是真的。"""
+    counted_old = sum(1 for raw in body if raw[:1] in {" ", "-"})
+    counted_new = sum(1 for raw in body if raw[:1] in {" ", "+"})
+    if (counted_old, counted_new) == (old_count, new_count):
+        return old_count, new_count
+    return counted_old, counted_new
+
+
 def _parse_hunk(lines: Sequence[str], index: int) -> Tuple[Hunk, int]:
     header = lines[index]
     match = _HUNK_HEADER.match(header)
@@ -346,26 +386,39 @@ def _parse_hunk(lines: Sequence[str], index: int) -> Tuple[Hunk, int]:
             continue
         if old_seen == old_count and new_seen == new_count:
             break
+        # 下一个文件的头（或者 `diff --git`）：这一段 hunk 到头了，行数按正文重数。
+        if line.startswith(("--- ", "+++ ", "diff --git ", "diff --cc ")):
+            break
         if not line:
+            # 空白上下文行被写成了彻底的空行
+            if old_seen < old_count and new_seen < new_count:
+                body.append(" ")
+                old_seen += 1
+                new_seen += 1
+                cursor += 1
+                continue
             raise DiffError(f"hunk 里出现了空行: {header!r}")
         prefix = line[0]
+        text = line[1:]
+        if prefix not in " +-":
+            # 上下文行漏了开头那个空格：hunk 头还等着旧行+新行各一条，那就按上下文算
+            if old_seen < old_count and new_seen < new_count:
+                prefix, text = " ", line
+            else:
+                raise DiffError(
+                    f"hunk 里这一行既不是上下文（要以一个空格开头）也不是增删（+ / -）: {line!r}"
+                )
         if prefix == " ":
             old_seen += 1
             new_seen += 1
         elif prefix == "-":
             old_seen += 1
-        elif prefix == "+":
-            new_seen += 1
         else:
-            raise DiffError(f"hunk 里这一行没有前缀: {line!r}")
-        if old_seen > old_count or new_seen > new_count:
-            raise DiffError(f"hunk 的正文比头里写的多: {header!r}")
-        body.append(line)
+            new_seen += 1
+        body.append(prefix + text)
         cursor += 1
-    if old_seen != old_count or new_seen != new_count:
-        raise DiffError(
-            f"hunk 头写的是 -{old_count} +{new_count}，正文只给了 -{old_seen} +{new_seen}"
-        )
+    # 手写的 diff 行数常常数错：正文到下一个头为止就是这一段，按正文重数，不跟它较真。
+    old_count, new_count = _recount(body, old_count, new_count)
     return (
         Hunk(old_start, old_count, new_start, new_count, tuple(body)),
         cursor,

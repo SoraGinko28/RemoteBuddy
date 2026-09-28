@@ -17,6 +17,7 @@ from agent_protocol import (
     AgentBackendError,
     AgentInterrupted,
     AgentProtocolError,
+    AgentRefused,
     AgentResponse,
     BackendEventCallback,
     DynamicActionHandler,
@@ -505,7 +506,7 @@ class CodexAppServerBackend:
                 if item_type in FORBIDDEN_ITEM_TYPES or (
                     item_type == "dynamicToolCall" and not self.config.codex_dynamic_tools
                 ):
-                    self._reject_protocol(f"forbidden Codex item type: {item_type}")
+                    self._refuse(f"forbidden Codex item type: {item_type}")
                 if item_type not in SAFE_ITEM_TYPES and item_type != "dynamicToolCall":
                     self._reject_protocol(f"unknown Codex item type: {item_type}")
                 if method == "item/completed" and item_type == "agentMessage":
@@ -590,7 +591,7 @@ class CodexAppServerBackend:
             return None
         if method != "item/tool/call" or not self.config.codex_dynamic_tools:
             self._send_error(request_id, -32601, "RemoteBuddy rejects App Server tool requests")
-            self._reject_protocol(f"forbidden Codex server request: {method}")
+            self._refuse(f"forbidden Codex server request: {method}")
         if params.get("tool") != "remotebuddy_action" or params.get("namespace") not in {None, ""}:
             self._send_error(request_id, -32602, "Unknown RemoteBuddy dynamic tool")
             self._reject_protocol("Codex requested an unregistered dynamic tool")
@@ -648,6 +649,22 @@ class CodexAppServerBackend:
                 executed=True,
             )
         return None
+
+    def _refuse(self, message: str) -> None:
+        """模型要的东西这里没有：记一笔、掐掉这一枪，让它换一条重来。
+
+        这和"协议坏了"不是一回事：联网搜索、子任务、在人看不见的地方改文件，都是它自己
+        挑的，能改；整轮以 api_error 收场才是真的没法收场。
+        """
+        self._emit(
+            "tool_refused",
+            session_id=self._thread_id,
+            turn_id=self._turn_id,
+            status="refused",
+            message=message,
+        )
+        self.interrupt()
+        raise AgentRefused(message)
 
     def _reject_protocol(self, message: str) -> None:
         self._emit(

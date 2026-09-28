@@ -788,11 +788,46 @@ class ParseEdgeTest(unittest.TestCase):
                 "--- a/b.py\n+++ b/b.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
             )
 
-    def test_unknown_line_prefix_is_an_error(self):
+    def test_a_context_line_that_lost_its_leading_space_is_read_as_context(self):
+        """手写的 diff 常把上下文行开头那个空格丢掉；hunk 的计数能看出这里该是上下文。"""
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n?a\n+new\n"
+            "--- a/b.py\n+++ b/b.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        )
+        self.assertEqual((" ?a", "+new"), patches[0].hunks[0].lines)
+
+    def test_a_blank_line_inside_a_hunk_is_a_blank_context_line(self):
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n a1\n\n+middle\n a3\n"
+            "--- a/b.py\n+++ b/b.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        )
+        self.assertEqual((" a1", " ", "+middle", " a3"), patches[0].hunks[0].lines)
+
+    def test_a_wrong_hunk_count_is_recounted_from_the_body(self):
+        """手写的 diff 行数常错：按正文重数，不跟它较真（落地对不对由内容那一关说了算）。"""
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n+++ b/a.py\n@@ -1,99 +1,99 @@\n-a\n+A\n b\n"
+            "--- a/b.py\n+++ b/b.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        )
+        hunk = patches[0].hunks[0]
+        self.assertEqual((2, 2), (hunk.old_count, hunk.new_count))
+
+    def test_a_codex_style_patch_wrapper_is_understood(self):
+        """`*** Begin Patch` / `*** Update File:` 这种写法换掉包裹就是标准 diff。"""
+        patches = tmux_vim.parse_unified_diff(
+            "*** Begin Patch\n*** Update File: pkg/store.py\n@@ -1,2 +1,2 @@\n-old\n+new\n keep\n*** End Patch\n"
+        )
+        self.assertEqual("pkg/store.py", patches[0].path)
+        self.assertEqual(("-old", "+new", " keep"), patches[0].hunks[0].lines)
+        added = tmux_vim.parse_unified_diff(
+            "*** Begin Patch\n*** Add File: fresh.py\n@@ -0,0 +1,1 @@\n+one\n*** End Patch\n"
+        )
+        self.assertTrue(added[0].is_new)
+
+    def test_prose_without_a_file_header_is_still_an_error(self):
         with self.assertRaises(DiffError):
             tmux_vim.parse_unified_diff(
-                "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n?a\n"
-                "--- a/b.py\n+++ b/b.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+                "把这两行改掉就行\n--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+b\n"
             )
 
     def test_body_longer_than_the_header_is_an_error(self):
