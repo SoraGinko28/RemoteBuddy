@@ -486,6 +486,9 @@ class CodexAppServerBackend:
                 )
                 if response is not None:
                     return response
+                # 这一枪刚干完一件活（可能是一次落盘，敲了几分钟）：期限从这一刻重新算，
+                # 别让动作刚做完、模型还在想的时候因为期限早过了判它超时。
+                deadline = time.monotonic() + timeout
                 continue
 
             method = value.get("method")

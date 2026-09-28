@@ -588,6 +588,33 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         finally:
             backend.close()
 
+    def test_a_slow_action_is_not_cut_off_by_the_turn_timeout(self):
+        """动作在执行时不算"这一枪挂了"：敲一份 diff 要几分钟，不该被请求超时掐掉。
+
+        真会里出过：一份 150 行的新脚本敲到一半，300s 的请求超时把整场会判成 api_error，
+        vim 还开着、文件一个字都没落。
+        """
+        from dataclasses import replace
+
+        backend = ClaudeCodeBackend(
+            replace(self.config(), request_timeout_seconds=0.4),
+            claude_binary="fake-claude",
+            process_factory=self.process_factory,
+            skip_protocol_check=True,
+        )
+        try:
+            session = backend.start_cycle("meeting-slow-action", "Skill", "")
+
+            def slow_handler(_action, _metadata):
+                time.sleep(1.2)  # 比 request_timeout_seconds 长得多
+                return {"success": True, "content": "typed", "pause": True}
+
+            response = backend.next_action(session, "observation", action_handler=slow_handler)
+            self.assertTrue(response.executed)
+            self.assertEqual("ack", response.action.message_type)
+        finally:
+            backend.close()
+
     def test_interrupt_wakes_waiter_and_close_reaps_process(self):
         backend = self.backend()
         session = backend.start_cycle("meeting-three", "Skill", "")

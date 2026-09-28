@@ -382,6 +382,7 @@ class FakePane:
         self.command_sequence: List[str] = []
         self.vim_starts = True
         self.vim_quits = True
+        self.in_insert = False
         self.answer_marker = True
 
     # --- 编排 ---------------------------------------------------------
@@ -398,8 +399,9 @@ class FakePane:
         self.scrollback += self.prompt
         return self
 
-    def enter_vim(self) -> "FakePane":
+    def enter_vim(self, insert: bool = False) -> "FakePane":
         self.command = "vim"
+        self.in_insert = insert
         return self
 
     # --- 传输层的那套方法 ---------------------------------------------
@@ -458,8 +460,14 @@ class FakePane:
         self.specials.append(key)
         if self.command not in SHELLS:
             if key == "C-c":
-                self.command = "bash"
-                self.scrollback += "^C\n" + self.prompt
+                if self.command == "vim":
+                    # vim 里 C-c 只是离开插入模式，不是退出 vim —— 这也是 harness 先 C-c
+                    # 再 `:q!` 的原因。
+                    self.in_insert = False
+                    self.pending = ""
+                else:
+                    self.command = "bash"
+                    self.scrollback += "^C\n" + self.prompt
             elif key in {"Escape", "Enter"}:
                 self._feed_vim("\x1b" if key == "Escape" else "\n")
 
@@ -473,6 +481,10 @@ class FakePane:
                     self._feed_vim("\x1b")
                 elif token.get("value") == "Enter":
                     self._feed_vim("\n")
+                elif token.get("value") == "C-c" and self.command == "vim":
+                    # 插入模式里收尾用的那个 C-c：回到普通模式，不是退出 vim。
+                    self.in_insert = False
+                    self.pending = ""
 
     def send_workspace_command(self, _pane_id: str, command: str, path: str = "") -> None:
         self.send_keys(_pane_id, command)
@@ -515,8 +527,11 @@ class FakePane:
         """
         if text == "\x1b":
             self.pending = ""
+            self.in_insert = False
             return
         if text == "\n":
+            if self.in_insert:
+                return  # 插入模式里的回车只是换行
             command = self.pending.strip()
             self.pending = ""
             if command in {":wq", ":wq!", ":x", ":q", ":q!"} and self.vim_quits:
@@ -527,6 +542,12 @@ class FakePane:
             self.command = "bash"
             self.pending = ""
             self.scrollback += self.prompt
+            return
+        if self.in_insert:
+            return  # 插入模式里敲什么都是字
+        if text in {"i", "I", "a", "A", "o", "O"}:
+            self.in_insert = True
+            self.pending = ""
             return
         if text.startswith(":") or text.startswith("/"):
             self.pending = text
@@ -1146,6 +1167,14 @@ class EnsureShellTest(unittest.TestCase):
         ready = tmux_vim.ensure_shell(pane, pane.pane_id)
         self.assertIn("quit-vim", ready.actions)
         self.assertEqual("bash", pane.command)
+
+    def test_a_vim_is_left_first_with_c_c_so_q_bang_can_reach_it(self):
+        """vim 停在插入模式时，`:q!` 会被当字插进缓冲区：先 C-c 回普通模式再敲它。"""
+        pane = self.pane()
+        pane.enter_vim()
+        ready = tmux_vim.ensure_shell(pane, pane.pane_id)
+        self.assertIn("quit-vim", ready.actions)
+        self.assertEqual(["C-c"], pane.specials)
 
     def test_a_pager_is_quit_with_q(self):
         pane = self.pane(command="less")

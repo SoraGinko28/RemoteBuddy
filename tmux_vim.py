@@ -849,6 +849,9 @@ def ensure_shell(
         actions.append("enter")
         return ShellReady(pane_id=pane_id, actions=tuple(actions))
     if program in VIM_PROGRAMS:
+        # 先 C-c 退出插入模式，再 `:q!`：vim 停在插入模式时，`:q!` 只是被插进缓冲区的一串字，
+        # 回车也只是换行，等它的还是 vim —— 最后只能白白重启整块终端（人那边的滚动历史没了）。
+        transport.send_special(pane_id, "C-c")
         transport.send_tokens(pane_id, (_text(":q!"), _ctrl("Enter")))
         actions.append("quit-vim")
     elif program in PAGER_PROGRAMS:
