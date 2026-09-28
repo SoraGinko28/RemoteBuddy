@@ -776,34 +776,17 @@ AgentCmd =
   | $cmd str
   | $appliable_diff str
 
-ApplyAgentCmd =
-    Oneof
-  | $apply_cmd ApplyCmd
-  | $apply_diff ApplyDiff
-
-# $cmd 在共享终端里跑一行。跑之前先确认前台是 shell —— 不是就想办法退出来，实在不行重开
-# 那个会话；跑完返回码和整屏缓存都要拿到，缓存是整条历史，不是可见的那几行。
-ApplyCmd =
-    Object
-  * $cmd str
-  * Assert[{ $cmd 是一条会自己结束的命令行：它不等人在终端里输入 }]
-
-# $appliable_diff 把一份 diff 落到工作区。动手之前拍一份快照；先确认它应用到快照上，
-# 应用不了就一个字都不敲。落盘在共享终端里由 harness 逐文件做，一步一次：两步之间人可能
-# 说话、critic 可能提问，要不要接着做必须问过 agent 才继续。每一轮结束都比一次"工作区现在
-# 是什么样"和"这份 diff 要求的是什么样"，只重做还对不上的那些文件，最多 $rounds 轮。
-ApplyDiff =
-    Object
-  * $appliable_diff str
-  * $rounds int
-  * Assert[{ $appliable_diff 应用到动手前那份快照上 }]
+# 两种命令对应的执行动作：看情况走 ApplyCmd 还是 ApplyDiff，回一件 AgentCmdResult。
+ApplyAgentCmd = AgentCmdResult <- AgentCmd <- {
+	看情况执行 ApplyCmd 和 ApplyDiff
+}
 
 AgentCmdResult =
     Oneof
   | $tmux_cmd_result TmuxCmdResult
   | $shell_cmd_result ShellCmdResult
 
-# 共享终端里的结果：返回码 + 整屏缓存
+# 共享终端里的结果：返回码 + 整屏缓存（整条历史，不是可见的那几行）
 TmuxCmdResult =
     Object
   * $retcode str
@@ -815,6 +798,49 @@ ShellCmdResult =
   * $retcode str
   * $stdout str
   * $stderr str
+
+ApplyCmd = $ret TmuxCmdResult <- $cmd str <- {
+	首先，确认 tmux 的屏幕是 bash 环境（比如悄悄地回车一下），如果不是，要退出来，实在不行重启 tmux 会话。
+	其次，执行 $cmd。截屏获取当前屏幕结果，放到 ret.output_on_screen，这里要用那种一下子把整个缓存截下来的方式。
+	最后，echo $?，看看结果，放到 ret.retcode 里。取数据简单地看两个 PS1 之间的数据就行。
+}
+
+ApplyDiff = $ret AgentCmdResult <- $appliable_diff str <- {
+	首先把当前项目所有的文件用 git worktree 做快照，方法如下：
+
+	```bash
+	cd ~/proj
+	branch="snapshot-$(date +%Y%m%d-%H%M%S)"
+	snap="/tmp/proj-$branch"
+	idx="/tmp/git-snapshot-index.$$"
+
+	# 用临时索引读取 HEAD
+	GIT_INDEX_FILE="$idx" git read-tree HEAD
+
+	# 把当前工作区所有文件加入临时索引，-f 包含被忽略文件
+	GIT_INDEX_FILE="$idx" git add -A -f .
+
+	# 写入 tree，并创建 commit 对象
+	tree=$(GIT_INDEX_FILE="$idx" git write-tree)
+	commit=$(git commit-tree "$tree" -p HEAD -m "snapshot $branch")
+
+	# 基于这个 commit 创建 worktree 和新分支
+	git worktree add -b "$branch" "$snap" "$commit"
+
+	rm -f "$idx"
+	```
+
+	然后试试 $appliable_diff 是否可应用（这一步可以不在 tmux 里执行）：ret.retcode 就是这个可应用的结果，
+	ret.stdout 和 ret.stderr 相应地填。
+
+	再新写一个 diff -> tmux vim 操作序列的脚本，由 harness 逐个执行这些 tmux vim 序列。注意，这个过程中
+	一定要允许打断，不要一气呵成执行完 —— 人类或者 critic 有时会直接提出疑问，harness 要能暂停这些活、
+	响应其他人的疑问；而且是否继续执行需要再询问 actor。
+
+	编辑完了之后，把代码同步到 worktree 那边，从 worktree 那边取这次编辑对文件系统造成的新 diff。
+
+	对比 $appliable_diff 和刚刚的新 diff，如果不一致，就让 harness 再改一轮。
+}
 ```
 
 ---
