@@ -964,6 +964,10 @@ class VimStepShapeTest(unittest.TestCase):
     def file_steps(self, text, path):
         return [step for step in self.steps_for(text) if step.path == path]
 
+    def file_steps_with(self, text, path, contents):
+        steps = tmux_vim.vim_steps_for_diff(text, contents)
+        return [step for step in steps if step.path == path]
+
     def values(self, step):
         return [str(token.get("value", "")) for token in step.keys]
 
@@ -979,6 +983,24 @@ class VimStepShapeTest(unittest.TestCase):
         self.assertEqual(["O", "A2", "C-c"], self.values(steps[2]))
         self.assertEqual(["4G", "1dd"], self.values(steps[3]))
         self.assertEqual(":wq", keys_of(steps[4])[:3])
+
+    def test_a_context_line_that_repeats_is_not_used_as_a_search_anchor(self):
+        """文件里到处都是 `}` 这种行时不能拿它去搜：`/^}$/` 会命中第一个 `}`，改动落到别处。
+
+        落盘时手上是有文件内容的，这时改成报"这个 hunk 实际落在第几行"——干跑就是按上下文
+        找到那一行的；没有文件内容可比时（只看 diff）维持原样，按上下文搜。
+        """
+        text = "--- a/a.py\n+++ b/a.py\n@@ -6,3 +6,3 @@\n }\n \n-old()\n+new()\n"
+        lines = ["}", "", "}", "", "}", "", "old()", ""]
+        steps = self.file_steps_with(text, "a.py", {"a.py": "\n".join(lines) + "\n"})
+        self.assertEqual([("line", 7, 0)], anchor_plan_of_steps([steps[1]]))
+        self.assertEqual([("search", "^}$", 2)], anchor_plan_of_steps([self.file_steps(text, "a.py")[1]]))
+
+    def test_a_context_line_that_appears_once_is_still_searched_for(self):
+        text = "--- a/a.py\n+++ b/a.py\n@@ -6,3 +6,3 @@\n only-one\n \n-old()\n+new()\n"
+        contents = {"a.py": "}\n\n}\nonly-one\n\nold()\n"}
+        steps = self.file_steps_with(text, "a.py", contents)
+        self.assertEqual([("search", "^only-one$", 2)], anchor_plan_of_steps([steps[1]]))
 
     def test_insert_two_lines_writes_them_one_line_per_step(self):
         text = self.two_file_diff(
@@ -1993,6 +2015,37 @@ class RealTmuxEdgeTest(unittest.TestCase):
         transport, _session, pane = self.open_session(work)
         kwargs.setdefault("ask", lambda question: "continue")
         return tmux_vim.tmux_apply_diff_by_vim(transport, None, pane, diff, **kwargs)
+
+    def test_a_repeated_context_line_does_not_pull_the_edit_elsewhere(self):
+        """hunk 开头那行是 `}`（文件里一堆）时，改动必须落在它该在的那一行。
+
+        真会里出过：`/^}$/` 从文件头搜到第一个 `}`，一整段新函数被写进了另一个函数里面，
+        后面三轮都没补回来。这一条就是那次事故的复现。
+        """
+        work = repo_workdir(self)
+        (work / "code.js").write_text(
+            "function one() {\n  return 1;\n}\n\n"
+            "function two() {\n  return 2;\n}\n\n"
+            "function three() {\n  return 3;\n}\n",
+            encoding="utf-8",
+        )
+        git("add", "-A", cwd=work)
+        git("commit", "-qm", "base", cwd=work)
+        diff = (
+            "--- a/code.js\n+++ b/code.js\n@@ -7,5 +7,6 @@\n }\n \n function three() {\n"
+            "-  return 3;\n+  return 33;\n+  // 改过\n }\n"
+        )
+        outcome = self.apply(work, diff)
+        self.assertEqual("0", outcome.result.retcode, outcome.got_diff[-2000:])
+        self.assertEqual([], outcome.mismatched_files)
+        # 一轮就该落对：落歪了再补，人看到的就是"改一下抖三抖"。
+        self.assertEqual(1, outcome.rounds, outcome.got_diff[-2000:])
+        self.assertEqual(
+            "function one() {\n  return 1;\n}\n\n"
+            "function two() {\n  return 2;\n}\n\n"
+            "function three() {\n  return 33;\n  // 改过\n}\n",
+            (work / "code.js").read_text(encoding="utf-8"),
+        )
 
     def test_a_drifted_line_number_is_landed_by_context_and_reported(self):
         """行号写偏但上下文对得上：照样落对，并且告诉它偏了多少。"""

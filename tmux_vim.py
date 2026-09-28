@@ -495,8 +495,15 @@ class _Segment:
     line_number_known: bool  # 光看行号站不站得住（hunk 头里给了行号就是站得住的）
 
 
-def vim_steps_for(patch: FilePatch) -> List[VimStep]:
-    """一个文件的补丁变成一串 vim 动作（同一文件多个 hunk 要从后往前改，行号才不会串）。"""
+def vim_steps_for(
+    patch: FilePatch, lines: Optional[Sequence[str]] = None
+) -> List[VimStep]:
+    """一个文件的补丁变成一串 vim 动作（同一文件多个 hunk 要从后往前改，行号才不会串）。
+
+    `lines` 是改之前这个文件的内容：有它就用来判"这一行的上下文能不能当搜索锚"、
+    以及"这个 hunk 实际落在第几行"（干跑怎么找的，落盘就怎么走）；没有就只按 diff 里
+    写的行号和上下文办。
+    """
     path = patch.path if patch.path != "/dev/null" else ""
     steps: List[VimStep] = []
     if patch.is_rename:
@@ -531,8 +538,9 @@ def vim_steps_for(patch: FilePatch) -> List[VimStep]:
         )
     )
     for hunk in sorted(patch.hunks, key=lambda one: one.old_start, reverse=True):
+        drift = _hunk_drift(hunk, lines)
         for segment in reversed(_hunk_segments(hunk)):
-            steps.extend(_steps_for_segment(segment, hunk, path))
+            steps.extend(_steps_for_segment(segment, hunk, path, lines, drift))
     steps.append(
         VimStep(
             keys=(_text(":wq"), _ctrl("Enter")),
@@ -544,16 +552,27 @@ def vim_steps_for(patch: FilePatch) -> List[VimStep]:
     return steps
 
 
-def vim_steps_for_patches(patches: Sequence[FilePatch]) -> List[VimStep]:
+def vim_steps_for_patches(
+    patches: Sequence[FilePatch], contents: Optional[Dict[str, Optional[str]]] = None
+) -> List[VimStep]:
+    """整份补丁变成一串 vim 动作；`contents` 是这些文件改之前的内容（路径 -> 文本，没有就是 None）。"""
     steps: List[VimStep] = []
     for patch in patches:
-        steps.extend(vim_steps_for(patch))
+        lines: Optional[List[str]] = None
+        if contents is not None:
+            body = contents.get(patch.path)
+            if body is None and patch.old_path in contents:
+                body = contents.get(patch.old_path)
+            lines = (body or "").splitlines()
+        steps.extend(vim_steps_for(patch, lines))
     return steps
 
 
-def vim_steps_for_diff(text: str) -> List[VimStep]:
+def vim_steps_for_diff(
+    text: str, contents: Optional[Dict[str, Optional[str]]] = None
+) -> List[VimStep]:
     """整份 diff 变成一串 vim 动作。"""
-    return vim_steps_for_patches(parse_unified_diff(text))
+    return vim_steps_for_patches(parse_unified_diff(text), contents)
 
 
 def _text(value: str) -> KeyToken:
@@ -623,12 +642,50 @@ def _hunk_segments(hunk: Hunk) -> List[_Segment]:
     return segments
 
 
-def _steps_for_segment(segment: _Segment, hunk: Hunk, path: str) -> List[VimStep]:
+def _hunk_drift(hunk: Hunk, lines: Optional[Sequence[str]]) -> int:
+    """这个 hunk 实际落在文件里的第几行（相对 diff 里写的行号偏了多少）。
+
+    干跑（`_apply_patches`）就是按上下文找的，落盘必须照它找到的那一行走 —— 模型手写的
+    行号常偏，照它写的行号落，改动就落到别处去了。
+    """
+    if lines is None:
+        return 0
+    start = hunk.old_start if hunk.old_count == 0 else hunk.old_start - 1
+    block = [raw[1:] for raw in hunk.lines if raw[:1] in {" ", "-"}]
+    located = _locate(lines, block, start)
+    if located is None:
+        return 0
+    return located - start
+
+
+def _may_search(hunk: Hunk, segment: _Segment, lines: Optional[Sequence[str]]) -> bool:
+    """这个 hunk 开头那一行能不能当搜索锚：得是非空的一整行，而且在文件里只出现一次。
+
+    只出现一次才敢搜 —— `/^}$/` 这种会命中文件里第一个 `}`，改动就落到了别的地方
+    （真会里真出过：一整个函数被写进了另一个函数里面）。
+    """
+    if not segment.line_number_known:
+        return False
+    head = _head_context(hunk)
+    if not head:
+        return False
+    if lines is None:
+        return True
+    return list(lines).count(head) == 1
+
+
+def _steps_for_segment(
+    segment: _Segment,
+    hunk: Hunk,
+    path: str,
+    lines: Optional[Sequence[str]] = None,
+    drift: int = 0,
+) -> List[VimStep]:
     steps: List[VimStep] = []
-    anchor_label = _anchor_label(segment, hunk)
+    anchor_label = _anchor_label(segment, hunk, lines, drift)
     steps.append(
         VimStep(
-            keys=tuple(_anchor_keys(segment, hunk)),
+            keys=tuple(_anchor_keys(segment, hunk, lines, drift)),
             path=path,
             label=f"{path}: 定位到{anchor_label}",
         )
@@ -711,24 +768,37 @@ def _insert_keys(
     return keys
 
 
-def _anchor_keys(segment: _Segment, hunk: Hunk) -> List[KeyToken]:
-    """定位：hunk 开头有上下文行就按整行搜索过去，没有就报行号。"""
-    head = _head_context(hunk)
-    if head and segment.line_number_known:
+def _anchor_keys(
+    segment: _Segment,
+    hunk: Hunk,
+    lines: Optional[Sequence[str]] = None,
+    drift: int = 0,
+) -> List[KeyToken]:
+    """定位：hunk 开头那一行在文件里只出现一次就搜过去，否则报它实际落在的那一行。
+
+    同一文件的 hunk 是从后往前改的，所以行号不会被后面的改动顶歪；这里报的行号是干跑按
+    上下文找出来的那一行（`_hunk_drift`），不是 diff 里写的那个。
+    """
+    if _may_search(hunk, segment, lines):
+        head = _head_context(hunk)
         moves = segment.anchor_line - hunk.old_start
         if moves >= 0:
             keys: List[KeyToken] = [_text("gg"), _text("/" + _search_pattern(head)), _ctrl("Enter")]
             if moves:
                 keys.append(_text(f"{moves}j"))
             return keys
-    return [_text(f"{max(segment.anchor_line, 1)}G")]
+    return [_text(f"{max(segment.anchor_line + drift, 1)}G")]
 
 
-def _anchor_label(segment: _Segment, hunk: Hunk) -> str:
-    head = _head_context(hunk)
-    if head and segment.line_number_known:
-        return f"上下文行 {head[:40]!r} 下面"
-    return f"第 {max(segment.anchor_line, 1)} 行"
+def _anchor_label(
+    segment: _Segment,
+    hunk: Hunk,
+    lines: Optional[Sequence[str]] = None,
+    drift: int = 0,
+) -> str:
+    if _may_search(hunk, segment, lines):
+        return f"上下文行 {_head_context(hunk)[:40]!r} 下面"
+    return f"第 {max(segment.anchor_line + drift, 1)} 行"
 
 
 def _head_context(hunk: Hunk) -> str:
@@ -1518,10 +1588,12 @@ def tmux_apply_diff_by_vim(
     paths = _ordered_paths(patches)
     outcome = ApplyOutcome(wanted_diff=diff, mismatched_files=[], notes=notes)
     pending = diff
+    # 定位要看得见文件当时长什么样：第一轮是快照里的内容，补的轮次是刚落完的现状。
+    current: Dict[str, Optional[str]] = dict(snapshot.contents)
     try:
         while True:
             outcome.rounds += 1
-            steps = vim_steps_for_diff(pending)
+            steps = vim_steps_for_diff(pending, current)
             executed = apply_vim_steps(
                 transport,
                 store,
