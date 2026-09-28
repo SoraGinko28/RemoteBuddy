@@ -1,3 +1,4 @@
+import re
 import shlex
 import subprocess
 import tempfile
@@ -216,7 +217,14 @@ class FakeTransport:
 
     def send_enter(self, pane_id):
         line = self.pending_input
-        parts = shlex.split(line)
+        # harness 把"读返回码的那句 echo"接在命令尾巴上（同一行）；actor 自己写的那句会被换掉。
+        folded = re.search(r";\s*echo\s+(remotebuddy-retcode-[A-Za-z0-9_-]*)\s+\$\?\s*$", line)
+        marker = folded.group(1) if folded else None
+        command_line = line[: folded.start()] if folded else line
+        if not marker and line.strip().startswith("echo remotebuddy-retcode-"):
+            marker = line.strip().split()[1]
+            command_line = ""
+        parts = shlex.split(command_line)
         if parts:
             executable = parts[0]
             command = "python" if executable == "python3" else executable
@@ -228,11 +236,9 @@ class FakeTransport:
                 self.command = "vim"
             elif command == "python":
                 self.command = "python3"
-            # harness 用一行带随机标记的 echo 读返回码：把那一行也演出来。
-            if executable == "echo" and len(parts) > 1 and parts[1].startswith("remotebuddy-retcode-"):
-                self.console += f"{parts[1]} {self.retcode}\n"
-            else:
-                self.console += line + "\n"
+            self.console += command_line + "\n"
+        if marker:
+            self.console += f"{marker} {self.retcode}\n"
         self.pending_input = ""
         self.screen_revision += 1
 

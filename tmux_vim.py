@@ -910,11 +910,18 @@ def run_command(
     pane_id = ready.pane_id
     if interrupt_check is not None and interrupt_check():
         raise Interrupted("还没开始跑命令就被打断了")
+    token = uuid.uuid4().hex[:12]
+    line = retcode_line(command, token)
+    typed = line or command
     if type_line is not None:
-        type_line(pane_id, command)
+        type_line(pane_id, typed)
     else:
-        transport.send_keys(pane_id, command)
-    retcode = _read_retcode(transport, pane_id, interrupt_check, timeout=timeout)
+        transport.send_keys(pane_id, typed)
+    if line:
+        retcode = _await_retcode(transport, pane_id, interrupt_check, token, timeout=timeout)
+    else:
+        # 合不了（尾巴是 `&`、续行、管道）：老样子，读返回码那句单独敲一行。
+        retcode = _read_retcode(transport, pane_id, interrupt_check, timeout=timeout)
     screen = transport.capture(pane_id)
     _record(transport, store, pane_id, change_kind="command")
     return TmuxCmdResult(retcode=retcode, output_on_screen=screen)
@@ -922,25 +929,55 @@ def run_command(
 
 RETCODE_MARKER = "remotebuddy-retcode-"
 
+# actor 也可能自己在命令尾巴上接一句 `echo remotebuddy-retcode-xxx $?`（它知道 harness 要读
+# 返回码）。那句话归 harness 写：这里把它剥掉、换成我们自己这一枪的标记，跟命令合成同一行
+# —— 一个回车就够，屏上也不会出现两条标记。它写没写、写成什么样都不影响。
+_RETCODE_TAIL = re.compile(
+    r"\s*(?:;|&&|\|\|)?\s*echo\s+(?:-n\s+)?[\"']?"
+    + re.escape(RETCODE_MARKER)
+    + r"[A-Za-z0-9_-]*[\"']?\s+\$?\?[\"']?\s*$"
+)
+
+
+def strip_retcode_tail(command: str) -> str:
+    """去掉 actor 自己接的返回码 echo 尾巴；它没接就原样返回。"""
+    text = command.rstrip()
+    stripped = _RETCODE_TAIL.sub("", text).rstrip()
+    return stripped or text
+
 
 def _retcode_command(token: str) -> str:
     return f"echo {RETCODE_MARKER}{token} $?"
 
 
-def _read_retcode(
+def retcode_line(command: str, token: str) -> str:
+    """把一条命令和"读返回码的那句 echo"合成一行；合不了（尾巴是后台/续行/管道）返回空串。"""
+    body = strip_retcode_tail(command)
+    if not body.strip():
+        return _retcode_command(token)
+    if body.endswith(";"):
+        # 本来就以 `;` 收尾，再补一个分号是语法错误：接一个空格就够。
+        return f"{body} {_retcode_command(token)}"
+    if body[-1] in "&|\\":
+        return ""
+    return f"{body}; {_retcode_command(token)}"
+
+
+def _await_retcode(
     transport: Any,
     pane_id: str,
     interrupt_check: Optional[Callable[[], bool]],
+    token: str,
     *,
     timeout: float = COMMAND_TIMEOUT_SECONDS,
 ) -> str:
-    """再敲一行带随机标记的 `echo`，从整屏缓存里把返回码读出来。
+    """等那一句带标记的 `echo` 落到屏上，从整屏缓存里把返回码读出来。
 
     标记必须每次都不一样：命令刚敲下去、壳还没轮到执行它的那一瞬间，整屏缓存里只有上一次
-    那个标记，拿它去解析就会把上一条命令的返回码当成本次的，等于没等命令跑完。
+    那个标记，拿它去解析就会把上一条命令的返回码当成本次的，等于没等命令跑完。合成一行之后
+    还有一层：刚敲下去的那一行本身就带着这次的新标记，但它后面跟的是字面的 `$?`、没有数字，
+    所以读不到值（`_retcode_after_marker` 会返回 None），得等 echo 真的跑出来。
     """
-    token = uuid.uuid4().hex[:12]
-    transport.send_keys(pane_id, _retcode_command(token))
     needle = f"{RETCODE_MARKER}{token}"
     deadline = time.monotonic() + timeout
     while True:
@@ -953,6 +990,19 @@ def _read_retcode(
         if time.monotonic() >= deadline:
             raise CommandTimeout(f"命令跑了超过 {timeout:.0f} 秒还没返回")
         time.sleep(POLL_SECONDS)
+
+
+def _read_retcode(
+    transport: Any,
+    pane_id: str,
+    interrupt_check: Optional[Callable[[], bool]],
+    *,
+    timeout: float = COMMAND_TIMEOUT_SECONDS,
+) -> str:
+    """单独敲一行带随机标记的 `echo` 再等它（合成不了一行时走这条）。"""
+    token = uuid.uuid4().hex[:12]
+    transport.send_keys(pane_id, _retcode_command(token))
+    return _await_retcode(transport, pane_id, interrupt_check, token, timeout=timeout)
 
 
 def _retcode_after_marker(screen: str, needle: str) -> Optional[str]:

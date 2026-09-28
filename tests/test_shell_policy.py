@@ -218,8 +218,11 @@ class ShellPolicyRunnerTest(unittest.TestCase):
         self.assertEqual(1, len(rejected))
         self.assertIn("deletion-class command is not allowed: rm", rejected[0]["content"])
         typed = [text for _pane, text in transport.literal_sends]
-        self.assertIn("git status", typed)
-        self.assertNotIn("rm -rf build", typed)
+        # 命令和"读返回码的那句 echo"合成一行敲进去，所以这里按开头比。
+        self.assertTrue(
+            any(text.startswith("git status; echo remotebuddy-retcode-") for text in typed), typed
+        )
+        self.assertFalse(any("rm -rf build" in text for text in typed), typed)
 
     def test_a_leftover_foreground_program_is_recovered_before_the_next_command(self):
         """前台被别的程序占着（人留下的 `top`）：harness 先把终端收回来，再跑自己的命令。"""

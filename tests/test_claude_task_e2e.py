@@ -269,8 +269,9 @@ class ClaudeTaskEndToEndTest(unittest.TestCase):
         self.assertEqual("screen", final["data"]["references"][0]["kind"])
         # 两条命令都由 harness 在共享终端里敲进去：动作本身不再带按键。
         typed = [text for _pane, text in self.transport.literal_sends]
-        self.assertIn("mkdir -p build", typed)
-        self.assertIn("touch checked.marker", typed)
+        # 命令和"读返回码的那句 echo"是同一行，所以按开头比。
+        self.assertTrue(any(text.startswith("mkdir -p build; echo ") for text in typed), typed)
+        self.assertTrue(any(text.startswith("touch checked.marker; echo ") for text in typed), typed)
         self.assertEqual([], self.transport.tokens)
         statuses = [
             event["data"].get("status")

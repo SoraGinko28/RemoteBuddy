@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -375,6 +376,8 @@ class FakePane:
         self.tokens: List[List[Dict[str, str]]] = []
         self.literals: List[str] = []
         self.commands: List[str] = []
+        # 敲进去的整行（`send_keys` 那一下），用来查"这一行到底长什么样"。
+        self.sent_lines: List[str] = []
         self.killed = 0
         self.created = 0
         self.captures = 0
@@ -453,6 +456,7 @@ class FakePane:
             self._feed_vim("\n")
 
     def send_keys(self, pane_id: str, text: str) -> None:
+        self.sent_lines.append(text)
         self.send_literal(pane_id, text)
         self.send_enter(pane_id)
 
@@ -501,24 +505,41 @@ class FakePane:
         return self.pane_id
 
     # --- 内部 ---------------------------------------------------------
+    def _folded(self, line: str):
+        """把 harness 接在尾巴上的返回码 echo 切下来：(命令行, 标记 token 或 None)。"""
+        marker = re.escape(tmux_vim.RETCODE_MARKER)
+        match = None
+        for found in re.finditer(rf";\s*echo\s+{marker}([A-Za-z0-9_-]*)\s+\$\?", line):
+            match = found
+        if match is not None:
+            return line[: match.start()], match.group(1)
+        pure = re.fullmatch(rf"echo\s+{marker}([A-Za-z0-9_-]*)\s+\$\?", line.strip())
+        if pure is not None:
+            return "", pure.group(1)
+        return line, None
+
     def _run_line(self, line: str) -> None:
-        """壳里执行一行：命令本身已经在打字时回显过了，这里只补输出和返回码。"""
+        """壳里执行一行：命令本身已经在打字时回显过了，这里只补输出和返回码。
+
+        harness 把"读返回码的那句 echo"接在命令尾巴上（同一行），actor 自己写的会被换掉，
+        所以先把它切下来：命令照旧按脚本回答，那句话按返回码演一遍；合不成一行时
+        （尾巴是 `&`、续行、管道）它还是单独一行。
+        """
         if not line.strip():
             return
-        self.commands.append(line)
-        if line.startswith(f"echo {tmux_vim.RETCODE_MARKER}"):
-            if self.answer_marker:
-                token = line.split(tmux_vim.RETCODE_MARKER, 1)[1].split()[0]
-                self.scrollback += f"{tmux_vim.RETCODE_MARKER}{token} {self.retcode}\n"
-            return
-        if line.startswith("vim ") or line.startswith("vim\t"):
-            if self.vim_starts:
-                self.command = "vim"
-            return
-        output, code = self.script.get(line, ("", self.retcode))
-        self.retcode = code
-        if output:
-            self.scrollback += output + "\n"
+        command, token = self._folded(line)
+        if command.strip():
+            self.commands.append(command)
+            if command.startswith("vim ") or command.startswith("vim\t"):
+                if self.vim_starts:
+                    self.command = "vim"
+            else:
+                output, code = self.script.get(command, ("", self.retcode))
+                self.retcode = code
+                if output:
+                    self.scrollback += output + "\n"
+        if token is not None and self.answer_marker:
+            self.scrollback += f"{tmux_vim.RETCODE_MARKER}{token} {self.retcode}\n"
 
     def _feed_vim(self, text: str) -> None:
         """记账用的假 vim：只看它有没有收到"写盘退出"，据此把前台还给 shell。
@@ -1296,12 +1317,45 @@ class RunCommandTest(unittest.TestCase):
         for path in case.paths():
             self.assertIn(path, result.output_on_screen)
 
-    def test_the_command_is_typed_as_one_line(self):
+    def test_the_return_code_echo_rides_on_the_same_line(self):
+        """命令和"读返回码的那句 echo"是同一行：一个回车，屏上不会出现两条标记。"""
         pane = self.pane()
         pane.answer("git status --porcelain", " M a.py\n M b.py\n")
-        tmux_vim.run_command(pane, None, pane.pane_id, "git status --porcelain")
-        self.assertTrue(pane.commands[0] == "git status --porcelain")
-        self.assertTrue(pane.commands[1].startswith(f"echo {tmux_vim.RETCODE_MARKER}"), pane.commands)
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "git status --porcelain")
+        self.assertEqual(["git status --porcelain"], pane.commands)
+        self.assertEqual("0", result.retcode)
+        typed = [step for step in pane.sent_lines if tmux_vim.RETCODE_MARKER in step]
+        self.assertEqual(1, len(typed), pane.sent_lines)
+        self.assertTrue(typed[0].startswith("git status --porcelain; echo "), typed)
+
+    def test_a_return_code_echo_the_actor_wrote_itself_is_replaced(self):
+        """actor 自己接的那句 `echo remotebuddy-retcode-xxx $?` 是换掉，不是再接一句。"""
+        pane = self.pane()
+        pane.answer(".venv/bin/python check_rename_ui.py", "OK\n")
+        result = tmux_vim.run_command(
+            pane,
+            None,
+            pane.pane_id,
+            ".venv/bin/python check_rename_ui.py; echo remotebuddy-retcode-ui $?",
+        )
+        self.assertEqual(["0"], [result.retcode])
+        typed = [step for step in pane.sent_lines if tmux_vim.RETCODE_MARKER in step]
+        self.assertEqual(1, len(typed), pane.sent_lines)
+        self.assertEqual(1, typed[0].count(tmux_vim.RETCODE_MARKER), typed[0])
+        self.assertNotIn("remotebuddy-retcode-ui", typed[0])
+        self.assertTrue(typed[0].startswith(".venv/bin/python check_rename_ui.py; echo "), typed)
+
+    def test_a_trailing_ampersand_still_gets_its_own_echo_line(self):
+        """尾巴是后台/续行时合不成一行：命令照敲，返回码那句另起一行（老路）。"""
+        pane = self.pane()
+        pane.answer("sleep 1 &", "")
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "sleep 1 &")
+        self.assertEqual("0", result.retcode)
+        self.assertEqual("sleep 1 &", pane.sent_lines[0])
+        self.assertTrue(
+            pane.sent_lines[1].startswith(f"echo {tmux_vim.RETCODE_MARKER}"), pane.sent_lines
+        )
+        self.assertEqual("sleep 1 &", pane.commands[0])
 
     def test_the_shell_is_confirmed_first(self):
         pane = self.pane()
