@@ -1801,12 +1801,26 @@ class InteractiveRunner:
             with self.lock:
                 self.store.refresh()
                 self._last_action_success = False
+                if isinstance(exc, (tmux_vim.DiffError, tmux_vim.DiffNotAppliable)):
+                    # ADT：ApplyDiff 回一件 AgentCmdResult —— 干跑就过不去时它是 ShellCmdResult
+                    # （可应用性的返回码和它说的话），不是一句抛出来的字符串。写进事件里，
+                    # 结构化后端也能在下一屏观察里读到它。
+                    self._last_action_result = {
+                        "kind": "shell_cmd",
+                        "retcode": "1",
+                        "stdout": "",
+                        "stderr": str(exc),
+                    }
                 self.store.append_event(
                     "action",
                     "harness",
                     "agent_acting",
                     content=str(exc),
-                    data={"action_id": action_id, "status": "rejected"},
+                    data={
+                        "action_id": action_id,
+                        "status": "rejected",
+                        "result": self._last_action_result,
+                    },
                 )
                 if isinstance(exc, TmuxError):
                     self._fail_terminal(str(exc))

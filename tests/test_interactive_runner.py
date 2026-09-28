@@ -517,6 +517,17 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(1, len(fresh))
         self.assertIn("干跑", fresh[0]["content"])
         self.assertEqual("completion_proposed", loaded.meeting.phase)
+        # 干跑过不去这件结果按 ADT 是 ShellCmdResult（可应用性的返回码 + 它说的话）
+        applied = [
+            event for event in loaded.events()
+            if event["kind"] == "action"
+            and isinstance((event.get("data") or {}).get("result"), dict)
+            and event["data"]["result"].get("kind") == "shell_cmd"
+        ]
+        self.assertTrue(applied)
+        self.assertEqual("1", applied[0]["data"]["result"]["retcode"])
+        self.assertIn("notes.md", applied[0]["data"]["result"]["stderr"])
+        self.assertIn("这个文件不存在", applied[0]["data"]["result"]["stderr"])
 
     def test_a_tool_the_harness_does_not_offer_does_not_kill_the_cycle(self):
         """模型要联网搜索这类这里没有的东西：记一笔、让它换一条，不许把整轮判死。"""
