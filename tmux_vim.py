@@ -341,7 +341,12 @@ def parse_unified_diff(text: str) -> List[FilePatch]:
         if not line.strip():
             index += 1
             continue
-        raise DiffError(f"这一段不属于任何文件: {line!r}")
+        raise DiffError(
+            f"这一段不属于任何文件: {line!r} —— 每个文件的改动前面都要有 `--- a/<路径>` 和 "
+            "`+++ b/<路径>` 两行；一个文件写完、换下一个文件时要重新写这两行。"
+            "hunk 头的行数（`@@ -旧起点,旧行数 +新起点,新行数 @@`）写错不要紧，"
+            "缺了文件头就读不出这些行是哪个文件的。"
+        )
     if rename_from and rename_to:
         patches.append(_rename_patch(rename_from, rename_to))
     elif rename_from or rename_to:
@@ -386,30 +391,25 @@ def _parse_hunk(lines: Sequence[str], index: int) -> Tuple[Hunk, int]:
             body.append(line)
             cursor += 1
             continue
-        if old_seen == old_count and new_seen == new_count:
-            break
-        # 下一个文件的头（或者 `diff --git`）：这一段 hunk 到头了，行数按正文重数。
-        if line.startswith(("--- ", "+++ ", "diff --git ", "diff --cc ")):
+        # 到头只有这几种：下一个 hunk、下一个文件的头、或者空行。**不按 hunk 头里写的行数停**：
+        # 手写的 diff 常把行数写少，按它停就会把后面的行甩出去，读成"这一段不属于任何文件"
+        # （真会里就这么连撞三次、把一场会撞死）。正文到下一个头为止，行数最后统一重数。
+        if line.startswith(("@@", "--- ", "+++ ", "diff --git ", "diff --cc ")):
             break
         if not line:
-            # 空白上下文行被写成了彻底的空行
+            # 空白上下文行被写成了彻底的空行；数已经够了就当这一段到头了（后面多半是新文件或收尾的话）。
             if old_seen < old_count and new_seen < new_count:
                 body.append(" ")
                 old_seen += 1
                 new_seen += 1
                 cursor += 1
                 continue
-            raise DiffError(f"hunk 里出现了空行: {header!r}")
+            break
         prefix = line[0]
         text = line[1:]
         if prefix not in " +-":
-            # 上下文行漏了开头那个空格：hunk 头还等着旧行+新行各一条，那就按上下文算
-            if old_seen < old_count and new_seen < new_count:
-                prefix, text = " ", line
-            else:
-                raise DiffError(
-                    f"hunk 里这一行既不是上下文（要以一个空格开头）也不是增删（+ / -）: {line!r}"
-                )
+            # 上下文行漏了开头那个空格（hunk 头行数已经数错的情况也一样）：按上下文算。
+            prefix, text = " ", line
         if prefix == " ":
             old_seen += 1
             new_seen += 1

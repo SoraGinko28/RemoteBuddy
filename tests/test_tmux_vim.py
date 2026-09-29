@@ -830,6 +830,34 @@ class ParseEdgeTest(unittest.TestCase):
         self.assertEqual(["a.py", "b.py"], [patch.path for patch in patches])
         self.assertTrue(patches[1].is_new)
 
+    def test_a_hunk_that_undercounts_its_lines_keeps_the_extra_ones(self):
+        """hunk 头的行数写少了：多出来的行还是这个 hunk 的，不甩出去。
+
+        真会里出过：模型把两处改动写成一个 hunk 的长度、行数又写少，后面几行就成了
+        "这一段不属于任何文件"，连撞三次把一场会撞死（`20260929-103923-cc44ce`）。
+        """
+        text = (
+            "--- a/frontend/workspace.html\n+++ b/frontend/workspace.html\n"
+            "@@ -293,2 +293,3 @@\n <div>\n+  <dialog id=\"delete-dialog\"></dialog>\n </div>\n <p>more</p>\n"
+            "--- a/frontend/workspace.js\n+++ b/frontend/workspace.js\n"
+            "@@ -3345,2 +3349,3 @@\n async function deleteMeeting(meetingId) {\n"
+            "+  state.deleteMeetingId = \"\";\n }\n+  hideMeetingMenu();\n"
+        )
+        patches = tmux_vim.parse_unified_diff(text)
+        self.assertEqual(["frontend/workspace.html", "frontend/workspace.js"],
+                         [patch.path for patch in patches])
+        # 行数按正文重数：多出来的那几行还在这一段里。
+        self.assertEqual((3, 4), (patches[0].hunks[0].old_count, patches[0].hunks[0].new_count))
+        self.assertEqual(4, len(patches[0].hunks[0].lines))
+        self.assertEqual((2, 4), (patches[1].hunks[0].old_count, patches[1].hunks[0].new_count))
+        self.assertIn("+  hideMeetingMenu();", patches[1].hunks[0].lines)
+
+    def test_orphaned_lines_are_refused_with_the_file_header_hint(self):
+        """真的没有文件头时：拒绝理由要说清"每个文件都要有自己的两行头"。"""
+        text = "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-x\n+y\n\n这一行没有文件头\n"
+        with self.assertRaisesRegex(tmux_vim.DiffError, "每个文件的改动前面都要有"):
+            tmux_vim.parse_unified_diff(text)
+
     def test_no_newline_markers_are_kept(self):
         text = (
             "--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n-old\n\\ No newline at end of file\n"
@@ -898,11 +926,17 @@ class ParseEdgeTest(unittest.TestCase):
                 "把这两行改掉就行\n--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+b\n"
             )
 
-    def test_body_longer_than_the_header_is_an_error(self):
-        with self.assertRaises(DiffError):
-            tmux_vim.parse_unified_diff(
-                "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+A\n+A2\n"
-            )
+    def test_body_longer_than_the_header_is_kept_and_recounted(self):
+        """正文比 hunk 头写的长：多出来的行算这一段，行数按正文重数。
+
+        手写的 diff 常把行数写少；按它停就会把后面的行甩出去、读成"不属于任何文件"。
+        """
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+A\n+A2\n"
+        )
+        hunk = patches[0].hunks[0]
+        self.assertEqual(("-a", "+A", "+A2"), hunk.lines)
+        self.assertEqual((1, 2), (hunk.old_count, hunk.new_count))
 
     def test_path_escaping_the_workspace_is_an_error(self):
         with self.assertRaises(DiffError):
