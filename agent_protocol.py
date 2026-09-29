@@ -179,27 +179,13 @@ class AgentActionError(AgentProtocolError):
 
 
 MESSAGE_TYPE_ORDER = ("none", "ack", "progress", "question", "final")
-# 每一次请求都属于两步之一。调查步：只许用自己的读工具，共享终端整个关掉，结论用文字说。
-# 行动步：只许改东西，文件读取已经在上一次请求的调查步里做完了。这两段话是 prompt 里
-# 唯一告诉模型"现在是哪一步"的地方，harness 那边另有硬拦（调查步的动作工具一律退回）。
-INVESTIGATE_STEP_TEXT = (
-    "Investigation step. The shared terminal is closed for this turn: do not call "
-    "`remotebuddy_action`, and do not run anything there -- a call is refused. If you need to "
-    "know something that is in a file, read it with your own tools (Claude Code has "
-    "Read/Glob/Grep, Trae has its own read tools and a read-only shell). Then answer with what "
-    "you found, in one or two lines, and only when the action step needs it: a path, a value, "
-    "the exact lines you are about to change. You are not reporting to the human here and you "
-    "are not narrating your plan. If you found nothing worth carrying into the next step, "
-    "answer with nothing at all -- an empty answer is normal, and the action step starts right "
-    "after it. Anything the human is waiting to hear -- the answer to their question, the file "
-    "contents they asked to see -- is said in the action step, not here."
-)
 # 行动步的正文分两种：一种给"它自己有读工具、并且共享终端拒收只读命令"的 backend
 # （Claude Code / ACP），另一种给"它手里没有读工具"的 backend（结构化 app-server、
 # Responses）——后者共享终端就是它唯一能看东西的地方，再跟它说"这里不许读"它就只能去问人。
 ACT_STEP_BODY_REFUSED = (
-    "Action step. Reading is over: whatever you needed was read in the investigation step that "
-    "just ended, so read nothing here. Two moves change things, and neither of them is typing: a "
+    "Action step. You have your own read tools (Claude Code has Read/Glob/Grep, Trae has its own "
+    "read tools): read with them, not in the shared terminal -- a plain reader sent as a `command` "
+    "is refused. Two moves change things, and neither of them is typing: a "
     "`command` is one bash line the harness runs for you in the shared terminal, and a `diff` is a "
     "unified diff the harness lands with vim, file by file, in that same pane. Send the command "
     "itself: the harness appends the return-code echo for you (and replaces one you wrote yourself, "
@@ -250,11 +236,6 @@ def act_step_text(action_submission: str = "tool", readers_refused: bool = True)
     return ACT_STEP_OPEN_JSON_TEXT if by_json else ACT_STEP_OPEN_TEXT
 
 
-INVESTIGATION_CLOSED_MESSAGE = (
-    "The shared terminal is closed in the investigation step, so the action tool is not "
-    "available here. Read what you need with your own tools and answer in plain text; the action "
-    "step asks you to act right after this answer."
-)
 
 
 def _name_list(names: Sequence[str]) -> str:

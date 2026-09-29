@@ -25,8 +25,7 @@ from meeting_v2 import MeetingStore, utc_now
 from agent_protocol import AgentActionError
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
-from agent_protocol import (ACT_STEP_JSON_TEXT, ACT_STEP_OPEN_JSON_TEXT, ACT_STEP_TEXT,
-                            INVESTIGATE_STEP_TEXT)
+from agent_protocol import ACT_STEP_JSON_TEXT, ACT_STEP_OPEN_JSON_TEXT, ACT_STEP_TEXT
 
 
 def make_action(action_type="chat", **changes):
@@ -1130,11 +1129,15 @@ class InteractiveRunnerTest(unittest.TestCase):
 
         self.assertIn("sed", typed)
 
-    def test_every_action_is_preceded_by_an_investigation_step(self):
+    def test_every_request_is_an_action_step(self):
+        """不再拆调查步：每一次请求都是行动步，不再有"读文件的另一趟"。
+
+        共享终端现在就是一个 shell（`cmd-…` 标记 + `retcode-…` 那一行），读和写都在这一步里做；
+        原来那套"调查步 → 行动步"每轮白扔一枪，模型还老在调查步里调动作工具、被退回。
+        """
         client = InvestigatingClient(
             [
-                make_action(),
-                make_action("command", command="pwd"),
+                make_action("command", command="git status"),
                 make_action("done", message_type="final", content="Done."),
             ]
         )
@@ -1143,69 +1146,14 @@ class InteractiveRunnerTest(unittest.TestCase):
         ).start()
 
         loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual(3, len(client.investigations))
-        self.assertIn(INVESTIGATE_STEP_TEXT, client.investigations[0])
-        # 行动那一次请求：明说这一步不读，而且带着上一次请求调查的结论。
-        self.assertIn(ACT_STEP_TEXT, client.calls[0][2])
-        self.assertIn("我看了 notes.md", client.calls[1][2])
-        started = [
+        self.assertEqual([], client.investigations, "不该再走调查步")
+        steps = [
             event["data"].get("step")
             for event in loaded.events()
             if event["kind"] == "action" and event["data"].get("status") == "request_started"
         ]
-        self.assertEqual(["investigate", "act", "investigate", "act", "investigate", "act"], started)
-        findings = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "state" and event["data"].get("step") == "investigate"
-        ]
-        self.assertEqual(3, len(findings))
-        self.assertEqual("我看了 notes.md：里面还是空的。", findings[0]["content"])
-
-    def test_a_silent_investigation_leaves_no_record(self):
-        """没什么可查的它会静默：那一刻不留空记录，行动步照样接着走。"""
-        client = InvestigatingClient(
-            [make_action("done", message_type="final", content="Done.")], findings=""
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        ).start()
-
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual(1, len(client.investigations))
-        findings = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "state" and event["data"].get("step") == "investigate"
-        ]
-        self.assertEqual([], findings)
-        self.assertEqual(
-            ["investigate", "act"],
-            [
-                event["data"].get("step")
-                for event in loaded.events()
-                if event["kind"] == "action" and event["data"].get("status") == "request_started"
-            ],
-        )
-
-    def test_an_action_written_as_text_is_not_a_finding(self):
-        """它在调查步把动作写成文字：那不是结论，别记下来当"我做过了"。"""
-        client = InvestigatingClient(
-            [make_action("command", command="git status")],
-            findings='{"action":"command","command":"git status","path":""}',
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        ).start()
-
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        findings = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "state" and event["data"].get("step") == "investigate"
-        ]
-        self.assertEqual([], findings)
-        self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
+        self.assertTrue(steps, loaded.events())
+        self.assertEqual({"act"}, set(steps), steps)
 
     def test_the_next_cycle_resumes_the_session_and_does_not_replay_history(self):
         """第二轮带上上一轮的 agent_session_id，而且不再把整段历史重发一遍。"""
@@ -1258,44 +1206,6 @@ class InteractiveRunnerTest(unittest.TestCase):
         observation = client.calls[0][2]
         self.assertIn("`remotebuddy_action` tool", observation)
         self.assertNotIn("the response schema asks for", observation)
-
-    def test_a_failed_investigation_does_not_kill_the_cycle(self):
-        """调查步超时/断掉：记一笔就进行动步，别把整轮弄成 api_error。"""
-        client = StuckInvestigationClient([make_action("done", message_type="final", content="Done.")])
-        runner = InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        )
-        runner.start()
-
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual("completion_proposed", loaded.meeting.phase)
-        failed = [
-            event for event in loaded.events()
-            if event["kind"] == "state" and event["data"].get("status") == "failed"
-            and event["data"].get("step") == "investigate"
-        ]
-        self.assertEqual(1, len(failed))
-        self.assertIn("直接进行动步", failed[0]["content"])
-        self.assertTrue(self.transport.commands or client.calls)
-
-    def test_the_investigation_step_refuses_every_action(self):
-        runner = InteractiveRunner(
-            self.store, self.transport, InvestigatingClient([]),
-            action_settle_seconds=0, typing_interval_seconds=0,
-        )
-        answer = runner._investigation_refusal(make_action("command", command="pwd"), {})
-
-        self.assertFalse(answer["success"])
-        # pause 必须是 False：True 会让 Claude Code 把这次退回当成"这一次请求的动作"。
-        self.assertFalse(answer["pause"])
-        self.assertIn("closed in the investigation step", answer["content"])
-        rejected = [
-            event
-            for event in self.store.events()
-            if event["kind"] == "action" and event["data"].get("reason") == "investigation_step"
-        ]
-        self.assertEqual(1, len(rejected))
-        self.assertEqual(0, self.store.meeting.cycle_action_count)
 
     def test_a_backend_without_read_tools_has_no_investigation_step(self):
         """没有自己读工具的 backend：终端就是它唯一的读路，两步拆不开，每一次请求都是行动步。"""

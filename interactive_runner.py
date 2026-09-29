@@ -15,8 +15,6 @@ from agent_protocol import (
     ACTION_TYPES,
     AgentRefused,
     act_step_text,
-    INVESTIGATE_STEP_TEXT,
-    INVESTIGATION_CLOSED_MESSAGE,
     AgentAction,
     AgentActionError,
     AgentBackend,
@@ -87,7 +85,6 @@ SHELL_COMMANDS = {"bash", "zsh", "sh"}
 # 它们唯一那条路，所以不挡。
 BACKENDS_WITH_OWN_READ_TOOLS = {"claude-code", "trae-acp"}
 # 调查步的时间下限：它可能真的在翻一个很大的文件，一次请求的默认预算不够。
-INVESTIGATION_TIMEOUT_FLOOR = 300.0
 # 一轮里最多交给模型几张图：够用就行，免得一次把整场会的图都塞进去。
 MAX_IMAGES_PER_TURN = 4
 # 太大的图不随请求走（观察里仍然写着它在哪），免得一次请求大到发不出去。
@@ -158,7 +155,6 @@ class InteractiveRunner:
         self._resumed_session_id = ""
         self._resume_retried = False
         # 这一次请求是调查还是行动（见 _agent_loop）。_agent_loop 开头会重置它。
-        self._step = "investigate"
         # 页面上那两个按钮留下的请求，在下一个请求边界处理（见 _apply_backend_requests）：
         # 换 Skill 文本不动进程，或者把进程杀掉重开。
         self._skill_reload_requested = False
@@ -559,7 +555,6 @@ class InteractiveRunner:
             context = self._initial_observation(resuming=bool(resume_session_id))
             images = self._images_of(self.store.events_after(0))
             # 新进程的第一次请求就是上面的初始上下文：那一次请求是调查步。
-            self._step = "investigate"
             self.store.update(phase="agent_restart", pending_action_id=None)
             self.store.append_event(
                 "state",
@@ -600,7 +595,6 @@ class InteractiveRunner:
     def _agent_loop(self) -> None:
         # 每一次请求都属于两步之一：调查（只用自己的读工具，共享终端关着）和行动（只改东西）。
         # 一次请求之后必然回到调查，所以写一个文件会是：调查→vim→调查→打字→调查→:wq→…
-        self._step = "investigate"
         while True:
             if not self._apply_backend_requests():
                 return
@@ -639,11 +633,10 @@ class InteractiveRunner:
                 allowed_types, allowed_messages, budget_final = self._phase_constraints()
                 observation = self._observation(unread, budget_final)
                 images = self._images_of(unread)
-                step = self._step
-                if step == "investigate" and not self._can_investigate():
-                    # 没有自己读工具的 backend 拆不开两步（终端是它唯一的读路）。
-                    step = "act"
-                self._step = "act" if step == "investigate" else "investigate"
+                # 只有一步：共享终端现在就是一个 shell（命令前面有 `cmd-…` 标记、返回码由
+                # `retcode-…` 那一行读回来），读文件和改东西都能在这一步里做，不再拆
+                # "调查步 → 行动步"。
+                step = "act"
                 self._include_agent_chat_once = False
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
                 session_id = self.store.meeting.agent_session_id or self.store.meeting.conversation_id
@@ -677,58 +670,6 @@ class InteractiveRunner:
                         self.store.refresh()
                         self._cycle_timeout()
                     return
-                if step == "investigate":
-                    try:
-                        findings = self.client.investigate(
-                            session_id,
-                            INVESTIGATE_STEP_TEXT + "\n\n" + observation,
-                            model=self.store.meeting.model,
-                            # 调查步是一整趟"读文件"：比一次普通往返久，给它一个下限。
-                            request_timeout_seconds=min(
-                                max(configured_timeout, INVESTIGATION_TIMEOUT_FLOOR),
-                                max(0.1, remaining_seconds - self._request_overhead_seconds()),
-                            ),
-                            action_handler=self._investigation_refusal,
-                        )
-                    except AgentInterrupted:
-                        raise
-                    except AgentBackendError as exc:
-                        # 调查是可选的：它超时或断掉，不该把整轮判死（`api_error` 就再也
-                        # 没人干活了）。记一笔，把它掐掉，直接进行动步——观察里本来就有
-                        # 人说的话和终端那一屏，够它动手了。
-                        with self.lock:
-                            self.store.refresh()
-                            self.store.append_event(
-                                "state",
-                                "harness",
-                                self.store.meeting.phase,
-                                content=f"调查步没跑完（{exc}），直接进行动步。",
-                                data={
-                                    "step": "investigate",
-                                    "status": "failed",
-                                    "action_id": request_id,
-                                },
-                            )
-                            self.store.update(pending_action_id=None)
-                        continue
-                    with self.lock:
-                        self.store.refresh()
-                        self._check_stop()
-                        if self.store.meeting.control_owner != self.agent_name:
-                            return
-                        # 没可查的它就静默：那时不留空记录，也不给它补一句。
-                        note = str(findings or "").strip()
-                        if note and not self._stray_action_text(note):
-                            # 这一段是下一步唯一拿到的东西：写进 journal，行动步的观察里带着它。
-                            self.store.append_event(
-                                "state",
-                                self.agent_name,
-                                self.store.meeting.phase,
-                                content=note,
-                                data={"step": "investigate", "action_id": request_id},
-                            )
-                        self.store.update(pending_action_id=None)
-                    continue
                 response = self._next_backend_action(
                     session_id,
                     instructions,
@@ -1247,41 +1188,8 @@ class InteractiveRunner:
         return act_step_text(getattr(self.client, "action_submission", "tool"),
                              self._readers_refused())
 
-    def _can_investigate(self) -> bool:
-        """这一次请求能不能拆出调查步：backend 得有自己的读工具，而且它实现了这一步。"""
-        if not callable(getattr(self.client, "investigate", None)):
-            return False
-        name = str(getattr(self.client, "backend_name", "") or self.store.meeting.agent_backend)
-        return name in BACKENDS_WITH_OWN_READ_TOOLS
-
-    @staticmethod
-    def _stray_action_text(text: str) -> bool:
-        """它把动作写成了文字：那不是调查结论，是走错门的动作，别当结论记下来。
-
-        记下来下一步的观察里就躺着一个像"我已经做过这个动作"的 JSON——它可能真的以为做过了。
-        """
-        if not (text.startswith("{") and text.endswith("}")):
-            return False
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            return False
-        if not isinstance(payload, dict):
-            return False
-        # 两种写法都见过：`{"action": {...}}`（把动作包在里面）和
-        # `{"action": "command", ...}`（`action` 就是动作类型名）。
-        inner = payload.get("action")
-        if isinstance(inner, dict):
-            kind = str(inner.get("type") or "")
-        elif isinstance(inner, str):
-            kind = inner
-        else:
-            kind = str(payload.get("type") or "")
-        return kind in ACTION_TYPES
-
     def _initial_observation(self, resuming: bool = False) -> str:
-        """cycle 开头的那个观察。一个 cycle 的第一次请求是调查步（能拆步的 backend），
-        所以这段话要跟它一致——第一次请求用的是这段初始上下文，不是请求里的观察。
+        """cycle 开头的那个观察。每一步都是行动步，所以跟行动步那段话保持一致。
 
         续上一次会话时（`resuming`）只发"它还没读过的"：整段历史在 CLI 那个会话里已经是
         它自己上下文的一部分，重发一遍既费 token 又把前缀缓存打散。
@@ -1289,36 +1197,7 @@ class InteractiveRunner:
         unread = (self.store.events_after(self.store.meeting.agent_cursor) if resuming
                   else self.store.events_after(0))
         text = self._observation(unread, False, force_history=not resuming)
-        banner = (INVESTIGATE_STEP_TEXT if self._can_investigate()
-                  else self._act_step_banner())
-        return banner + "\n\n" + text
-
-    def _investigation_refusal(
-        self, action: AgentAction, metadata: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """调查步里来的动作：共享终端整个关着，工具退回去，让它改用文字说。
-
-        这里既不执行也不花动作预算——这一步本来就不该产生动作；`pause` 必须是 False，
-        否则 Claude Code 会把这次退回当成"这一次请求的动作"。
-        """
-        with self.lock:
-            self.store.refresh()
-            self.store.append_event(
-                "action",
-                "harness",
-                self.store.meeting.phase,
-                content=INVESTIGATION_CLOSED_MESSAGE,
-                data={
-                    "action_id": "tool-action-" + uuid.uuid4().hex,
-                    "status": "rejected",
-                    "reason": "investigation_step",
-                    "step": "investigate",
-                    "action": asdict(action),
-                    "dynamic_tool": True,
-                },
-            )
-            self._last_action_success = False
-        return {"success": False, "content": INVESTIGATION_CLOSED_MESSAGE, "pause": False}
+        return self._act_step_banner() + "\n\n" + text
 
     def _run_dynamic_action(
         self,
