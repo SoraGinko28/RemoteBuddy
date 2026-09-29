@@ -314,6 +314,24 @@
     <button type="button" data-meeting-action="delete" role="menuitem">删除会话</button>
   </div>
 
+  <dialog id="delete-dialog" class="new-dialog">
+    <form id="delete-form" method="dialog">
+      <header>
+        <div>
+          <p class="pane-kicker">DELETE SESSION</p>
+          <h2>删除会话</h2>
+        </div>
+        <button id="close-delete-dialog" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <p id="delete-message">确定要删除这个会话吗？对话、终端和数据都会被删除。</p>
+      <p id="delete-error" class="form-error" hidden></p>
+      <footer>
+        <button id="cancel-delete" class="command-button" type="button">取消</button>
+        <button id="confirm-delete" class="danger-button" type="submit">删除会话</button>
+      </footer>
+    </form>
+  </dialog>
+
   <div id="selection-menu" class="selection-menu" hidden role="toolbar" aria-label="选区操作">
     <button type="button" data-selection-action="evaluate" class="score-action evaluate">评价</button>
     <button type="button" data-selection-action="add-to-conversation" class="score-action add-to-conversation">添加到对话</button>

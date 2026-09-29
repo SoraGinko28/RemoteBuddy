@@ -325,5 +325,59 @@ class RenameDialogTest(_PageTestCase):
         self.assertEqual("改过的会话名", self._store().meeting.name)
 
 
+class DeleteDialogTest(_PageTestCase):
+    """删会话也走页面里的 modal，并且点下去真的删掉。"""
+
+    def _open_delete_dialog(self) -> None:
+        self.page.wait_for(
+            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30, what="页面画出这场会"
+        )
+        self.page.js(OPEN_MEETING_MENU)
+        self.page.wait_for(
+            "(() => { const menu = document.querySelector('#meeting-menu');"
+            " return !!menu && !menu.hidden"
+            " && !!menu.querySelector('[data-meeting-action=\"delete\"]'); })()",
+            10, what="菜单里有「删除会话」",
+        )
+        self.page.js(
+            "document.querySelector('[data-meeting-action=\"delete\"]').click(); 'ok'"
+        )
+        self.page.wait_for(
+            "document.querySelector('#delete-dialog')?.open === true", 10, what="删除确认框打开"
+        )
+
+    def test_the_delete_dialog_cancels_without_deleting(self):
+        self.page.js(
+            "window.confirm = () => { throw new Error('native confirm was used'); }; 'stubbed'"
+        )
+        self._open_delete_dialog()
+        self.assertIn(
+            FIRST_MESSAGE,
+            self.page.js("document.querySelector('#delete-message').textContent"),
+        )
+        self.page.js("document.querySelector('#cancel-delete').click(); 'ok'")
+        self.page.wait_for(
+            "document.querySelector('#delete-dialog')?.open !== true", 10, what="取消后关掉"
+        )
+        self.assertIsNotNone(self._store().meeting.meeting_id)
+
+    def test_confirming_the_dialog_deletes_the_meeting(self):
+        self.page.js(
+            "window.confirm = () => { throw new Error('native confirm was used'); }; 'stubbed'"
+        )
+        self._open_delete_dialog()
+        self.page.js("document.querySelector('#confirm-delete').click(); 'ok'")
+        self.page.wait_for(
+            "document.querySelector('#delete-dialog')?.open !== true", 10, what="删除后关掉"
+        )
+        self.page.wait_for(
+            f"!document.body.innerText.includes({FIRST_MESSAGE!r})", 10, what="列表里那条没了"
+        )
+        self.assertEqual(
+            [], [m for m in self.service.list_meetings()["meetings"]
+                 if m["meeting_id"] == self.meeting_id]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

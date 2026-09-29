@@ -27,7 +27,7 @@ const el = Object.fromEntries([
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
-  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
+  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form", "delete-dialog", "delete-form", "close-delete-dialog", "cancel-delete", "confirm-delete", "delete-message", "delete-error",
   "close-dialog", "cancel-new", "initial-message", "workspace-input", "choose-directory", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "skill-cell", "reload-skill-button", "restart-agent-button",
@@ -49,6 +49,8 @@ const state = {
   // 正开着重命名弹框的那场会（空串 = 没开）；renameBound 是弹框按钮只接一次线的开关。
   renameMeetingId: "",
   renameBound: false,
+  // 正开着删除确认框的那场会（空串 = 没开）。
+  deleteMeetingId: "",
   // 正在拖的那一样：kind（meeting/workspace）、node、scope、起点和落点（见 beginDrag）。
   drag: null,
   suppressClickUntil: 0,
@@ -3343,12 +3345,36 @@ function toggleMeetingMenu(meeting, anchor) {
 }
 
 // 删除会话：数据、终端、那一行一起走。删除按钮在浮层里，问一句再动手。
-async function deleteMeeting(meetingId) {
+// 删除会话：跟重命名一样弹页面里的 modal，不用原生 confirm —— 原生框套在暗色界面外面，
+// 标题、按钮、底色都是它自己的，跟这个工作区对不上。
+function deleteMeeting(meetingId) {
   hideMeetingMenu();
+  if (!el.delete_dialog) return;
   const summary = state.meetings.find((one) => one.meeting_id === meetingId);
   const name = summary ? meetingLabel(summary) : meetingId;
-  if (!window.confirm(`删除会话「${name}」？它的对话、终端和数据都会删掉。`)) return;
-  await api(`/api/meetings/${encodeURIComponent(meetingId)}/delete`, { method: "POST" });
+  state.deleteMeetingId = meetingId;
+  el.delete_message.textContent = `确定要删除会话「${name}」吗？对话、终端和数据都会被删除。`;
+  if (el.delete_error) { el.delete_error.hidden = true; el.delete_error.textContent = ""; }
+  el.delete_dialog.showModal();
+}
+
+async function confirmDeleteMeeting() {
+  const meetingId = state.deleteMeetingId;
+  if (!meetingId) { el.delete_dialog?.close(); return; }
+  el.confirm_delete.disabled = true;
+  try {
+    // 正文要带上（哪怕是个空对象）：这些接口读的是 JSON 正文，不带就是 400。
+    await api(`/api/meetings/${encodeURIComponent(meetingId)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  } catch (error) {
+    // 删不掉要说清为什么，框留着让人重试（另一个服务在驱动这场会时就是这条）。
+    if (el.delete_error) { el.delete_error.textContent = error.message || String(error); el.delete_error.hidden = false; }
+    return;
+  } finally {
+    el.confirm_delete.disabled = false;
+  }
   if (state.selectedId === meetingId) {
     // 删掉的正是打开着的那一场：回到"没开会"的样子，而不是继续轮询一个不存在的会。
     state.selectedId = null;
@@ -3357,6 +3383,8 @@ async function deleteMeeting(meetingId) {
     state.timeline = [];
     rememberMeeting("");
   }
+  state.deleteMeetingId = "";
+  el.delete_dialog?.close();
   await loadMeetings();
   renderAll();
 }
@@ -3649,6 +3677,13 @@ function bind() {
   el.meeting_menu?.querySelector('[data-meeting-action="delete"]')?.addEventListener("click", () => {
     deleteMeeting(state.meetingMenuId).catch((error) => toast(error.message));
   });
+  el.close_delete_dialog?.addEventListener("click", () => { state.deleteMeetingId = ""; el.delete_dialog?.close(); });
+  el.cancel_delete?.addEventListener("click", () => { state.deleteMeetingId = ""; el.delete_dialog?.close(); });
+  el.delete_form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    confirmDeleteMeeting().catch((error) => toast(error.message));
+  });
+  el.delete_dialog?.addEventListener("close", () => { state.deleteMeetingId = ""; });
   el.welcome_new_button.addEventListener("click", openWorkspace);
   el.welcome_advanced_button?.addEventListener("click", openNewDialog);
   const railMore = document.getElementById("rail-more-button");

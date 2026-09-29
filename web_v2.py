@@ -2465,9 +2465,15 @@ class MeetingWebService:
                 self.queued_jobs.pop(meeting_id, None)
         return store
 
-    def stop(self, meeting_id: str) -> MeetingStore:
+    def stop(self, meeting_id: str, *, force: bool = False) -> MeetingStore:
+        """中止这场会（杀掉它的 tmux 会话、把状态写成 interrupted）。
+
+        `force=True` 跳过"这场会现在归谁驱动"的检查：删除会话用得上 —— 两个服务共用一块工作区时，
+        声明在别人手里也得能删（删除是数据的事，不该被"谁在开"挡住）。
+        """
         initial = self.load_store(meeting_id)
-        self._ensure_driver(initial)
+        if not force:
+            self._ensure_driver(initial)
         # Publish the durable interrupt before contending on meeting/state
         # locks. The typing loop checks this file at every burst boundary.
         if initial.meeting.session_state == "stopped" and initial.meeting.status == "interrupted":
@@ -2497,7 +2503,10 @@ class MeetingWebService:
                 )
             except (TmuxError, OSError) as exc:
                 store.append_event("error", "harness", "interrupted", content=str(exc))
-                raise WebError(502, "meeting stopped, but tmux cleanup failed") from exc
+                if not force:
+                    raise WebError(502, "meeting stopped, but tmux cleanup failed") from exc
+                # 删除这条路上会话可能早就不在了（没开过终端、或者已经被别处收掉）：
+                # 收不掉也得接着删，数据才是这一趟的目的。
             store.mark_session_stopped()
             store.append_event("state", "human", "interrupted", data={"status": "interrupted"})
             with self.lock:
@@ -2531,7 +2540,9 @@ class MeetingWebService:
         """
         store = self.load_store(meeting_id)
         if store.meeting.status not in TERMINAL_STATUSES:
-            self.stop(meeting_id)
+            # 强制停：这场会可能正被另一个服务驱动（两个服务共用工作区），但删除是数据的事，
+            # 不该被那份声明挡住 —— 先停信号写下去、把 tmux 会话收掉，再删。
+            self.stop(meeting_id, force=True)
         elif store.meeting.session_state != "stopped":
             self.cleanup(meeting_id)
         with self._meeting_lock(meeting_id):
@@ -2911,6 +2922,10 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         data = self.rfile.read(length)
         if len(data) != length:
             raise WebError(400, "incomplete request body")
+        if not data.strip():
+            # 没带正文的 POST 当成 `{}`：`/delete`、`/stop` 这类"没有参数"的接口，
+            # 客户端很容易漏掉正文 —— 前端就这么漏了一次，删除一直回 400、点了没反应。
+            return {}
         try:
             payload = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

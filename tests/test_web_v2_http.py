@@ -571,6 +571,43 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual("继续", chats[-1]["content"])
         self.wait_for_workers()
 
+    def test_a_meeting_can_be_deleted_while_another_service_drives_it(self):
+        """两个服务共用一块工作区时，删除不该被"这场会归谁驱动"挡住。
+
+        真事：页面上点「删除会话」没删掉 —— 另一个服务（同一个工作区的第二份页面）握着驱动声明，
+        删除走到 stop() 就被 409 挡回来了。删除是数据的事，停信号写下去、tmux 收掉，然后照删。
+        """
+        import json as _json
+        import subprocess
+        import sys
+        import time as _time
+
+        self.start_meeting("delete-while-driven")
+        store = MeetingStore.load_in_workspace(self.root, "delete-while-driven")
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(child.kill)
+        (store.run_dir / "driver.json").write_text(
+            _json.dumps({
+                "pid": child.pid,
+                "url": "http://127.0.0.1:9",
+                "workspace": str(self.root),
+                "meeting_id": "delete-while-driven",
+                "heartbeat": _time.time(),
+            }),
+            encoding="utf-8",
+        )
+        # 这份声明真的挡得住别的操作：停一下就被挡回来。
+        with self.assertRaises(WebError) as caught:
+            self.service.stop("delete-while-driven")
+        self.assertEqual(409, caught.exception.status)
+
+        self.service.delete_meeting("delete-while-driven")
+        self.assertFalse(store.run_dir.exists(), "数据目录该删掉")
+        self.assertEqual(
+            [], [m for m in self.service.list_meetings()["meetings"]
+                 if m["meeting_id"] == "delete-while-driven"]
+        )
+
     def test_immediate_message_wakes_a_mid_cycle_agent(self):
         """delivery=interrupt wakes the agent; the deferred mode only queues.
 
@@ -851,6 +888,7 @@ class HTTPBoundaryTest(unittest.TestCase):
         MeetingWebServiceTest.tearDown(self)
 
     wait_for_workers = MeetingWebServiceTest.wait_for_workers
+    start_meeting = MeetingWebServiceTest.start_meeting
 
     def request(self, path, method="GET", body=None, csrf=False, headers=None):
         request_headers = dict(headers or {})
@@ -876,6 +914,22 @@ class HTTPBoundaryTest(unittest.TestCase):
         body = context.exception.read()
         payload = json.loads(body) if body else {}
         return context.exception.code, payload
+
+    def test_deleting_a_meeting_works_without_a_request_body(self):
+        """删除会话：正文可以不带（前端就漏过一次）。
+
+        真事：页面上点「删除会话」一直 400（`request body must be UTF-8 JSON`），点了没反应。
+        """
+        self.start_meeting("delete-no-body")
+        response = self.request(
+            "/api/meetings/delete-no-body/delete", method="POST", body="", csrf=True
+        )
+        payload = json.load(response)
+        self.assertTrue(payload["deleted"], payload)
+        self.assertEqual(
+            [], [m for m in self.service.list_meetings()["meetings"]
+                 if m["meeting_id"] == "delete-no-body"]
+        )
 
     def test_session_static_health_and_csrf(self):
         session = json.load(self.request("/api/session"))
