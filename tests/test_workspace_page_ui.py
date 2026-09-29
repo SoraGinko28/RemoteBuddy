@@ -355,6 +355,12 @@ class DeleteDialogTest(_PageTestCase):
             FIRST_MESSAGE,
             self.page.js("document.querySelector('#delete-message').textContent"),
         )
+        # 框里就一个中文标题：不要再顶一行英文小字（"DELETE SESSION" 那种）。
+        self.assertEqual(
+            "删除会话",
+            self.page.js("document.querySelector('#delete-dialog h2').textContent.trim()"),
+        )
+        self.assertIsNone(self.page.js("document.querySelector('#delete-dialog .pane-kicker')"))
         self.page.js("document.querySelector('#cancel-delete').click(); 'ok'")
         self.page.wait_for(
             "document.querySelector('#delete-dialog')?.open !== true", 10, what="取消后关掉"
