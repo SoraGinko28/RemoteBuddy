@@ -916,16 +916,15 @@ def run_command(
     if interrupt_check is not None and interrupt_check():
         raise Interrupted("还没开始跑命令就被打断了")
     token = uuid.uuid4().hex[:12]
-    typed, folded = command_line(command, token)
+    typed = command_line(command, token)
     if type_line is not None:
         type_line(pane_id, typed)
     else:
         transport.send_keys(pane_id, typed)
-    if folded:
-        retcode = _await_retcode(transport, pane_id, interrupt_check, token, timeout=timeout)
-    else:
-        # 合不了（尾巴是 `&`、续行、管道）：读返回码那句单独敲一行。
-        retcode = _read_retcode(transport, pane_id, interrupt_check, timeout=timeout)
+    # 读返回码那句另起一行，用同一个 token（`command_output` 靠一前一后两个标记切输出）。
+    retcode = _read_retcode(
+        transport, pane_id, interrupt_check, token=token, timeout=timeout
+    )
     screen = transport.capture(pane_id)
     _record(transport, store, pane_id, change_kind="command")
     # 交回去的是这一条命令自己的输出（两个标记之间那一段），不是整屏缓存：模型要的是这次跑
@@ -975,22 +974,18 @@ def _retcode_command(token: str) -> str:
     return f"echo {RETCODE_MARKER}{token} $?"
 
 
-def command_line(command: str, token: str) -> Tuple[str, bool]:
-    """敲进共享终端的那一行：前置标记 + 命令（能合就带上读返回码的那句）。
+def command_line(command: str, token: str) -> str:
+    """敲进共享终端的那一行：前置标记 + 命令本身。
 
-    返回第二项是"返回码那句合进来了吗"：合不了（命令尾巴是 `&`、续行、管道）就只敲前置标记
-    加命令，探针另起一行（`_read_retcode`）。
+    读返回码那句 `echo … $?` **不往同一行上接**。命令尾巴千奇百怪，接上去会把它本身改坏：
+    `find ../viba -type f -name '*.md' -print -exec cat {} \\;` 这种尾巴上带 `\\;` 的，
+    接出来就成了 `… {} \\; echo retcode-… $?` —— find 把 `echo` 当成了自己的参数，
+    直接报 "unknown primary or operator"。那一句另起一行敲（`_read_retcode`）。
     """
     body = strip_retcode_tail(command)
-    head = f"{_marker_command(token)}; "
     if not body.strip():
-        return head + _retcode_command(token), True
-    if body[-1] in "&|\\":
-        return head + body, False
-    if body.endswith(";"):
-        # 本来就以 `;` 收尾，再补一个分号是语法错误：接一个空格就够。
-        return f"{head}{body} {_retcode_command(token)}", True
-    return f"{head}{body}; {_retcode_command(token)}", True
+        return _marker_command(token)
+    return f"{_marker_command(token)}; {body}"
 
 
 def command_output(screen: str, token: str) -> Tuple[Optional[str], bool]:
@@ -1077,10 +1072,11 @@ def _read_retcode(
     pane_id: str,
     interrupt_check: Optional[Callable[[], bool]],
     *,
+    token: Optional[str] = None,
     timeout: float = COMMAND_TIMEOUT_SECONDS,
 ) -> str:
-    """单独敲一行带随机标记的 `echo` 再等它（合成不了一行时走这条）。"""
-    token = uuid.uuid4().hex[:12]
+    """单独敲一行带标记的 `echo` 再等它。`token` 给的就是这一枪那个（两处标记同号才切得出输出）。"""
+    token = token or uuid.uuid4().hex[:12]
     transport.send_keys(pane_id, _retcode_command(token))
     return _await_retcode(transport, pane_id, interrupt_check, token, timeout=timeout)
 

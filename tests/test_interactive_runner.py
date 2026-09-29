@@ -219,23 +219,24 @@ class FakeTransport:
 
     def send_enter(self, pane_id):
         line = self.pending_input
-        # harness 在这一行两端加标记：`echo cmd-<tok> > /dev/null; <命令>; echo retcode-<tok> $?`
-        # （合不成一行时后半句单独一行）；actor 自己写的返回码 echo 会被换掉。
+        # harness 给命令那一行挂一个前置标记（只用来切输出），读返回码的 `echo retcode-<tok> $?`
+        # 是紧跟着的另一行；actor 自己写在尾巴上的返回码 echo 会被剥掉。
         command_line = line
         marker = None
         cmd_marker = re.escape(tmux_vim.CMD_MARKER)
         retcode_marker = re.escape(tmux_vim.RETCODE_MARKER)
         head = re.match(rf"echo\s+{cmd_marker}([A-Za-z0-9_-]*)\s*>\s*/dev/null\s*;\s*", command_line)
         if head is not None:
-            marker = head.group(1)
             command_line = command_line[head.end() :]
-        folded = re.search(rf";\s*echo\s+{retcode_marker}([A-Za-z0-9_-]*)\s+\$\?\s*$", command_line)
-        if folded is not None:
-            marker = folded.group(1)
-            command_line = command_line[: folded.start()]
-        elif marker is None and command_line.strip().startswith(f"echo {tmux_vim.RETCODE_MARKER}"):
-            marker = command_line.strip().split()[1]
+        pure = re.fullmatch(rf"echo\s+{retcode_marker}([A-Za-z0-9_-]*)\s+\$\?", command_line.strip())
+        if pure is not None:
+            marker = pure.group(1)
             command_line = ""
+        else:
+            folded = re.search(rf";\s*echo\s+{retcode_marker}([A-Za-z0-9_-]*)\s+\$\?\s*$", command_line)
+            if folded is not None:
+                marker = folded.group(1)
+                command_line = command_line[: folded.start()]
         parts = shlex.split(command_line)
         if parts:
             executable = parts[0]
