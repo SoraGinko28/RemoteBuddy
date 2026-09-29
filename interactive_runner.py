@@ -147,6 +147,9 @@ class InteractiveRunner:
         self._invalid_action_streak = 0
         self._dynamic_action_active = threading.Event()
         self._cycle_started_monotonic = time.monotonic()
+        # 记着"这个预算属于哪一代请求"：人每说一句话 generation 就顶一格，那是新的一轮，
+        # 预算要重新算（见 `_note_cycle_generation`）。
+        self._cycle_generation = self.store.meeting.request_generation
         self._current_input_seq = self.store.last_event_sequence()
         self._stall_fingerprint: Optional[tuple] = None
         self._stall_streak = 0
@@ -621,6 +624,7 @@ class InteractiveRunner:
                 )
                 self._current_input_seq = latest_sequence
                 generation = self.store.meeting.request_generation
+                self._note_cycle_generation(generation)
                 elapsed = self._cycle_elapsed()
                 if elapsed >= CYCLE_LIMIT_SECONDS:
                     self._cycle_timeout()
@@ -1061,6 +1065,18 @@ class InteractiveRunner:
         if budget_final:
             return ("chat", "done"), MESSAGE_TYPES, True
         return ("chat", "command", "diff", "done", "observe"), MESSAGE_TYPES, False
+
+    def _note_cycle_generation(self, generation: int) -> None:
+        """人说话了（generation 变了）就是新的一轮：这一轮的预算从这一刻重新算。
+
+        不重置的话，一场会跑满一轮时限之后就永久停在"没时间了"：`_phase_constraints` 只放
+        chat/done，模型改什么都交不上来，人说多少次都没用 —— 真事：`task-check-165333`
+        跑了三十多分钟后，人叫它清理一处样式，它连交两次都被"expected chat, or done"挡回来。
+        """
+        if generation == getattr(self, "_cycle_generation", None):
+            return
+        self._cycle_generation = generation
+        self._cycle_started_monotonic = time.monotonic()
 
     def _cycle_elapsed(self) -> float:
         return max(0.0, time.monotonic() - self._cycle_started_monotonic)

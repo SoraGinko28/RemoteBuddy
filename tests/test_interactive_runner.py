@@ -892,6 +892,25 @@ class InteractiveRunnerTest(unittest.TestCase):
             if (event.get("data") or {}).get("reason") == "idle_chat"
         ])
 
+    def test_a_new_human_message_restarts_the_cycle_budget(self):
+        """一轮时限跑满之后，人再说话就是新的一轮：预算重新算，不许永久停在收尾模式。
+
+        真事：`task-check-165333` 跑了三十多分钟，人叫它清理一处样式，它连交两次 diff 都被
+        "expected chat, or done" 挡回来 —— 因为 runner 手里那个时钟还停在开会那一刻。
+        """
+        runner = InteractiveRunner(
+            self.store, self.transport, FakeClient([]),
+            action_settle_seconds=0, typing_interval_seconds=0,
+        )
+        runner._cycle_started_monotonic = time.monotonic() - 10_000
+        self.assertGreater(runner._cycle_elapsed(), 9_000)
+        self.assertTrue(runner._phase_constraints()[2], "超时了就该是收尾模式")
+
+        self.store.bump_request_generation(cycle_action_count=0, cycle_started_at=utc_now())
+        runner._note_cycle_generation(self.store.meeting.request_generation)
+        self.assertLess(runner._cycle_elapsed(), 5)
+        self.assertFalse(runner._phase_constraints()[2], "人说话了就该能接着干")
+
     def test_consecutive_invalid_actions_still_fail_the_cycle(self):
         client = FakeClient(
             [make_action()]

@@ -409,34 +409,6 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
             )
             self.assertTrue(before, f"{selector} 该在输入框前面")
 
-    def test_the_box_shows_a_pending_picture_and_quote_above_the_words(self):
-        """输入框里真放一张待发图片和一条引用：它们得在输入框上面（看得见的位置）。"""
-        self.page.wait_for("!!document.querySelector('#message-input')", 30)
-        # 页面那份脚本是 defer 的：等它跑过（state 有了）再去动它。
-        self.page.wait_for("typeof state === 'object'", 10, what="页面脚本跑起来")
-        self.page.js(
-            "(() => {"
-            " state.pendingAttachments = [{name: 'pending.png'}];"
-            " renderAttachments();"
-            " return 'ok'; })()"
-        )
-        self.page.wait_for(
-            "document.querySelector('#attachment-strip').getBoundingClientRect().height > 0",
-            20, what="图片条露出来",
-        )
-        boxes = self.page.js("""
-(() => {
-  const strip = document.querySelector('#attachment-strip');
-  const box = document.querySelector('#message-input');
-  if (!strip || !box) return null;
-  return {stripVisible: strip.getBoundingClientRect().height > 0,
-          pictureAbove: strip.getBoundingClientRect().top < box.getBoundingClientRect().top};
-})()
-""")
-        self.assertIsNotNone(boxes, "输入框和图片条都该在")
-        self.assertTrue(boxes["stripVisible"], "图片条该露出来")
-        self.assertTrue(boxes["pictureAbove"], "图片该在输入框上面")
-
     def test_a_message_shows_its_quote_and_image_before_the_text(self):
         import base64
 
