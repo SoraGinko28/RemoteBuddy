@@ -62,6 +62,11 @@ def _typed_command(action: AgentAction) -> str:
 # 前几版里那些**从没落上**的内容写（那些 diff 的原文还在它的会话上下文里）：换个干净会话，
 # 让它重新读一遍文件再动手，比继续劝它管用。
 DIFF_REJECT_LIMIT = 3
+# 连着几轮只回一句 ack/progress（什么都没干）：这一轮到头了，交回给人。
+# 真事：人说"停下"之后，trae-agent 连回 23 条 `chat[ack]`「保持停止，不执行任何操作。」，
+# 每 5 秒一轮 —— ack 不是"干完了"，harness 会接着问，模型只回 ack 就一直问下去，
+# 眼看要烧到 ACTION_LIMIT(60) 才肯停。
+IDLE_CHAT_LIMIT = 3
 ACTION_LIMIT = 60
 # 一轮最多跑多久：请求预算（`model_api/config.toml` 的 `request_timeout_seconds`）是
 # 单次安静的上限，这里是一整轮的上限，得比它大一截 —— 否则一次大落盘刚敲完就撞上本轮超时。
@@ -145,6 +150,7 @@ class InteractiveRunner:
         self._current_input_seq = self.store.last_event_sequence()
         self._stall_fingerprint: Optional[tuple] = None
         self._stall_streak = 0
+        self._idle_chat_streak = 0
         # 这一轮是带着上一次的会话 id 起的吗；续不上时只允许退回一次。
         self._resumed_session_id = ""
         self._resume_retried = False
@@ -207,6 +213,7 @@ class InteractiveRunner:
         self._include_agent_chat_once = False
         self._last_action_success = True
         self._invalid_action_streak = 0
+        self._idle_chat_streak = 0
 
     @staticmethod
     def _latest_sequence(events: Sequence[Dict[str, Any]], default: int = 0) -> int:
@@ -968,6 +975,37 @@ class InteractiveRunner:
                     self.store.update(pending_action_id=None)
             if should_pause:
                 return
+            if self._note_idle_chat(request_id, response.action):
+                return
+
+    def _note_idle_chat(self, request_id: str, action: AgentAction) -> bool:
+        """记一笔"这一轮只回了一句 ack/progress"；连够 `IDLE_CHAT_LIMIT` 就把这一轮停下来。
+
+        ack 是"我听到了"，不是"我干完了"：harness 收到 ack 会继续问下一句。模型要是每轮都只
+        回一句 ack（人说"停"的时候最常见 —— 它以为回了就等于停了），就会一直问下去，拿它的
+        预算和人的钱换同一句话。停下来的方式是回到"等待你的消息"，人说话再醒。
+        """
+        idle = action.type == "chat" and action.message_type in {"none", "ack", "progress"}
+        self._idle_chat_streak = self._idle_chat_streak + 1 if idle else 0
+        if self._idle_chat_streak < IDLE_CHAT_LIMIT:
+            return False
+        repeats = self._idle_chat_streak
+        self._idle_chat_streak = 0
+        with self.lock:
+            self.store.refresh()
+            self.store.append_event(
+                "action",
+                "harness",
+                self.store.meeting.phase,
+                data={
+                    "action_id": request_id,
+                    "status": "stalled",
+                    "reason": "idle_chat",
+                    "repeats": repeats,
+                },
+            )
+        self._wait_for_user("idle_chat")
+        return True
 
     def _capture_agent_activity(self, stop: threading.Event) -> None:
         """Capture terminal redraws while a model request is in flight."""

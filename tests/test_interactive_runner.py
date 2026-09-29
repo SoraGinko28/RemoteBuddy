@@ -10,6 +10,7 @@ from unittest import mock
 
 from agent_protocol import AgentActionError, AgentBackendError, AgentRefused
 from interactive_runner import (
+    IDLE_CHAT_LIMIT,
     MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
     RunnerError,
@@ -842,6 +843,53 @@ class InteractiveRunnerTest(unittest.TestCase):
         # can correct itself.
         self.assertEqual(4, len(client.calls))
         self.assertIn("requires a real bash command line", client.calls[2][2])
+
+    def test_a_turn_that_only_answers_ack_parks_instead_of_looping(self):
+        """连着几轮只回 ack：停下来等说话，不许拿预算和钱换同一句话。
+
+        真会里出过：人说「停下」，trae-agent 连回 23 条 `chat[ack]`「保持停止，不执行任何操作。」，
+        每 5 秒一轮，眼看要烧到 60 次动作上限。
+        """
+        client = FakeClient([make_action() for _ in range(12)])
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("waiting_for_user", loaded.meeting.phase)
+        self.assertEqual("none", loaded.meeting.control_owner)
+        self.assertLessEqual(len(client.calls), IDLE_CHAT_LIMIT)
+        stalled = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "action"
+            and (event.get("data") or {}).get("reason") == "idle_chat"
+        ]
+        self.assertEqual(1, len(stalled), loaded.events())
+        self.assertEqual(IDLE_CHAT_LIMIT, stalled[0]["data"]["repeats"])
+
+    def test_a_chat_between_two_real_actions_does_not_park_the_meeting(self):
+        """中间夹一句 chat 不算"只回 ack"：真干活的轮次会把计数清零。"""
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("command", command="git status"),
+                make_action(),
+                make_action("command", command="git diff"),
+                make_action("done", message_type="final", content="Done."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        self.assertEqual([], [
+            event
+            for event in loaded.events()
+            if (event.get("data") or {}).get("reason") == "idle_chat"
+        ])
 
     def test_consecutive_invalid_actions_still_fail_the_cycle(self):
         client = FakeClient(
