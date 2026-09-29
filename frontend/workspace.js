@@ -413,7 +413,15 @@ function fmtTime(value) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date);
+  const seconds = Math.floor(Math.max(0, Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return "刚刚";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}天前`;
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date);
 }
 
 function duration(value) {
@@ -1079,7 +1087,7 @@ function renderChat() {
       article.dataset.eventId = event.event_id || "";
       const head = node("header", "message-head");
       const timeEl = node("time", "", fmtTime(event.captured_at));
-      timeEl.title = "跳转到相近终端画面";
+      timeEl.title = new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "medium" }).format(new Date(event.captured_at));
       timeEl.addEventListener("click", () => jumpToChatTime(event));
       const meetingSnapshot = state.snapshot?.meeting;
       // Show the record's own speaker names: human = 你, every agent (and
@@ -3116,7 +3124,9 @@ async function uploadImages(files) {
 function renderAttachments() {
   if (!el.attachment_strip) return;
   el.attachment_strip.replaceChildren();
-  el.attachment_strip.hidden = state.pendingAttachments.length === 0;
+  const hasAttachments = state.pendingAttachments.length > 0;
+  // The hidden attribute owns visibility; CSS supplies the strip layout only while it is present.
+  el.attachment_strip.hidden = !hasAttachments;
   state.pendingAttachments.forEach((attachment, index) => {
     const item = node("div", "attachment-chip");
     const image = node("img", "attachment-thumb");
