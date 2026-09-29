@@ -24,7 +24,7 @@ from agent_protocol import (
 )
 import tmux_vim
 from meeting_v2 import MeetingError, MeetingStore, utc_now
-from references import reference_from_event
+from references import SOURCE_EVENT_KINDS, reference_from_event
 from tmux_transport import TmuxError, TmuxTransport
 
 from typing_executor import (
@@ -1088,6 +1088,18 @@ class InteractiveRunner:
                 raise AgentProtocolError(
                     "reference source event was not found; use the seq of an earlier chat or screen event"
                 )
+            wanted_kind = SOURCE_EVENT_KINDS.get(str(item.get("kind") or ""))
+            if wanted_kind is not None and event.get("kind") != wanted_kind:
+                # 模型手里唯一带 seq 的东西是历史里那些事件，最扎眼的是它刚跑完的那条
+                # action；引用屏幕时它常把那条的 seq 填进来。指出来它该填哪个号。
+                # 真事：20260929-200133-eedc8a 的第一次 done 就这么被拒，然后它干脆把
+                # 证据整个删掉重交，那次过了 —— 一个没有证据的完成。
+                newest_screen = self.store.latest_screen() or {}
+                raise AgentProtocolError(
+                    f"reference seq={event.get('seq')} is a {event.get('kind')} event, not "
+                    f"{item.get('kind')}: a screen reference takes the seq of a screen event. "
+                    f"The newest screen event is seq={newest_screen.get('seq')}."
+                )
             region = item.get("region")
             if region is None:
                 content = str(event.get("content", ""))
@@ -1111,31 +1123,36 @@ class InteractiveRunner:
         payload["references"] = [dict(item) for item in action.references]
         try:
             AgentAction.from_dict(payload, allowed_types, allowed_messages)
-            self._resolved_action_references(action)
-            if action.type == "chat" and action.message_type == "progress":
-                if self._last_terminal_evidence is None:
-                    raise AgentProtocolError(
-                        "progress requires a completed terminal action in this cycle; "
-                        "send a plain "
-                        "chat or observe instead when there is nothing new to report"
-                    )
-            if action.type == "done":
-                # Claiming completion is the Agent's call, guided by the Skill
-                # and confirmed by the human; only a message that arrived while
-                # the turn was in flight blocks it.
-                pending_human = [
-                    event for event in self.store.events_after(self._current_input_seq)
-                    if event.get("kind") == "chat" and event.get("actor") == "human"
-                ]
-                if pending_human:
-                    raise AgentProtocolError("cannot propose completion while a new human message is pending")
         except AgentProtocolError as exc:
+            # Only a shape/phase rejection gets this tail: it is about the type
+            # and the message type, and it names what the phase would accept.
+            # Appending it to a rejected reference (below) answered a question
+            # the model had not asked -- 真事：一条 `reference source event is
+            # invalid` 后面跟着 `allowed_types=…`，模型看完把证据删了重交。
             current_command = (self.store.meeting.current_command or "unknown").lower()
             raise AgentProtocolError(
                 f"{exc}; got type={action.type}, message_type={action.message_type}, "
                 f"current_command={current_command}, allowed_types={','.join(allowed_types or ())}, "
                 f"allowed_message_types={','.join(allowed_messages or ())}"
             ) from exc
+        self._resolved_action_references(action)
+        if action.type == "chat" and action.message_type == "progress":
+            if self._last_terminal_evidence is None:
+                raise AgentProtocolError(
+                    "progress requires a completed terminal action in this cycle; "
+                    "send a plain "
+                    "chat or observe instead when there is nothing new to report"
+                )
+        if action.type == "done":
+            # Claiming completion is the Agent's call, guided by the Skill
+            # and confirmed by the human; only a message that arrived while
+            # the turn was in flight blocks it.
+            pending_human = [
+                event for event in self.store.events_after(self._current_input_seq)
+                if event.get("kind") == "chat" and event.get("actor") == "human"
+            ]
+            if pending_human:
+                raise AgentProtocolError("cannot propose completion while a new human message is pending")
         return budget_final
 
     def _execute_dynamic_action(
@@ -1377,6 +1394,13 @@ class InteractiveRunner:
             },
             "new_events": relevant,
             "terminal": {
+                # The screen is an event like a chat is: a `done` that quotes the
+                # lines proving the claim needs its seq, and the terminal block
+                # was the one place the model could not see it. Without it the
+                # model quotes the newest seq it *can* see -- an action event --
+                # and the reference is refused for naming the wrong kind.
+                "seq": screen.get("seq"),
+                "event_id": screen.get("event_id", ""),
                 "current_command": screen_data.get("current_command", ""),
                 "current_path": screen_data.get("current_path", ""),
                 "content_sha256": screen_data.get("content_sha256", ""),

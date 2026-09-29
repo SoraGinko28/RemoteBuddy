@@ -318,11 +318,16 @@ class AgentAction:
             )
         if unknown:
             raise AgentProtocolError("model action has unexpected fields: " + ", ".join(unknown))
-        # Every action but chat and done carries message_type "none", so an
-        # omission there is unambiguous; chat and done must say what they mean.
-        if "message_type" not in payload and payload.get("type") not in {"chat", "done"}:
-            payload["message_type"] = "none"
-        missing = sorted(field for field in ("type", "message_type") if field not in payload)
+        # Every action but done carries message_type "none", and a chat without
+        # one is read as ack: the model wrote a sentence, and that is the only
+        # thing the missing value could have meant -- the same reading as a
+        # message_type that names an action type gets a few lines below. done
+        # is the exception: it claims the work is finished, so it has to say so
+        # itself. 真事：`{"type":"chat","action":{…正文…}}` 缺 message_type，
+        # 连着驳回三轮，20260929-200133-eedc8a 就是这么死在 api_error 上的。
+        if not str(payload.get("message_type") or "").strip() and payload.get("type") != "done":
+            payload["message_type"] = "ack" if payload.get("type") == "chat" else "none"
+        missing = sorted(field for field in ("type", "message_type") if not payload.get(field))
         if missing:
             raise AgentProtocolError("model action is missing fields: " + ", ".join(missing))
         # Models routinely omit the fields an action does not use; fill in the
@@ -994,8 +999,21 @@ def unwrap_action_envelope(payload: Any) -> Any:
         # 外层那个 type 常常只是占位（`none`/`chat`），真正的动作在里层：外层不合法、里层
         # 合法时听里层的。真事：`{"type":"none","action":{"type":"diff",…}}` 连着来三次，
         # 一场会就被判成 api_error。
-        if merged.get("type") not in ACTION_TYPES and inner.get("type") in ACTION_TYPES:
-            merged["type"] = inner["type"]
+        inner_type = inner.get("type")
+        if merged.get("type") not in ACTION_TYPES and inner_type in ACTION_TYPES:
+            merged["type"] = inner_type
+        # 里层连类型都没写时，外层那个 `none`/`chat` 只是在说"这里有一个动作"；是哪一种看
+        # 里层填了哪些字段。真事：`{"type":"chat","action":{"command":"sed -n …"}}` 被当成
+        # 缺 message_type 的 chat 驳回，一路重试到 api_error，20260929-200133-eedc8a 就这
+        # 么死的。
+        elif inner_type not in ACTION_TYPES and str(merged.get("type") or "") in {"", "none", "chat"}:
+            inner_command = str(inner.get("command") or "")
+            if _looks_like_patch(inner_command):
+                merged["type"] = "diff"
+            elif inner_command.strip() not in {"", "none"}:
+                merged["type"] = "command"
+            elif str(inner.get("diff") or "").strip():
+                merged["type"] = "diff"
         payload = merged
     return payload
 

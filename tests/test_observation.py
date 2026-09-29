@@ -124,6 +124,16 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual("visible screen", packet["terminal"]["screen"])
         self.assertEqual("bash", packet["terminal"]["current_command"])
 
+    def test_terminal_block_carries_the_screens_own_seq(self):
+        """引用屏幕要填屏幕事件的 seq，而终端块是这个号唯一露出来的地方。
+
+        真事：20260929-200133-eedc8a 里模型想引用屏幕，手上只有 action 事件的 seq，
+        填进去被判成"引用源事件非法"，它就把证据删了重交。"""
+        screen = self.store.latest_screen()
+        packet = self.observation(StatelessClient())
+        self.assertEqual(screen["seq"], packet["terminal"]["seq"])
+        self.assertEqual(screen["event_id"], packet["terminal"]["event_id"])
+
     def test_scores_and_screens_are_filtered_from_new_events(self):
         unread = [
             record(10, kind="screen", actor="workspace", content="frame"),
