@@ -368,6 +368,13 @@ class AgentAction:
             payload["message_type"] = "none"
         if payload.get("command") == "":
             payload["command"] = "none"
+        # 有的模型把整份补丁塞进 `command`（还常用 Codex 的 `*** Begin Patch` 写法），
+        # `diff` 留空。位置不对、意图很清楚：搬到 `diff` 里，别让它卡在字段名上。
+        if payload.get("type") == "diff" and not str(payload.get("diff") or "").strip():
+            pasted = str(payload.get("command") or "")
+            if _looks_like_patch(pasted):
+                payload["diff"] = pasted
+                payload["command"] = "none"
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
             raise AgentProtocolError(
@@ -387,6 +394,13 @@ class AgentAction:
             action_type = "done"
             payload = {**payload, "type": "done", "message_type": "final"}
         message_type = payload["message_type"]
+        if message_type not in MESSAGE_TYPE_ORDER and message_type in ACTION_TYPES:
+            # 有的模型把动作类型填进 message_type（`"message_type": "chat"`）——它的意思是
+            # "这是一句话"，不是想说一个非法值。chat 当成 ack（"我听到了"），别的当成 none，
+            # 别为这个把动作拒了。（放在上面那条 chat+final/done → done 的规则之后，
+            # 免得把那条本来就读得懂的写法带偏。）
+            message_type = "ack" if action_type == "chat" else "none"
+            payload["message_type"] = message_type
         if message_type not in MESSAGE_TYPE_ORDER:
             raise AgentProtocolError(
                 "model message type is invalid: expected " + _name_list(MESSAGE_TYPE_ORDER))
@@ -463,6 +477,12 @@ class AgentAction:
                     + stray_fields(("diff", bool(diff)), ("delay_ms", bool(delay_ms)))
                 )
         elif action_type == "diff":
+            if not diff.strip():
+                raise AgentProtocolError(
+                    "type is diff but `diff` is empty: the unified diff goes in `diff` "
+                    "(`--- a/<path>` / `+++ b/<path>` / `@@ … @@`); `command` holds one bash "
+                    "line and never carries a patch"
+                )
             stray = stray_fields(("message_type", message_type != "none"),
                                  ("content", bool(content)),
                                  ("command", command != "none"),
@@ -473,8 +493,6 @@ class AgentAction:
                     "diff has unrelated fields: " + stray
                     + "; a diff action carries only the unified diff"
                 )
-            if not diff.strip():
-                raise AgentProtocolError("diff action requires a unified diff")
             if "\x00" in diff or "\r" in diff:
                 raise AgentProtocolError("diff must be plain text with unix line endings")
             from tmux_vim import DiffError, parse_unified_diff
@@ -959,6 +977,23 @@ def decode_action_text(
         raise AgentActionError(str(exc), source=text) from exc
 
 
+_PATCH_HINTS = (
+    "*** Begin Patch",
+    "*** Update File:",
+    "*** Add File:",
+    "*** Delete File:",
+    "diff --git ",
+    "--- a/",
+    "--- /dev/null",
+)
+
+
+def _looks_like_patch(text: str) -> bool:
+    """这段文本像不像一份补丁：模型把补丁塞错字段时，靠它把位置纠回来。"""
+    head = str(text or "").lstrip()
+    return any(head.startswith(hint) for hint in _PATCH_HINTS)
+
+
 def unwrap_action_envelope(payload: Any) -> Any:
     """Flatten the ``action`` wrapper some models put around their action.
 
@@ -974,7 +1009,13 @@ def unwrap_action_envelope(payload: Any) -> Any:
         if not isinstance(inner, dict):
             return payload
         outer = {key: value for key, value in payload.items() if key != "action"}
-        payload = {**inner, **outer}
+        merged = {**inner, **outer}
+        # 外层那个 type 常常只是占位（`none`/`chat`），真正的动作在里层：外层不合法、里层
+        # 合法时听里层的。真事：`{"type":"none","action":{"type":"diff",…}}` 连着来三次，
+        # 一场会就被判成 api_error。
+        if merged.get("type") not in ACTION_TYPES and inner.get("type") in ACTION_TYPES:
+            merged["type"] = inner["type"]
+        payload = merged
     return payload
 
 
@@ -996,7 +1037,10 @@ def _decode_action_text(
                 raise AgentProtocolError("model output repeated the action too many times")
             remaining = remaining[end:].lstrip()
     except json.JSONDecodeError as exc:
-        raise AgentProtocolError("model output is not valid action JSON") from exc
+        raise AgentProtocolError(
+            "model output is not valid action JSON (" + str(exc).splitlines()[0] + "): "
+            "整套动作要是一个 JSON 对象，字符串里的换行写成 \\n，补丁放在 `diff` 里"
+        ) from exc
     if any(value != values[0] for value in values[1:]):
         raise AgentProtocolError("model output contains multiple different actions")
     payload = unwrap_action_envelope(values[0])

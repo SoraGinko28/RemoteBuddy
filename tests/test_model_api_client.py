@@ -360,7 +360,7 @@ class AgentActionTest(unittest.TestCase):
             )
 
     def test_a_diff_may_not_be_empty(self):
-        with self.assertRaisesRegex(ModelResponseError, "requires a unified diff"):
+        with self.assertRaisesRegex(ModelResponseError, "the unified diff goes in `diff`"):
             AgentAction.from_dict(
                 action_payload(type="diff", message_type="none", content="", command="none")
             )

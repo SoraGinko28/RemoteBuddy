@@ -421,7 +421,8 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
             " return 'ok'; })()"
         )
         self.page.wait_for(
-            "!document.querySelector('#attachment-strip').hidden", 8, what="图片条露出来"
+            "document.querySelector('#attachment-strip').getBoundingClientRect().height > 0",
+            20, what="图片条露出来",
         )
         boxes = self.page.js("""
 (() => {

@@ -297,6 +297,48 @@ class AgentActionToleranceTest(unittest.TestCase):
             decode_action_text(json.dumps({"type": "chat", "message_type": "final", "content": ""}))
 
 
+class ActionShapeToleranceTest(unittest.TestCase):
+    """模型把动作写成别的样子时，能纠回来的就纠，别再为字段名把一场会判死。"""
+
+    def test_an_outer_placeholder_type_does_not_hide_the_real_action(self):
+        """`{"type":"none","action":{...}}`：里层才是真的动作（真事：这么连来三次，一
+        场会被判成 api_error）。"""
+        action = AgentAction.from_dict(
+            {
+                "type": "none",
+                "action": {
+                    "type": "diff",
+                    "diff": "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-x\n+y\n",
+                },
+            }
+        )
+        self.assertEqual("diff", action.type)
+        self.assertIn("+y", action.diff)
+
+    def test_a_message_type_that_names_the_action_is_read_as_ack(self):
+        """`"message_type": "chat"` 的意思是"这是一句话"，当成 ack，不是非法值。"""
+        action = AgentAction.from_dict(
+            {"type": "chat", "message_type": "chat", "content": "收到"}
+        )
+        self.assertEqual("chat", action.type)
+        self.assertEqual("ack", action.message_type)
+
+    def test_a_patch_pasted_into_command_moves_to_diff(self):
+        """整份补丁塞进 `command`（还常用 Codex 的 `*** Begin Patch` 写法）：搬到 `diff`。"""
+        pasted = (
+            "*** Begin Patch\n*** Update File: a.py\n"
+            "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        )
+        action = AgentAction.from_dict({"type": "diff", "command": pasted})
+        self.assertEqual("diff", action.type)
+        self.assertEqual("none", action.command)
+        self.assertTrue(action.diff.startswith("*** Begin Patch"))
+
+    def test_an_empty_diff_says_where_the_patch_goes(self):
+        with self.assertRaisesRegex(Exception, "the unified diff goes in `diff`"):
+            AgentAction.from_dict({"type": "diff", "command": "ls -l"})
+
+
 if __name__ == "__main__":
     unittest.main()
 
