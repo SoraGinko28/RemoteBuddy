@@ -385,5 +385,69 @@ class DeleteDialogTest(_PageTestCase):
         )
 
 
+class OrderOfImagesAndQuotesTest(_PageTestCase):
+    """引用和图片放在文字前面 —— 聊天区和输入框都是。"""
+
+    def _first_event_id(self) -> str:
+        store = self._store()
+        return next(
+            event["event_id"] for event in store.events()
+            if event.get("kind") == "chat" and event.get("actor") == "human"
+        )
+
+    def test_the_composer_puts_the_strips_above_the_text(self):
+        self.page.wait_for("!!document.querySelector('#message-input')", 30)
+        for selector in ("#attachment-strip", "#reference-card"):
+            before = self.page.js(
+                "(() => {"
+                f" const strip = document.querySelector('{selector}');"
+                " const box = document.querySelector('#message-input');"
+                " if (!strip || !box) return null;"
+                " const order = strip.compareDocumentPosition(box);"
+                " return Boolean(order & Node.DOCUMENT_POSITION_FOLLOWING);"
+                "})()"
+            )
+            self.assertTrue(before, f"{selector} 该在输入框前面")
+
+    def test_a_message_shows_its_quote_and_image_before_the_text(self):
+        import base64
+
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        attachment = self.service.save_attachment(self.meeting_id, "image/png", png)
+        source = self._first_event_id()
+        self.service.message(
+            self.meeting_id,
+            {
+                "message": "带引用和图片的一条",
+                "delivery": "next_action",
+                "references": [
+                    {"kind": "chat", "event_id": source, "region": {"start": 0, "end": 4}}
+                ],
+                "attachments": [{"name": attachment["name"]}],
+            },
+        )
+        self.page.wait_for(
+            "document.body.innerText.includes('带引用和图片的一条')", 20, what="这条消息画出来"
+        )
+        order = self.page.js("""
+(() => {
+  const article = [...document.querySelectorAll('#chat-list article')]
+    .find((one) => one.innerText.includes('带引用和图片的一条'));
+  if (!article) return null;
+  const text = article.querySelector('.message-content');
+  const quote = article.querySelector('.message-reference');
+  const images = article.querySelector('.message-images');
+  if (!text || !quote || !images) return null;
+  const before = (node) => Boolean(node.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING);
+  return {quote: before(quote), images: before(images)};
+})()
+""")
+        self.assertIsNotNone(order, "这条消息该带引用、图片和正文")
+        self.assertTrue(order["quote"], "引用该在正文前面")
+        self.assertTrue(order["images"], "图片该在正文前面")
+
+
 if __name__ == "__main__":
     unittest.main()

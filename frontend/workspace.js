@@ -1099,17 +1099,9 @@ function renderChat() {
       body.setAttribute("aria-label", "聊天消息文本");
       appendAnnotatedText(body, event.content, annotations);
       article.append(head);
-      // 先字后图：图是给这句话作证的，不该把话压在下面。
-      // 只有图片没有字的消息，也不必留一个空段落。
-      if (event.content) article.append(body);
-      if (images) article.append(images);
-      const summary = scoreSummary(annotations);
-      if (summary) article.append(summary);
-      if (replayReference?.kind === "chat" && replayReference.event_id === event.event_id) {
-        article.classList.add("score-replay-target");
-        replayTarget = article;
-      }
       const references = referencesForEvent(event);
+      // 引用和图片都放在正文前面：先看见"这句话在说哪一段、盯着哪张图"，再读这句话。
+      // 只有图片没有字的消息，也不留一个空段落。
       references.forEach((reference, referenceIndex) => {
         if (!reference?.excerpt) return;
         // The quote stands on its own: no "引用" label in front of it, only a
@@ -1137,6 +1129,14 @@ function renderChat() {
         if (state.highlightReference?.event_id === reference.event_id) quote.classList.add("highlighted");
         article.append(quote);
       });
+      if (images) article.append(images);
+      if (event.content) article.append(body);
+      const summary = scoreSummary(annotations);
+      if (summary) article.append(summary);
+      if (replayReference?.kind === "chat" && replayReference.event_id === event.event_id) {
+        article.classList.add("score-replay-target");
+        replayTarget = article;
+      }
       el.chat_list.append(article);
       const eventSequence = Number(event.seq);
       if (
