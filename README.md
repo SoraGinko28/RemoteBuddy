@@ -86,13 +86,13 @@ The Claude integration currently supports macOS and POSIX Linux. Windows support
 Check the environment:
 
 ```bash
-python3 demo_v2.py doctor
+python3 demo.py doctor
 ```
 
 ## Run
 
 ```bash
-python3 web_v2.py
+python3 web.py
 ```
 
 Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/). The service never binds to a non-loopback address.
@@ -100,9 +100,9 @@ Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/). The service never binds t
 New sessions are created from the Web interface. The CLI manages existing v2 sessions:
 
 ```bash
-python3 demo_v2.py status <meeting-id>
-python3 demo_v2.py stop <meeting-id>
-python3 demo_v2.py cleanup <meeting-id>
+python3 demo.py status <meeting-id>
+python3 demo.py stop <meeting-id>
+python3 demo.py cleanup <meeting-id>
 ```
 
 ## Session Model

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from web_v2 import MeetingWebService, WebError
+from web import MeetingWebService, WebError
 
 
 class WebV2CredentialsTest(unittest.TestCase):

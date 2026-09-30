@@ -12,7 +12,7 @@ from agent_protocol import (
     decode_action_text,
 )
 from interactive_runner import InteractiveRunner
-from meeting_v2 import MeetingStore
+from meeting import MeetingStore
 from tests.test_interactive_runner import FakeClient, FakeTransport, make_action
 
 

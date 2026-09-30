@@ -23,7 +23,7 @@ from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_i
                          at_key as viba_at_key, by_field_index as viba_by_field_index,
                          by_tag as viba_by_tag)
 from viba.type import VibaProgramErr, Ok
-from web_v2 import MeetingWebService, RemoteBuddyHTTPServer
+from web import MeetingWebService, RemoteBuddyHTTPServer
 
 
 class _SdkService(MeetingWebService):

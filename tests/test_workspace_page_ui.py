@@ -144,8 +144,8 @@ class _PageTestCase(unittest.TestCase):
                 pass
 
     def setUp(self) -> None:
-        import web_v2
-        from meeting_v2 import MeetingStore
+        import web
+        from meeting import MeetingStore
 
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -166,11 +166,11 @@ class _PageTestCase(unittest.TestCase):
         # 停在"等人说话"：这一条不查终端，就别让页面去把 tmux 会话开出来。
         store.update(phase="waiting_for_user")
 
-        self.service = web_v2.MeetingWebService(
+        self.service = web.MeetingWebService(
             workspace=self.workspace, project_root=self.test_project_root
         )
         self.port = _free_port()
-        self.server = web_v2.build_server("127.0.0.1", self.port, service=self.service)
+        self.server = web.build_server("127.0.0.1", self.port, service=self.service)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)

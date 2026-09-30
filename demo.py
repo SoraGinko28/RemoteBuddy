@@ -9,7 +9,7 @@ from typing import Optional, Sequence
 
 from codex_app_server_client import CodexAppServerError, probe_codex_backend, probe_trae_backend
 from claude_code_client import ClaudeCodeError, probe_claude_backend
-from meeting_v2 import MeetingError, MeetingStore
+from meeting import MeetingError, MeetingStore
 from model_api_client import ModelApiConfig, ModelConfigError
 from tmux_transport import TmuxError, TmuxTransport, libtmux_version
 

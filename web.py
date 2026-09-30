@@ -46,7 +46,7 @@ from interactive_runner import (
     RunnerError,
     capture_workspace,
 )
-from meeting_v2 import (
+from meeting import (
     MAX_ATTACHMENT_BYTES,
     MAX_CHAT_REFERENCES,
     MAX_MESSAGE_BYTES,
@@ -2884,7 +2884,7 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
     def _internal_error(self, exc: Exception) -> None:
         # Exception text can carry absolute filesystem paths; keep it out of
         # the response and log it server-side instead.
-        print(f"[web_v2] internal error on {self.command} {self.path}: {exc!r}", file=sys.stderr, flush=True)
+        print(f"[web] internal error on {self.command} {self.path}: {exc!r}", file=sys.stderr, flush=True)
         self._error(500, "internal error")
 
     def _read_json(self) -> Dict[str, Any]:

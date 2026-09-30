@@ -28,7 +28,7 @@ REST_MAX_MS = 2000
 ACTION_TYPE_ORDER = ("chat", "command", "diff", "observe", "done")
 ACTION_TYPES = set(ACTION_TYPE_ORDER)
 REFERENCE_KINDS = {"chat", "screen"}
-# Mirrors meeting_v2.MAX_CHAT_REFERENCES without importing the storage layer.
+# Mirrors meeting.MAX_CHAT_REFERENCES without importing the storage layer.
 MAX_ACTION_REFERENCES = 32
 # Structured commands keep workspace path resolution and safe quoting.
 STRUCTURED_COMMANDS = {"pwd", "cd", "python"}

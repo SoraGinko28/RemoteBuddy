@@ -23,7 +23,7 @@ from agent_protocol import (
     AgentProtocolError,
 )
 import tmux_vim
-from meeting_v2 import MeetingError, MeetingStore, utc_now
+from meeting import MeetingError, MeetingStore, utc_now
 from references import SOURCE_EVENT_KINDS, reference_from_event
 from tmux_transport import TmuxError, TmuxTransport
 

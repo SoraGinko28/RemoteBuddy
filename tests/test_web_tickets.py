@@ -15,7 +15,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from ticket_centered import Meeting, Member, SHIPPED_WORKFLOW, load_workflow  # noqa: E402
 import pytest  # noqa: E402
 
-import web_v2  # noqa: E402
+import web  # noqa: E402
 
 TASK = "写一个快速排序，放到 quicksort.py"
 
@@ -42,15 +42,15 @@ class FakeStore:
 
 def test_the_board_says_what_is_due_and_who_answers_it(tmp_path):
     run_dir = tmp_path / "runs" / "ticket-test"
-    root = run_dir / web_v2.TICKET_ROOT
+    root = run_dir / web.TICKET_ROOT
     workflow = load_workflow(SHIPPED_WORKFLOW)
     meeting = Meeting(root, workflow)
-    for name in web_v2.TICKET_MEMBERS:
+    for name in web.TICKET_MEMBERS:
         meeting.join(Member(name, name, {}))
     case = meeting.case("quicksort")
     meeting.store.write(meeting.absolute(case, ""), "stated_task", TASK)
 
-    board = web_v2._ticket_board(FakeStore(run_dir, "ticket-test"))
+    board = web._ticket_board(FakeStore(run_dir, "ticket-test"))
     assert board["digest"] == workflow.digest()
     assert board["case"] == case
     assert board["target"] == "quicksort.py"
@@ -67,6 +67,6 @@ def test_the_board_says_what_is_due_and_who_answers_it(tmp_path):
     assert judge["due"] is False and "还缺" in judge["why"]
 
     meeting.store.write(meeting.absolute(case, "drafted"), "write_code", "def f():\n    pass\n")
-    board = web_v2._ticket_board(FakeStore(run_dir, "ticket-test"))
+    board = web._ticket_board(FakeStore(run_dir, "ticket-test"))
     write_a_draft = next(one for one in board["tickets"] if one["ticket"] == "write_a_draft")
     assert next(step for step in write_a_draft["answers"] if step["op"] == "write_code")["answered"]

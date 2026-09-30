@@ -11,7 +11,7 @@ from agent_protocol import (
 )
 import tmux_vim
 from interactive_runner import InteractiveRunner
-from meeting_v2 import MeetingStore
+from meeting import MeetingStore
 from tests.test_interactive_runner import FakeClient, FakeTransport, make_action
 from tmux_transport import TmuxError, workspace_command_text
 
