@@ -73,7 +73,7 @@ CYCLE_LIMIT_SECONDS = 1800.0
 COMMAND_RESULT_LINES = 120
 # Consecutive undecodable/invalid model actions tolerated before the cycle
 # fails; each retry feeds the validation error back as an observation.
-MAX_INVALID_ACTION_RETRIES = 3
+MAX_INVALID_ACTION_RETRIES = 5
 # If the model repeats the exact same dynamic action this many times without
 # a usable result, park the turn instead of looping ("not every dynamic tool
 # completes; once the threshold is hit, move on").

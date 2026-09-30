@@ -11,6 +11,7 @@ from unittest import mock
 from agent_protocol import AgentActionError, AgentBackendError, AgentRefused
 from interactive_runner import (
     IDLE_CHAT_LIMIT,
+    MAX_INVALID_ACTION_RETRIES,
     MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
     RunnerError,
@@ -974,15 +975,17 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertFalse(runner._phase_constraints()[2], "人说话了就该能接着干")
 
     def test_consecutive_invalid_actions_still_fail_the_cycle(self):
+        # 容忍几次由 MAX_INVALID_ACTION_RETRIES 定：写死次数的话，改配额就得改用例。
+        retries = MAX_INVALID_ACTION_RETRIES
         client = FakeClient(
             [make_action()]
-            + [AgentActionError(f"invalid action {index}") for index in range(3)]
+            + [AgentActionError(f"invalid action {index}") for index in range(retries)]
         )
         InteractiveRunner(
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         ).start()
         loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual(4, len(client.calls))
+        self.assertEqual(retries + 1, len(client.calls))
         self.assertEqual("api_error", loaded.meeting.phase)
         self.assertTrue(loaded.meeting.recovery_required)
 
