@@ -222,7 +222,7 @@ class CodexTaskEndToEndTest(unittest.TestCase):
             for token in keys:
                 value = str(token.get("value", ""))
                 self.assertTrue(
-                    "remotebuddy-retcode-" in value or value == "C-c",
+                    "retcode-remotebuddy-" in value or value == "C-c",
                     transport.tokens,
                 )
 

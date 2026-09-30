@@ -55,6 +55,8 @@ READ_ONLY_TOOL_KINDS = {
 }
 WRITE_TOOL_KINDS = {"edit", "write", "delete", "move", "rename", "patch", "create"}
 ACP_PROTOCOL_VERSION = 1
+# 一次动作最多让它跑多久（执行期间期限顺延成"闲多久算挂"，这个上限兜住卡死）。
+ACTION_CEILING_SECONDS = 1800.0
 
 
 class AcpBackend:
@@ -90,6 +92,8 @@ class AcpBackend:
         self._turn_action: Optional[AgentAction] = None
         self._claimed: Optional[AgentAction] = None
         self._claimed_call_id: Optional[str] = None
+        # 此刻共享终端那边正有一个动作在执行（落 diff 要一行一行敲，几分钟很正常）。
+        self._executing = False
         self._closed = False
         self._interrupted = False
         self._next_id = 1
@@ -496,7 +500,11 @@ class AcpBackend:
             }
         )
         self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
+        # 动作在执行期间不算"这一枪挂了"（和 Claude Code 那条路一个道理）：期限顺延成
+        # "闲多久算挂"，整枪另有一个上限。
+        ceiling = started + max(timeout * 6.0, ACTION_CEILING_SECONDS)
         try:
             while True:
                 with self._condition:
@@ -533,6 +541,8 @@ class AcpBackend:
                             )
                     if self._process_error:
                         raise AgentBackendError(f"Trae ACP process exited: {self._process_error}")
+                    if self._executing and time.monotonic() < ceiling:
+                        deadline = time.monotonic() + timeout
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise AgentBackendError(
@@ -656,6 +666,8 @@ class AcpBackend:
             return {"request_id": request_id, "success": False, "content": str(exc), "pause": False}
         except Exception as exc:  # noqa: BLE001
             return {"request_id": request_id, "success": False, "content": str(exc), "pause": False}
+        with self._condition:
+            self._executing = True
         try:
             result = handler(
                 action, {"call_id": request_id, "session_id": session_id, "turn_id": turn_id}
@@ -664,6 +676,9 @@ class AcpBackend:
             result = {"success": False, "content": "superseded", "pause": True}
         except Exception as exc:  # noqa: BLE001
             result = {"success": False, "content": str(exc), "pause": False}
+        finally:
+            with self._condition:
+                self._executing = False
         if not isinstance(result, dict):
             result = {"success": False, "content": "handler returned an invalid result", "pause": True}
         with self._condition:

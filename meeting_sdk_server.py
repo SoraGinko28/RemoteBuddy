@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Sequence
 import meeting_adt as adt
 # The contract's other group: values a caller builds (no ctx, never served).
 # The builders themselves live in meeting_adt; the names belong to the contract.
-from meeting_adt import (make_chat_reference, make_score_reference,  # noqa: F401
+from meeting_adt import (make_chat_reference,  # noqa: F401
                          make_screen_reference, make_terminal_control_reference,
                          make_text_region, make_versioned_file_content_reference,
                          make_versioned_file_reference)
@@ -38,7 +38,7 @@ if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VEND
 
 from viba.type import VibaProgramErr as _Err, Ok as _Ok, Result as _Result  # noqa: E402
 
-_REFERENCE_TYPES = (adt.ScreenReference, adt.ChatReference, adt.ScoreReference,
+_REFERENCE_TYPES = (adt.ScreenReference, adt.ChatReference,
                     adt.TerminalControlReference, adt.VersionedFileReference,
                     adt.VersionedFileContentReference)
 
@@ -86,16 +86,12 @@ def streams_between(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result
 
 
 # ----------------------------------------------------------------------
-# Getters: chat and scores
+# Getters: chat
 # ----------------------------------------------------------------------
 
 
 def chat_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
     return _Ok([m for m in _records(ctx, adt.ChatStreamChunk) if _within(m.time, start, end)])
-
-
-def score_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
-    return _Ok([m for m in _records(ctx, adt.ScoreStreamChunk) if _within(m.time, start, end)])
 
 
 def chat_message_at(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
@@ -118,29 +114,12 @@ def resolve_chat_content_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Resul
     return _Ok(_region_of(_chat_message_text(given.ok_value), ref.region))
 
 
-def resolve_score_reference(ctx: Ctx, ref: "adt.ScoreReference") -> _Result:
-    for message in _records(ctx, adt.ScoreStreamChunk):
-        if message.time == ref.judge_time and message.judge_name == ref.judge_name:
-            return _Ok(message)
-    return _Err(f"the score stream has no score by {ref.judge_name!r} at {ref.judge_time}")
-
-
 def chat_message_references(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
     """The references this message carries, in order."""
     given = chat_message_at(ctx, time, user)
     if isinstance(given, _Err):
         return given
     return _Ok([part for part in given.ok_value.message if isinstance(part, _REFERENCE_TYPES)])
-
-
-def score_message_reference(ctx: Ctx, time: _dt.datetime, judge: str) -> _Result:
-    """The reference this score carries."""
-    given = resolve_score_reference(ctx, adt.ScoreReference(judge_time=time, judge_name=judge))
-    if isinstance(given, _Err):
-        return given
-    if given.ok_value.reference is None:
-        return _Err(f"the score by {judge!r} at {time} carries no reference")
-    return _Ok(given.ok_value.reference)
 
 
 def first_chunk_time(ctx: Ctx) -> _Result:
@@ -328,7 +307,7 @@ def _records(ctx: Ctx, chunk_type) -> List:
 def _chunk_time(chunk) -> Optional[_dt.datetime]:
     if isinstance(chunk, adt.ScreenStreamChunk):
         return chunk.chunks[0].captured_at if chunk.chunks else None
-    if isinstance(chunk, (adt.ChatStreamChunk, adt.ScoreStreamChunk)):
+    if isinstance(chunk, adt.ChatStreamChunk):
         return chunk.chunks[0].time if chunk.chunks else None
     if isinstance(chunk, adt.TerminalControlStreamChunk):
         return chunk.chunks[0].start_time if chunk.chunks else None
@@ -427,13 +406,10 @@ __all__ = [
     "chunk_times",
     "streams_between",
     "chat_messages",
-    "score_messages",
     "chat_message_at",
     "resolve_chat_reference",
     "resolve_chat_content_reference",
-    "resolve_score_reference",
     "chat_message_references",
-    "score_message_reference",
     "first_chunk_time",
     "last_chunk_time",
     "screen_times",
@@ -453,7 +429,6 @@ __all__ = [
     "make_text_region",
     "make_screen_reference",
     "make_chat_reference",
-    "make_score_reference",
     "make_terminal_control_reference",
     "make_versioned_file_reference",
     "make_versioned_file_content_reference",

@@ -9,6 +9,7 @@ from agent_protocol import (
     action_json_schema,
     validate_shell_command,
 )
+import tmux_vim
 from interactive_runner import InteractiveRunner
 from meeting_v2 import MeetingStore
 from tests.test_interactive_runner import FakeClient, FakeTransport, make_action
@@ -218,8 +219,12 @@ class ShellPolicyRunnerTest(unittest.TestCase):
         self.assertEqual(1, len(rejected))
         self.assertIn("deletion-class command is not allowed: rm", rejected[0]["content"])
         typed = [text for _pane, text in transport.literal_sends]
-        self.assertIn("git status", typed)
-        self.assertNotIn("rm -rf build", typed)
+        # 敲进去两行：带标记的命令行，和单独一行的返回码探针。
+        joined = "\n".join(typed)
+        self.assertIn("git status", joined)
+        self.assertIn(tmux_vim.RETCODE_MARKER, joined)
+        self.assertTrue(any("git status" == text.split("; ", 1)[-1] for text in typed), typed)
+        self.assertNotIn("rm -rf build", joined)
 
     def test_a_leftover_foreground_program_is_recovered_before_the_next_command(self):
         """前台被别的程序占着（人留下的 `top`）：harness 先把终端收回来，再跑自己的命令。"""

@@ -54,7 +54,6 @@ class AgentReferenceProtocolTest(unittest.TestCase):
 
     def test_invalid_references_are_rejected(self):
         cases = [
-            [{"kind": "score", "seq": 1, "region": None}],
             [{"kind": "chat", "region": None}],
             [{"kind": "chat", "seq": 0, "region": None}],
             [{"kind": "chat", "seq": 1, "region": {"start": 3, "end": 3}}],
@@ -195,6 +194,8 @@ class AgentReferenceRunnerTest(unittest.TestCase):
         ]
         self.assertEqual(1, len(rejected))
         self.assertIn("reference source event was not found", rejected[0]["content"])
+        # 引用被拒时不要跟着念 type/message_type 那一串：那是答另一个问题。
+        self.assertNotIn("allowed_types=", rejected[0]["content"])
         acks = [
             event
             for event in loaded.chat_messages()
@@ -203,6 +204,33 @@ class AgentReferenceRunnerTest(unittest.TestCase):
         self.assertEqual(1, len(acks))
         self.assertNotIn("references", acks[0]["data"])
         self.assertEqual("completion_proposed", loaded.meeting.phase)
+
+    def test_a_screen_reference_pointing_at_an_action_event_names_the_screen_seq(self):
+        """引用屏幕却填了 action 事件的 seq：说清楚该填哪个号，别答非所问。
+
+        真事：20260929-200133-eedc8a 的第一次 `done` 就是这么被拒的，拒绝理由后面还跟着
+        `allowed_types=…`；模型看完把证据整个删了重交，那次过了 —— 一个没有证据的完成。
+        """
+        self.store.append_screen("the test output", "bash", str(self.store.workspace_path))
+        screen_seq = self.store.latest_screen()["seq"]
+        action = self.store.append_event("action", "harness", "agent_acting",
+                                         data={"status": "completed"})
+        runner = InteractiveRunner(
+            self.store, self.transport, FakeClient([]),
+            action_settle_seconds=0, typing_interval_seconds=0,
+        )
+        quoted = make_action(
+            "done",
+            message_type="final",
+            content="Finishing.",
+            references=[{"kind": "screen", "seq": action["seq"], "region": None}],
+        )
+        with self.assertRaisesRegex(
+                AgentProtocolError,
+                f"reference seq={action['seq']} is a action event, not screen"):
+            runner._resolved_action_references(quoted)
+        with self.assertRaisesRegex(AgentProtocolError, f"newest screen event is seq={screen_seq}"):
+            runner._resolved_action_references(quoted)
 
     def test_region_outside_source_content_is_rejected(self):
         _client, loaded = self.run_runner(
@@ -232,8 +260,8 @@ class AgentActionFieldDiagnosticsTest(unittest.TestCase):
 
     def test_missing_required_field_is_named_in_the_error(self):
         payload = chat_payload()
-        payload.pop("message_type")
-        with self.assertRaisesRegex(AgentProtocolError, "missing fields: message_type"):
+        payload.pop("type")
+        with self.assertRaisesRegex(AgentProtocolError, "missing fields: type"):
             AgentAction.from_dict(payload)
 
 
@@ -295,6 +323,113 @@ class AgentActionToleranceTest(unittest.TestCase):
     def test_chat_final_without_content_is_still_wrong(self):
         with self.assertRaisesRegex(AgentActionError, "chat requires"):
             decode_action_text(json.dumps({"type": "chat", "message_type": "final", "content": ""}))
+
+
+class ActionShapeToleranceTest(unittest.TestCase):
+    """模型把动作写成别的样子时，能纠回来的就纠，别再为字段名把一场会判死。"""
+
+    def test_an_outer_placeholder_type_does_not_hide_the_real_action(self):
+        """`{"type":"none","action":{...}}`：里层才是真的动作（真事：这么连来三次，一
+        场会被判成 api_error）。"""
+        action = AgentAction.from_dict(
+            {
+                "type": "none",
+                "action": {
+                    "type": "diff",
+                    "diff": "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-x\n+y\n",
+                },
+            }
+        )
+        self.assertEqual("diff", action.type)
+        self.assertIn("+y", action.diff)
+
+    def test_a_message_type_that_names_the_action_is_read_as_ack(self):
+        """`"message_type": "chat"` 的意思是"这是一句话"，当成 ack，不是非法值。"""
+        action = AgentAction.from_dict(
+            {"type": "chat", "message_type": "chat", "content": "收到"}
+        )
+        self.assertEqual("chat", action.type)
+        self.assertEqual("ack", action.message_type)
+
+    def test_a_chat_envelope_around_a_real_command_is_that_command(self):
+        """里层没写类型、外层写着 `chat`，但里层填的是命令：那就是命令。
+
+        原文来自 20260929-200133-eedc8a：这一条被判成"缺 message_type 的 chat"驳回，
+        重试到整场会 api_error。"""
+        action = AgentAction.from_dict(
+            {
+                "type": "chat",
+                "action": {
+                    "command": "sed -n '308,326p;400,424p' frontend/workspace.js",
+                    "content": "",
+                    "diff": "",
+                    "path": "",
+                    "delay_ms": 0,
+                    "references": [],
+                },
+                "result_needed": True,
+            }
+        )
+        self.assertEqual("command", action.type)
+        self.assertEqual("sed -n '308,326p;400,424p' frontend/workspace.js", action.command)
+        self.assertEqual("none", action.message_type)
+
+    def test_a_chat_envelope_around_a_patch_is_that_patch(self):
+        action = AgentAction.from_dict(
+            {
+                "type": "chat",
+                "action": {
+                    "command": "*** Begin Patch\n*** Update File: a.py\n"
+                               "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-x\n+y\n",
+                    "content": "",
+                    "diff": "",
+                },
+            }
+        )
+        self.assertEqual("diff", action.type)
+        self.assertTrue(action.diff.startswith("*** Begin Patch"))
+
+    def test_a_chat_without_a_message_type_is_read_as_ack(self):
+        """一句正文没写 message_type：只可能是"我听到了"，按 ack 收下别驳回。
+
+        原文来自 20260929-200133-eedc8a，这一条连着出现三次。"""
+        action = AgentAction.from_dict(
+            {
+                "type": "chat",
+                "action": {
+                    "command": "none",
+                    "content": "我先看成员“最后活跃”和消息时间的现有实现，再补上同样的完整时间提示。",
+                    "diff": "",
+                    "path": "",
+                    "delay_ms": 0,
+                    "references": [{"kind": "chat", "seq": 1, "region": None}],
+                },
+                "result_needed": False,
+            }
+        )
+        self.assertEqual("chat", action.type)
+        self.assertEqual("ack", action.message_type)
+        self.assertIn("最后活跃", action.content)
+
+    def test_a_done_still_has_to_say_it_is_final(self):
+        """done 例外：它在声称活干完了，必须自己说清，不能替它默认。"""
+        with self.assertRaisesRegex(Exception, "missing fields: message_type"):
+            AgentAction.from_dict({"type": "done", "content": "改完了"})
+
+    def test_a_patch_pasted_into_command_moves_to_diff(self):
+        """整份补丁塞进 `command`（还常用 Codex 的 `*** Begin Patch` 写法）：搬到 `diff`。"""
+        pasted = (
+            "*** Begin Patch\n*** Update File: a.py\n"
+            "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        )
+        action = AgentAction.from_dict({"type": "diff", "command": pasted})
+        self.assertEqual("diff", action.type)
+        self.assertEqual("none", action.command)
+        self.assertTrue(action.diff.startswith("*** Begin Patch"))
+
+    def test_an_empty_diff_says_where_the_patch_goes(self):
+        with self.assertRaisesRegex(Exception, "the unified diff goes in `diff`"):
+            AgentAction.from_dict({"type": "diff", "command": "ls -l"})
 
 
 if __name__ == "__main__":

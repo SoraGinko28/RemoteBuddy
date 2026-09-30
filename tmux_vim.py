@@ -8,11 +8,11 @@
   vim 动作，逐步执行（每步之间可以被打断、要问过 actor 才继续），落盘之后再核对
   "工作区现在是什么样"和"这份 diff 要求的什么样"是否一致，不一致就再来一轮。
 
-核对不比对 diff 文本，而是比对文件树：动手前用一份**临时索引**把整个工作区写成一棵树
-（`Snapshot`），再用另一份临时索引把 actor 要的那份 diff 应用到这棵树上，得到"要求的样子"
-（`expected tree`）。每轮结束把工作区现状也写成一棵树，两者只在这份 diff 涉及的文件上比较，
-差出来的那一小节就是下一轮要补的改动。这样上下文行的多少、hunk 怎么分组、行号是不是对的
-都不影响判断，判据始终是文件里的内容。
+核对不比对 diff 文本，而是比对文件内容：动手前拍一份快照（`Snapshot`）——这些文件现在是
+什么，外加一棵 git worktree 快照（项目是仓库时，见"工作区快照与比对"那一节）；把 actor 要的
+这份 diff 在内存里应用一遍，得到"要求的样子"。每轮结束把这几个文件再读一遍，和"要求的样子"
+逐文件比，差出来的那一小节就是下一轮要补的改动；新 diff 从 worktree 那边取。这样上下文行的
+多少、hunk 怎么分组、行号是不是对的都不影响判断，判据始终是文件里的内容。
 
 这份文件里的 vim 只做这几件事：定位（`{n}G` 或按上下文行搜索）、删若干行、插若干行、
 保存退出。一次 vim 动作最多写 `MAX_LINES_PER_STEP` 行，为的是每步之间都能被人打断。
@@ -20,8 +20,12 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
 import shlex
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,9 +36,19 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 # {"kind": "text"|"ctrl", "value": ...}
 KeyToken = Dict[str, Any]
 Runner = Callable[..., Any]
+from tmux_transport import TmuxError
+
+
+class CommandSendError(TmuxError):
+    """The command line or its return marker could not be injected."""
+
 
 # 每一步写几行文本。一行一行的：人在屏上看得见每一行的到来，也能在两行之间叫停。
 MAX_LINES_PER_STEP = 1
+
+# 拍快照、取新 diff 这些 git 命令最多跑多久。整个项目写进临时对象库对大项目要几秒，
+# 但不能没有上限：卡住了这一份 diff 就该退回去自己算，不能把这场会拖着。
+GIT_TIMEOUT_SECONDS = 120
 
 # vim 用一套干净的配置跑：不读用户的 vimrc（autoindent/expandtab 这类设置会把写进去的
 # 行改样），不写 viminfo，nocompatible，也不写 swap 文件 —— 一次编辑被掐断（人叫停、会话
@@ -113,10 +127,15 @@ class CommandTimeout(RuntimeError):
 
 @dataclass(frozen=True)
 class TmuxCmdResult:
-    """在共享终端里跑一条命令的结果。"""
+    """在共享终端里跑一条命令的结果。
+
+    `truncated` 说明这条命令的输出比 tmux 的历史缓存还长：前置标记那一行已经被顶掉了，
+    `output_on_screen` 里是裁剩的尾巴，不是全部。
+    """
 
     retcode: str
     output_on_screen: str
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -234,6 +253,15 @@ _CODEX_WRAPPERS = ("*** Begin Patch", "*** End Patch")
 _CODEX_FILE = re.compile(r"^\*\*\* (Update|Add|Delete) File: (.+)$")
 
 
+def _is_patch_end_marker(line: str) -> bool:
+    return line.strip().lower() in {
+        "***",
+        "*** end patch",
+        "*** end diff",
+        "*** end of file",
+    }
+
+
 def _normalize_diff_lines(text: str) -> List[str]:
     """把常见的手写变体归一到标准 unified diff，再交给下面那段严格的读法。
 
@@ -243,6 +271,8 @@ def _normalize_diff_lines(text: str) -> List[str]:
     lines: List[str] = []
     for raw in text.splitlines():
         line = raw.rstrip("\r")
+        if _is_patch_end_marker(line):
+            continue
         if line.strip() in _CODEX_WRAPPERS:
             continue
         match = _CODEX_FILE.match(line)
@@ -328,7 +358,12 @@ def parse_unified_diff(text: str) -> List[FilePatch]:
         if not line.strip():
             index += 1
             continue
-        raise DiffError(f"这一段不属于任何文件: {line!r}")
+        raise DiffError(
+            f"这一段不属于任何文件: {line!r} —— 每个文件的改动前面都要有 `--- a/<路径>` 和 "
+            "`+++ b/<路径>` 两行；一个文件写完、换下一个文件时要重新写这两行。"
+            "hunk 头的行数（`@@ -旧起点,旧行数 +新起点,新行数 @@`）写错不要紧，"
+            "缺了文件头就读不出这些行是哪个文件的。"
+        )
     if rename_from and rename_to:
         patches.append(_rename_patch(rename_from, rename_to))
     elif rename_from or rename_to:
@@ -373,30 +408,30 @@ def _parse_hunk(lines: Sequence[str], index: int) -> Tuple[Hunk, int]:
             body.append(line)
             cursor += 1
             continue
-        if old_seen == old_count and new_seen == new_count:
-            break
-        # 下一个文件的头（或者 `diff --git`）：这一段 hunk 到头了，行数按正文重数。
-        if line.startswith(("--- ", "+++ ", "diff --git ", "diff --cc ")):
+        # 到头只有这几种：下一个 hunk、下一个文件的头、或者空行。**不按 hunk 头里写的行数停**：
+        # 手写的 diff 常把行数写少，按它停就会把后面的行甩出去，读成"这一段不属于任何文件"
+        # （真会里就这么连撞三次、把一场会撞死）。正文到下一个头为止，行数最后统一重数。
+        is_file_header = (
+            line.startswith("--- ")
+            and cursor + 1 < len(lines)
+            and lines[cursor + 1].startswith(("+++ ", "--- "))
+        )
+        if line.startswith(("@@", "diff --git ", "diff --cc ")) or is_file_header:
             break
         if not line:
-            # 空白上下文行被写成了彻底的空行
+            # 空白上下文行被写成了彻底的空行；数已经够了就当这一段到头了（后面多半是新文件或收尾的话）。
             if old_seen < old_count and new_seen < new_count:
                 body.append(" ")
                 old_seen += 1
                 new_seen += 1
                 cursor += 1
                 continue
-            raise DiffError(f"hunk 里出现了空行: {header!r}")
+            break
         prefix = line[0]
         text = line[1:]
         if prefix not in " +-":
-            # 上下文行漏了开头那个空格：hunk 头还等着旧行+新行各一条，那就按上下文算
-            if old_seen < old_count and new_seen < new_count:
-                prefix, text = " ", line
-            else:
-                raise DiffError(
-                    f"hunk 里这一行既不是上下文（要以一个空格开头）也不是增删（+ / -）: {line!r}"
-                )
+            # 上下文行漏了开头那个空格（hunk 头行数已经数错的情况也一样）：按上下文算。
+            prefix, text = " ", line
         if prefix == " ":
             old_seen += 1
             new_seen += 1
@@ -487,8 +522,15 @@ class _Segment:
     line_number_known: bool  # 光看行号站不站得住（hunk 头里给了行号就是站得住的）
 
 
-def vim_steps_for(patch: FilePatch) -> List[VimStep]:
-    """一个文件的补丁变成一串 vim 动作（同一文件多个 hunk 要从后往前改，行号才不会串）。"""
+def vim_steps_for(
+    patch: FilePatch, lines: Optional[Sequence[str]] = None
+) -> List[VimStep]:
+    """一个文件的补丁变成一串 vim 动作（同一文件多个 hunk 要从后往前改，行号才不会串）。
+
+    `lines` 是改之前这个文件的内容：有它就用来判"这一行的上下文能不能当搜索锚"、
+    以及"这个 hunk 实际落在第几行"（干跑怎么找的，落盘就怎么走）；没有就只按 diff 里
+    写的行号和上下文办。
+    """
     path = patch.path if patch.path != "/dev/null" else ""
     steps: List[VimStep] = []
     if patch.is_rename:
@@ -523,8 +565,9 @@ def vim_steps_for(patch: FilePatch) -> List[VimStep]:
         )
     )
     for hunk in sorted(patch.hunks, key=lambda one: one.old_start, reverse=True):
+        drift = _hunk_drift(hunk, lines)
         for segment in reversed(_hunk_segments(hunk)):
-            steps.extend(_steps_for_segment(segment, hunk, path))
+            steps.extend(_steps_for_segment(segment, hunk, path, lines, drift))
     steps.append(
         VimStep(
             keys=(_text(":wq"), _ctrl("Enter")),
@@ -536,16 +579,27 @@ def vim_steps_for(patch: FilePatch) -> List[VimStep]:
     return steps
 
 
-def vim_steps_for_patches(patches: Sequence[FilePatch]) -> List[VimStep]:
+def vim_steps_for_patches(
+    patches: Sequence[FilePatch], contents: Optional[Dict[str, Optional[str]]] = None
+) -> List[VimStep]:
+    """整份补丁变成一串 vim 动作；`contents` 是这些文件改之前的内容（路径 -> 文本，没有就是 None）。"""
     steps: List[VimStep] = []
     for patch in patches:
-        steps.extend(vim_steps_for(patch))
+        lines: Optional[List[str]] = None
+        if contents is not None:
+            body = contents.get(patch.path)
+            if body is None and patch.old_path in contents:
+                body = contents.get(patch.old_path)
+            lines = (body or "").splitlines()
+        steps.extend(vim_steps_for(patch, lines))
     return steps
 
 
-def vim_steps_for_diff(text: str) -> List[VimStep]:
+def vim_steps_for_diff(
+    text: str, contents: Optional[Dict[str, Optional[str]]] = None
+) -> List[VimStep]:
     """整份 diff 变成一串 vim 动作。"""
-    return vim_steps_for_patches(parse_unified_diff(text))
+    return vim_steps_for_patches(parse_unified_diff(text), contents)
 
 
 def _text(value: str) -> KeyToken:
@@ -615,12 +669,50 @@ def _hunk_segments(hunk: Hunk) -> List[_Segment]:
     return segments
 
 
-def _steps_for_segment(segment: _Segment, hunk: Hunk, path: str) -> List[VimStep]:
+def _hunk_drift(hunk: Hunk, lines: Optional[Sequence[str]]) -> int:
+    """这个 hunk 实际落在文件里的第几行（相对 diff 里写的行号偏了多少）。
+
+    干跑（`_apply_patches`）就是按上下文找的，落盘必须照它找到的那一行走 —— 模型手写的
+    行号常偏，照它写的行号落，改动就落到别处去了。
+    """
+    if lines is None:
+        return 0
+    start = hunk.old_start if hunk.old_count == 0 else hunk.old_start - 1
+    block = [raw[1:] for raw in hunk.lines if raw[:1] in {" ", "-"}]
+    located = _locate(lines, block, start)
+    if located is None:
+        return 0
+    return located - start
+
+
+def _may_search(hunk: Hunk, segment: _Segment, lines: Optional[Sequence[str]]) -> bool:
+    """这个 hunk 开头那一行能不能当搜索锚：得是非空的一整行，而且在文件里只出现一次。
+
+    只出现一次才敢搜 —— `/^}$/` 这种会命中文件里第一个 `}`，改动就落到了别的地方
+    （真会里真出过：一整个函数被写进了另一个函数里面）。
+    """
+    if not segment.line_number_known:
+        return False
+    head = _head_context(hunk)
+    if not head:
+        return False
+    if lines is None:
+        return True
+    return list(lines).count(head) == 1
+
+
+def _steps_for_segment(
+    segment: _Segment,
+    hunk: Hunk,
+    path: str,
+    lines: Optional[Sequence[str]] = None,
+    drift: int = 0,
+) -> List[VimStep]:
     steps: List[VimStep] = []
-    anchor_label = _anchor_label(segment, hunk)
+    anchor_label = _anchor_label(segment, hunk, lines, drift)
     steps.append(
         VimStep(
-            keys=tuple(_anchor_keys(segment, hunk)),
+            keys=tuple(_anchor_keys(segment, hunk, lines, drift)),
             path=path,
             label=f"{path}: 定位到{anchor_label}",
         )
@@ -703,24 +795,37 @@ def _insert_keys(
     return keys
 
 
-def _anchor_keys(segment: _Segment, hunk: Hunk) -> List[KeyToken]:
-    """定位：hunk 开头有上下文行就按整行搜索过去，没有就报行号。"""
-    head = _head_context(hunk)
-    if head and segment.line_number_known:
+def _anchor_keys(
+    segment: _Segment,
+    hunk: Hunk,
+    lines: Optional[Sequence[str]] = None,
+    drift: int = 0,
+) -> List[KeyToken]:
+    """定位：hunk 开头那一行在文件里只出现一次就搜过去，否则报它实际落在的那一行。
+
+    同一文件的 hunk 是从后往前改的，所以行号不会被后面的改动顶歪；这里报的行号是干跑按
+    上下文找出来的那一行（`_hunk_drift`），不是 diff 里写的那个。
+    """
+    if _may_search(hunk, segment, lines):
+        head = _head_context(hunk)
         moves = segment.anchor_line - hunk.old_start
         if moves >= 0:
             keys: List[KeyToken] = [_text("gg"), _text("/" + _search_pattern(head)), _ctrl("Enter")]
             if moves:
                 keys.append(_text(f"{moves}j"))
             return keys
-    return [_text(f"{max(segment.anchor_line, 1)}G")]
+    return [_text(f"{max(segment.anchor_line + drift, 1)}G")]
 
 
-def _anchor_label(segment: _Segment, hunk: Hunk) -> str:
-    head = _head_context(hunk)
-    if head and segment.line_number_known:
-        return f"上下文行 {head[:40]!r} 下面"
-    return f"第 {max(segment.anchor_line, 1)} 行"
+def _anchor_label(
+    segment: _Segment,
+    hunk: Hunk,
+    lines: Optional[Sequence[str]] = None,
+    drift: int = 0,
+) -> str:
+    if _may_search(hunk, segment, lines):
+        return f"上下文行 {_head_context(hunk)[:40]!r} 下面"
+    return f"第 {max(segment.anchor_line + drift, 1)} 行"
 
 
 def _head_context(hunk: Hunk) -> str:
@@ -771,6 +876,9 @@ def ensure_shell(
         actions.append("enter")
         return ShellReady(pane_id=pane_id, actions=tuple(actions))
     if program in VIM_PROGRAMS:
+        # 先 C-c 退出插入模式，再 `:q!`：vim 停在插入模式时，`:q!` 只是被插进缓冲区的一串字，
+        # 回车也只是换行，等它的还是 vim —— 最后只能白白重启整块终端（人那边的滚动历史没了）。
+        transport.send_special(pane_id, "C-c")
         transport.send_tokens(pane_id, (_text(":q!"), _ctrl("Enter")))
         actions.append("quit-vim")
     elif program in PAGER_PROGRAMS:
@@ -829,37 +937,149 @@ def run_command(
     pane_id = ready.pane_id
     if interrupt_check is not None and interrupt_check():
         raise Interrupted("还没开始跑命令就被打断了")
-    if type_line is not None:
-        type_line(pane_id, command)
-    else:
-        transport.send_keys(pane_id, command)
-    retcode = _read_retcode(transport, pane_id, interrupt_check, timeout=timeout)
+    token = uuid.uuid4().hex[:12]
+    typed = command_line(command, token)
+    try:
+        if type_line is not None:
+            type_line(pane_id, typed)
+        else:
+            transport.send_keys(pane_id, typed)
+    except TmuxError as exc:
+        raise CommandSendError(
+            f"command was not sent to pane; retry this action: {exc}"
+        ) from exc
+    # 读返回码那句另起一行，用同一个 token（`command_output` 靠一前一后两个标记切输出）。
+    retcode = _read_retcode(
+        transport, pane_id, interrupt_check, token=token, timeout=timeout
+    )
     screen = transport.capture(pane_id)
     _record(transport, store, pane_id, change_kind="command")
-    return TmuxCmdResult(retcode=retcode, output_on_screen=screen)
+    # 交回去的是这一条命令自己的输出（两个标记之间那一段），不是整屏缓存：模型要的是这次跑
+    # 出来的东西，不是上一条命令留下的、人屏幕上的历史。切不出来时宁多勿错，整屏兜底；
+    # 切出来是空的就交空的（"这条命令没打印东西"也是结论）。
+    output, truncated = command_output(screen, token)
+    return TmuxCmdResult(
+        retcode=retcode,
+        output_on_screen=screen if output is None else output,
+        truncated=truncated,
+    )
 
 
-RETCODE_MARKER = "remotebuddy-retcode-"
+# 一枪命令的两个标记，随 token 一起把"这条命令的输出"夹在中间：
+#   echo cmd-remotebuddy-<token> > /dev/null; <命令>; echo retcode-remotebuddy-<token> $?
+# 前置那个 echo 重定向到 /dev/null、自己不打印，只用来在屏上标出这一行的开头；后面那句
+# 打印返回码，同时是输出的结尾。`command_output` 就照这两个标记切（见它的说明）。
+CMD_MARKER = "cmd-remotebuddy-"
+RETCODE_MARKER = "retcode-remotebuddy-"
+# actor 自己写过的拼法（上一版 harness 用的就是它）：剥尾巴时照样认。
+LEGACY_RETCODE_MARKER = "remotebuddy-retcode-"
+
+# actor 也可能自己在命令尾巴上接一句 `echo …-retcode-xxx $?`（它知道 harness 要读返回码）。
+# 那句话归 harness 写：这里把它剥掉、换成我们自己这一枪的标记。它写没写、写成什么样都不影响。
+_RETCODE_TAIL = re.compile(
+    r"\s*(?:;|&&|\|\|)?\s*echo\s+(?:-n\s+)?[\"']?(?:"
+    + re.escape(RETCODE_MARKER)
+    + "|"
+    + re.escape(LEGACY_RETCODE_MARKER)
+    + r")[A-Za-z0-9_-]*[\"']?\s+\$?\?[\"']?\s*$"
+)
+
+
+def strip_retcode_tail(command: str) -> str:
+    """去掉 actor 自己接的返回码 echo 尾巴；它没接就原样返回。"""
+    text = command.rstrip()
+    stripped = _RETCODE_TAIL.sub("", text).rstrip()
+    return stripped or text
+
+
+def _marker_command(token: str) -> str:
+    """标出这一行开头的那个 echo：自己不打印。"""
+    return f"echo {CMD_MARKER}{token} > /dev/null"
 
 
 def _retcode_command(token: str) -> str:
     return f"echo {RETCODE_MARKER}{token} $?"
 
 
-def _read_retcode(
+def command_line(command: str, token: str) -> str:
+    """敲进共享终端的那一行：前置标记 + 命令本身。
+
+    读返回码那句 `echo … $?` **不往同一行上接**。命令尾巴千奇百怪，接上去会把它本身改坏：
+    `find ../viba -type f -name '*.md' -print -exec cat {} \\;` 这种尾巴上带 `\\;` 的，
+    接出来就成了 `… {} \\; echo retcode-… $?` —— find 把 `echo` 当成了自己的参数，
+    直接报 "unknown primary or operator"。那一句另起一行敲（`_read_retcode`）。
+    """
+    body = strip_retcode_tail(command)
+    if not body.strip():
+        return _marker_command(token)
+    return f"{_marker_command(token)}; {body}"
+
+
+def command_output(screen: str, token: str) -> Tuple[Optional[str], bool]:
+    """把这一枪命令的输出从整屏缓存里切出来：返回（输出, 是不是被缓存截剩了尾巴）。
+
+    区间是"前置标记那一行之后"到"带返回码的那一行之前"。合不成一行时中间会多出读返回码的
+    那次探针（连它前面那个提示符一起剔掉）；命令自己的输出原样留着。
+
+    前置标记那一行不在了、带返回码那行还在：说明输出把 tmux 的历史缓存顶穿了，最早那几行
+    （连标记）已经被丢掉，手上只剩尾巴 —— `truncated` 置真，并且把第一行剔掉（那多半是被
+    截断的半行，上半截已经掉出去了）。切不出来（连返回码那行都没有）返回 (None, False)，
+    调用方拿整屏兜底。
+    """
+    last = None
+    for match in re.finditer(
+        rf"(?m)^{re.escape(RETCODE_MARKER)}{re.escape(token)}\s+-?\d+", screen
+    ):
+        last = match
+    if last is None:
+        return None, False
+    head = screen.rfind(f"{CMD_MARKER}{token}", 0, last.start())
+    truncated = False
+    if head < 0:
+        truncated = True
+        body = screen[: last.start()]
+    else:
+        line_end = screen.find("\n", head)
+        if line_end < 0 or line_end >= last.start():
+            truncated = True
+            body = screen[: last.start()]
+        else:
+            body = screen[line_end + 1 : last.start()]
+    probe = f"{RETCODE_MARKER}{token} $?"
+    cut = body.rfind(probe)
+    if cut >= 0:
+        line_start = body.rfind("\n", 0, cut)
+        body = body[: line_start if line_start >= 0 else 0]
+    lines = body.split("\n")
+    if truncated and lines:
+        # 缓存顶穿时留下的第一行是半截（上面那半已经掉出去了）。
+        lines.pop(0)
+    while lines and not lines[0].strip():
+        # 敲回车在屏上留下的那个空行，不是命令的输出。
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and re.fullmatch(r"\S*[$#>]\s*", lines[-1]):
+        # 命令跑完、探针还没敲下去之间的那个提示符。
+        lines.pop()
+    return "\n".join(lines), truncated
+
+
+def _await_retcode(
     transport: Any,
     pane_id: str,
     interrupt_check: Optional[Callable[[], bool]],
+    token: str,
     *,
     timeout: float = COMMAND_TIMEOUT_SECONDS,
 ) -> str:
-    """再敲一行带随机标记的 `echo`，从整屏缓存里把返回码读出来。
+    """等那一句带标记的 `echo` 落到屏上，从整屏缓存里把返回码读出来。
 
     标记必须每次都不一样：命令刚敲下去、壳还没轮到执行它的那一瞬间，整屏缓存里只有上一次
-    那个标记，拿它去解析就会把上一条命令的返回码当成本次的，等于没等命令跑完。
+    那个标记，拿它去解析就会把上一条命令的返回码当成本次的，等于没等命令跑完。合成一行之后
+    还有一层：刚敲下去的那一行本身就带着这次的新标记，但它后面跟的是字面的 `$?`、没有数字，
+    所以读不到值（`_retcode_after_marker` 会返回 None），得等 echo 真的跑出来。
     """
-    token = uuid.uuid4().hex[:12]
-    transport.send_keys(pane_id, _retcode_command(token))
     needle = f"{RETCODE_MARKER}{token}"
     deadline = time.monotonic() + timeout
     while True:
@@ -872,6 +1092,25 @@ def _read_retcode(
         if time.monotonic() >= deadline:
             raise CommandTimeout(f"命令跑了超过 {timeout:.0f} 秒还没返回")
         time.sleep(POLL_SECONDS)
+
+
+def _read_retcode(
+    transport: Any,
+    pane_id: str,
+    interrupt_check: Optional[Callable[[], bool]],
+    *,
+    token: Optional[str] = None,
+    timeout: float = COMMAND_TIMEOUT_SECONDS,
+) -> str:
+    """单独敲一行带标记的 `echo` 再等它。`token` 给的就是这一枪那个（两处标记同号才切得出输出）。"""
+    token = token or uuid.uuid4().hex[:12]
+    try:
+        transport.send_keys(pane_id, _retcode_command(token))
+    except TmuxError as exc:
+        raise CommandSendError(
+            f"command return-code marker was not sent; retry this action: {exc}"
+        ) from exc
+    return _await_retcode(transport, pane_id, interrupt_check, token, timeout=timeout)
 
 
 def _retcode_after_marker(screen: str, needle: str) -> Optional[str]:
@@ -1059,25 +1298,43 @@ def _wait_for(
 
 
 # ----------------------------------------------------------------------
-# 工作区快照与比对：harness 自己读文件、自己算，不占共享终端，也不要求这里是 git 仓库
+# 工作区快照与比对：动手之前拍一份，落盘之后从它那边取"这次编辑到底改了什么"
 # ----------------------------------------------------------------------
 #
-# 判据是"文件里的内容"，不是 diff 文本：动手之前把这份 diff 牵到的文件先读下来
-# （`Snapshot`），把这份 diff 在内存里应用一遍得到"要求的样子"，落盘之后再把同样的文件
-# 读一遍，逐文件比。差出来的那一小节（`difflib` 出来的 unified diff）就是下一轮要补的改动。
-# 全程不用 git：`git apply` 比我们严（行数写错、上下文行少一个空格就"补丁损坏"），报错
-# 也没法照着改；而模型手写的 diff 恰恰常常是那样。
+# 判据是"文件里的内容"，不是 diff 文本：动手之前给这份 diff 牵到的文件先拍一张快照
+# （`Snapshot`），把这份 diff 在内存里应用一遍得到"要求的样子"，落盘之后把同样的文件
+# 再读一遍，逐文件比。差出来的那一小节就是下一轮要补的改动。
+#
+# 快照走 ADT 里那段 recipe：项目是 git 仓库、工作区就是它的根，就用一棵 git worktree
+# 快照把整个项目（被忽略的文件也算）记下来 —— 临时索引 read-tree/add -A -f/write-tree/
+# commit-tree，再从那个提交上开一棵 worktree。快照的对象写进临时对象目录（alternates
+# 指回项目的对象库），项目自己的 `.git` 只多一条分支和一个 worktree 登记，收尾都删掉；
+# 不然每拍一次都会往项目的对象库里塞进整个工作区的内容。
+#
+# 落盘之后把现在这些文件同步进那棵工作树，让 git 说这轮改了什么 —— 新 diff 从 worktree
+# 那边取。工作区不是仓库、只是仓库里的一个子目录、或者是个空仓库时拍不成，退回自己读
+# 文件拼 diff（`difflib`）：拍不成不能把这份 diff 判死。
+#
+# 可应用性（`check_appliable`）不走 `git apply --check`：它比我们严（行数写错、上下文行少
+# 一个空格就"补丁损坏"），报错也没法照着改，而模型手写的 diff 恰恰常常是那样。这一步本来
+# 就不必在共享终端里做，把它读到的那份文件和补丁摆在一起比，报"哪一行、补丁要什么、文件
+# 里是什么"，它照着改就行。
 
 
 @dataclass(frozen=True)
 class Snapshot:
     """动手之前给这份 diff 牵到的文件拍的那张快照。
 
-    `contents` 是每个文件当时的内容（None = 那时还不存在），比对照着它算。
+    `contents` 是每个文件当时的内容（None = 那时还不存在），干跑和比对都照着它算。
+    `worktree` 是 git 那边那棵快照工作树，`branch` 是它挂的分支，`root` 是这一轮快照的
+    临时目录（工作树、对象库、临时索引都在里面）。没拍成时它们是 None。
     """
 
     workspace: Path
     contents: Dict[str, Optional[str]]
+    worktree: Optional[Path] = None
+    branch: Optional[str] = None
+    root: Optional[Path] = None
 
 
 def _read_contents(workspace: Path, paths: Sequence[str]) -> Dict[str, Optional[str]]:
@@ -1093,13 +1350,124 @@ def _read_contents(workspace: Path, paths: Sequence[str]) -> Dict[str, Optional[
     return contents
 
 
-def snapshot_workspace(workspace: Path, patches: Sequence[FilePatch]) -> Snapshot:
-    """动手之前给这份 diff 牵到的文件拍一张快照（连没被跟踪、被忽略的文件一起）。"""
+def _git(
+    path: Path, *args: str, env: Optional[Dict[str, str]] = None
+) -> Optional[subprocess.CompletedProcess]:
+    """在 `path` 里跑一句 git；git 不在、跑不起来、超时都算没跑成（返回 None）。"""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _snapshot_objects_dir(workspace: Path) -> Optional[Path]:
+    """这个项目的对象库在哪（快照要拿它当 alternates）。"""
+    result = _git(workspace, "rev-parse", "--absolute-git-dir")
+    if result is None or result.returncode != 0:
+        return None
+    return Path(result.stdout.strip()) / "objects"
+
+
+def _snapshot_env(root: Path, objects: Path) -> Dict[str, str]:
+    """这一轮快照用的环境：新的对象写进临时对象库，项目的对象库挂在 alternates 上。
+
+    提交、树、这一轮新写的文件内容全都落在临时对象库里，收尾一起删掉 —— 项目自己的
+    `.git` 不会因为拍快照而长胖。
+    """
+    env = dict(os.environ)
+    env["GIT_OBJECT_DIRECTORY"] = str(root / "objects")
+    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(objects)
+    return env
+
+
+def _worktree_snapshot(
+    workspace: Path, notes: Optional[List[str]] = None
+) -> Tuple[Optional[Path], Optional[str], Optional[Path]]:
+    """按 ADT 里那段 recipe 给整个项目拍一棵 git worktree 快照；拍不成返回三个 None。
+
+    拍不成的原因写进 `notes`：这不是错误，只是这一轮的新 diff 由 harness 自己按内容拼。
+    """
+
+    def give_up(reason: str) -> Tuple[None, None, None]:
+        if notes is not None:
+            notes.append(f"没拍成 git 快照（{reason}），这一轮新 diff 按文件内容自己算")
+        return None, None, None
+
+    toplevel = _git(workspace, "rev-parse", "--show-toplevel")
+    if toplevel is None or toplevel.returncode != 0:
+        return None, None, None  # 不是仓库：正常情况，不用解释
+    if Path(toplevel.stdout.strip()).resolve() != workspace:
+        return give_up("工作区是仓库里的一个子目录")
+    head = _git(workspace, "rev-parse", "--verify", "HEAD")
+    if head is None or head.returncode != 0:
+        return give_up("这个仓库还没有提交")
+    objects = _snapshot_objects_dir(workspace)
+    if objects is None:
+        return give_up("找不到项目的对象库")
+
+    root = Path(tempfile.mkdtemp(prefix="remotebuddy-snapshot-"))
+    (root / "objects").mkdir()
+    worktree = root / "tree"
+    branch = f"snapshot-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+    index = root / "index"
+    env = _snapshot_env(root, objects)
+    recipe = "\n".join(
+        [
+            "set -e",
+            'GIT_INDEX_FILE={index} git read-tree HEAD',
+            'GIT_INDEX_FILE={index} git add -A -f .',
+            'tree=$(GIT_INDEX_FILE={index} git write-tree)',
+            'commit=$(git commit-tree "$tree" -p HEAD -m {message})',
+            'git worktree add --no-checkout -b {branch} {worktree} "$commit"',
+        ]
+    ).format(
+        index=shlex.quote(str(index)),
+        message=shlex.quote(f"snapshot {branch}"),
+        branch=shlex.quote(branch),
+        worktree=shlex.quote(str(worktree)),
+    )
+    try:
+        done = subprocess.run(
+            ["bash", "-c", recipe],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        return give_up(f"git 没跑起来：{exc}")
+    if done.returncode != 0:
+        reason = (done.stderr or done.stdout or "").strip().splitlines()
+        shutil.rmtree(root, ignore_errors=True)
+        return give_up(reason[0] if reason else f"git 退出码 {done.returncode}")
+    return worktree, branch, root
+
+
+def snapshot_workspace(
+    workspace: Path, patches: Sequence[FilePatch], notes: Optional[List[str]] = None
+) -> Snapshot:
+    """动手之前拍一份快照：这些文件现在是什么内容，外加整个项目的那棵 git 工作树（拍得成的话）。"""
     resolved = Path(workspace).expanduser().resolve()
     if not resolved.is_dir():
         raise DiffNotAppliable(f"工作区目录不在了: {resolved}")
     paths = [path for patch in patches for path in patch.paths]
-    return Snapshot(workspace=resolved, contents=_read_contents(resolved, paths))
+    contents = _read_contents(resolved, paths)
+    worktree, branch, root = _worktree_snapshot(resolved, notes)
+    return Snapshot(
+        workspace=resolved,
+        contents=contents,
+        worktree=worktree,
+        branch=branch,
+        root=root,
+    )
 
 
 def _snippet(lines: Sequence[str], around: int, span: int = 3) -> str:
@@ -1170,9 +1538,37 @@ def _apply_patches(
             located = _locate(lines, block, start)
             if located is None:
                 wanted = block[0] if block else "（空 hunk）"
+                best_at = max(0, min(start, len(lines)))
+                best_matched = 0
+                for candidate in range(len(lines) + 1):
+                    matched = 0
+                    while (
+                        matched < len(block)
+                        and candidate + matched < len(lines)
+                        and lines[candidate + matched] == block[matched]
+                    ):
+                        matched += 1
+                    if matched > best_matched or (
+                        matched == best_matched
+                        and abs(candidate - start) < abs(best_at - start)
+                    ):
+                        best_at, best_matched = candidate, matched
+                mismatch_line = best_at + best_matched + 1
+                expected = (
+                    block[best_matched]
+                    if best_matched < len(block)
+                    else "（文件到头了）"
+                )
+                actual = (
+                    lines[best_at + best_matched]
+                    if best_at + best_matched < len(lines)
+                    else "（文件到头了）"
+                )
                 raise DiffNotAppliable(
-                    f"{name}: 找不到这个 hunk 要改的那一段 —— 补丁的第一行是 {wanted!r}，"
-                    f"文件里没有。这个文件现在（第 {max(start + 1, 1)} 行附近）是这样：\n"
+                    f"{name}: 找不到这个 hunk 要改的那一段 —— 补丁的第一行是 {wanted!r}；"
+                    f"文件从第 {best_at + 1} 行开始对上 {best_matched} 行，"
+                    f"第 {mismatch_line} 行开始不对：补丁要 {expected!r}，文件里是 {actual!r}。"
+                    f"这个文件现在（第 {max(start + 1, 1)} 行附近）是这样：\n"
                     f"{_snippet(lines, start)}\n"
                     f"照这些行重写这一版，别照你上一版补丁里的行写。"
                 )
@@ -1238,8 +1634,48 @@ def _unified_diff(before: Optional[str], after: Optional[str], path: str) -> str
     return f"--- {old_name}\n+++ {new_name}\n" + "".join(body)
 
 
+def _worktree_diff(snapshot: Snapshot, contents: Dict[str, Optional[str]]) -> Optional[str]:
+    """把现在这些文件同步进那棵快照工作树，让 git 说这轮改了什么；没跑成就返回 None。"""
+    if snapshot.worktree is None or snapshot.root is None:
+        return None
+    objects = _snapshot_objects_dir(snapshot.workspace)
+    if objects is None:
+        return None
+    env = _snapshot_env(snapshot.root, objects)
+    for path, body in contents.items():
+        target = snapshot.worktree / path
+        try:
+            if body is None:
+                target.unlink(missing_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body.encode("utf-8", "surrogateescape"))
+        except OSError:
+            return None
+    if not contents:
+        return ""
+    paths = list(contents)
+    staged = _git(snapshot.worktree, "add", "-A", "-f", "--", *paths, env=env)
+    if staged is None or staged.returncode != 0:
+        return None
+    # 工作树是从快照提交上开的、开始时一个文件都没检出，索引里只有上面同步进去的这些
+    # 文件；所以 diff 也只取这些文件（`-- paths`）—— 其余文件在两边的差别是"还没检出"，
+    # 不是这轮编辑改出来的东西。
+    result = _git(snapshot.worktree, "diff", "--cached", "--", *paths, env=env)
+    if result is None or result.returncode != 0:
+        return None
+    return result.stdout
+
+
 def workspace_diff(snapshot: Snapshot, contents: Dict[str, Optional[str]]) -> str:
-    """从快照那边取"这次编辑对这些文件做了什么"。"""
+    """从快照那边取"这次编辑对这些文件做了什么"。
+
+    有那棵 git 工作树就从它那边取（这才是这轮编辑对文件系统造成的实际改动）；没有
+    （不是仓库、或快照没拍成）就自己按快照里的内容和现在的内容拼一份。
+    """
+    from_worktree = _worktree_diff(snapshot, contents)
+    if from_worktree is not None:
+        return from_worktree
     return "".join(
         _unified_diff(snapshot.contents.get(path), contents.get(path), path)
         for path in snapshot.contents
@@ -1272,8 +1708,22 @@ def check_appliable(workspace: Path, diff: str, *, run: Optional[Runner] = None)
 
 
 def cleanup_snapshot(snapshot: Snapshot) -> None:
-    """按文件拍的快照没有临时目录要收，留着这个函数是为了调用方那句话读得通。"""
-    del snapshot
+    """收掉这一轮快照：摘掉那棵工作树、删掉它挂的分支、把临时目录（连对象库）整个删了。"""
+    if snapshot.worktree is not None:
+        objects = _snapshot_objects_dir(snapshot.workspace)
+        env = _snapshot_env(snapshot.root, objects) if snapshot.root and objects else None
+        _git(
+            snapshot.workspace,
+            "worktree",
+            "remove",
+            "--force",
+            str(snapshot.worktree),
+            env=env,
+        )
+        if snapshot.branch:
+            _git(snapshot.workspace, "branch", "-D", snapshot.branch, env=env)
+    if snapshot.root is not None:
+        shutil.rmtree(snapshot.root, ignore_errors=True)
 
 
 def diffs_match(wanted: str, got: str) -> bool:
@@ -1317,8 +1767,8 @@ def tmux_apply_diff_by_vim(
     if not patches:
         raise DiffError("这份 diff 里没有文件改动")
     workspace = _workspace_of(store, transport, pane_id)
-    snapshot = snapshot_workspace(workspace, patches)
     notes: List[str] = []
+    snapshot = snapshot_workspace(workspace, patches, notes)
     try:
         expected = _apply_patches(patches, snapshot.contents, notes)
     except DiffNotAppliable as exc:
@@ -1327,10 +1777,12 @@ def tmux_apply_diff_by_vim(
     paths = _ordered_paths(patches)
     outcome = ApplyOutcome(wanted_diff=diff, mismatched_files=[], notes=notes)
     pending = diff
+    # 定位要看得见文件当时长什么样：第一轮是快照里的内容，补的轮次是刚落完的现状。
+    current: Dict[str, Optional[str]] = dict(snapshot.contents)
     try:
         while True:
             outcome.rounds += 1
-            steps = vim_steps_for_diff(pending)
+            steps = vim_steps_for_diff(pending, current)
             executed = apply_vim_steps(
                 transport,
                 store,

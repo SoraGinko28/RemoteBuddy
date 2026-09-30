@@ -130,6 +130,9 @@ class CodexAppServerBackend:
         self._process: Any = None
         self._temporary: Optional[tempfile.TemporaryDirectory] = None
         self._reader: Optional[threading.Thread] = None
+        # app-server 对同一个 item 会先报 started、再报 completed；已经为这个 id
+        # 拒过一次的，第二次直接跳过——一次越界只该花掉一枪，不是两枪。
+        self._refused_item_ids: set = set()
         self._stderr_reader: Optional[threading.Thread] = None
         self._condition = threading.Condition(threading.RLock())
         self._write_lock = threading.Lock()
@@ -486,6 +489,9 @@ class CodexAppServerBackend:
                 )
                 if response is not None:
                     return response
+                # 这一枪刚干完一件活（可能是一次落盘，敲了几分钟）：期限从这一刻重新算，
+                # 别让动作刚做完、模型还在想的时候因为期限早过了判它超时。
+                deadline = time.monotonic() + timeout
                 continue
 
             method = value.get("method")
@@ -503,9 +509,13 @@ class CodexAppServerBackend:
                     item_type=item_type,
                     status=status,
                 )
+                if item_id is not None and item_id in self._refused_item_ids:
+                    continue
                 if item_type in FORBIDDEN_ITEM_TYPES or (
                     item_type == "dynamicToolCall" and not self.config.codex_dynamic_tools
                 ):
+                    if item_id is not None:
+                        self._refused_item_ids.add(item_id)
                     self._refuse(f"forbidden Codex item type: {item_type}")
                 if item_type not in SAFE_ITEM_TYPES and item_type != "dynamicToolCall":
                     self._reject_protocol(f"unknown Codex item type: {item_type}")

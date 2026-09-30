@@ -16,7 +16,6 @@ Asserts covered (aligned with MEETING_ADT.md / meeting_adt.py):
                     row count == height / cursor within bounds / segments
                     non-empty and adjacent attributes distinct
   terminal_control  owner in terminal_capable (human or actor)
-  score             summon_chained (a passive must be summoned via an @)
   meeting           keys(agent_name2role) subset of user_names
   file_desktop      names unique per level (so a path resolves to one entry);
                     member order is a permutation at every level;
@@ -117,17 +116,14 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
         _check(report, "file_desktop", None, "file_id_in_store",
                lambda f=file_id: adt.assert_file_id_in_store(f, meeting.file_kv_store))
 
-    # ---- collect control/chat/score records for cross-chunk checks ----
+    # ---- collect control/chat records for cross-chunk checks ----
     controls: list[adt.TerminalControl] = []
     chat_messages: list[adt.ChatMessage] = []
-    score_messages: list[adt.ScoreMessage] = []
     for chunk in meeting.sorted_stream_chunks:
         if isinstance(chunk, adt.TerminalControlStreamChunk):
             controls.extend(chunk.chunks)
         elif isinstance(chunk, adt.ChatStreamChunk):
             chat_messages.extend(chunk.chunks)
-        elif isinstance(chunk, adt.ScoreStreamChunk):
-            score_messages.extend(chunk.chunks)
 
     role_of = lambda name: meeting.agent_name2role.get(name)  # noqa: E731
 
@@ -140,13 +136,6 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
                 _check(report, "terminal_control", control.start_time,
                        "terminal_control_capable",
                        lambda c=control: adt.assert_terminal_control_capable(c, role_of))
-        elif isinstance(chunk, adt.ScoreStreamChunk):
-            for message in chunk.chunks:
-                referenced = _resolve_score_reference(message, chat_messages)
-                _check(report, "score", message.time,
-                       "score_summon_chained",
-                       lambda m=message, r=referenced: adt.assert_score_summon_chained(
-                           m, role_of, r))
 
         # ---- ordering: records within a chunk are non-decreasing in time ----
         _check(report, _chunk_stream_name(chunk), None, "records_time_ascending",
@@ -157,21 +146,6 @@ def validate_meeting_data(meeting: adt.MeetingData) -> ValidationReport:
            lambda: _assert_chunks_ascending(meeting.sorted_stream_chunks))
 
     return report
-
-
-def _resolve_score_reference(message: adt.ScoreMessage,
-                             chat_messages: "list[adt.ChatMessage]"):
-    """Reference resolution used by the summon_chained check: only whether
-    chat_ref points at a summoning message."""
-    reference = message.reference
-    if reference is None:
-        return None
-    if isinstance(reference, adt.ChatReference):
-        try:
-            return adt.resolve_chat_reference(reference, chat_messages)
-        except (LookupError, ValueError):
-            return None
-    return None  # a screen/score reference cannot prove a summon
 
 
 def _validate_screen_chunk(report: ValidationReport, chunk: adt.ScreenStreamChunk) -> None:

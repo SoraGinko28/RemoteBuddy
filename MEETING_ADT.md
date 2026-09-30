@@ -28,8 +28,7 @@ MeetingData =
   * $file_desktop FileDesktop
   * Appendix[{
       user_names = every mc.UserName that appears in any chunk
-                     (screen.owner / chat.user_name / score.judge_name /
-                      terminal_control.user_name)
+                     (screen.owner / chat.user_name / terminal_control.user_name)
                    ∪ every mc.Versioned.author in the file layer
                      (the three chains of file_kv_store / file_desktop's $reorder_indexes)
     }]
@@ -37,7 +36,7 @@ MeetingData =
   * Hint[{
       reply reminder: ∀ chat message m in the chat stream, if m carries
                  $at_user_name == P and role(P) == $critic,
-                 then ∃ a later record r (a chat or score produced by P)
+                 then ∃ a later record r (a chat produced by P)
                    : r carries an mc.ContentReference that resolves to m
     }]
   * Appendix[{
@@ -126,7 +125,7 @@ StreamChunk =
     Oneof
   | $screen_stream_chunk ScreenStreamChunk
   | $chat_stream_chunk ChatStreamChunk
-  | $score_stream_chunk ScoreStreamChunk
+  | $agent_cmd_stream_chunk AgentCmdStreamChunk
   | $terminal_control_stream_chunk TerminalControlStreamChunk
 
 ScreenStreamChunk =
@@ -146,9 +145,21 @@ ChatStreamChunk =
                      its own stream)
     }]
 
-ScoreStreamChunk =
+AgentCmdStreamChunk =
     DataClass
-  * $chunks list[mc.ScoreMessage]
+  * $stream_name str
+  * $chunks list[AgentCmdMessage]
+  * Assert[{
+      # 每条记录都是 Agent 真正交出去的那一份 AgentCmd，原样保存 ——
+      # 不是模型响应的复述，也不是执行结果；$chunks 的顺序就是交出去的顺序。
+      # 配上 screen 流，每条命令的 stdout 与 retcode 都能推出来：
+      #   有 $token 的执行，stdout 是 screen 流里 `cmd-remotebuddy-<token>` 与
+      #   `retcode-remotebuddy-<token>` 两行之间的文本，retcode 是后一行里的数
+      #   （前置标记行被缓存顶穿时，推出来的是裁剩的尾巴）—— 与 TmuxCmdResult 同形；
+      #   没有 $token 的执行（diff 那条路），同样能从 diff 文本与它留下的痕迹
+      #   推出这次应用成没成、哪些文件与要求有差。
+      # 结果不必另存：它是这条流与 screen 流合起来的推论。
+    }]
 
 TerminalControlStreamChunk =
     DataClass
@@ -185,7 +196,7 @@ TerminalControl =
 
 ScreenCapture =
     DataClass
-  * $screen_data str                       # plain text (the coordinates the model / references / scores use); every row right-trimmed
+  * $screen_data str                       # plain text (the coordinates the model / references use); every row right-trimmed
   * $terminal_text_content list[mc.TerminalTextSegment]
   * $cursor_x int                          # cell coordinates (0-based); the renderer converts to character coordinates with wcwidth
   * $cursor_y int
@@ -213,7 +224,7 @@ ScreenCapture =
 ## Stable types — meeting_core.viba
 
 The small, stable types are gathered in this chapter: time, identity, versions,
-text regions, colors, references, chat and score records. They do not change as
+text regions, colors, references and chat records. They do not change as
 the work goes on, and the record layers of the later chapters are built on them.
 
 ```bash
@@ -312,7 +323,7 @@ FileState =
   * $content str
 
 # ---------------------------------------------------------------- #
-# 3. References, chat and score records
+# 3. References and chat records
 # ---------------------------------------------------------------- #
 
 FileId =
@@ -350,28 +361,12 @@ ImageAttachment =
   * $sha256 str
   * $byte_count int
 
-ScoreMessage =
-    Object
-  * $tag str
-  * $score Optional[float]
-  * $comment Optional[str]
-  * $judge_name UserName
-  * $time datetime
-  * $reference ContentReference
-  * Appendix[{
-      summon_chained = role($judge_name) != $critic
-                        ∨ this message's $reference resolves to a message that
-                          summoned it
-    }]
-  * Assert[{ summon_chained }]
-
 ContentReference =
     Oneof
   * Assert[{
       one kind per StreamChunk:
         screen_stream_chunk            ↔ screen_ref
         chat_stream_chunk              ↔ chat_ref
-        score_stream_chunk             ↔ score_ref
         terminal_control_stream_chunk  ↔ terminal_control_ref
     }]
   * Hint[{
@@ -383,7 +378,6 @@ ContentReference =
     }]
   | $screen_ref ScreenReference
   | $chat_ref ChatReference
-  | $score_ref ScoreReference
   | $terminal_control_ref TerminalControlReference
   | $versioned_file_ref VersionedFileReference
   | $versioned_file_content_ref VersionedFileContentReference
@@ -428,16 +422,6 @@ ChatReference =
         resolve($chat_ref) = the record in the chat stream that satisfies
             (ChatMessage.time == $chat_ref.msg_time
              ∧ ChatMessage.user_name == $chat_ref.user_name)
-    }]
-
-ScoreReference =
-    Object
-  * $judge_time datetime
-  * $judge_name UserName
-  * Appendix[{
-        resolve($score_ref) = the record in the score stream that satisfies
-            (ScoreMessage.judge_name == $score_ref.judge_name
-             ∧ ScoreMessage.time == $score_ref.judge_time)
     }]
 
 TerminalControlReference =
@@ -541,17 +525,11 @@ streams_between[Ctx] =
   <- $end mc.datetime
 
 # ---------------------------------------------------------------- #
-# Chat and scores
+# Chat
 # ---------------------------------------------------------------- #
 
 chat_messages[Ctx] =
     mc.Result[list[mc.ChatMessage]]
-  <- $ctx Ctx
-  <- $start mc.datetime
-  <- $end mc.datetime
-
-score_messages[Ctx] =
-    mc.Result[list[mc.ScoreMessage]]
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
@@ -572,22 +550,11 @@ resolve_chat_content_reference[Ctx] =
   <- $ctx Ctx
   <- $ref mc.ChatReference
 
-resolve_score_reference[Ctx] =
-    mc.Result[mc.ScoreMessage]
-  <- $ctx Ctx
-  <- $ref mc.ScoreReference
-
 chat_message_references[Ctx] =
     mc.Result[list[mc.ContentReference]]       # the references this message carries, in order
   <- $ctx Ctx
   <- $time mc.datetime
   <- $user mc.UserName
-
-score_message_reference[Ctx] =
-    mc.Result[mc.ContentReference]             # the reference this score carries
-  <- $ctx Ctx
-  <- $time mc.datetime
-  <- $judge mc.UserName
 
 first_chunk_time[Ctx] =
     mc.Result[mc.datetime]                     # the moment of the meeting's first chunk
@@ -703,11 +670,6 @@ make_chat_reference =
   <- $user_name mc.UserName
   <- $region mc.TextRegion
 
-make_score_reference =
-    mc.ScoreReference
-  <- $judge_time mc.datetime
-  <- $judge_name mc.UserName
-
 make_terminal_control_reference =
     mc.TerminalControlReference
   <- $start_time mc.datetime
@@ -776,38 +738,42 @@ AgentCmd =
   | $cmd str
   | $appliable_diff str
 
-ApplyAgentCmd =
-    Oneof
-  | $apply_cmd ApplyCmd
-  | $apply_diff ApplyDiff
+# Agent 交出的命令原样留档：谁交的、什么时候生成、什么时候生效、这次执行的标记号。
+# 这一条进 agent_cmd 流；成没成都留。
+AgentCmdMessage =
+    DataClass
+  * $agent_cmd AgentCmd
+  * $agent_name mc.UserName
+  * $produced_time mc.datetime
+  * $effective_time mc.Optional[mc.datetime]
+  * $token mc.Optional[str]
+  * Appendix[{
+      $agent_cmd 是原样文本：$cmd 就是 Agent 交的那一行（不含 harness 加的标记），
+      $appliable_diff 就是交给文件更新那条路的那份 diff 文本。
+      $effective_time 缺席 = 这次执行没有在那个 pane 里发生过（被拒、没敲进去…）。
+      $token 是这次执行的标记号（`cmd-remotebuddy-<token>` 里的那段），在命令打进 pane
+        之前就定下来：有 $token 而没有 $effective_time，说明这次执行已经开了头、没有回来。
+      只有 $cmd 那条路打这种标记；diff 那条路不打，所以那份记录里 $token 缺席 ——
+        它把这次应用对上，靠的是 diff 文本本身、以及它留下的文件痕迹与屏幕痕迹。
+    }]
 
-# $cmd 在共享终端里跑一行。跑之前先确认前台是 shell —— 不是就想办法退出来，实在不行重开
-# 那个会话；跑完返回码和整屏缓存都要拿到，缓存是整条历史，不是可见的那几行。
-ApplyCmd =
-    Object
-  * $cmd str
-  * Assert[{ $cmd 是一条会自己结束的命令行：它不等人在终端里输入 }]
-
-# $appliable_diff 把一份 diff 落到工作区。动手之前拍一份快照；先确认它应用到快照上，
-# 应用不了就一个字都不敲。落盘在共享终端里由 harness 逐文件做，一步一次：两步之间人可能
-# 说话、critic 可能提问，要不要接着做必须问过 agent 才继续。每一轮结束都比一次"工作区现在
-# 是什么样"和"这份 diff 要求的是什么样"，只重做还对不上的那些文件，最多 $rounds 轮。
-ApplyDiff =
-    Object
-  * $appliable_diff str
-  * $rounds int
-  * Assert[{ $appliable_diff 应用到动手前那份快照上 }]
+# 两种命令对应的执行动作：看情况走 ApplyCmd 还是 ApplyDiff，回一件 AgentCmdResult。
+ApplyAgentCmd = AgentCmdResult <- AgentCmd <- {
+	看情况执行 ApplyCmd 和 ApplyDiff
+}
 
 AgentCmdResult =
     Oneof
   | $tmux_cmd_result TmuxCmdResult
   | $shell_cmd_result ShellCmdResult
 
-# 共享终端里的结果：返回码 + 整屏缓存
+# 共享终端里的结果：返回码 + 这条命令自己的输出。$truncated 为真表示这条命令的输出比 tmux 的
+# 历史缓存还长，$output_on_screen 里是裁剩的尾巴，不是全部。
 TmuxCmdResult =
     Object
   * $retcode str
   * $output_on_screen str
+  * $truncated bool
 
 # harness 自己在工作区里跑出来的结果
 ShellCmdResult =
@@ -815,6 +781,55 @@ ShellCmdResult =
   * $retcode str
   * $stdout str
   * $stderr str
+
+ApplyCmd = $ret TmuxCmdResult <- $cmd str <- {
+	首先，确认 tmux 的屏幕是 bash 环境（比如悄悄地回车一下），如果不是，要退出来，实在不行重启 tmux 会话。
+	其次，执行 $cmd：在它前面打印一个只属于这次执行的标记（`echo cmd-remotebuddy-<token> > /dev/null`，
+	它自己不打印东西）；读返回码的那一句（`echo retcode-remotebuddy-<token> $?`）另起一行敲 ——
+	不往命令尾巴上接：尾巴上带 `\;`（`find … -exec … \;`）、`&`、续行、管道的命令，接上去会把
+	命令本身改坏。
+	然后截屏获取当前屏幕结果，要用那种一下子把整个缓存截下来的方式；按这两个标记把这条命令自己的
+	输出切出来放到 ret.output_on_screen（前置标记那一行不在了、带返回码那行还在，就说明输出把缓存
+	顶穿了，ret.truncated 置真，交回去的是裁剩的尾巴）。
+	最后从带返回码那句话里读 ret.retcode。
+}
+
+ApplyDiff = $ret AgentCmdResult <- $appliable_diff str <- {
+	首先把当前项目所有的文件用 git worktree 做快照，方法如下：
+
+	```bash
+	cd ~/proj
+	branch="snapshot-$(date +%Y%m%d-%H%M%S)"
+	snap="/tmp/proj-$branch"
+	idx="/tmp/git-snapshot-index.$$"
+
+	# 用临时索引读取 HEAD
+	GIT_INDEX_FILE="$idx" git read-tree HEAD
+
+	# 把当前工作区所有文件加入临时索引，-f 包含被忽略文件
+	GIT_INDEX_FILE="$idx" git add -A -f .
+
+	# 写入 tree，并创建 commit 对象
+	tree=$(GIT_INDEX_FILE="$idx" git write-tree)
+	commit=$(git commit-tree "$tree" -p HEAD -m "snapshot $branch")
+
+	# 基于这个 commit 创建 worktree 和新分支
+	git worktree add -b "$branch" "$snap" "$commit"
+
+	rm -f "$idx"
+	```
+
+	然后试试 $appliable_diff 是否可应用（这一步可以不在 tmux 里执行）：ret.retcode 就是这个可应用的结果，
+	ret.stdout 和 ret.stderr 相应地填。
+
+	再新写一个 diff -> tmux vim 操作序列的脚本，由 harness 逐个执行这些 tmux vim 序列。注意，这个过程中
+	一定要允许打断，不要一气呵成执行完 —— 人类或者 critic 有时会直接提出疑问，harness 要能暂停这些活、
+	响应其他人的疑问；而且是否继续执行需要再询问 actor。
+
+	编辑完了之后，把代码同步到 worktree 那边，从 worktree 那边取这次编辑对文件系统造成的新 diff。
+
+	对比 $appliable_diff 和刚刚的新 diff，如果不一致，就让 harness 再改一轮。
+}
 ```
 
 ---

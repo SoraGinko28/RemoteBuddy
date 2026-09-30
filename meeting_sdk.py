@@ -159,9 +159,6 @@ class Client:
     def chat_messages(self, ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
         return self.call('chat_messages', ctx, start=start, end=end)
 
-    def score_messages(self, ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
-        return self.call('score_messages', ctx, start=start, end=end)
-
     def chat_message_at(self, ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
         """One person has one message at a moment.
         """
@@ -175,18 +172,10 @@ class Client:
         """
         return self.call('resolve_chat_content_reference', ctx, ref=ref)
 
-    def resolve_score_reference(self, ctx: Ctx, ref: 'adt.ScoreReference') -> _Result:
-        return self.call('resolve_score_reference', ctx, ref=ref)
-
     def chat_message_references(self, ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
         """The references this message carries, in order.
         """
         return self.call('chat_message_references', ctx, time=time, user=user)
-
-    def score_message_reference(self, ctx: Ctx, time: _dt.datetime, judge: str) -> _Result:
-        """The reference this score carries.
-        """
-        return self.call('score_message_reference', ctx, time=time, judge=judge)
 
     def first_chunk_time(self, ctx: Ctx) -> _Result:
         """The moment of the meeting's first chunk.
@@ -300,9 +289,6 @@ def streams_between(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result
 def chat_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
     return _DEFAULT.chat_messages(ctx, start, end)
 
-def score_messages(ctx: Ctx, start: _dt.datetime, end: _dt.datetime) -> _Result:
-    return _DEFAULT.score_messages(ctx, start, end)
-
 def chat_message_at(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
     return _DEFAULT.chat_message_at(ctx, time, user)
 
@@ -312,14 +298,8 @@ def resolve_chat_reference(ctx: Ctx, ref: 'adt.ChatReference') -> _Result:
 def resolve_chat_content_reference(ctx: Ctx, ref: 'adt.ChatReference') -> _Result:
     return _DEFAULT.resolve_chat_content_reference(ctx, ref)
 
-def resolve_score_reference(ctx: Ctx, ref: 'adt.ScoreReference') -> _Result:
-    return _DEFAULT.resolve_score_reference(ctx, ref)
-
 def chat_message_references(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
     return _DEFAULT.chat_message_references(ctx, time, user)
-
-def score_message_reference(ctx: Ctx, time: _dt.datetime, judge: str) -> _Result:
-    return _DEFAULT.score_message_reference(ctx, time, judge)
 
 def first_chunk_time(ctx: Ctx) -> _Result:
     return _DEFAULT.first_chunk_time(ctx)
@@ -379,7 +359,6 @@ make_screen_reference = adt.make_screen_reference
 make_chat_reference = adt.make_chat_reference
 
 
-make_score_reference = adt.make_score_reference
 
 
 make_terminal_control_reference = adt.make_terminal_control_reference
@@ -395,13 +374,10 @@ __all__ = [
     "chunk_times",
     "streams_between",
     "chat_messages",
-    "score_messages",
     "chat_message_at",
     "resolve_chat_reference",
     "resolve_chat_content_reference",
-    "resolve_score_reference",
     "chat_message_references",
-    "score_message_reference",
     "first_chunk_time",
     "last_chunk_time",
     "screen_times",
@@ -421,7 +397,6 @@ __all__ = [
     "make_text_region",
     "make_screen_reference",
     "make_chat_reference",
-    "make_score_reference",
     "make_terminal_control_reference",
     "make_versioned_file_reference",
     "make_versioned_file_content_reference",

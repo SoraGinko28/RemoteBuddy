@@ -73,7 +73,7 @@ class TestDesign:
 
     def test_pool_carries_the_stable_definitions(self) -> None:
         names = [d.def_name for d in reflect._design_pool().files[0].definitions]
-        assert len(names) == 31
+        assert len(names) == 29
         assert "FileId" in names and "ContentReference" in names and "Result" in names
         assert "ImageAttachment" in names                  # 随消息交出去的图片（ChatMessage 的一部分）
         assert "ScreenContent" in names and "FileState" in names

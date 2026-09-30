@@ -21,16 +21,6 @@ def record(seq, kind="chat", actor="human", content="hello", message_type="reque
 
 
 class BoundedHistoryTest(unittest.TestCase):
-    def test_scores_are_never_exposed_to_agent_prompts(self):
-        events = [
-            record(1),
-            record(2, kind="score", actor="human", content="secret annotation"),
-            record(3, kind="action", actor="actor", content=""),
-        ]
-        records = InteractiveRunner._bounded_history(events)
-        self.assertEqual([1, 3], [item["seq"] for item in records])
-        self.assertNotIn("secret annotation", json.dumps(records))
-
     def test_event_limit_keeps_the_first_record_and_the_tail(self):
         events = [record(seq) for seq in range(1, HISTORY_EVENT_LIMIT + 51)]
         records = InteractiveRunner._bounded_history(events)
@@ -124,7 +114,17 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual("visible screen", packet["terminal"]["screen"])
         self.assertEqual("bash", packet["terminal"]["current_command"])
 
-    def test_scores_and_screens_are_filtered_from_new_events(self):
+    def test_terminal_block_carries_the_screens_own_seq(self):
+        """引用屏幕要填屏幕事件的 seq，而终端块是这个号唯一露出来的地方。
+
+        真事：20260929-200133-eedc8a 里模型想引用屏幕，手上只有 action 事件的 seq，
+        填进去被判成"引用源事件非法"，它就把证据删了重交。"""
+        screen = self.store.latest_screen()
+        packet = self.observation(StatelessClient())
+        self.assertEqual(screen["seq"], packet["terminal"]["seq"])
+        self.assertEqual(screen["event_id"], packet["terminal"]["event_id"])
+
+    def test_screens_are_filtered_from_new_events(self):
         unread = [
             record(10, kind="screen", actor="workspace", content="frame"),
             record(11, kind="chat", actor="human", content="New request"),

@@ -3,7 +3,7 @@
 Design intent (aligned with MEETING_ADT.md + meeting_adt.py):
 - Project only "events.jsonl + meeting.json -> MeetingData"; read-only, the
   journal is never modified.
-- The ADT five streams are the capability layer; the loader is one slice of
+- The ADT four streams are the capability layer; the loader is one slice of
   the storage format:
   the kind-to-stream mapping is the core of the storage format; field
   mismatches are left for the validator to report, then fixed afterward.
@@ -19,15 +19,12 @@ kind-to-stream mapping (see runs/20260902-153537-7f1bea):
                              of a human takeover interval)
   action / state / error  -> not mapped (operational noise, not part of the
                              five streams)
-  score                   -> the current journal has no such events ->
-                             empty stream (a missing stream is semantically
-                             allowed)
   keystroke               -> not a stream: keystrokes stay in the harness and
                              are never persisted
 
 Known limitations (surfaced in validation reports; the journal is never
 modified):
-  - The current journal has no score events and no role metadata;
+  - The current journal has no role metadata;
     agent_name2role can only be inferred on the assumption that every agent
     that appears is an actor (valid for single-agent meetings).
   - control events carry only acquired/released, with no tmux pane info:
@@ -51,6 +48,7 @@ _RELEASED_PHASES = {"agent_thinking", "waiting_for_user"}
 
 # Operational-noise kinds: never mapped into the five streams
 _NOISE_KINDS = {"action", "state", "error"}
+_MARKER_RE = __import__("re").compile(r"(?:cmd|retcode)-remotebuddy-([0-9a-z]+)")
 
 # Non-terminal-owner actors: the harness is RemoteBuddy itself and does not
 # produce a terminal_control record (its acquired is only a session-level
@@ -231,6 +229,62 @@ def _screen_owner_runs(screens: "list[adt.ScreenCapture]",
     return chunks
 
 
+def _agent_cmd_stream(events: list[dict]) -> "adt.AgentCmdStreamChunk":
+    """Project received command/diff actions into the agent_cmd stream."""
+    by_id: dict[str, adt.AgentCmdMessage] = {}
+    ordered: list[adt.AgentCmdMessage] = []
+    effective: dict[str, object] = {}
+    rejected: set[str] = set()
+    for event in events:
+        if event.get("kind") != "action":
+            continue
+        data = event.get("data") or {}
+        action_id = data.get("action_id")
+        if not isinstance(action_id, str):
+            continue
+        status = data.get("status")
+        action = data.get("action")
+        if status == "received" and isinstance(action, dict):
+            if action.get("type") == "command" and isinstance(action.get("command"), str):
+                agent_cmd = adt.CmdLine(cmd=action["command"])
+            elif action.get("type") == "diff" and isinstance(action.get("diff"), str):
+                agent_cmd = adt.DiffText(appliable_diff=action["diff"])
+            else:
+                continue
+            message = adt.AgentCmdMessage(
+                agent_cmd=agent_cmd,
+                agent_name=str(event.get("actor") or ""),
+                produced_time=_time_of(event),
+            )
+            by_id[action_id] = message
+            ordered.append(message)
+        elif status == "rejected":
+            rejected.add(action_id)
+        elif status == "result":
+            effective[action_id] = _time_of(event)
+
+    for action_id, message in by_id.items():
+        if action_id not in rejected:
+            message.effective_time = effective.get(action_id)
+        if action_id in rejected or message.effective_time is None:
+            continue
+        end = message.effective_time
+        if isinstance(message.agent_cmd, adt.CmdLine):
+            marker_values: list[str] = []
+            for event in events:
+                if event.get("kind") != "screen":
+                    continue
+                captured = _time_of(event)
+                if message.produced_time is not None and captured is not None and captured < message.produced_time:
+                    continue
+                if captured is not None and captured > end:
+                    continue
+                marker_values.extend(_MARKER_RE.findall(str(event.get("content") or "")))
+            if marker_values:
+                message.token = marker_values[-1]
+    return adt.AgentCmdStreamChunk(chunks=ordered)
+
+
 def load_meeting_data_from_run(run_dir: Path) -> tuple[adt.MeetingData, LoadSummary]:
     """Load a MeetingData from runs/<id>; raise FileNotFoundError when files
     are missing."""
@@ -283,6 +337,8 @@ def load_meeting_data_from_run(run_dir: Path) -> tuple[adt.MeetingData, LoadSumm
 
     controls = _terminal_controls(events)
     summary.mapped[adt.TERMINAL_CONTROL_STREAM_NAME] = len(controls)
+    agent_cmd_chunk = _agent_cmd_stream(events)
+    summary.mapped[adt.AGENT_CMD_STREAM_NAME] = len(agent_cmd_chunk.chunks)
 
     role_map = _role_map_from_events(events, manifest)
     default_owner = next(iter(sorted(role_map)), "")
@@ -294,8 +350,8 @@ def load_meeting_data_from_run(run_dir: Path) -> tuple[adt.MeetingData, LoadSumm
     if controls:
         chunks.append(adt.TerminalControlStreamChunk(
             stream_name=adt.TERMINAL_CONTROL_STREAM_NAME, chunks=controls))
-    # No score events -> the stream is absent (semantically
-    # equivalent to an empty stream; no chunk is emitted)
+    if agent_cmd_chunk.chunks:
+        chunks.append(agent_cmd_chunk)
     chunks.sort(key=_chunk_start_time)
 
     meeting = adt.MeetingData(
@@ -312,7 +368,7 @@ def _chunk_start_time(chunk: object):
     if not chunks:
         return None
     first = chunks[0]
-    for attr in ("captured_at", "time", "start_time"):
+    for attr in ("captured_at", "time", "start_time", "produced_time"):
         if hasattr(first, attr) and getattr(first, attr) is not None:
             return getattr(first, attr)
     return None

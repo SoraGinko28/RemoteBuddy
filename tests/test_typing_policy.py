@@ -1,6 +1,12 @@
 import unittest
 
-from typing_policy import ENTER_WIND_UP_MS, PROFILE_SPECS, TYPING_PROFILES, plan_input
+from typing_policy import (
+    ENTER_WIND_UP_MS,
+    PROFILE_SPECS,
+    TYPING_PROFILES,
+    VIM_ENTER_WIND_UP_MS,
+    plan_input,
+)
 
 
 class TypingPolicyTest(unittest.TestCase):
@@ -123,6 +129,40 @@ class TypingPolicyTest(unittest.TestCase):
         self.assertLessEqual(plan.steps[1].delay_after_ms, spec.semantic_max_ms)
         # 最后那行后面没有回车，就还是 profile 的短停顿。
         self.assertLess(plan.steps[2].delay_after_ms, ENTER_WIND_UP_MS)
+
+    def test_vim_lines_hold_much_shorter_before_enter(self):
+        """编辑器里一路（`context="vim"`）：一行一个动作、本来就看得见，前摇只停 0.1s。
+
+        一份两百行的文件里，光这个前摇就能差出两分半钟。
+        """
+        plan = plan_input(
+            [
+                {"kind": "text", "value": "const name = window.prompt("},
+                {"kind": "ctrl", "value": "C-c"},
+                {"kind": "text", "value": "    const next = one;"},
+                {"kind": "ctrl", "value": "Enter"},
+            ],
+            "balanced",
+            "meeting",
+            "action",
+            "vim",
+            allow_paste=False,
+        )
+        held = [step for step in plan.steps if step.kind == "text"]
+        self.assertEqual(VIM_ENTER_WIND_UP_MS, held[-1].delay_after_ms)
+        self.assertLess(VIM_ENTER_WIND_UP_MS, ENTER_WIND_UP_MS)
+        # 编辑器之外还是老样子：0.1s 只给 vim。
+        shell = plan_input(
+            [
+                {"kind": "text", "value": "python3 -m pytest -q"},
+                {"kind": "ctrl", "value": "Enter"},
+            ],
+            "balanced",
+            "meeting",
+            "action",
+            "shell",
+        )
+        self.assertEqual(ENTER_WIND_UP_MS, shell.steps[0].delay_after_ms)
 
     def test_rest_pauses_before_enter_without_sending_keys(self):
         plan = plan_input(

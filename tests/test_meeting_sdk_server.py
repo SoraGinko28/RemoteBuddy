@@ -63,13 +63,12 @@ def prepare_meeting_data_as_ctx():
     controls = [adt.make_terminal_control_reference(_T0, _ALICE, text_region(0, 3)),
                 adt.make_terminal_control_reference(_T2, None, text_region(0, 3))]
 
-    # alice's first message carries all six kinds of reference; later cases
+    # alice's first message carries all five kinds of reference; later cases
     # pull them out of the data
     first_message = adt.ChatMessage(user_name=_ALICE, time=_T1, message=[
         adt.RawMessage("hi"),
         adt.make_screen_reference(_T1, "screen", text_region(0, 2)),
         adt.make_chat_reference(_T2, _BOB, text_region(0, 2)),
-        adt.make_score_reference(_T2, _BOB),
         controls[0],
         controls[1],
         file_ref,
@@ -86,15 +85,9 @@ def prepare_meeting_data_as_ctx():
         adt.ScreenCapture(screen_data="ab\ncd", terminal_text_content=[], cursor_x=0,
                           cursor_y=0, screen_width=2, screen_height=2, captured_at=_T1),
     ])
-    chats = adt.ChatStreamChunk(chunks=[
-        first_message,
+    chats = adt.ChatStreamChunk(chunks=[first_message])
+    later_chat = adt.ChatStreamChunk(chunks=[
         adt.ChatMessage(user_name=_BOB, time=_T2, message=[adt.RawMessage("yo")]),
-    ])
-    scores = adt.ScoreStreamChunk(chunks=[
-        adt.ScoreMessage(tag="correctness", score=1.0, comment="good", judge_name=_BOB,
-                         time=_T2,
-                         reference=adt.make_chat_reference(
-                             _T1, _ALICE, text_region(0, 2))),
     ])
 
     fold = adt.FileFold(fold_name="pkg", member_file_ids=[
@@ -121,7 +114,7 @@ def prepare_meeting_data_as_ctx():
         meeting_name="case",
         agent_name2role={_ALICE: adt.AgentRole.ACTOR,
                          _BOB: adt.AgentRole.CRITIC},
-        sorted_stream_chunks=[screens, chats, scores, controls_chunk],
+        sorted_stream_chunks=[screens, chats, later_chat, controls_chunk],
         file_kv_store=store,
         file_desktop=desktop,
     )
@@ -182,7 +175,7 @@ def _err_message(value, reflect):
     return result.get_err().value
 
 
-_REFERENCE_KINDS = ("screen_ref", "chat_ref", "score_ref", "terminal_control_ref",
+_REFERENCE_KINDS = ("screen_ref", "chat_ref", "terminal_control_ref",
                     "versioned_file_ref", "versioned_file_content_ref")
 
 
@@ -263,8 +256,7 @@ def test_case_chunk_times_follow_the_streams(ctx, sdk, reflect):
     last = _ok_data(sdk.last_chunk_time(ctx), reflect)
     payload = _ok_node(sdk.chunk_times(ctx, first, last), reflect).data
     moments = [_node(m, "datetime", reflect).get_microsecond().value for m in payload]
-    # control starts at _T0; one screen and one chat are both at _T1;
-    # the score is at _T2
+    # control starts at _T0; one screen and one chat are at _T1; the later chat is at _T2
     assert moments == [1, 2, 2, 3]
 
 
@@ -279,11 +271,11 @@ def test_case_streams_between_lists_the_stream_names(ctx, sdk, reflect):
     first = _ok_data(sdk.first_chunk_time(ctx), reflect)
     last = _ok_data(sdk.last_chunk_time(ctx), reflect)
     names = _ok_node(sdk.streams_between(ctx, first, last), reflect).data
-    assert sorted(names) == ["chat", "score", "screen", "terminal_control"]
+    assert sorted(names) == ["chat", "screen", "terminal_control"]
 
 
 # =====================================================================
-# Chat and scores
+# Chat
 # =====================================================================
 
 def test_case_chat_messages_read_through_the_design(ctx, sdk, reflect):
@@ -310,7 +302,7 @@ def test_case_chat_message_at_is_unique_per_time_and_user(ctx, sdk, reflect):
     assert "alice" in _err_message(sdk.chat_message_at(ctx, moment, _ALICE), reflect)
 
 
-def test_case_message_references_carry_all_six_kinds(ctx, sdk, reflect):
+def test_case_message_references_carry_all_five_kinds(ctx, sdk, reflect):
     alice = _message_of(_messages(ctx, sdk, reflect), _ALICE, reflect)
     references = _ok_node(sdk.chat_message_references(ctx, _message_time(alice, reflect),
                                                       _ALICE), reflect).data
@@ -335,31 +327,6 @@ def test_case_resolve_chat_content_reference_takes_the_region(ctx, sdk, reflect)
                                                       _ALICE), reflect).data
     ref = _one_reference_of_kind(references, "chat_ref", reflect)
     assert _ok_value(sdk.resolve_chat_content_reference(ctx, ref), reflect) == "yo"
-
-
-def test_case_resolve_score_reference(ctx, sdk, reflect):
-    alice = _message_of(_messages(ctx, sdk, reflect), _ALICE, reflect)
-    references = _ok_node(sdk.chat_message_references(ctx, _message_time(alice, reflect),
-                                                      _ALICE), reflect).data
-    ref = _one_reference_of_kind(references, "score_ref", reflect)
-    message = _ok_node(sdk.resolve_score_reference(ctx, ref), reflect).data
-    node = _node(message, "ScoreMessage", reflect)
-    assert node.get_tag().value == "correctness"
-    assert node.get_score().value == 1.0
-
-
-def test_case_score_message_reference_points_at_a_chat_message(ctx, sdk, reflect):
-    moment = _message_time(_message_of(_messages(ctx, sdk, reflect), _BOB, reflect), reflect)
-    ref = _ok_node(sdk.score_message_reference(ctx, moment, _BOB), reflect).data
-    assert _reference_kind(ref, reflect) == "chat_ref"
-    message = _ok_node(sdk.resolve_chat_reference(ctx, ref), reflect).data
-    assert _node(message, "ChatMessage", reflect).get_user_name().by_tag(
-        "agent_name").value == "alice"
-
-
-def test_case_score_message_reference_without_that_score_is_an_error(ctx, sdk, reflect):
-    moment = _message_time(_message_of(_messages(ctx, sdk, reflect), _BOB, reflect), reflect)
-    assert _err_message(sdk.score_message_reference(ctx, moment, _ALICE), reflect)
 
 
 def test_case_make_chat_reference_points_back_at_the_message(ctx, sdk, reflect):

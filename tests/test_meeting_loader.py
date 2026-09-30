@@ -70,6 +70,36 @@ class TestMapping:
         assert messages[0].message == [adt.RawMessage(text="hi")]
         assert summary.mapped["chat"] == 2
 
+    def test_agent_cmd_maps_command_and_diff_actions(self, tmp_path) -> None:
+        command = "python3 -c 'print(\"hello\")'"
+        diff = "--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-old\n+new\n"
+        events = [
+            _ev(1, "action", "2026-09-02T07:35:37.684Z", actor="agent",
+                data={"action": {"type": "command", "command": command},
+                      "action_id": "command-1", "status": "received"}),
+            _ev(2, "action", "2026-09-02T07:35:38.000Z", actor="agent",
+                data={"action": {"type": "diff", "diff": diff},
+                      "action_id": "diff-1", "status": "received"}),
+            _ev(3, "action", "2026-09-02T07:35:38.684Z", actor="harness",
+                data={"action_id": "command-1", "status": "result"}),
+            _ev(4, "action", "2026-09-02T07:35:39.000Z", actor="harness",
+                data={"action_id": "diff-1", "status": "rejected"}),
+        ]
+        run_dir = _write_run(tmp_path, events)
+        meeting, summary = loader.load_meeting_data_from_run(run_dir)
+
+        chunks = [c for c in meeting.sorted_stream_chunks
+                  if isinstance(c, adt.AgentCmdStreamChunk)]
+        assert len(chunks) == 1
+        messages = chunks[0].chunks
+        assert summary.mapped["agent_cmd"] == 2
+        assert isinstance(messages[0].agent_cmd, adt.CmdLine)
+        assert messages[0].agent_cmd.cmd == command
+        assert messages[0].effective_time == _t("2026-09-02T07:35:38.684Z")
+        assert isinstance(messages[1].agent_cmd, adt.DiffText)
+        assert messages[1].agent_cmd.appliable_diff == diff
+        assert messages[1].effective_time is None
+
     def test_screen_mapping_fields(self, tmp_path) -> None:
         content = "ab\ncd"
         events = [_ev(1, "screen", "2026-09-02T07:35:37.890Z", content=content,
