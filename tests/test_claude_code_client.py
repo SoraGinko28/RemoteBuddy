@@ -206,6 +206,36 @@ class ClaudeCodeBackendTest(unittest.TestCase):
         payload = json.loads(backend._process.stdin.getvalue())
         self.assertEqual([{"type": "text", "text": "看这张"}], payload["message"]["content"])
 
+    def test_a_large_pasted_attachment_reaches_the_next_model_turn(self):
+        import base64
+        import io
+        import types
+
+        # This is deliberately below the wire limit but much larger than the
+        # tiny fixture above: it exercises the same attachment payload shape
+        # used after the composer uploads a pasted screenshot.
+        screenshot = self.root / "pasted-screenshot.png"
+        screenshot_bytes = b"\x89PNG\r\n\x1a\n" + (b"screenshot-pixels" * 20000)
+        screenshot.write_bytes(screenshot_bytes)
+        backend = self.backend()
+        backend._session_id = "session-1"
+        backend._process = types.SimpleNamespace(stdin=io.StringIO())
+
+        backend._send_user_message(
+            "请看我刚粘贴的截图",
+            [{"path": str(screenshot), "media_type": "image/png"}],
+        )
+
+        payload = json.loads(backend._process.stdin.getvalue())
+        content = payload["message"]["content"]
+        self.assertEqual("text", content[0]["type"])
+        self.assertEqual("image", content[1]["type"])
+        self.assertEqual("image/png", content[1]["source"]["media_type"])
+        self.assertEqual(
+            screenshot_bytes,
+            base64.b64decode(content[1]["source"]["data"]),
+        )
+
     def test_isolated_command_environment_and_single_executed_action(self):
         backend = self.backend()
         actions = []

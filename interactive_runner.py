@@ -1497,7 +1497,17 @@ class InteractiveRunner:
                     path = self.store.attachment_path(name)
                 except MeetingError:
                     continue
-                if not path.is_file() or path.stat().st_size > MAX_IMAGE_BYTES_PER_TURN:
+                if not path.is_file():
+                    continue
+                if path.stat().st_size > MAX_IMAGE_BYTES_PER_TURN:
+                    warning = f"图片附件 {name} 超过本轮模型输入上限（4MB），未发送给 Agent。"
+                    if not any(
+                        event.get("kind") == "chat"
+                        and (event.get("data") or {}).get("message") == warning
+                        for event in self.store.events()
+                    ):
+                        self.store.append_chat(self.agent_name, warning, "progress")
+                    seen.add(name)
                     continue
                 seen.add(name)
                 images.append({
