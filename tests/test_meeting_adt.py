@@ -9,7 +9,7 @@ import meeting_adt as adt
 
 
 # =====================================================================
-# G1: the four stream constants
+# G1: the stream constants
 # =====================================================================
 
 class TestStreamNames:
@@ -18,17 +18,19 @@ class TestStreamNames:
             "screen",
             "chat",
             "score",
+            "agent_cmd",
             "terminal_control",
         )
 
-    def test_length_is_four(self) -> None:
-        assert len(adt.STREAM_NAMES) == 4
+    def test_length_is_five(self) -> None:
+        assert len(adt.STREAM_NAMES) == 5
 
     def test_constants_equal_positions_in_tuple(self) -> None:
         assert adt.SCREEN_STREAM_NAME == adt.STREAM_NAMES[0]
         assert adt.CHAT_STREAM_NAME == adt.STREAM_NAMES[1]
         assert adt.SCORE_STREAM_NAME == adt.STREAM_NAMES[2]
-        assert adt.TERMINAL_CONTROL_STREAM_NAME == adt.STREAM_NAMES[3]
+        assert adt.AGENT_CMD_STREAM_NAME == adt.STREAM_NAMES[3]
+        assert adt.TERMINAL_CONTROL_STREAM_NAME == adt.STREAM_NAMES[4]
 
     def test_names_are_unique(self) -> None:
         assert len(set(adt.STREAM_NAMES)) == len(adt.STREAM_NAMES)
@@ -47,6 +49,7 @@ class TestStreamNames:
             "SCREEN_STREAM_NAME",
             "CHAT_STREAM_NAME",
             "SCORE_STREAM_NAME",
+            "AGENT_CMD_STREAM_NAME",
             "TERMINAL_CONTROL_STREAM_NAME",
             "STREAM_NAMES",
         ):
@@ -58,6 +61,7 @@ class TestStreamNames:
             "SCREEN_STREAM_NAME",
             "CHAT_STREAM_NAME",
             "SCORE_STREAM_NAME",
+            "AGENT_CMD_STREAM_NAME",
             "TERMINAL_CONTROL_STREAM_NAME",
             "STREAM_NAMES",
             "HUMAN_USER_NAME",
@@ -123,6 +127,17 @@ class TestStreamNames:
             "CtrlKey",
             "RestKey",
             "Keystroke",
+            "AgentCmd",
+            "CmdLine",
+            "DiffText",
+            "AgentCmdMessage",
+            "AgentCmdStreamChunk",
+            "agent_cmd_to_dict",
+            "agent_cmd_from_dict",
+            "agent_cmd_message_to_dict",
+            "agent_cmd_message_from_dict",
+            "agent_cmd_stream_chunk_to_dict",
+            "agent_cmd_stream_chunk_from_dict",
             "TerminalControl",
             "TerminalControlStreamChunk",
             "keystroke_str_to_dict",
@@ -1356,6 +1371,12 @@ class TestStreamChunkDispatch:
                                             chunks=[adt.ScreenCapture(captured_at=now)]),
             "chat": adt.ChatStreamChunk(chunks=[adt.ChatMessage(user_name="a", time=now)]),
             "score": adt.ScoreStreamChunk(chunks=[adt.ScoreMessage(tag="t")]),
+            "agent_cmd": adt.AgentCmdStreamChunk(chunks=[
+                adt.AgentCmdMessage(agent_cmd=adt.CmdLine(cmd="ls -l"), agent_name="a",
+                                    produced_time=now, effective_time=now, token="t0k3n"),
+                adt.AgentCmdMessage(agent_cmd=adt.DiffText(appliable_diff="--- a/x\n"),
+                                    agent_name="a", produced_time=now),
+            ]),
             "terminal_control": adt.TerminalControlStreamChunk(chunks=[
                 adt.TerminalControl(user_name="a", start_time=now)]),
         }[stream_name]

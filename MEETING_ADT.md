@@ -127,6 +127,7 @@ StreamChunk =
   | $screen_stream_chunk ScreenStreamChunk
   | $chat_stream_chunk ChatStreamChunk
   | $score_stream_chunk ScoreStreamChunk
+  | $agent_cmd_stream_chunk AgentCmdStreamChunk
   | $terminal_control_stream_chunk TerminalControlStreamChunk
 
 ScreenStreamChunk =
@@ -149,6 +150,22 @@ ChatStreamChunk =
 ScoreStreamChunk =
     DataClass
   * $chunks list[mc.ScoreMessage]
+
+AgentCmdStreamChunk =
+    DataClass
+  * $stream_name str
+  * $chunks list[AgentCmdMessage]
+  * Assert[{
+      # 每条记录都是 Agent 真正交出去的那一份 AgentCmd，原样保存 ——
+      # 不是模型响应的复述，也不是执行结果；$chunks 的顺序就是交出去的顺序。
+      # 配上 screen 流，每条命令的 stdout 与 retcode 都能推出来：
+      #   有 $token 的执行，stdout 是 screen 流里 `cmd-remotebuddy-<token>` 与
+      #   `retcode-remotebuddy-<token>` 两行之间的文本，retcode 是后一行里的数
+      #   （前置标记行被缓存顶穿时，推出来的是裁剩的尾巴）—— 与 TmuxCmdResult 同形；
+      #   没有 $token 的执行（diff 那条路），同样能从 diff 文本与它留下的痕迹
+      #   推出这次应用成没成、哪些文件与要求有差。
+      # 结果不必另存：它是这条流与 screen 流合起来的推论。
+    }]
 
 TerminalControlStreamChunk =
     DataClass
@@ -776,6 +793,25 @@ AgentCmd =
   | $cmd str
   | $appliable_diff str
 
+# Agent 交出的命令原样留档：谁交的、什么时候生成、什么时候生效、生效那次执行的标记号。
+# 这一条进 agent_cmd 流；成没成都留。
+AgentCmdMessage =
+    DataClass
+  * $agent_cmd AgentCmd
+  * $agent_name mc.UserName
+  * $produced_time mc.datetime
+  * $effective_time mc.Optional[mc.datetime]
+  * $token mc.Optional[str]
+  * Appendix[{
+      $agent_cmd 是原样文本：$cmd 就是 Agent 交的那一行（不含 harness 加的标记），
+      $appliable_diff 就是交给文件更新那条路的那份 diff 文本。
+      $effective_time 缺席 = 这次执行没有在那个 pane 里发生过（被拒、没敲进去…）。
+      $token 是执行时打在命令前面的标记号（`cmd-remotebuddy-<token>` 里的那段）；
+        有 $token 而没有 $effective_time，说明这次执行在敲出去之前就失败了。
+      diff 那条路没有这种标记：$token 给的是这次应用的编号，作用相同 ——
+        把原始 diff 和它留下的屏幕痕迹、文件痕迹对上。
+    }]
+
 # 两种命令对应的执行动作：看情况走 ApplyCmd 还是 ApplyDiff，回一件 AgentCmdResult。
 ApplyAgentCmd = AgentCmdResult <- AgentCmd <- {
 	看情况执行 ApplyCmd 和 ApplyDiff
@@ -803,7 +839,7 @@ ShellCmdResult =
 
 ApplyCmd = $ret TmuxCmdResult <- $cmd str <- {
 	首先，确认 tmux 的屏幕是 bash 环境（比如悄悄地回车一下），如果不是，要退出来，实在不行重启 tmux 会话。
-	其次，执行 $cmd：在它前面打印一个只属于这一枪的标记（`echo cmd-remotebuddy-<token> > /dev/null`，
+	其次，执行 $cmd：在它前面打印一个只属于这次执行的标记（`echo cmd-remotebuddy-<token> > /dev/null`，
 	它自己不打印东西）；读返回码的那一句（`echo retcode-remotebuddy-<token> $?`）另起一行敲 ——
 	不往命令尾巴上接：尾巴上带 `\;`（`find … -exec … \;`）、`&`、续行、管道的命令，接上去会把
 	命令本身改坏。

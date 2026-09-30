@@ -7,7 +7,7 @@ Design intent (finalized in MEETING_ADT.md; this module is its executable spec):
 - Once frozen, data is immutable; increments only append, never mutate in place.
 - Type changes must stay consistent with the ADT document; the document leads.
 
-Stream order is fixed: screen/chat/score/terminal_control (shared by replay and validation).
+Stream order is fixed: screen/chat/score/agent_cmd/terminal_control (shared by replay and validation).
 Keystrokes are not a stream: they live in the harness and are never persisted.
 """
 
@@ -18,16 +18,18 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Final, Generic, Optional, TypeVar
 
-# Stream names: the ADT's four streams, order fixed; do not add, remove, or reorder them.
+# Stream names: the ADT's streams, order fixed; do not add, remove, or reorder them.
 SCREEN_STREAM_NAME = "screen"
 CHAT_STREAM_NAME = "chat"
 SCORE_STREAM_NAME = "score"
+AGENT_CMD_STREAM_NAME = "agent_cmd"
 TERMINAL_CONTROL_STREAM_NAME = "terminal_control"
 
 STREAM_NAMES: Final[tuple[str, ...]] = (
     SCREEN_STREAM_NAME,
     CHAT_STREAM_NAME,
     SCORE_STREAM_NAME,
+    AGENT_CMD_STREAM_NAME,
     TERMINAL_CONTROL_STREAM_NAME,
 )
 
@@ -35,6 +37,7 @@ __all__ = [
     "SCREEN_STREAM_NAME",
     "CHAT_STREAM_NAME",
     "SCORE_STREAM_NAME",
+    "AGENT_CMD_STREAM_NAME",
     "TERMINAL_CONTROL_STREAM_NAME",
     "STREAM_NAMES",
     "HUMAN_USER_NAME",
@@ -841,6 +844,144 @@ __all__ += [
 
 
 # =====================================================================
+# G11: AgentCmdMessage / AgentCmdStreamChunk (agent_cmd stream)
+# =====================================================================
+#
+# AgentCmd = Oneof | $cmd str | $appliable_diff str
+# AgentCmdMessage = DataClass
+#   * $agent_cmd AgentCmd
+#   * $agent_name UserName
+#   * $produced_time datetime
+#   * $effective_time Optional[datetime]
+#   * $token Optional[str]
+#   * Appendix[{
+#       $agent_cmd is the text as handed over: $cmd is the line the Agent gave (without the
+#         markers the harness adds); $appliable_diff is the diff text handed to the
+#         file-update path.
+#       $effective_time absent = that run never happened in the pane (refused, never typed...).
+#       $token is the marker number the harness prints in front of the command
+#         (the `<token>` of `cmd-remotebuddy-<token>`); a $token with no $effective_time
+#         means the run failed before it was typed.
+#       The diff path has no such marker: $token there is that application's number, and it
+#         does the same job -- tying the raw diff to the screen and file traces it left.
+#       Failed runs are kept too: the stream does not filter by success.
+#     }]
+#
+# With the screen stream, every command's stdout and retcode are derivable from this stream:
+#   for a record with $token, stdout is the text between `cmd-remotebuddy-<token>` and
+#   `retcode-remotebuddy-<token>` in the screen stream, and retcode is the number on the
+#   latter line (when the leading marker line fell out of the buffer, what comes out is the
+#   tail) -- the same shape as TmuxCmdResult.
+#
+# Persisted JSON (the AgentCmd Oneof is disambiguated by a single-key envelope):
+#   {"agent_cmd": {"cmd": s} | {"appliable_diff": s}, "agent_name": u,
+#    "produced_time": iso, "effective_time": iso|null, "token": t|null}
+
+@dataclass(frozen=True)
+class CmdLine:
+    cmd: str
+
+
+@dataclass(frozen=True)
+class DiffText:
+    appliable_diff: str
+
+
+AgentCmd = CmdLine | DiffText
+
+
+@dataclass
+class AgentCmdMessage:
+    agent_cmd: AgentCmd
+    agent_name: str
+    produced_time: Optional[_dt.datetime] = None
+    effective_time: Optional[_dt.datetime] = None
+    token: Optional[str] = None
+
+
+@dataclass
+class AgentCmdStreamChunk:
+    stream_name: str = AGENT_CMD_STREAM_NAME
+    chunks: list[AgentCmdMessage] = field(default_factory=list)
+
+
+def agent_cmd_to_dict(agent_cmd: AgentCmd) -> dict:
+    if isinstance(agent_cmd, CmdLine):
+        return {"cmd": agent_cmd.cmd}
+    if isinstance(agent_cmd, DiffText):
+        return {"appliable_diff": agent_cmd.appliable_diff}
+    raise TypeError(f"unknown agent cmd: {type(agent_cmd).__name__}")
+
+
+def agent_cmd_from_dict(payload: dict) -> AgentCmd:
+    if not isinstance(payload, dict) or len(payload) != 1:
+        raise ValueError(f"agent cmd must be a single-key envelope: {payload!r}")
+    if "cmd" in payload:
+        return CmdLine(cmd=payload["cmd"])
+    if "appliable_diff" in payload:
+        return DiffText(appliable_diff=payload["appliable_diff"])
+    raise ValueError(f"unknown agent cmd branch: {payload!r}")
+
+
+def agent_cmd_message_to_dict(message: AgentCmdMessage) -> dict:
+    return {
+        "agent_cmd": agent_cmd_to_dict(message.agent_cmd),
+        "agent_name": message.agent_name,
+        "produced_time": _iso_format(message.produced_time) if message.produced_time is not None else None,
+        "effective_time": _iso_format(message.effective_time) if message.effective_time is not None else None,
+        "token": message.token,
+    }
+
+
+def agent_cmd_message_from_dict(payload: dict) -> AgentCmdMessage:
+    if "agent_cmd" not in payload:
+        raise ValueError(f"agent cmd message missing agent_cmd: {payload!r}")
+    produced = payload.get("produced_time")
+    effective = payload.get("effective_time")
+    token = payload.get("token")
+    if token is not None and not isinstance(token, str):
+        raise ValueError(f"agent cmd token must be text: {token!r}")
+    return AgentCmdMessage(
+        agent_cmd=agent_cmd_from_dict(payload["agent_cmd"]),
+        agent_name=payload.get("agent_name", ""),
+        produced_time=_iso_parse(produced) if isinstance(produced, str) else None,
+        effective_time=_iso_parse(effective) if isinstance(effective, str) else None,
+        token=token,
+    )
+
+
+def agent_cmd_stream_chunk_to_dict(chunk: AgentCmdStreamChunk) -> dict:
+    return {
+        "stream_name": chunk.stream_name,
+        "chunks": [agent_cmd_message_to_dict(m) for m in chunk.chunks],
+    }
+
+
+def agent_cmd_stream_chunk_from_dict(payload: dict) -> AgentCmdStreamChunk:
+    if payload.get("stream_name") != AGENT_CMD_STREAM_NAME:
+        raise ValueError(f"not an agent cmd chunk: {payload.get('stream_name')!r}")
+    return AgentCmdStreamChunk(
+        stream_name=payload["stream_name"],
+        chunks=[agent_cmd_message_from_dict(m) for m in payload["chunks"]],
+    )
+
+
+__all__ += [
+    "AgentCmd",
+    "CmdLine",
+    "DiffText",
+    "AgentCmdMessage",
+    "AgentCmdStreamChunk",
+    "agent_cmd_to_dict",
+    "agent_cmd_from_dict",
+    "agent_cmd_message_to_dict",
+    "agent_cmd_message_from_dict",
+    "agent_cmd_stream_chunk_to_dict",
+    "agent_cmd_stream_chunk_from_dict",
+]
+
+
+# =====================================================================
 # G10: Keystroke (harness-internal, never persisted) / TerminalControl
 # =====================================================================
 #
@@ -1625,7 +1766,7 @@ class ScreenStreamChunk:
     chunks: list[ScreenCapture] = field(default_factory=list)
 
 
-StreamChunk = (ScreenStreamChunk | ChatStreamChunk | ScoreStreamChunk
+StreamChunk = (ScreenStreamChunk | ChatStreamChunk | ScoreStreamChunk | AgentCmdStreamChunk
                | TerminalControlStreamChunk)
 
 
@@ -1717,6 +1858,8 @@ def stream_chunk_to_dict(chunk: StreamChunk) -> dict:
         return chat_stream_chunk_to_dict(chunk)
     if isinstance(chunk, ScoreStreamChunk):
         return score_stream_chunk_to_dict(chunk)
+    if isinstance(chunk, AgentCmdStreamChunk):
+        return agent_cmd_stream_chunk_to_dict(chunk)
     if isinstance(chunk, TerminalControlStreamChunk):
         return terminal_control_stream_chunk_to_dict(chunk)
     raise TypeError(f"unknown stream chunk: {type(chunk).__name__}")
@@ -1735,6 +1878,8 @@ def stream_chunk_from_dict(payload: dict) -> StreamChunk:
         return chat_stream_chunk_from_dict(payload)
     if stream_name == SCORE_STREAM_NAME:
         return score_stream_chunk_from_dict(payload)
+    if stream_name == AGENT_CMD_STREAM_NAME:
+        return agent_cmd_stream_chunk_from_dict(payload)
     return terminal_control_stream_chunk_from_dict(payload)
 
 
