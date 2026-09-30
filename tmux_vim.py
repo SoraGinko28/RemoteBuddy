@@ -39,6 +39,10 @@ Runner = Callable[..., Any]
 from tmux_transport import TmuxError
 
 
+class PaneClosedError(TmuxError):
+    """The workspace pane disappeared while a command was running."""
+
+
 class CommandSendError(TmuxError):
     """The command line or its return marker could not be injected."""
 
@@ -1083,6 +1087,8 @@ def _await_retcode(
     needle = f"{RETCODE_MARKER}{token}"
     deadline = time.monotonic() + timeout
     while True:
+        if hasattr(transport, "pane_alive") and not transport.pane_alive(pane_id):
+            raise PaneClosedError("共享终端窗格没了；工作区需要重开后才能继续")
         screen = transport.capture(pane_id)
         retcode = _retcode_after_marker(screen, needle)
         if retcode is not None:
