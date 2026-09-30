@@ -793,7 +793,7 @@ AgentCmd =
   | $cmd str
   | $appliable_diff str
 
-# Agent 交出的命令原样留档：谁交的、什么时候生成、什么时候生效、生效那次执行的标记号。
+# Agent 交出的命令原样留档：谁交的、什么时候生成、什么时候生效、这次执行的标记号。
 # 这一条进 agent_cmd 流；成没成都留。
 AgentCmdMessage =
     DataClass
@@ -806,10 +806,10 @@ AgentCmdMessage =
       $agent_cmd 是原样文本：$cmd 就是 Agent 交的那一行（不含 harness 加的标记），
       $appliable_diff 就是交给文件更新那条路的那份 diff 文本。
       $effective_time 缺席 = 这次执行没有在那个 pane 里发生过（被拒、没敲进去…）。
-      $token 是执行时打在命令前面的标记号（`cmd-remotebuddy-<token>` 里的那段）；
-        有 $token 而没有 $effective_time，说明这次执行在敲出去之前就失败了。
-      diff 那条路没有这种标记：$token 给的是这次应用的编号，作用相同 ——
-        把原始 diff 和它留下的屏幕痕迹、文件痕迹对上。
+      $token 是这次执行的标记号（`cmd-remotebuddy-<token>` 里的那段），在命令打进 pane
+        之前就定下来：有 $token 而没有 $effective_time，说明这次执行已经开了头、没有回来。
+      只有 $cmd 那条路打这种标记；diff 那条路不打，所以那份记录里 $token 缺席 ——
+        它把这次应用对上，靠的是 diff 文本本身、以及它留下的文件痕迹与屏幕痕迹。
     }]
 
 # 两种命令对应的执行动作：看情况走 ApplyCmd 还是 ApplyDiff，回一件 AgentCmdResult。
