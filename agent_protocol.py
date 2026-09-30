@@ -179,29 +179,19 @@ class AgentActionError(AgentProtocolError):
 
 
 MESSAGE_TYPE_ORDER = ("none", "ack", "progress", "question", "final")
-# 每一次请求都属于两步之一。调查步：只许用自己的读工具，共享终端整个关掉，结论用文字说。
-# 行动步：只许改东西，文件读取已经在上一次请求的调查步里做完了。这两段话是 prompt 里
-# 唯一告诉模型"现在是哪一步"的地方，harness 那边另有硬拦（调查步的动作工具一律退回）。
-INVESTIGATE_STEP_TEXT = (
-    "Investigation step. The shared terminal is closed for this turn: do not call "
-    "`remotebuddy_action`, and do not run anything there -- a call is refused. If you need to "
-    "know something that is in a file, read it with your own tools (Claude Code has "
-    "Read/Glob/Grep, Trae has its own read tools and a read-only shell). Then answer with what "
-    "you found, in one or two lines, and only when the action step needs it: a path, a value, "
-    "the exact lines you are about to change. You are not reporting to the human here and you "
-    "are not narrating your plan. If you found nothing worth carrying into the next step, "
-    "answer with nothing at all -- an empty answer is normal, and the action step starts right "
-    "after it. Anything the human is waiting to hear -- the answer to their question, the file "
-    "contents they asked to see -- is said in the action step, not here."
-)
 # 行动步的正文分两种：一种给"它自己有读工具、并且共享终端拒收只读命令"的 backend
 # （Claude Code / ACP），另一种给"它手里没有读工具"的 backend（结构化 app-server、
 # Responses）——后者共享终端就是它唯一能看东西的地方，再跟它说"这里不许读"它就只能去问人。
 ACT_STEP_BODY_REFUSED = (
-    "Action step. Reading is over: whatever you needed was read in the investigation step that "
-    "just ended, so read nothing here. Two moves change things, and neither of them is typing: a "
+    "Action step. You have your own read tools (Claude Code has Read/Glob/Grep, Trae has its own "
+    "read tools): read with them, not in the shared terminal -- a plain reader sent as a `command` "
+    "is refused. Two moves change things, and neither of them is typing: a "
     "`command` is one bash line the harness runs for you in the shared terminal, and a `diff` is a "
-    "unified diff the harness lands with vim, file by file, in that same pane. You never open an "
+    "unified diff the harness lands with vim, file by file, in that same pane. Send the command "
+    "itself: the harness appends the return-code echo for you (and replaces one you wrote yourself, "
+    "rather than running both), so never add `echo ... $?` of your own. You get back this command's "
+    "own output and its return code; `truncated` true means the output outran the pane's buffer and "
+    "what you see is only its tail. You never open an "
     "editor and you never send keys. A plain reader (cat, sed, head, tail, nl, rg, grep, ls, wc, "
     "file, stat, tree) sent as a `command` is refused; a file the human asked to see in the "
     "terminal is the exception. If the human asked you to find something out or to show something, "
@@ -211,7 +201,10 @@ ACT_STEP_BODY_REFUSED = (
 ACT_STEP_BODY_OPEN = (
     "Action step. You have no read tools of your own, so the shared terminal -- the pane the "
     "human watches -- is also where you look: `cat`, `sed`, `head`, `tail`, `nl`, `rg`, `grep`, "
-    "`ls`, `wc`, `git diff` all work as `command` lines. Look first (one or two commands, not a "
+    "`ls`, `wc`, `git diff` all work as `command` lines. Send the command alone: the harness "
+    "appends the return-code echo itself (and replaces one you wrote yourself), so never add "
+    "`echo ... $?` of your own. You get back this command's own output and its return code; "
+    "`truncated` true means the output outran the pane's buffer and what you see is only its tail. Look first (one or two commands, not a "
     "tour of the repository), then change what the request asks for -- a `diff` for file contents, "
     "a `command` for everything else. Never ask the human for a path you can find yourself: the "
     "pane's working directory is the workspace, and `ls`/`git ls-files` show what is in it. If the "
@@ -243,11 +236,6 @@ def act_step_text(action_submission: str = "tool", readers_refused: bool = True)
     return ACT_STEP_OPEN_JSON_TEXT if by_json else ACT_STEP_OPEN_TEXT
 
 
-INVESTIGATION_CLOSED_MESSAGE = (
-    "The shared terminal is closed in the investigation step, so the action tool is not "
-    "available here. Read what you need with your own tools and answer in plain text; the action "
-    "step asks you to act right after this answer."
-)
 
 
 def _name_list(names: Sequence[str]) -> str:
@@ -330,11 +318,16 @@ class AgentAction:
             )
         if unknown:
             raise AgentProtocolError("model action has unexpected fields: " + ", ".join(unknown))
-        # Every action but chat and done carries message_type "none", so an
-        # omission there is unambiguous; chat and done must say what they mean.
-        if "message_type" not in payload and payload.get("type") not in {"chat", "done"}:
-            payload["message_type"] = "none"
-        missing = sorted(field for field in ("type", "message_type") if field not in payload)
+        # Every action but done carries message_type "none", and a chat without
+        # one is read as ack: the model wrote a sentence, and that is the only
+        # thing the missing value could have meant -- the same reading as a
+        # message_type that names an action type gets a few lines below. done
+        # is the exception: it claims the work is finished, so it has to say so
+        # itself. 真事：`{"type":"chat","action":{…正文…}}` 缺 message_type，
+        # 连着驳回三轮，20260929-200133-eedc8a 就是这么死在 api_error 上的。
+        if not str(payload.get("message_type") or "").strip() and payload.get("type") != "done":
+            payload["message_type"] = "ack" if payload.get("type") == "chat" else "none"
+        missing = sorted(field for field in ("type", "message_type") if not payload.get(field))
         if missing:
             raise AgentProtocolError("model action is missing fields: " + ", ".join(missing))
         # Models routinely omit the fields an action does not use; fill in the
@@ -361,6 +354,13 @@ class AgentAction:
             payload["message_type"] = "none"
         if payload.get("command") == "":
             payload["command"] = "none"
+        # 有的模型把整份补丁塞进 `command`（还常用 Codex 的 `*** Begin Patch` 写法），
+        # `diff` 留空。位置不对、意图很清楚：搬到 `diff` 里，别让它卡在字段名上。
+        if payload.get("type") == "diff" and not str(payload.get("diff") or "").strip():
+            pasted = str(payload.get("command") or "")
+            if _looks_like_patch(pasted):
+                payload["diff"] = pasted
+                payload["command"] = "none"
         action_type = payload["type"]
         if action_type not in ACTION_TYPES:
             raise AgentProtocolError(
@@ -380,6 +380,13 @@ class AgentAction:
             action_type = "done"
             payload = {**payload, "type": "done", "message_type": "final"}
         message_type = payload["message_type"]
+        if message_type not in MESSAGE_TYPE_ORDER and message_type in ACTION_TYPES:
+            # 有的模型把动作类型填进 message_type（`"message_type": "chat"`）——它的意思是
+            # "这是一句话"，不是想说一个非法值。chat 当成 ack（"我听到了"），别的当成 none，
+            # 别为这个把动作拒了。（放在上面那条 chat+final/done → done 的规则之后，
+            # 免得把那条本来就读得懂的写法带偏。）
+            message_type = "ack" if action_type == "chat" else "none"
+            payload["message_type"] = message_type
         if message_type not in MESSAGE_TYPE_ORDER:
             raise AgentProtocolError(
                 "model message type is invalid: expected " + _name_list(MESSAGE_TYPE_ORDER))
@@ -456,6 +463,12 @@ class AgentAction:
                     + stray_fields(("diff", bool(diff)), ("delay_ms", bool(delay_ms)))
                 )
         elif action_type == "diff":
+            if not diff.strip():
+                raise AgentProtocolError(
+                    "type is diff but `diff` is empty: the unified diff goes in `diff` "
+                    "(`--- a/<path>` / `+++ b/<path>` / `@@ … @@`); `command` holds one bash "
+                    "line and never carries a patch"
+                )
             stray = stray_fields(("message_type", message_type != "none"),
                                  ("content", bool(content)),
                                  ("command", command != "none"),
@@ -466,8 +479,6 @@ class AgentAction:
                     "diff has unrelated fields: " + stray
                     + "; a diff action carries only the unified diff"
                 )
-            if not diff.strip():
-                raise AgentProtocolError("diff action requires a unified diff")
             if "\x00" in diff or "\r" in diff:
                 raise AgentProtocolError("diff must be plain text with unix line endings")
             from tmux_vim import DiffError, parse_unified_diff
@@ -952,6 +963,23 @@ def decode_action_text(
         raise AgentActionError(str(exc), source=text) from exc
 
 
+_PATCH_HINTS = (
+    "*** Begin Patch",
+    "*** Update File:",
+    "*** Add File:",
+    "*** Delete File:",
+    "diff --git ",
+    "--- a/",
+    "--- /dev/null",
+)
+
+
+def _looks_like_patch(text: str) -> bool:
+    """这段文本像不像一份补丁：模型把补丁塞错字段时，靠它把位置纠回来。"""
+    head = str(text or "").lstrip()
+    return any(head.startswith(hint) for hint in _PATCH_HINTS)
+
+
 def unwrap_action_envelope(payload: Any) -> Any:
     """Flatten the ``action`` wrapper some models put around their action.
 
@@ -967,7 +995,26 @@ def unwrap_action_envelope(payload: Any) -> Any:
         if not isinstance(inner, dict):
             return payload
         outer = {key: value for key, value in payload.items() if key != "action"}
-        payload = {**inner, **outer}
+        merged = {**inner, **outer}
+        # 外层那个 type 常常只是占位（`none`/`chat`），真正的动作在里层：外层不合法、里层
+        # 合法时听里层的。真事：`{"type":"none","action":{"type":"diff",…}}` 连着来三次，
+        # 一场会就被判成 api_error。
+        inner_type = inner.get("type")
+        if merged.get("type") not in ACTION_TYPES and inner_type in ACTION_TYPES:
+            merged["type"] = inner_type
+        # 里层连类型都没写时，外层那个 `none`/`chat` 只是在说"这里有一个动作"；是哪一种看
+        # 里层填了哪些字段。真事：`{"type":"chat","action":{"command":"sed -n …"}}` 被当成
+        # 缺 message_type 的 chat 驳回，一路重试到 api_error，20260929-200133-eedc8a 就这
+        # 么死的。
+        elif inner_type not in ACTION_TYPES and str(merged.get("type") or "") in {"", "none", "chat"}:
+            inner_command = str(inner.get("command") or "")
+            if _looks_like_patch(inner_command):
+                merged["type"] = "diff"
+            elif inner_command.strip() not in {"", "none"}:
+                merged["type"] = "command"
+            elif str(inner.get("diff") or "").strip():
+                merged["type"] = "diff"
+        payload = merged
     return payload
 
 
@@ -989,7 +1036,10 @@ def _decode_action_text(
                 raise AgentProtocolError("model output repeated the action too many times")
             remaining = remaining[end:].lstrip()
     except json.JSONDecodeError as exc:
-        raise AgentProtocolError("model output is not valid action JSON") from exc
+        raise AgentProtocolError(
+            "model output is not valid action JSON (" + str(exc).splitlines()[0] + "): "
+            "整套动作要是一个 JSON 对象，字符串里的换行写成 \\n，补丁放在 `diff` 里"
+        ) from exc
     if any(value != values[0] for value in values[1:]):
         raise AgentProtocolError("model output contains multiple different actions")
     payload = unwrap_action_envelope(values[0])

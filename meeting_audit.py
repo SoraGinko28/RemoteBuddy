@@ -65,18 +65,17 @@ def render_markdown(rows: list[dict]) -> str:
         "",
         "## Per-Meeting Results",
         "",
-        "| run | events | chat | screen | score | terminal_control | violations | conclusion |",
-        "|---|---|---|---|---|---|---|---|",
+        "| run | events | chat | screen | terminal_control | violations | conclusion |",
+        "|---|---|---|---|---|---|---|",
     ]
     for row in rows:
         mapped = row.get("mapped") or {}
         lines.append(
-            "| {run} | {ev} | {chat} | {screen} | {score} | {tc} | {viol} | {ok} |".format(
+            "| {run} | {ev} | {chat} | {screen} | {tc} | {viol} | {ok} |".format(
                 run=row["run"],
                 ev=_cell(row.get("event_total")),
                 chat=_cell(mapped.get("chat")),
                 screen=_cell(mapped.get("screen")),
-                score=_cell(mapped.get("score")),
                 tc=_cell(mapped.get("terminal_control")),
                 viol=_cell(row.get("violations")),
                 ok=_cell(row.get("ok")) if row.get("error") is None else row["error"][:60],
@@ -104,9 +103,9 @@ def render_markdown(rows: list[dict]) -> str:
         "3. **role-map inference**: journals currently carry no role metadata, so "
         "every agent that appears is inferred as actor (valid for single-agent "
         "meetings).",
-        "4. **a missing stream is an empty stream**: a meeting without score "
-        "events gets no score chunk, and validation treats it as an empty "
-        "stream (equivalent semantics).",
+        "4. **a missing stream is an empty stream**: a stream with no events "
+        "gets no chunk, and validation treats it as an empty stream "
+        "(equivalent semantics).",
         "",
         "## Suggested Revisions to ADT/Storage (annotation only, no code changes)",
         "",
@@ -115,8 +114,6 @@ def render_markdown(rows: list[dict]) -> str:
         "2. `agent_name2role` should be persisted with the meeting (suggested: "
         "write it into the manifest) instead of inferred; future multi-agent / "
         "review-chain meetings need the real roles.",
-        "3. Journals need to start recording score events so the score stream has "
-        "data to validate.",
         "",
     ]
     return "\n".join(lines)

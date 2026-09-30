@@ -9,7 +9,7 @@ import meeting_adt as adt
 
 
 # =====================================================================
-# G1: the four stream constants
+# G1: the stream constants
 # =====================================================================
 
 class TestStreamNames:
@@ -17,7 +17,7 @@ class TestStreamNames:
         assert adt.STREAM_NAMES == (
             "screen",
             "chat",
-            "score",
+            "agent_cmd",
             "terminal_control",
         )
 
@@ -27,7 +27,7 @@ class TestStreamNames:
     def test_constants_equal_positions_in_tuple(self) -> None:
         assert adt.SCREEN_STREAM_NAME == adt.STREAM_NAMES[0]
         assert adt.CHAT_STREAM_NAME == adt.STREAM_NAMES[1]
-        assert adt.SCORE_STREAM_NAME == adt.STREAM_NAMES[2]
+        assert adt.AGENT_CMD_STREAM_NAME == adt.STREAM_NAMES[2]
         assert adt.TERMINAL_CONTROL_STREAM_NAME == adt.STREAM_NAMES[3]
 
     def test_names_are_unique(self) -> None:
@@ -46,7 +46,7 @@ class TestStreamNames:
         for attr in (
             "SCREEN_STREAM_NAME",
             "CHAT_STREAM_NAME",
-            "SCORE_STREAM_NAME",
+            "AGENT_CMD_STREAM_NAME",
             "TERMINAL_CONTROL_STREAM_NAME",
             "STREAM_NAMES",
         ):
@@ -57,7 +57,7 @@ class TestStreamNames:
         assert set(adt.__all__) == {
             "SCREEN_STREAM_NAME",
             "CHAT_STREAM_NAME",
-            "SCORE_STREAM_NAME",
+            "AGENT_CMD_STREAM_NAME",
             "TERMINAL_CONTROL_STREAM_NAME",
             "STREAM_NAMES",
             "HUMAN_USER_NAME",
@@ -102,27 +102,28 @@ class TestStreamNames:
             "TextRegion",
             "ScreenReference",
             "ChatReference",
-            "ScoreReference",
             "text_region_to_dict",
             "text_region_from_dict",
             "content_reference_to_dict",
             "content_reference_from_dict",
             "resolve_screen_reference",
             "resolve_chat_reference",
-            "resolve_score_reference",
             "resolve_content_reference",
-            "ScoreMessage",
-            "ScoreStreamChunk",
-            "score_message_to_dict",
-            "score_message_from_dict",
-            "score_stream_chunk_to_dict",
-            "score_stream_chunk_from_dict",
-            "score_summon_chained",
-            "assert_score_summon_chained",
             "TextKey",
             "CtrlKey",
             "RestKey",
             "Keystroke",
+            "AgentCmd",
+            "CmdLine",
+            "DiffText",
+            "AgentCmdMessage",
+            "AgentCmdStreamChunk",
+            "agent_cmd_to_dict",
+            "agent_cmd_from_dict",
+            "agent_cmd_message_to_dict",
+            "agent_cmd_message_from_dict",
+            "agent_cmd_stream_chunk_to_dict",
+            "agent_cmd_stream_chunk_from_dict",
             "TerminalControl",
             "TerminalControlStreamChunk",
             "keystroke_str_to_dict",
@@ -842,53 +843,6 @@ class TestContentReferenceCodec:
             region=adt.TextRegion(2, 8),
         )
 
-    def _score_ref(self) -> adt.ScoreReference:
-        return adt.ScoreReference(
-            judge_time=_datetime(2026, 9, 2, 7, 35, 41, 328000, tzinfo=_dt_timezone.utc),
-            judge_name="bob",
-        )
-
-    def test_screen_roundtrip(self) -> None:
-        ref = self._screen_ref()
-        assert adt.content_reference_from_dict(adt.content_reference_to_dict(ref)) == ref
-
-    def test_chat_roundtrip(self) -> None:
-        ref = self._chat_ref()
-        assert adt.content_reference_from_dict(adt.content_reference_to_dict(ref)) == ref
-
-    def test_score_roundtrip(self) -> None:
-        ref = self._score_ref()
-        assert adt.content_reference_from_dict(adt.content_reference_to_dict(ref)) == ref
-
-    def test_screen_json_envelope(self) -> None:
-        payload = adt.content_reference_to_dict(self._screen_ref())
-        assert set(payload) == {"screen_ref"}
-        assert payload["screen_ref"]["region"] == {"start": 0, "end": 5}
-        assert payload["screen_ref"]["stream_name"] == "screen"
-
-    def test_chat_json_envelope(self) -> None:
-        payload = adt.content_reference_to_dict(self._chat_ref())
-        assert set(payload) == {"chat_ref"}
-        assert payload["chat_ref"]["user_name"] == "alice"
-
-    def test_score_json_envelope(self) -> None:
-        payload = adt.content_reference_to_dict(self._score_ref())
-        assert set(payload) == {"score_ref"}
-        assert payload["score_ref"]["judge_name"] == "bob"
-
-    def test_from_dict_no_kind_raises(self) -> None:
-        with pytest.raises(ValueError, match="unknown content reference"):
-            adt.content_reference_from_dict({"foo": {}})
-
-    def test_to_dict_unknown_type_raises(self) -> None:
-        with pytest.raises(TypeError, match="unknown content reference"):
-            adt.content_reference_to_dict("nope")  # type: ignore[arg-type]
-
-    def test_score_ref_has_no_region_field(self) -> None:
-        # ADT: score_ref carries only judge_time/judge_name
-        assert not hasattr(self._score_ref(), "region")
-
-
 class TestResolveScreen:
     def _capture(self, moment: _datetime) -> adt.ScreenCapture:
         return adt.ScreenCapture(screen_data="ab\ncd", screen_width=2, screen_height=2,
@@ -940,171 +894,24 @@ class TestResolveChat:
             adt.resolve_chat_reference(ref, [msg])
 
 
-class TestResolveScore:
-    def _stub_score(self, judge_name: str, moment: _datetime) -> object:
-        # ScoreMessage is only defined in G9: use a minimal duck-typed object here
-        return type("ScoreStub", (), {"judge_name": judge_name, "time": moment})()
-
-    def test_found(self) -> None:
-        t = _dt_now()
-        ref = adt.ScoreReference(judge_time=t, judge_name="bob")
-        stub = self._stub_score("bob", t)
-        assert adt.resolve_score_reference(ref, [stub]) is stub
-
-    def test_wrong_name_raises_lookup(self) -> None:
-        ref = adt.ScoreReference(judge_time=_dt_now(), judge_name="bob")
-        with pytest.raises(LookupError):
-            adt.resolve_score_reference(ref, [self._stub_score("carol", ref.judge_time)])
-
-
 class TestResolveDispatch:
     def test_dispatches_screen(self) -> None:
         t = _dt_now()
         ref = adt.ScreenReference(capture_time=t, stream_name="screen",
                                   region=adt.TextRegion(0, 1))
         cap = adt.ScreenCapture(captured_at=t)
-        result = adt.resolve_content_reference(ref, [cap], [], [])
+        result = adt.resolve_content_reference(ref, [cap], [])
         assert result is cap
 
     def test_dispatches_chat(self) -> None:
         t = _dt_now()
         msg = adt.ChatMessage(user_name="u", time=t)
         ref = adt.ChatReference(msg_time=t, user_name="u", region=adt.TextRegion(0, 1))
-        assert adt.resolve_content_reference(ref, [], [msg], []) is msg
+        assert adt.resolve_content_reference(ref, [], [msg]) is msg
 
     def test_rejects_unknown(self) -> None:
         with pytest.raises(TypeError, match="unknown content reference"):
-            adt.resolve_content_reference("x", [], [], [])  # type: ignore[arg-type]
-
-
-# =====================================================================
-# G9: ScoreMessage / ScoreStreamChunk / summon_chained
-# =====================================================================
-
-def _score_ref_into(judge: str, moment: _datetime) -> adt.ScoreReference:
-    return adt.ScoreReference(judge_time=moment, judge_name=judge)
-
-
-def _score(tag: str = "correctness", judge: str = "bob",
-           moment: Optional[_datetime] = None,
-           reference: Optional[adt.ContentReference] = None) -> adt.ScoreMessage:
-    return adt.ScoreMessage(
-        tag=tag, score=0.8, comment="ok", judge_name=judge,
-        time=moment or _dt_now(), reference=reference,
-    )
-
-
-class TestScoreMessageCodec:
-    def test_roundtrip_full(self) -> None:
-        msg = _score(reference=_score_ref_into("bob", _dt_now()))
-        assert adt.score_message_from_dict(adt.score_message_to_dict(msg)) == msg
-
-    def test_roundtrip_without_optional_parts(self) -> None:
-        msg = adt.ScoreMessage(tag="style")
-        assert adt.score_message_from_dict(adt.score_message_to_dict(msg)) == msg
-
-    def test_json_format(self) -> None:
-        moment = _datetime(2026, 9, 2, 8, 0, 0, tzinfo=_dt_timezone.utc)
-        payload = adt.score_message_to_dict(_score(judge="bob", moment=moment))
-        assert payload["tag"] == "correctness"
-        assert payload["score"] == 0.8
-        assert payload["comment"] == "ok"
-        assert payload["judge_name"] == "bob"
-        assert payload["time"] == "2026-09-02T08:00:00Z"
-        assert "reference" not in payload  # key omitted when there is no reference
-
-    def test_json_none_score(self) -> None:
-        payload = adt.score_message_to_dict(adt.ScoreMessage(tag="t"))
-        assert payload["score"] is None
-        assert payload["time"] is None
-
-    def test_missing_tag_raises(self) -> None:
-        with pytest.raises(ValueError, match="missing tag"):
-            adt.score_message_from_dict({"score": 0.5})
-
-    def test_human_judge_roundtrip(self) -> None:
-        msg = adt.ScoreMessage(tag="t", judge_name=adt.HUMAN_USER_NAME)
-        assert adt.score_message_from_dict(adt.score_message_to_dict(msg)) == msg
-
-
-class TestScoreStreamChunkCodec:
-    def test_empty_chunk_is_the_empty_stream_repr(self) -> None:
-        # the real journal has no score events -> empty chunks are the empty-stream representation
-        chunk = adt.ScoreStreamChunk()
-        assert adt.score_stream_chunk_from_dict(adt.score_stream_chunk_to_dict(chunk)) == chunk
-        assert chunk.chunks == []
-
-    def test_roundtrip_nonempty(self) -> None:
-        chunk = adt.ScoreStreamChunk(chunks=[_score(), _score(tag="clarity")])
-        assert adt.score_stream_chunk_from_dict(adt.score_stream_chunk_to_dict(chunk)) == chunk
-
-    def test_default_stream_name_is_score(self) -> None:
-        assert adt.ScoreStreamChunk().stream_name == "score"
-
-    def test_rejects_wrong_stream_name(self) -> None:
-        with pytest.raises(ValueError, match="not a score chunk"):
-            adt.score_stream_chunk_from_dict({"stream_name": "chat", "chunks": []})
-
-
-class TestSummonChained:
-    def _role_map(self) -> dict:
-        return {
-            "actor_bot": adt.AgentRole.ACTOR,
-            "active_bot": adt.AgentRole.ASSISTANT,
-            "passive_bot": adt.AgentRole.CRITIC,
-        }
-
-    def _role_of(self, role_map: dict):
-        return lambda name: role_map.get(name) if name in role_map else None
-
-    def _mention_msg(self, judge: str) -> adt.ChatMessage:
-        return adt.ChatMessage(
-            user_name="someone", time=_dt_now(),
-            message=[adt.RawMessage(text="please review "),
-                     adt.AtUserMessage(user_name=judge)],
-        )
-
-    def test_actor_never_needs_summon(self) -> None:
-        msg = _score(judge="actor_bot", reference=None)
-        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is True
-
-    def test_active_never_needs_summon(self) -> None:
-        msg = _score(judge="active_bot", reference=None)
-        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is True
-
-    def test_human_judge_not_passive_so_chained(self) -> None:
-        msg = _score(judge=adt.HUMAN_USER_NAME)
-        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is True
-
-    def test_passive_with_resolvable_summon_mention_chained(self) -> None:
-        msg = _score(judge="passive_bot")
-        mention = self._mention_msg("passive_bot")
-        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), mention) is True
-
-    def test_passive_no_reference_not_chained(self) -> None:
-        msg = _score(judge="passive_bot", reference=None)
-        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), None) is False
-
-    def test_passive_reference_to_non_summon_message_not_chained(self) -> None:
-        msg = _score(judge="passive_bot")
-        other = adt.ChatMessage(user_name="x", time=_dt_now(),
-                                message=[adt.RawMessage(text="no mention")])
-        assert adt.score_summon_chained(msg, self._role_of(self._role_map()), other) is False
-
-    def test_passive_reference_to_mention_of_other_judge_not_chained(self) -> None:
-        msg = _score(judge="passive_bot")
-        mention_other = self._mention_msg("actor_bot")
-        assert adt.score_summon_chained(msg, self._role_of(self._role_map()),
-                                        mention_other) is False
-
-    def test_assert_passes_for_actor(self) -> None:
-        msg = _score(judge="actor_bot")
-        assert adt.assert_score_summon_chained(msg, self._role_of(self._role_map()), None) is None
-
-    def test_assert_fails_for_unsummoned_passive(self) -> None:
-        msg = _score(judge="passive_bot")
-        with pytest.raises(AssertionError, match="not summon_chained"):
-            adt.assert_score_summon_chained(msg, self._role_of(self._role_map()), None)
+            adt.resolve_content_reference("x", [], [])  # type: ignore[arg-type]
 
 
 # =====================================================================
@@ -1355,7 +1162,12 @@ class TestStreamChunkDispatch:
             "screen": adt.ScreenStreamChunk(owner_user_name="a",
                                             chunks=[adt.ScreenCapture(captured_at=now)]),
             "chat": adt.ChatStreamChunk(chunks=[adt.ChatMessage(user_name="a", time=now)]),
-            "score": adt.ScoreStreamChunk(chunks=[adt.ScoreMessage(tag="t")]),
+            "agent_cmd": adt.AgentCmdStreamChunk(chunks=[
+                adt.AgentCmdMessage(agent_cmd=adt.CmdLine(cmd="ls -l"), agent_name="a",
+                                    produced_time=now, effective_time=now, token="t0k3n"),
+                adt.AgentCmdMessage(agent_cmd=adt.DiffText(appliable_diff="--- a/x\n"),
+                                    agent_name="a", produced_time=now),
+            ]),
             "terminal_control": adt.TerminalControlStreamChunk(chunks=[
                 adt.TerminalControl(user_name="a", start_time=now)]),
         }[stream_name]
@@ -1385,14 +1197,12 @@ class TestUserNames:
                 adt.ScreenStreamChunk(owner_user_name="screen-owner"),
                 adt.ChatStreamChunk(chunks=[adt.ChatMessage(user_name="chat-user",
                                                             time=now)]),
-                adt.ScoreStreamChunk(chunks=[adt.ScoreMessage(tag="t",
-                                                              judge_name="judge")]),
                 adt.TerminalControlStreamChunk(chunks=[adt.TerminalControl(
                     user_name=adt.HUMAN_USER_NAME, start_time=now)]),
             ],
         )
         assert adt.user_names_of_meeting_data(data) == {
-            "screen-owner", "chat-user", "judge", "$human",
+            "screen-owner", "chat-user", "$human",
         }
 
     def test_empty_meeting_has_no_names(self) -> None:

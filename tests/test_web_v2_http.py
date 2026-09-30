@@ -7,6 +7,7 @@ import time
 import unittest
 from unittest import mock
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -224,7 +225,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(["web-demo"], [item["meeting_id"] for item in listing["meetings"]])
         self.assertTrue(listing["warnings"])
         snapshot = self.service.snapshot("web-demo")
-        # Chat and scores are rebuilt client-side from the event timeline and
+        # Chat is rebuilt client-side from the event timeline and
         # are intentionally absent from the per-poll snapshot payload.
         self.assertNotIn("chat", snapshot)
         self.assertTrue(snapshot["latest_screen"]["content"])
@@ -533,7 +534,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             "human",
             MeetingStore.load_in_workspace(self.root, "control-message").meeting.control_owner,
         )
-        store = self.service.message("control-message", {"message": "接管结束，继续改 README"})
+        store, _agent_error = self.service.message("control-message", {"message": "接管结束，继续改 README"})
         self.assertEqual("actor", store.meeting.control_owner)
         loaded = MeetingStore.load_in_workspace(self.root, "control-message")
         controls = [
@@ -545,6 +546,68 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual([False], RecordingRunner.instances[-1].resume_modes)
         chats = MeetingStore.load_in_workspace(self.root, "control-message").chat_messages()
         self.assertEqual("接管结束，继续改 README", chats[-1]["content"])
+
+    def test_a_stored_message_is_not_handed_back_when_the_agent_cannot_start(self):
+        """配置坏了：话已经收下了，就别回错误。
+
+        回错误的话前端会把刚发出去的话塞回输入框，人以为没发出去，再发一遍 —— 真会里就
+        这么重复发出去了三条。这里要的是：消息留在对话里，会议进 api_error 并写着原因，
+        响应里带着 agent_error。
+        """
+        self.start_meeting("bad-config")
+        # 会开起来之后才把配置弄坏：请求预算超出允许范围。
+        (self.model_api / "config.toml").write_text(
+            'model="gpt-5.6-luna"\n'
+            'base_url="https://api.openai.com/v1"\n'
+            'request_timeout_seconds=99999\n'
+            'reasoning_effort="low"\n',
+            encoding="utf-8",
+        )
+        store, agent_error = self.service.message("bad-config", {"message": "继续"})
+        self.assertIn("request_timeout_seconds", agent_error)
+        self.assertEqual("api_error", store.meeting.phase)
+        self.assertTrue(store.meeting.recovery_required)
+        self.assertIn("request_timeout_seconds", store.meeting.failure or "")
+        chats = MeetingStore.load_in_workspace(self.root, "bad-config").chat_messages()
+        self.assertEqual("继续", chats[-1]["content"])
+        self.wait_for_workers()
+
+    def test_a_meeting_can_be_deleted_while_another_service_drives_it(self):
+        """两个服务共用一块工作区时，删除不该被"这场会归谁驱动"挡住。
+
+        真事：页面上点「删除会话」没删掉 —— 另一个服务（同一个工作区的第二份页面）握着驱动声明，
+        删除走到 stop() 就被 409 挡回来了。删除是数据的事，停信号写下去、tmux 收掉，然后照删。
+        """
+        import json as _json
+        import subprocess
+        import sys
+        import time as _time
+
+        self.start_meeting("delete-while-driven")
+        store = MeetingStore.load_in_workspace(self.root, "delete-while-driven")
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(child.kill)
+        (store.run_dir / "driver.json").write_text(
+            _json.dumps({
+                "pid": child.pid,
+                "url": "http://127.0.0.1:9",
+                "workspace": str(self.root),
+                "meeting_id": "delete-while-driven",
+                "heartbeat": _time.time(),
+            }),
+            encoding="utf-8",
+        )
+        # 这份声明真的挡得住别的操作：停一下就被挡回来。
+        with self.assertRaises(WebError) as caught:
+            self.service.stop("delete-while-driven")
+        self.assertEqual(409, caught.exception.status)
+
+        self.service.delete_meeting("delete-while-driven")
+        self.assertFalse(store.run_dir.exists(), "数据目录该删掉")
+        self.assertEqual(
+            [], [m for m in self.service.list_meetings()["meetings"]
+                 if m["meeting_id"] == "delete-while-driven"]
+        )
 
     def test_immediate_message_wakes_a_mid_cycle_agent(self):
         """delivery=interrupt wakes the agent; the deferred mode only queues.
@@ -826,6 +889,7 @@ class HTTPBoundaryTest(unittest.TestCase):
         MeetingWebServiceTest.tearDown(self)
 
     wait_for_workers = MeetingWebServiceTest.wait_for_workers
+    start_meeting = MeetingWebServiceTest.start_meeting
 
     def request(self, path, method="GET", body=None, csrf=False, headers=None):
         request_headers = dict(headers or {})
@@ -852,6 +916,22 @@ class HTTPBoundaryTest(unittest.TestCase):
         payload = json.loads(body) if body else {}
         return context.exception.code, payload
 
+    def test_deleting_a_meeting_works_without_a_request_body(self):
+        """删除会话：正文可以不带（前端就漏过一次）。
+
+        真事：页面上点「删除会话」一直 400（`request body must be UTF-8 JSON`），点了没反应。
+        """
+        self.start_meeting("delete-no-body")
+        response = self.request(
+            "/api/meetings/delete-no-body/delete", method="POST", body="", csrf=True
+        )
+        payload = json.load(response)
+        self.assertTrue(payload["deleted"], payload)
+        self.assertEqual(
+            [], [m for m in self.service.list_meetings()["meetings"]
+                 if m["meeting_id"] == "delete-no-body"]
+        )
+
     def test_session_static_health_and_csrf(self):
         session = json.load(self.request("/api/session"))
         self.assertEqual(self.service.csrf_token, session["csrf_token"])
@@ -863,6 +943,22 @@ class HTTPBoundaryTest(unittest.TestCase):
             body=json.dumps({"message": "topic"}),
         )
         self.assertEqual(403, status)
+
+    def test_asset_change_is_observable_without_reloading_the_page(self):
+        first = json.load(self.request("/api/assets/changes"))
+        css = self.root / "frontend" / "workspace.css"
+        css.write_text("body { color: rgb(1, 2, 3); }", encoding="utf-8")
+        changed = json.load(self.request(
+            "/api/assets/changes?version=" + urllib.parse.quote(first["version"])
+        ))
+        self.assertNotEqual(first["version"], changed["version"])
+        self.assertNotEqual(
+            first["assets"]["workspace.css"], changed["assets"]["workspace.css"]
+        )
+        with self.request(
+            "/assets/workspace.css?v=" + changed["assets"]["workspace.css"]
+        ) as response:
+            self.assertIn("rgb(1, 2, 3)", response.read().decode("utf-8"))
 
     def test_create_events_etag_and_boundaries(self):
         response = self.request(
@@ -889,6 +985,19 @@ class HTTPBoundaryTest(unittest.TestCase):
         self.assertEqual(404, status)
         status, _payload = self.error_status("/api/meetings/..%2Fescape/snapshot")
         self.assertIn(status, {400, 404})
+
+        self.start_meeting("scores-removed")
+        before = len(self.service.load_store("scores-removed").events())
+        status, _payload = self.error_status(
+            "/api/meetings/scores-removed/scores",
+            method="POST",
+            body=json.dumps({"tag": "competent"}),
+            csrf=True,
+        )
+        self.assertEqual(404, status)
+        after = len(self.service.load_store("scores-removed").events())
+        self.assertEqual(before, after)
+
         huge = json.dumps({"message": "x" * (1024 * 1024 + 1)})
         status, _payload = self.error_status(
             "/api/meetings", method="POST", body=huge, csrf=True
@@ -1169,7 +1278,7 @@ class AttachmentTest(MeetingWebServiceTest):
     def test_the_message_carries_the_image_into_the_journal(self):
         self.start_meeting("attach-demo")
         descriptor = self.upload()
-        store = self.service.message("attach-demo", {
+        store, _agent_error = self.service.message("attach-demo", {
             "message": "看这张", "attachments": [{"name": descriptor["name"]}],
         })
         chats = [e for e in store.events() if e["kind"] == "chat" and e["actor"] == "human"]
@@ -1181,7 +1290,7 @@ class AttachmentTest(MeetingWebServiceTest):
     def test_a_message_may_be_nothing_but_pictures(self):
         self.start_meeting("attach-demo")
         descriptor = self.upload()
-        store = self.service.message("attach-demo", {"message": "", "attachments": [descriptor["name"]]})
+        store, _agent_error = self.service.message("attach-demo", {"message": "", "attachments": [descriptor["name"]]})
         chats = [e for e in store.events() if e["kind"] == "chat" and e["actor"] == "human"]
         self.assertEqual("", chats[-1]["content"])
 

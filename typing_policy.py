@@ -32,6 +32,9 @@ MEDIUM_BOUNDARIES = set(",=+-*/%<>|&^")
 # 一行打完到按下回车之间固定停这么久：前摇要让人来得及读那一行。
 # actor 自己用 `$rest` 点的拍子不动 —— 那是它要求的停顿。
 ENTER_WIND_UP_MS = 800
+# 编辑器里那一路（`context="vim"`）短得多：落盘是一行一个 vim 动作，一行就是一步、本来就
+# 一步一步看得见；每行再等 0.8s 只是白等，一份两百行的文件要因此多花两分半。
+VIM_ENTER_WIND_UP_MS = 100
 
 
 @dataclass(frozen=True)
@@ -143,20 +146,22 @@ def _key_step(
     return TypingStep("ctrl", key, delay, "typing", key_context, 0)
 
 
-def _with_enter_wind_up(steps: Sequence[TypingStep]) -> List[TypingStep]:
-    """一行打完到按下回车之间固定停 ``ENTER_WIND_UP_MS``。
+def _with_enter_wind_up(steps: Sequence[TypingStep], context: str) -> List[TypingStep]:
+    """一行打完到按下回车之间停一下：shell 一行停 ``ENTER_WIND_UP_MS``，编辑器里停
+    ``VIM_ENTER_WIND_UP_MS``（一行一个动作、本来就看得见，不用等那么久）。
 
     暂停挂在按键前面那一步上：计划是"发一步、停它的 delay、再发下一步"，
     所以回车的前摇就是它前一个 literal 的停顿。``$rest`` 是 actor 点的拍子，
     留着它自己的毫秒数。
     """
+    wind_up = VIM_ENTER_WIND_UP_MS if context == "vim" else ENTER_WIND_UP_MS
     held = list(steps)
     for index, step in enumerate(held):
         if index == 0 or step.kind != "ctrl" or step.value != "Enter":
             continue
         previous = held[index - 1]
         if previous.kind == "text":
-            held[index - 1] = replace(previous, delay_after_ms=ENTER_WIND_UP_MS)
+            held[index - 1] = replace(previous, delay_after_ms=wind_up)
     return held
 
 
@@ -255,7 +260,7 @@ def plan_input(
             flush_paste()
             steps = converted
 
-    steps = _with_enter_wind_up(steps)
+    steps = _with_enter_wind_up(steps, context)
     numbered = _renumber(steps)
     return TypingPlan(
         numbered,

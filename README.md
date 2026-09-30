@@ -149,7 +149,7 @@ The Agent works only through the shared terminal. Structured `pwd`, `cd`, and `p
 
 Agent `done` means "wait for the human." Only the human can complete a session. Completion retains tmux for inspection; stop interrupts the session and removes tmux.
 
-Scores are human-only annotations. The Agent has no score action, score events are never shown to Agent prompts, and human-authored chat messages cannot be scored by anyone — while any earlier chat or screen content, including the human's own messages, can be quoted into the conversation as a reference.
+Any earlier chat or screen content, including the human's own messages, can be quoted into the conversation as a reference.
 
 Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CLI interfaces intentionally hide them.
 

@@ -402,6 +402,49 @@ class ClaudeCodeBackendTest(unittest.TestCase):
             release.set()
             backend.close()
 
+    def test_an_action_that_ran_but_did_not_finish_is_not_a_protocol_error(self):
+        """动作做了却没做全（diff 还差几个文件）不是协议错误：这一枪的动作就是它。
+
+        真会里出过：三份 diff 落到第三轮还有文件对不上，结果被当成"动作被退回"，
+        整场会以 api_error 收场、还要人来恢复。
+        """
+        backend = self.backend()
+        release = threading.Event()
+        try:
+            backend.start_cycle("meeting-partial", "Skill", "HANG")
+
+            def partial_handler(_action, _metadata):
+                release.wait(2)
+                return {
+                    "success": False,
+                    "content": '{"status": "rejected", "action_result": {"retcode": "1"}}',
+                    "pause": False,
+                    "executed": True,
+                }
+
+            backend._active_handler = partial_handler
+            backend._turn_id = "turn-partial"
+            request = {
+                "token": backend._bridge_token,
+                "request_id": "partial-call",
+                "action": {"action": ACK},
+            }
+            worker = threading.Thread(target=lambda: backend._handle_bridge_request(request))
+            worker.start()
+            deadline = time.monotonic() + 2
+            while backend._turn_claimed_action is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            backend._handle_stream_event(
+                {"type": "result", "subtype": "success", "is_error": False}
+            )
+            release.set()
+            worker.join(2)
+            self.assertIsNone(backend._turn_protocol_error)
+            self.assertIsNotNone(backend._turn_action)
+        finally:
+            release.set()
+            backend.close()
+
     def test_chat_only_rejections_do_not_trip_the_retry_limit(self):
         # A wrong chat message_type is a correctable mistake whose rejection
         # names the allowed options; it must not burn the retry budget that
@@ -542,6 +585,33 @@ class ClaudeCodeBackendTest(unittest.TestCase):
                 self.assertTrue(response.executed)
                 self.assertEqual("ack", response.action.message_type)
                 self.assertEqual(index + 1, len(actions))
+        finally:
+            backend.close()
+
+    def test_a_slow_action_is_not_cut_off_by_the_turn_timeout(self):
+        """动作在执行时不算"这一枪挂了"：敲一份 diff 要几分钟，不该被请求超时掐掉。
+
+        真会里出过：一份 150 行的新脚本敲到一半，300s 的请求超时把整场会判成 api_error，
+        vim 还开着、文件一个字都没落。
+        """
+        from dataclasses import replace
+
+        backend = ClaudeCodeBackend(
+            replace(self.config(), request_timeout_seconds=0.4),
+            claude_binary="fake-claude",
+            process_factory=self.process_factory,
+            skip_protocol_check=True,
+        )
+        try:
+            session = backend.start_cycle("meeting-slow-action", "Skill", "")
+
+            def slow_handler(_action, _metadata):
+                time.sleep(1.2)  # 比 request_timeout_seconds 长得多
+                return {"success": True, "content": "typed", "pause": True}
+
+            response = backend.next_action(session, "observation", action_handler=slow_handler)
+            self.assertTrue(response.executed)
+            self.assertEqual("ack", response.action.message_type)
         finally:
             backend.close()
 

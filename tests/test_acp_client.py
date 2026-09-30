@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -177,6 +178,30 @@ class AcpBackendTest(unittest.TestCase):
         self.assertEqual("touch ran.marker", response.action.command)
         self.assertEqual(1, len(handled))
         self.assertTrue(response.executed)
+
+    def test_a_slow_action_is_not_cut_off_by_the_turn_timeout(self):
+        """动作在执行时不算"这一枪挂了"：落一份 diff 要几分钟，不该被请求超时掐掉。
+
+        真会里出过：一份 150 行的新脚本敲到一半，请求超时把整场会判成 api_error。
+        """
+        backend = self.backend()
+        try:
+            session = backend.start_cycle(
+                "meeting-acp-slow", "RemoteBuddy skill", "落一份 diff",
+                workspace=str(self.workspace),
+            )
+
+            def slow_handler(_action, _metadata):
+                time.sleep(0.6)  # 比 request_timeout_seconds 长
+                return {"success": True, "content": "落了", "pause": True}
+
+            response = backend.next_action(
+                session, "落它", action_handler=slow_handler, request_timeout_seconds=0.4
+            )
+        finally:
+            backend.close()
+        self.assertTrue(response.executed)
+        self.assertEqual("command", response.action.type)
 
     def test_the_action_tool_is_inlined_as_a_stdio_mcp_server(self):
         backend = self.backend()

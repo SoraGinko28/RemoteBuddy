@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import tmux_vim
+from tmux_transport import TmuxError
 from tmux_vim import (
     CommandTimeout,
     DiffError,
@@ -375,6 +377,8 @@ class FakePane:
         self.tokens: List[List[Dict[str, str]]] = []
         self.literals: List[str] = []
         self.commands: List[str] = []
+        # 敲进去的整行（`send_keys` 那一下），用来查"这一行到底长什么样"。
+        self.sent_lines: List[str] = []
         self.killed = 0
         self.created = 0
         self.captures = 0
@@ -382,7 +386,11 @@ class FakePane:
         self.command_sequence: List[str] = []
         self.vim_starts = True
         self.vim_quits = True
+        self.in_insert = False
         self.answer_marker = True
+        # 给个数字就当成 tmux 的历史缓存只有这么多行：超出的（最旧的）先掉出去，
+        # 用来演"输出把缓存顶穿"的那种情况。None = 不设限。
+        self.history_limit: Optional[int] = None
 
     # --- 编排 ---------------------------------------------------------
     def answer(self, command: str, output: str = "", retcode: str = "0") -> "FakePane":
@@ -398,8 +406,9 @@ class FakePane:
         self.scrollback += self.prompt
         return self
 
-    def enter_vim(self) -> "FakePane":
+    def enter_vim(self, insert: bool = False) -> "FakePane":
         self.command = "vim"
+        self.in_insert = insert
         return self
 
     # --- 传输层的那套方法 ---------------------------------------------
@@ -423,7 +432,10 @@ class FakePane:
 
     def capture(self, _pane_id: str) -> str:
         self.captures += 1
-        return self.scrollback
+        if self.history_limit is None:
+            return self.scrollback
+        lines = self.scrollback.split("\n")
+        return "\n".join(lines[-self.history_limit :])
 
     def capture_visible(self, _pane_id: str) -> str:
         self.visible_captures += 1
@@ -451,6 +463,7 @@ class FakePane:
             self._feed_vim("\n")
 
     def send_keys(self, pane_id: str, text: str) -> None:
+        self.sent_lines.append(text)
         self.send_literal(pane_id, text)
         self.send_enter(pane_id)
 
@@ -458,8 +471,14 @@ class FakePane:
         self.specials.append(key)
         if self.command not in SHELLS:
             if key == "C-c":
-                self.command = "bash"
-                self.scrollback += "^C\n" + self.prompt
+                if self.command == "vim":
+                    # vim 里 C-c 只是离开插入模式，不是退出 vim —— 这也是 harness 先 C-c
+                    # 再 `:q!` 的原因。
+                    self.in_insert = False
+                    self.pending = ""
+                else:
+                    self.command = "bash"
+                    self.scrollback += "^C\n" + self.prompt
             elif key in {"Escape", "Enter"}:
                 self._feed_vim("\x1b" if key == "Escape" else "\n")
 
@@ -473,6 +492,10 @@ class FakePane:
                     self._feed_vim("\x1b")
                 elif token.get("value") == "Enter":
                     self._feed_vim("\n")
+                elif token.get("value") == "C-c" and self.command == "vim":
+                    # 插入模式里收尾用的那个 C-c：回到普通模式，不是退出 vim。
+                    self.in_insert = False
+                    self.pending = ""
 
     def send_workspace_command(self, _pane_id: str, command: str, path: str = "") -> None:
         self.send_keys(_pane_id, command)
@@ -489,24 +512,58 @@ class FakePane:
         return self.pane_id
 
     # --- 内部 ---------------------------------------------------------
+    def _folded(self, line: str):
+        """(命令行, 这一行是不是返回码探针)。
+
+        harness 在命令前面加一个标记（`echo cmd-<tok> > /dev/null; <命令>`），读返回码的
+        `echo retcode-<tok> $?` 是**另一行**。标记本身不打印东西，探针那一行才打印返回码。
+        """
+        body = line
+        head = re.match(
+            rf"echo\s+{re.escape(tmux_vim.CMD_MARKER)}[A-Za-z0-9_-]*\s+>\s*/dev/null\s*;\s*", line
+        )
+        if head is not None:
+            body = line[head.end() :]
+        pure = re.fullmatch(
+            rf"echo\s+{re.escape(tmux_vim.RETCODE_MARKER)}[A-Za-z0-9_-]*\s+\$\?", body.strip()
+        )
+        if pure is not None:
+            return "", True
+        # 早先那版把探针接在尾巴上，也认（真会里出现过，留着兜底）。
+        tail = re.search(
+            rf";\s*echo\s+{re.escape(tmux_vim.RETCODE_MARKER)}[A-Za-z0-9_-]*\s+\$\?\s*$", body
+        )
+        if tail is not None:
+            return body[: tail.start()], True
+        return body, False
+
     def _run_line(self, line: str) -> None:
-        """壳里执行一行：命令本身已经在打字时回显过了，这里只补输出和返回码。"""
+        """壳里执行一行：命令本身已经在打字时回显过了，这里只补输出和返回码。
+
+        命令那一行前面挂着 harness 的标记（只用来切输出，它自己不打印）；返回码是 harness
+        另敲的一行探针打出来的。
+        """
         if not line.strip():
             return
-        self.commands.append(line)
-        if line.startswith(f"echo {tmux_vim.RETCODE_MARKER}"):
-            if self.answer_marker:
-                token = line.split(tmux_vim.RETCODE_MARKER, 1)[1].split()[0]
-                self.scrollback += f"{tmux_vim.RETCODE_MARKER}{token} {self.retcode}\n"
-            return
-        if line.startswith("vim ") or line.startswith("vim\t"):
-            if self.vim_starts:
-                self.command = "vim"
-            return
-        output, code = self.script.get(line, ("", self.retcode))
-        self.retcode = code
-        if output:
-            self.scrollback += output + "\n"
+        command, is_probe = self._folded(line)
+        if command.strip():
+            self.commands.append(command)
+            if command.startswith("vim ") or command.startswith("vim\t"):
+                if self.vim_starts:
+                    self.command = "vim"
+            else:
+                output, code = self.script.get(command, ("", self.retcode))
+                self.retcode = code
+                if output:
+                    self.scrollback += output + "\n"
+        if is_probe and self.answer_marker:
+            token = self._probe_token(line)
+            self.scrollback += f"{tmux_vim.RETCODE_MARKER}{token} {self.retcode}\n"
+
+    @staticmethod
+    def _probe_token(line: str) -> str:
+        match = re.search(rf"{re.escape(tmux_vim.RETCODE_MARKER)}([A-Za-z0-9_-]*)", line)
+        return match.group(1) if match else ""
 
     def _feed_vim(self, text: str) -> None:
         """记账用的假 vim：只看它有没有收到"写盘退出"，据此把前台还给 shell。
@@ -515,8 +572,11 @@ class FakePane:
         """
         if text == "\x1b":
             self.pending = ""
+            self.in_insert = False
             return
         if text == "\n":
+            if self.in_insert:
+                return  # 插入模式里的回车只是换行
             command = self.pending.strip()
             self.pending = ""
             if command in {":wq", ":wq!", ":x", ":q", ":q!"} and self.vim_quits:
@@ -527,6 +587,12 @@ class FakePane:
             self.command = "bash"
             self.pending = ""
             self.scrollback += self.prompt
+            return
+        if self.in_insert:
+            return  # 插入模式里敲什么都是字
+        if text in {"i", "I", "a", "A", "o", "O"}:
+            self.in_insert = True
+            self.pending = ""
             return
         if text.startswith(":") or text.startswith("/"):
             self.pending = text
@@ -771,6 +837,34 @@ class ParseEdgeTest(unittest.TestCase):
         self.assertEqual(["a.py", "b.py"], [patch.path for patch in patches])
         self.assertTrue(patches[1].is_new)
 
+    def test_a_hunk_that_undercounts_its_lines_keeps_the_extra_ones(self):
+        """hunk 头的行数写少了：多出来的行还是这个 hunk 的，不甩出去。
+
+        真会里出过：模型把两处改动写成一个 hunk 的长度、行数又写少，后面几行就成了
+        "这一段不属于任何文件"，连撞三次把一场会撞死（`20260929-103923-cc44ce`）。
+        """
+        text = (
+            "--- a/frontend/workspace.html\n+++ b/frontend/workspace.html\n"
+            "@@ -293,2 +293,3 @@\n <div>\n+  <dialog id=\"delete-dialog\"></dialog>\n </div>\n <p>more</p>\n"
+            "--- a/frontend/workspace.js\n+++ b/frontend/workspace.js\n"
+            "@@ -3345,2 +3349,3 @@\n async function deleteMeeting(meetingId) {\n"
+            "+  state.deleteMeetingId = \"\";\n }\n+  hideMeetingMenu();\n"
+        )
+        patches = tmux_vim.parse_unified_diff(text)
+        self.assertEqual(["frontend/workspace.html", "frontend/workspace.js"],
+                         [patch.path for patch in patches])
+        # 行数按正文重数：多出来的那几行还在这一段里。
+        self.assertEqual((3, 4), (patches[0].hunks[0].old_count, patches[0].hunks[0].new_count))
+        self.assertEqual(4, len(patches[0].hunks[0].lines))
+        self.assertEqual((2, 4), (patches[1].hunks[0].old_count, patches[1].hunks[0].new_count))
+        self.assertIn("+  hideMeetingMenu();", patches[1].hunks[0].lines)
+
+    def test_orphaned_lines_are_refused_with_the_file_header_hint(self):
+        """真的没有文件头时：拒绝理由要说清"每个文件都要有自己的两行头"。"""
+        text = "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-x\n+y\n\n这一行没有文件头\n"
+        with self.assertRaisesRegex(tmux_vim.DiffError, "每个文件的改动前面都要有"):
+            tmux_vim.parse_unified_diff(text)
+
     def test_no_newline_markers_are_kept(self):
         text = (
             "--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n-old\n\\ No newline at end of file\n"
@@ -819,6 +913,22 @@ class ParseEdgeTest(unittest.TestCase):
         )
         self.assertEqual("pkg/store.py", patches[0].path)
         self.assertEqual(("-old", "+new", " keep"), patches[0].hunks[0].lines)
+        for marker in ("***", "*** End Patch", "*** End diff", "*** End of File"):
+            patches = tmux_vim.parse_unified_diff(
+                "*** Begin Patch\n"
+                "*** Update File: pkg/store.py\n"
+                "@@ -1,2 +1,2 @@\n"
+                "-old\n+new\n keep\n"
+                f"{marker}\n"
+            )
+            self.assertEqual(
+                ("-old", "+new", " keep"), patches[0].hunks[0].lines
+            )
+
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+        )
+        self.assertEqual(("-a", "+b"), patches[0].hunks[0].lines)
         added = tmux_vim.parse_unified_diff(
             "*** Begin Patch\n*** Add File: fresh.py\n@@ -0,0 +1,1 @@\n+one\n*** End Patch\n"
         )
@@ -839,11 +949,17 @@ class ParseEdgeTest(unittest.TestCase):
                 "把这两行改掉就行\n--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+b\n"
             )
 
-    def test_body_longer_than_the_header_is_an_error(self):
-        with self.assertRaises(DiffError):
-            tmux_vim.parse_unified_diff(
-                "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+A\n+A2\n"
-            )
+    def test_body_longer_than_the_header_is_kept_and_recounted(self):
+        """正文比 hunk 头写的长：多出来的行算这一段，行数按正文重数。
+
+        手写的 diff 常把行数写少；按它停就会把后面的行甩出去、读成"不属于任何文件"。
+        """
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+A\n+A2\n"
+        )
+        hunk = patches[0].hunks[0]
+        self.assertEqual(("-a", "+A", "+A2"), hunk.lines)
+        self.assertEqual((1, 2), (hunk.old_count, hunk.new_count))
 
     def test_path_escaping_the_workspace_is_an_error(self):
         with self.assertRaises(DiffError):
@@ -964,6 +1080,10 @@ class VimStepShapeTest(unittest.TestCase):
     def file_steps(self, text, path):
         return [step for step in self.steps_for(text) if step.path == path]
 
+    def file_steps_with(self, text, path, contents):
+        steps = tmux_vim.vim_steps_for_diff(text, contents)
+        return [step for step in steps if step.path == path]
+
     def values(self, step):
         return [str(token.get("value", "")) for token in step.keys]
 
@@ -979,6 +1099,24 @@ class VimStepShapeTest(unittest.TestCase):
         self.assertEqual(["O", "A2", "C-c"], self.values(steps[2]))
         self.assertEqual(["4G", "1dd"], self.values(steps[3]))
         self.assertEqual(":wq", keys_of(steps[4])[:3])
+
+    def test_a_context_line_that_repeats_is_not_used_as_a_search_anchor(self):
+        """文件里到处都是 `}` 这种行时不能拿它去搜：`/^}$/` 会命中第一个 `}`，改动落到别处。
+
+        落盘时手上是有文件内容的，这时改成报"这个 hunk 实际落在第几行"——干跑就是按上下文
+        找到那一行的；没有文件内容可比时（只看 diff）维持原样，按上下文搜。
+        """
+        text = "--- a/a.py\n+++ b/a.py\n@@ -6,3 +6,3 @@\n }\n \n-old()\n+new()\n"
+        lines = ["}", "", "}", "", "}", "", "old()", ""]
+        steps = self.file_steps_with(text, "a.py", {"a.py": "\n".join(lines) + "\n"})
+        self.assertEqual([("line", 7, 0)], anchor_plan_of_steps([steps[1]]))
+        self.assertEqual([("search", "^}$", 2)], anchor_plan_of_steps([self.file_steps(text, "a.py")[1]]))
+
+    def test_a_context_line_that_appears_once_is_still_searched_for(self):
+        text = "--- a/a.py\n+++ b/a.py\n@@ -6,3 +6,3 @@\n only-one\n \n-old()\n+new()\n"
+        contents = {"a.py": "}\n\n}\nonly-one\n\nold()\n"}
+        steps = self.file_steps_with(text, "a.py", contents)
+        self.assertEqual([("search", "^only-one$", 2)], anchor_plan_of_steps([steps[1]]))
 
     def test_insert_two_lines_writes_them_one_line_per_step(self):
         text = self.two_file_diff(
@@ -1125,6 +1263,14 @@ class EnsureShellTest(unittest.TestCase):
         self.assertIn("quit-vim", ready.actions)
         self.assertEqual("bash", pane.command)
 
+    def test_a_vim_is_left_first_with_c_c_so_q_bang_can_reach_it(self):
+        """vim 停在插入模式时，`:q!` 会被当字插进缓冲区：先 C-c 回普通模式再敲它。"""
+        pane = self.pane()
+        pane.enter_vim()
+        ready = tmux_vim.ensure_shell(pane, pane.pane_id)
+        self.assertIn("quit-vim", ready.actions)
+        self.assertEqual(["C-c"], pane.specials)
+
     def test_a_pager_is_quit_with_q(self):
         pane = self.pane(command="less")
         ready = tmux_vim.ensure_shell(pane, pane.pane_id)
@@ -1221,15 +1367,62 @@ class RunCommandTest(unittest.TestCase):
     def case(self, name="4files_2hunks_mixed") -> Case:
         return _case_by_name(name)
 
-    def test_output_comes_from_the_whole_scrollback_not_the_viewport(self):
+    # 敲进去的两行：`echo cmd-<tok> > /dev/null; <命令>`，然后单独一行读返回码。
+    MARKED = re.compile(
+        r"^echo cmd-remotebuddy-(?P<token>[0-9a-z]+) > /dev/null; (?P<command>.*)$"
+    )
+
+    def assert_marked(self, pane, command: str) -> str:
+        """命令那一行带着前置标记，返回码是紧接着的另一行探针 —— 两行同一个 token。"""
+        match = self.MARKED.fullmatch(pane.sent_lines[0])
+        self.assertIsNotNone(match, pane.sent_lines)
+        self.assertEqual(command, match.group("command"))
+        token = match.group("token")
+        self.assertEqual(
+            f"echo {tmux_vim.RETCODE_MARKER}{token} $?", pane.sent_lines[1], pane.sent_lines
+        )
+        return token
+
+    def test_output_longer_than_the_buffer_comes_back_as_a_truncated_tail(self):
+        """输出把 tmux 的历史缓存顶穿：交回去的是尾巴，并且说清它是尾巴。"""
+        pane = self.pane()
+        pane.answer("build everything", "\n".join(f"line {number}" for number in range(50)))
+        pane.history_limit = 5
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "build everything")
+        self.assertEqual("0", result.retcode)
+        self.assertTrue(result.truncated)
+        self.assertIn("line 49", result.output_on_screen)
+        self.assertNotIn("line 0\n", result.output_on_screen)
+        # 被截断的第一行是半截，剔掉；剩下的每一行都完整。
+        for line in result.output_on_screen.splitlines():
+            self.assertRegex(line, r"^line \d+$")
+
+    def test_a_short_output_is_not_flagged_as_truncated(self):
+        pane = self.pane()
+        pane.answer("pwd", "/w/proj")
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "pwd")
+        self.assertFalse(result.truncated)
+        self.assertEqual("/w/proj", result.output_on_screen)
+
+    def test_only_this_command_output_is_handed_back(self):
+        """整屏缓存是拿来切边界的：交回模型的是这一条命令自己的输出，不是上一条留下的历史。"""
         pane = self.pane()
         pane.show("很远以前的一行\n" * 40)
         pane.answer("git diff --stat", " a.py | 3 +++\n b.py | 2 +-\n")
         result = tmux_vim.run_command(pane, None, pane.pane_id, "git diff --stat")
         self.assertIsInstance(result, TmuxCmdResult)
-        self.assertIn("很远以前的一行", result.output_on_screen)
-        self.assertIn("a.py | 3 +++", result.output_on_screen)
+        self.assertNotIn("很远以前的一行", result.output_on_screen)
+        self.assertEqual(" a.py | 3 +++\n b.py | 2 +-", result.output_on_screen)
         self.assertEqual("0", result.retcode)
+
+    def test_output_comes_from_the_whole_scrollback_not_the_viewport(self):
+        """输出被切出来，但切的是整屏缓存里的那一段：滚出可视区的那几行也还在。"""
+        pane = self.pane()
+        pane.answer("git diff", "\n".join(f"line {number}" for number in range(40)))
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "git diff")
+        self.assertIn("line 0", result.output_on_screen)
+        self.assertIn("line 39", result.output_on_screen)
+        self.assertNotIn("line 0", pane.capture_visible(pane.pane_id))
 
     def test_a_non_zero_retcode_is_reported(self):
         pane = self.pane()
@@ -1245,12 +1438,57 @@ class RunCommandTest(unittest.TestCase):
         for path in case.paths():
             self.assertIn(path, result.output_on_screen)
 
-    def test_the_command_is_typed_as_one_line(self):
+    def test_the_command_is_marked_and_the_probe_is_its_own_line(self):
+        """命令前面一个标记，读返回码另起一行（同一个 token）；交回去的只有这条命令的输出。"""
         pane = self.pane()
         pane.answer("git status --porcelain", " M a.py\n M b.py\n")
-        tmux_vim.run_command(pane, None, pane.pane_id, "git status --porcelain")
-        self.assertTrue(pane.commands[0] == "git status --porcelain")
-        self.assertTrue(pane.commands[1].startswith(f"echo {tmux_vim.RETCODE_MARKER}"), pane.commands)
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "git status --porcelain")
+        self.assertEqual(["git status --porcelain"], pane.commands)
+        self.assertEqual("0", result.retcode)
+        self.assertEqual(" M a.py\n M b.py", result.output_on_screen)
+        self.assert_marked(pane, "git status --porcelain")
+        self.assertEqual(2, len(pane.sent_lines), pane.sent_lines)
+
+    def test_a_command_ending_with_an_escaped_semicolon_is_not_rewritten(self):
+        """`find … -exec … \\;` 这种尾巴：绝不往同一行上接 `echo … $?`。
+
+        真事：接上去之后 find 把 `echo` 当成自己的参数，报 "unknown primary or operator"，
+        那条命令等于没跑。
+        """
+        pane = self.pane()
+        command = "find ../viba -type f -name '*.md' -print -exec cat {} \\;"
+        pane.answer(command, "a.md\nb.md\n")
+        result = tmux_vim.run_command(pane, None, pane.pane_id, command)
+        self.assertEqual("0", result.retcode)
+        self.assertEqual("a.md\nb.md", result.output_on_screen)
+        self.assertEqual(command, pane.sent_lines[0].split("; ", 1)[1], pane.sent_lines)
+        self.assertEqual(1, pane.sent_lines[0].count("echo "), pane.sent_lines[0])
+
+    def test_a_return_code_echo_the_actor_wrote_itself_is_replaced(self):
+        """actor 自己接的那句 `echo …retcode… $?` 被剥掉，换成 harness 自己的一行。"""
+        pane = self.pane()
+        pane.answer(".venv/bin/python check_rename_ui.py", "OK\n")
+        result = tmux_vim.run_command(
+            pane,
+            None,
+            pane.pane_id,
+            ".venv/bin/python check_rename_ui.py; echo remotebuddy-retcode-ui $?",
+        )
+        self.assertEqual("0", result.retcode)
+        self.assertEqual("OK", result.output_on_screen)
+        self.assert_marked(pane, ".venv/bin/python check_rename_ui.py")
+        self.assertNotIn("remotebuddy-retcode-ui", pane.sent_lines[0])
+        self.assertEqual(2, len(pane.sent_lines), pane.sent_lines)
+
+    def test_a_background_command_keeps_its_own_line_too(self):
+        """尾巴是后台 `&`：命令原样敲（不接分号），返回码照旧另起一行。"""
+        pane = self.pane()
+        pane.answer("sleep 1 &", "")
+        result = tmux_vim.run_command(pane, None, pane.pane_id, "sleep 1 &")
+        self.assertEqual("0", result.retcode)
+        self.assertTrue(pane.sent_lines[0].endswith("; sleep 1 &"), pane.sent_lines)
+        self.assert_marked(pane, "sleep 1 &")
+        self.assertEqual("sleep 1 &", pane.commands[0])
 
     def test_the_shell_is_confirmed_first(self):
         pane = self.pane()
@@ -1518,18 +1756,72 @@ def repo_with_case(test: unittest.TestCase, case: Case) -> Path:
 
 
 class SnapshotTest(unittest.TestCase):
-    """快照按文件拍：只读工作区，不要求这里是 git 仓库，也不留东西。"""
+    """快照：项目是仓库就开一棵 git worktree，不是就只读文件；两种情况收尾都不留东西。"""
 
-    def test_a_snapshot_only_reads_the_workspace(self):
+    @staticmethod
+    def _files_of(work):
+        """工作区里的文件，`.git` 不算：快照要在 `.git` 里开分支、登记工作树，收尾会摘干净。"""
+        return sorted(
+            path.relative_to(work).as_posix()
+            for path in work.rglob("*")
+            if path.is_file() and ".git" not in path.relative_to(work).parts
+        )
+
+    @staticmethod
+    def _loose_objects(work):
+        done = subprocess.run(
+            ["git", "-C", str(work), "count-objects", "-v"], capture_output=True, text=True
+        )
+        return int(done.stdout.splitlines()[0].split(":")[1])
+
+    def test_a_snapshot_in_a_repository_is_a_worktree_and_leaves_nothing_behind(self):
         case = _case_by_name("3files_1hunks_replace")
         work = repo_with_case(self, case)
-        before = sorted(path.relative_to(work).as_posix() for path in work.rglob("*"))
+        before = self._files_of(work)
+        loose_before = self._loose_objects(work)
         files = {name: case.base_text(name) for name in case.paths()}
         snapshot = tmux_vim.snapshot_workspace(work, tmux_vim.parse_unified_diff(diff_text(case)))
         self.assertEqual(files, {name: text for name, text in snapshot.contents.items()})
+        # 项目是仓库：快照是从快照提交上开出来的那棵工作树，工作区里的文件一个都不动
+        self.assertIsNotNone(snapshot.worktree)
+        self.assertTrue(snapshot.worktree.is_dir())
+        self.assertTrue(snapshot.branch.startswith("snapshot-"))
+        self.assertEqual(before, self._files_of(work), "拍快照不该动工作区里的文件")
+        # 快照的对象写在临时对象库：项目自己的对象库一个都没有多
+        self.assertEqual(loose_before, self._loose_objects(work))
+
+        root, branch = snapshot.root, snapshot.branch
+        tmux_vim.cleanup_snapshot(snapshot)
+        self.assertFalse(root.exists(), "临时目录要整个删掉")
+        self.assertEqual(before, self._files_of(work))
+        worktrees = subprocess.run(
+            ["git", "-C", str(work), "worktree", "list"], capture_output=True, text=True
+        )
+        self.assertEqual(1, len(worktrees.stdout.strip().splitlines()), worktrees.stdout)
+        branches = subprocess.run(
+            ["git", "-C", str(work), "branch", "--list", branch], capture_output=True, text=True
+        )
+        self.assertEqual("", branches.stdout.strip(), "快照挂的分支要删掉")
+        self.assertEqual(loose_before, self._loose_objects(work), "项目自己的对象库要一个不多")
+
+    def test_a_snapshot_of_a_subdirectory_falls_back_to_reading_files(self):
+        """工作区是仓库里的一个子目录：拍不成整棵 worktree，退回只读这几个文件。"""
+        case = _case_by_name("3files_1hunks_replace")
+        work = repo_with_case(self, case)
+        inside = work / "inside"
+        inside.mkdir()
+        (inside / "notes.md").write_text("one\ntwo\n", encoding="utf-8")
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n"
+        )
+        notes = []
+        snapshot = tmux_vim.snapshot_workspace(inside, patches, notes)
+        self.assertIsNone(snapshot.worktree)
+        self.assertEqual({"notes.md": "one\ntwo\n"}, dict(snapshot.contents))
+        self.assertTrue(any("子目录" in note for note in notes), notes)
         self.assertEqual(
-            before, sorted(path.relative_to(work).as_posix() for path in work.rglob("*")),
-            "拍快照不该在工作区里留下任何东西",
+            "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n",
+            tmux_vim.workspace_diff(snapshot, {"notes.md": "ONE\ntwo\n"}),
         )
 
     def test_a_snapshot_works_in_a_directory_that_is_not_a_repository(self):
@@ -1544,11 +1836,26 @@ class SnapshotTest(unittest.TestCase):
         snapshot = tmux_vim.snapshot_workspace(work, patches)
         self.assertEqual({"a.py": "one\ntwo\n", "b.py": None}, dict(snapshot.contents))
 
+    def test_the_new_diff_is_taken_from_the_worktree_side(self):
+        """有那棵快照工作树时，新 diff 是 git 从那棵树上取出来的，不是 harness 自己拼的。"""
+        case = _case_by_name("3files_2hunks_mixed")
+        work = repo_with_case(self, case)
+        patches = tmux_vim.parse_unified_diff(diff_text(case))
+        snapshot = tmux_vim.snapshot_workspace(work, patches)
+        self.addCleanup(tmux_vim.cleanup_snapshot, snapshot)
+        write_case_target(case, work)
+        got = tmux_vim.workspace_diff(
+            snapshot, tmux_vim._read_contents(work, [p for one in patches for p in one.paths])
+        )
+        self.assertIn("diff --git ", got, "新 diff 该带着 git 自己的头")
+        self.assertTrue(tmux_vim.diffs_match(diff_text(case), got), got)
+
     def test_the_workspace_diff_says_what_changed_and_nothing_else(self):
         case = _case_by_name("3files_2hunks_mixed")
         work = repo_with_case(self, case)
         patches = tmux_vim.parse_unified_diff(diff_text(case))
         snapshot = tmux_vim.snapshot_workspace(work, patches)
+        self.addCleanup(tmux_vim.cleanup_snapshot, snapshot)
         write_case_target(case, work)
         got = tmux_vim.workspace_diff(
             snapshot, tmux_vim._read_contents(work, [p for one in patches for p in one.paths])
@@ -1565,6 +1872,7 @@ class SnapshotTest(unittest.TestCase):
         work = repo_with_case(self, case)
         patches = tmux_vim.parse_unified_diff(diff_text(case))
         snapshot = tmux_vim.snapshot_workspace(work, patches)
+        self.addCleanup(tmux_vim.cleanup_snapshot, snapshot)
         write_case_target(case, work)
         paths = [path for one in patches for path in one.paths]
         got = tmux_vim.workspace_diff(snapshot, tmux_vim._read_contents(work, paths))
@@ -1924,6 +2232,37 @@ class RealTmuxEdgeTest(unittest.TestCase):
         kwargs.setdefault("ask", lambda question: "continue")
         return tmux_vim.tmux_apply_diff_by_vim(transport, None, pane, diff, **kwargs)
 
+    def test_a_repeated_context_line_does_not_pull_the_edit_elsewhere(self):
+        """hunk 开头那行是 `}`（文件里一堆）时，改动必须落在它该在的那一行。
+
+        真会里出过：`/^}$/` 从文件头搜到第一个 `}`，一整段新函数被写进了另一个函数里面，
+        后面三轮都没补回来。这一条就是那次事故的复现。
+        """
+        work = repo_workdir(self)
+        (work / "code.js").write_text(
+            "function one() {\n  return 1;\n}\n\n"
+            "function two() {\n  return 2;\n}\n\n"
+            "function three() {\n  return 3;\n}\n",
+            encoding="utf-8",
+        )
+        git("add", "-A", cwd=work)
+        git("commit", "-qm", "base", cwd=work)
+        diff = (
+            "--- a/code.js\n+++ b/code.js\n@@ -7,5 +7,6 @@\n }\n \n function three() {\n"
+            "-  return 3;\n+  return 33;\n+  // 改过\n }\n"
+        )
+        outcome = self.apply(work, diff)
+        self.assertEqual("0", outcome.result.retcode, outcome.got_diff[-2000:])
+        self.assertEqual([], outcome.mismatched_files)
+        # 一轮就该落对：落歪了再补，人看到的就是"改一下抖三抖"。
+        self.assertEqual(1, outcome.rounds, outcome.got_diff[-2000:])
+        self.assertEqual(
+            "function one() {\n  return 1;\n}\n\n"
+            "function two() {\n  return 2;\n}\n\n"
+            "function three() {\n  return 33;\n  // 改过\n}\n",
+            (work / "code.js").read_text(encoding="utf-8"),
+        )
+
     def test_a_drifted_line_number_is_landed_by_context_and_reported(self):
         """行号写偏但上下文对得上：照样落对，并且告诉它偏了多少。"""
         case = _case_by_name("2files_1hunks_replace")
@@ -2041,6 +2380,26 @@ class RealTmuxEdgeTest(unittest.TestCase):
         failed = tmux_vim.run_command(transport, None, pane, "sh -c 'exit 7'")
         self.assertEqual("7", failed.retcode)
 
+    def test_command_send_failure_is_reported_as_a_local_action_error(self):
+        class FailingTransport:
+            def pane_info(self, _pane_id):
+                return {"command": "bash"}
+
+            def send_enter(self, _pane_id):
+                return None
+
+            def send_keys(self, _pane_id, _text):
+                raise TmuxError("tmux send-keys failed: command too long")
+
+
+        with self.assertRaises(tmux_vim.CommandSendError) as raised:
+            tmux_vim.run_command(
+                FailingTransport(), None, "pane", "x" * 400
+            )
+
+        self.assertIsInstance(raised.exception, TmuxError)
+        self.assertIn("command was not sent", str(raised.exception))
+
     def test_run_command_keeps_the_whole_scrollback(self):
         case = _case_by_name("2files_1hunks_replace")
         work = repo_with_case(self, case)
@@ -2157,4 +2516,27 @@ class MultiFileMultiLineGuardTest(unittest.TestCase):
                 if len(edits) >= 3:
                     return
         self.fail("用例表里得有一份文件带三个以上 hunk 的用例")
+
+
+class ApplyPatchDiagnosticTest(unittest.TestCase):
+    def test_hunk_failure_reports_partial_match_and_first_mismatch(self):
+        diff = (
+            "--- a/example.py\n"
+            "+++ b/example.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " one\n"
+            " two\n"
+            " three\n"
+        )
+        patch = tmux_vim.parse_unified_diff(diff)[0]
+        with self.assertRaises(DiffNotAppliable) as raised:
+            tmux_vim._apply_patches(
+                [patch],
+                {"example.py": "one\ntwo\nchanged\n"},
+            )
+        message = str(raised.exception)
+        self.assertIn("文件从第 1 行开始对上 2 行", message)
+        self.assertIn("第 3 行开始不对", message)
+        self.assertIn("补丁要 'three'", message)
+        self.assertIn("文件里是 'changed'", message)
 

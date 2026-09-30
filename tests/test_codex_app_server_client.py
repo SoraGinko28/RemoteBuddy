@@ -46,6 +46,7 @@ audit_path = sys.argv[1]
 thread_id = "thread-test"
 turn_id = "turn-test"
 dynamic = False
+slow = False
 
 ACK = {ack}
 PWD = {pwd}
@@ -120,6 +121,7 @@ for line in sys.stdin:
                 }},
             }})
             continue
+        slow = "SLOW_DONE" in text
         if dynamic:
             send({{
                 "id": "server-call-1",
@@ -141,6 +143,13 @@ for line in sys.stdin:
         send({{"id": request_id, "result": {{}}}})
         send({{"method": "turn/completed", "params": {{"threadId": thread_id, "turn": {{"id": turn_id, "status": "interrupted", "items": []}}}}}})
     elif request_id == "server-call-1" and "result" in value:
+        if slow:
+            # 动作做完了，模型还得想一会儿才把它那句结果发出来。
+            import time as _time
+            _time.sleep(0.25)
+            send(item(DONE, "message-done"))
+            send({{"method": "turn/completed", "params": {{"threadId": thread_id, "turn": {{"id": turn_id, "status": "completed", "items": []}}}}}})
+            continue
         send({{
             "id": "server-call-2",
             "method": "item/tool/call",
@@ -411,6 +420,29 @@ class CodexAppServerBackendTest(unittest.TestCase):
         ]
         self.assertEqual(2, len(server_results))
         self.assertTrue(all(value["result"]["success"] for value in server_results))
+
+    def test_a_slow_action_does_not_run_the_turn_out_of_time(self):
+        """动作在执行时不算"这一枪挂了"：敲一份 diff 要几分钟，敲完模型还得回一句。
+
+        真会里出过：一份 150 行的新脚本敲到一半，请求超时把整场会判成 api_error。
+        """
+        backend = self.backend(dynamic=True)
+        calls = []
+
+        def handler(action, metadata):
+            calls.append(metadata["call_id"])
+            time.sleep(0.6)  # 比 request_timeout_seconds 长
+            return {"success": True, "content": "landed", "pause": False}
+
+        try:
+            session = backend.start_cycle("meeting", "Skill", "SLOW_DONE")
+            response = backend.next_action(
+                session, "ignored", action_handler=handler, request_timeout_seconds=0.4
+            )
+        finally:
+            backend.close()
+        self.assertEqual(["call-1"], calls)
+        self.assertEqual("done", response.action.type)
 
     def test_timeout_clears_the_turn_slot(self):
         backend = self.backend()

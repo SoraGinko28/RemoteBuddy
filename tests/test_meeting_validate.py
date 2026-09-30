@@ -133,58 +133,6 @@ class TestTerminalControl:
         assert report.ok
 
 
-class TestScoreSummon:
-    def _score(self, judge: str, reference=None) -> adt.ScoreMessage:
-        return adt.ScoreMessage(tag="t", judge_name=judge, time=_later(3),
-                                reference=reference)
-
-    def _chat_with_mention(self, judge: str) -> adt.ChatMessage:
-        return adt.ChatMessage(
-            user_name="human", time=_later(2),
-            message=[adt.AtUserMessage(user_name=judge)])
-
-    def _meeting_with(self, chunks: list, roles: dict) -> adt.MeetingData:
-        meeting = _meeting(chunks)
-        meeting.agent_name2role = roles
-        return meeting
-
-    def test_passive_without_summon_flagged(self) -> None:
-        roles = {"pas": adt.AgentRole.CRITIC}
-        score_chunk = adt.ScoreStreamChunk(chunks=[self._score("pas")])
-        meeting = self._meeting_with([score_chunk], roles)
-        report = validator.validate_meeting_data(meeting)
-        assert "score_summon_chained" in report.by_assert()
-
-    def test_actor_score_never_flagged(self) -> None:
-        roles = {"gen": adt.AgentRole.ACTOR}
-        score_chunk = adt.ScoreStreamChunk(chunks=[self._score("gen")])
-        meeting = self._meeting_with([score_chunk], roles)
-        report = validator.validate_meeting_data(meeting)
-        assert report.ok, report.violations
-
-    def test_passive_summoned_by_chat_reference_ok(self) -> None:
-        roles = {"pas": adt.AgentRole.CRITIC}
-        chat = self._chat_with_mention("pas")
-        ref = adt.ChatReference(msg_time=chat.time, user_name=chat.user_name,
-                                region=adt.TextRegion(0, 1))
-        score_chunk = adt.ScoreStreamChunk(chunks=[self._score("pas", ref)])
-        chat_chunk = adt.ChatStreamChunk(chunks=[chat])
-        # sorted_stream_chunks must be ascending in time: chat (07:00:02)
-        # precedes score (07:00:03)
-        meeting = self._meeting_with([chat_chunk, score_chunk], roles)
-        report = validator.validate_meeting_data(meeting)
-        assert report.ok, report.violations
-
-    def test_passive_ref_missing_from_stream_flagged(self) -> None:
-        roles = {"pas": adt.AgentRole.CRITIC}
-        ref = adt.ChatReference(msg_time=_later(2), user_name="nobody",
-                                region=adt.TextRegion(0, 1))
-        score_chunk = adt.ScoreStreamChunk(chunks=[self._score("pas", ref)])
-        meeting = self._meeting_with([score_chunk], roles)
-        report = validator.validate_meeting_data(meeting)
-        assert "score_summon_chained" in report.by_assert()
-
-
 class TestMeetingLevel:
     def test_role_map_unknown_agent_flagged(self) -> None:
         chunk = adt.ScreenStreamChunk(owner_user_name="alice",

@@ -15,8 +15,6 @@ from agent_protocol import (
     ACTION_TYPES,
     AgentRefused,
     act_step_text,
-    INVESTIGATE_STEP_TEXT,
-    INVESTIGATION_CLOSED_MESSAGE,
     AgentAction,
     AgentActionError,
     AgentBackend,
@@ -26,7 +24,7 @@ from agent_protocol import (
 )
 import tmux_vim
 from meeting_v2 import MeetingError, MeetingStore, utc_now
-from references import reference_from_event
+from references import SOURCE_EVENT_KINDS, reference_from_event
 from tmux_transport import TmuxError, TmuxTransport
 
 from typing_executor import (
@@ -62,17 +60,29 @@ def _typed_command(action: AgentAction) -> str:
 # 前几版里那些**从没落上**的内容写（那些 diff 的原文还在它的会话上下文里）：换个干净会话，
 # 让它重新读一遍文件再动手，比继续劝它管用。
 DIFF_REJECT_LIMIT = 3
+# 连着几轮只回一句 ack/progress（什么都没干）：这一轮到头了，交回给人。
+# 真事：人说"停下"之后，trae-agent 连回 23 条 `chat[ack]`「保持停止，不执行任何操作。」，
+# 每 5 秒一轮 —— ack 不是"干完了"，harness 会接着问，模型只回 ack 就一直问下去，
+# 眼看要烧到 ACTION_LIMIT(60) 才肯停。
+IDLE_CHAT_LIMIT = 3
 ACTION_LIMIT = 60
-CYCLE_LIMIT_SECONDS = 900.0
+# 一轮最多跑多久：请求预算（`model_api/config.toml` 的 `request_timeout_seconds`）是
+# 单次安静的上限，这里是一整轮的上限，得比它大一截 —— 否则一次大落盘刚敲完就撞上本轮超时。
+CYCLE_LIMIT_SECONDS = 1800.0
 # 交给模型看的命令输出有多长：整屏缓存可能几千行，模型要的是结果那一段。
 COMMAND_RESULT_LINES = 120
 # Consecutive undecodable/invalid model actions tolerated before the cycle
 # fails; each retry feeds the validation error back as an observation.
-MAX_INVALID_ACTION_RETRIES = 3
+MAX_INVALID_ACTION_RETRIES = 5
 # If the model repeats the exact same dynamic action this many times without
 # a usable result, park the turn instead of looping ("not every dynamic tool
 # completes; once the threshold is hit, move on").
 DYNAMIC_STALL_LIMIT = 3
+# 同一个理由连着被拒这么多次，就不再让它无声地吃额度：驻留并把话说给人听。
+# 这不是"整轮判死"（那条由 MAX_INVALID_ACTION_RETRIES 管），而是"这个后端一直在
+# 要一个这里没有的能力，别再空转"——真事：一场会里 `webSearch` 被拒 61 次，
+# 差不多吃掉了整整一轮的动作额度。
+REFUSED_REASON_LIMIT = 8
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
 # 只有这两条 backend 自己有读工具：claude-code 是 Read/Glob/Grep，trae-acp 是它自己的读
 # 工具加只读 shell（2026-09-27 在真会上验过：它读了文件，终端一个字符没动）。别的
@@ -80,7 +90,6 @@ SHELL_COMMANDS = {"bash", "zsh", "sh"}
 # 它们唯一那条路，所以不挡。
 BACKENDS_WITH_OWN_READ_TOOLS = {"claude-code", "trae-acp"}
 # 调查步的时间下限：它可能真的在翻一个很大的文件，一次请求的默认预算不够。
-INVESTIGATION_TIMEOUT_FLOOR = 300.0
 # 一轮里最多交给模型几张图：够用就行，免得一次把整场会的图都塞进去。
 MAX_IMAGES_PER_TURN = 4
 # 太大的图不随请求走（观察里仍然写着它在哪），免得一次请求大到发不出去。
@@ -138,16 +147,22 @@ class InteractiveRunner:
         self._screen_before_think: Optional[tuple] = None
         self._stale_action_streak = 0
         self._invalid_action_streak = 0
+        self._refused_action_streak = 0
+        self._refused_reason = ""
+        self._refused_reason_streak = 0
         self._dynamic_action_active = threading.Event()
         self._cycle_started_monotonic = time.monotonic()
+        # 记着"这个预算属于哪一代请求"：人每说一句话 generation 就顶一格，那是新的一轮，
+        # 预算要重新算（见 `_note_cycle_generation`）。
+        self._cycle_generation = self.store.meeting.request_generation
         self._current_input_seq = self.store.last_event_sequence()
         self._stall_fingerprint: Optional[tuple] = None
         self._stall_streak = 0
+        self._idle_chat_streak = 0
         # 这一轮是带着上一次的会话 id 起的吗；续不上时只允许退回一次。
         self._resumed_session_id = ""
         self._resume_retried = False
         # 这一次请求是调查还是行动（见 _agent_loop）。_agent_loop 开头会重置它。
-        self._step = "investigate"
         # 页面上那两个按钮留下的请求，在下一个请求边界处理（见 _apply_backend_requests）：
         # 换 Skill 文本不动进程，或者把进程杀掉重开。
         self._skill_reload_requested = False
@@ -205,6 +220,10 @@ class InteractiveRunner:
         self._include_agent_chat_once = False
         self._last_action_success = True
         self._invalid_action_streak = 0
+        self._refused_action_streak = 0
+        self._refused_reason = ""
+        self._refused_reason_streak = 0
+        self._idle_chat_streak = 0
 
     @staticmethod
     def _latest_sequence(events: Sequence[Dict[str, Any]], default: int = 0) -> int:
@@ -547,7 +566,6 @@ class InteractiveRunner:
             context = self._initial_observation(resuming=bool(resume_session_id))
             images = self._images_of(self.store.events_after(0))
             # 新进程的第一次请求就是上面的初始上下文：那一次请求是调查步。
-            self._step = "investigate"
             self.store.update(phase="agent_restart", pending_action_id=None)
             self.store.append_event(
                 "state",
@@ -588,7 +606,6 @@ class InteractiveRunner:
     def _agent_loop(self) -> None:
         # 每一次请求都属于两步之一：调查（只用自己的读工具，共享终端关着）和行动（只改东西）。
         # 一次请求之后必然回到调查，所以写一个文件会是：调查→vim→调查→打字→调查→:wq→…
-        self._step = "investigate"
         while True:
             if not self._apply_backend_requests():
                 return
@@ -602,16 +619,15 @@ class InteractiveRunner:
                 capture_workspace(self.store, self.transport)
                 if self.store.meeting.pane_id:
                     self._screen_before_think = self._pane_snapshot(self.store.meeting.pane_id)
-                unread = [
-                    event
-                    for event in self.store.events_after(self.store.meeting.agent_cursor)
-                    if event.get("kind") != "score"
-                ]
+                unread = list(
+                    self.store.events_after(self.store.meeting.agent_cursor)
+                )
                 latest_sequence = max(
                     self.store.last_event_sequence(), self.store.meeting.agent_cursor
                 )
                 self._current_input_seq = latest_sequence
                 generation = self.store.meeting.request_generation
+                self._note_cycle_generation(generation)
                 elapsed = self._cycle_elapsed()
                 if elapsed >= CYCLE_LIMIT_SECONDS:
                     self._cycle_timeout()
@@ -626,11 +642,10 @@ class InteractiveRunner:
                 allowed_types, allowed_messages, budget_final = self._phase_constraints()
                 observation = self._observation(unread, budget_final)
                 images = self._images_of(unread)
-                step = self._step
-                if step == "investigate" and not self._can_investigate():
-                    # 没有自己读工具的 backend 拆不开两步（终端是它唯一的读路）。
-                    step = "act"
-                self._step = "act" if step == "investigate" else "investigate"
+                # 只有一步：共享终端现在就是一个 shell（命令前面有 `cmd-…` 标记、返回码由
+                # `retcode-…` 那一行读回来），读文件和改东西都能在这一步里做，不再拆
+                # "调查步 → 行动步"。
+                step = "act"
                 self._include_agent_chat_once = False
                 instructions = self.store.runtime_skill_path.read_text(encoding="utf-8")
                 session_id = self.store.meeting.agent_session_id or self.store.meeting.conversation_id
@@ -664,58 +679,6 @@ class InteractiveRunner:
                         self.store.refresh()
                         self._cycle_timeout()
                     return
-                if step == "investigate":
-                    try:
-                        findings = self.client.investigate(
-                            session_id,
-                            INVESTIGATE_STEP_TEXT + "\n\n" + observation,
-                            model=self.store.meeting.model,
-                            # 调查步是一整趟"读文件"：比一次普通往返久，给它一个下限。
-                            request_timeout_seconds=min(
-                                max(configured_timeout, INVESTIGATION_TIMEOUT_FLOOR),
-                                max(0.1, remaining_seconds - self._request_overhead_seconds()),
-                            ),
-                            action_handler=self._investigation_refusal,
-                        )
-                    except AgentInterrupted:
-                        raise
-                    except AgentBackendError as exc:
-                        # 调查是可选的：它超时或断掉，不该把整轮判死（`api_error` 就再也
-                        # 没人干活了）。记一笔，把它掐掉，直接进行动步——观察里本来就有
-                        # 人说的话和终端那一屏，够它动手了。
-                        with self.lock:
-                            self.store.refresh()
-                            self.store.append_event(
-                                "state",
-                                "harness",
-                                self.store.meeting.phase,
-                                content=f"调查步没跑完（{exc}），直接进行动步。",
-                                data={
-                                    "step": "investigate",
-                                    "status": "failed",
-                                    "action_id": request_id,
-                                },
-                            )
-                            self.store.update(pending_action_id=None)
-                        continue
-                    with self.lock:
-                        self.store.refresh()
-                        self._check_stop()
-                        if self.store.meeting.control_owner != self.agent_name:
-                            return
-                        # 没可查的它就静默：那时不留空记录，也不给它补一句。
-                        note = str(findings or "").strip()
-                        if note and not self._stray_action_text(note):
-                            # 这一段是下一步唯一拿到的东西：写进 journal，行动步的观察里带着它。
-                            self.store.append_event(
-                                "state",
-                                self.agent_name,
-                                self.store.meeting.phase,
-                                content=note,
-                                data={"step": "investigate", "action_id": request_id},
-                            )
-                        self.store.update(pending_action_id=None)
-                    continue
                 response = self._next_backend_action(
                     session_id,
                     instructions,
@@ -763,7 +726,13 @@ class InteractiveRunner:
                         self.store.refresh()
                         self._check_stop()
                         self._last_action_success = False
-                        self._invalid_action_streak += 1
+                        self._refused_action_streak += 1
+                        reason = str(exc)
+                        if reason == self._refused_reason:
+                            self._refused_reason_streak += 1
+                        else:
+                            self._refused_reason = reason
+                            self._refused_reason_streak = 1
                         next_count = self.store.meeting.cycle_action_count + 1
                         self.store.append_event(
                             "action",
@@ -784,7 +753,15 @@ class InteractiveRunner:
                         if next_count >= ACTION_LIMIT:
                             self._wait_for_user("action_budget_exhausted")
                             return
-                    if self._invalid_action_streak < MAX_INVALID_ACTION_RETRIES:
+                    # A refused capability is recoverable independently of malformed actions;
+                    # three consecutive refusals must keep the meeting alive.
+                    if self._refused_action_streak < ACTION_LIMIT:
+                        if self._refused_reason_streak >= REFUSED_REASON_LIMIT:
+                            self._wait_for_user(
+                                "the Agent backend keeps asking for something this "
+                                f"workspace does not offer: {exc}"
+                            )
+                            return
                         continue
                 if isinstance(exc, AgentActionError):
                     # The model produced an invalid action (for example
@@ -830,6 +807,7 @@ class InteractiveRunner:
             with self.lock:
                 self.store.refresh()
                 self._invalid_action_streak = 0
+                self._refused_action_streak = 0
                 stale = self._is_stale(generation)
                 self.store.update(
                     last_response_id=response.response_id,
@@ -966,6 +944,37 @@ class InteractiveRunner:
                     self.store.update(pending_action_id=None)
             if should_pause:
                 return
+            if self._note_idle_chat(request_id, response.action):
+                return
+
+    def _note_idle_chat(self, request_id: str, action: AgentAction) -> bool:
+        """记一笔"这一轮只回了一句 ack/progress"；连够 `IDLE_CHAT_LIMIT` 就把这一轮停下来。
+
+        ack 是"我听到了"，不是"我干完了"：harness 收到 ack 会继续问下一句。模型要是每轮都只
+        回一句 ack（人说"停"的时候最常见 —— 它以为回了就等于停了），就会一直问下去，拿它的
+        预算和人的钱换同一句话。停下来的方式是回到"等待你的消息"，人说话再醒。
+        """
+        idle = action.type == "chat" and action.message_type in {"none", "ack", "progress"}
+        self._idle_chat_streak = self._idle_chat_streak + 1 if idle else 0
+        if self._idle_chat_streak < IDLE_CHAT_LIMIT:
+            return False
+        repeats = self._idle_chat_streak
+        self._idle_chat_streak = 0
+        with self.lock:
+            self.store.refresh()
+            self.store.append_event(
+                "action",
+                "harness",
+                self.store.meeting.phase,
+                data={
+                    "action_id": request_id,
+                    "status": "stalled",
+                    "reason": "idle_chat",
+                    "repeats": repeats,
+                },
+            )
+        self._wait_for_user("idle_chat")
+        return True
 
     def _capture_agent_activity(self, stop: threading.Event) -> None:
         """Capture terminal redraws while a model request is in flight."""
@@ -1021,6 +1030,18 @@ class InteractiveRunner:
         if budget_final:
             return ("chat", "done"), MESSAGE_TYPES, True
         return ("chat", "command", "diff", "done", "observe"), MESSAGE_TYPES, False
+
+    def _note_cycle_generation(self, generation: int) -> None:
+        """人说话了（generation 变了）就是新的一轮：这一轮的预算从这一刻重新算。
+
+        不重置的话，一场会跑满一轮时限之后就永久停在"没时间了"：`_phase_constraints` 只放
+        chat/done，模型改什么都交不上来，人说多少次都没用 —— 真事：`task-check-165333`
+        跑了三十多分钟后，人叫它清理一处样式，它连交两次都被"expected chat, or done"挡回来。
+        """
+        if generation == getattr(self, "_cycle_generation", None):
+            return
+        self._cycle_generation = generation
+        self._cycle_started_monotonic = time.monotonic()
 
     def _cycle_elapsed(self) -> float:
         return max(0.0, time.monotonic() - self._cycle_started_monotonic)
@@ -1091,6 +1112,18 @@ class InteractiveRunner:
                 raise AgentProtocolError(
                     "reference source event was not found; use the seq of an earlier chat or screen event"
                 )
+            wanted_kind = SOURCE_EVENT_KINDS.get(str(item.get("kind") or ""))
+            if wanted_kind is not None and event.get("kind") != wanted_kind:
+                # 模型手里唯一带 seq 的东西是历史里那些事件，最扎眼的是它刚跑完的那条
+                # action；引用屏幕时它常把那条的 seq 填进来。指出来它该填哪个号。
+                # 真事：20260929-200133-eedc8a 的第一次 done 就这么被拒，然后它干脆把
+                # 证据整个删掉重交，那次过了 —— 一个没有证据的完成。
+                newest_screen = self.store.latest_screen() or {}
+                raise AgentProtocolError(
+                    f"reference seq={event.get('seq')} is a {event.get('kind')} event, not "
+                    f"{item.get('kind')}: a screen reference takes the seq of a screen event. "
+                    f"The newest screen event is seq={newest_screen.get('seq')}."
+                )
             region = item.get("region")
             if region is None:
                 content = str(event.get("content", ""))
@@ -1114,31 +1147,36 @@ class InteractiveRunner:
         payload["references"] = [dict(item) for item in action.references]
         try:
             AgentAction.from_dict(payload, allowed_types, allowed_messages)
-            self._resolved_action_references(action)
-            if action.type == "chat" and action.message_type == "progress":
-                if self._last_terminal_evidence is None:
-                    raise AgentProtocolError(
-                        "progress requires a completed terminal action in this cycle; "
-                        "send a plain "
-                        "chat or observe instead when there is nothing new to report"
-                    )
-            if action.type == "done":
-                # Claiming completion is the Agent's call, guided by the Skill
-                # and confirmed by the human; only a message that arrived while
-                # the turn was in flight blocks it.
-                pending_human = [
-                    event for event in self.store.events_after(self._current_input_seq)
-                    if event.get("kind") == "chat" and event.get("actor") == "human"
-                ]
-                if pending_human:
-                    raise AgentProtocolError("cannot propose completion while a new human message is pending")
         except AgentProtocolError as exc:
+            # Only a shape/phase rejection gets this tail: it is about the type
+            # and the message type, and it names what the phase would accept.
+            # Appending it to a rejected reference (below) answered a question
+            # the model had not asked -- 真事：一条 `reference source event is
+            # invalid` 后面跟着 `allowed_types=…`，模型看完把证据删了重交。
             current_command = (self.store.meeting.current_command or "unknown").lower()
             raise AgentProtocolError(
                 f"{exc}; got type={action.type}, message_type={action.message_type}, "
                 f"current_command={current_command}, allowed_types={','.join(allowed_types or ())}, "
                 f"allowed_message_types={','.join(allowed_messages or ())}"
             ) from exc
+        self._resolved_action_references(action)
+        if action.type == "chat" and action.message_type == "progress":
+            if self._last_terminal_evidence is None:
+                raise AgentProtocolError(
+                    "progress requires a completed terminal action in this cycle; "
+                    "send a plain "
+                    "chat or observe instead when there is nothing new to report"
+                )
+        if action.type == "done":
+            # Claiming completion is the Agent's call, guided by the Skill
+            # and confirmed by the human; only a message that arrived while
+            # the turn was in flight blocks it.
+            pending_human = [
+                event for event in self.store.events_after(self._current_input_seq)
+                if event.get("kind") == "chat" and event.get("actor") == "human"
+            ]
+            if pending_human:
+                raise AgentProtocolError("cannot propose completion while a new human message is pending")
         return budget_final
 
     def _execute_dynamic_action(
@@ -1191,41 +1229,8 @@ class InteractiveRunner:
         return act_step_text(getattr(self.client, "action_submission", "tool"),
                              self._readers_refused())
 
-    def _can_investigate(self) -> bool:
-        """这一次请求能不能拆出调查步：backend 得有自己的读工具，而且它实现了这一步。"""
-        if not callable(getattr(self.client, "investigate", None)):
-            return False
-        name = str(getattr(self.client, "backend_name", "") or self.store.meeting.agent_backend)
-        return name in BACKENDS_WITH_OWN_READ_TOOLS
-
-    @staticmethod
-    def _stray_action_text(text: str) -> bool:
-        """它把动作写成了文字：那不是调查结论，是走错门的动作，别当结论记下来。
-
-        记下来下一步的观察里就躺着一个像"我已经做过这个动作"的 JSON——它可能真的以为做过了。
-        """
-        if not (text.startswith("{") and text.endswith("}")):
-            return False
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            return False
-        if not isinstance(payload, dict):
-            return False
-        # 两种写法都见过：`{"action": {...}}`（把动作包在里面）和
-        # `{"action": "command", ...}`（`action` 就是动作类型名）。
-        inner = payload.get("action")
-        if isinstance(inner, dict):
-            kind = str(inner.get("type") or "")
-        elif isinstance(inner, str):
-            kind = inner
-        else:
-            kind = str(payload.get("type") or "")
-        return kind in ACTION_TYPES
-
     def _initial_observation(self, resuming: bool = False) -> str:
-        """cycle 开头的那个观察。一个 cycle 的第一次请求是调查步（能拆步的 backend），
-        所以这段话要跟它一致——第一次请求用的是这段初始上下文，不是请求里的观察。
+        """cycle 开头的那个观察。每一步都是行动步，所以跟行动步那段话保持一致。
 
         续上一次会话时（`resuming`）只发"它还没读过的"：整段历史在 CLI 那个会话里已经是
         它自己上下文的一部分，重发一遍既费 token 又把前缀缓存打散。
@@ -1233,36 +1238,7 @@ class InteractiveRunner:
         unread = (self.store.events_after(self.store.meeting.agent_cursor) if resuming
                   else self.store.events_after(0))
         text = self._observation(unread, False, force_history=not resuming)
-        banner = (INVESTIGATE_STEP_TEXT if self._can_investigate()
-                  else self._act_step_banner())
-        return banner + "\n\n" + text
-
-    def _investigation_refusal(
-        self, action: AgentAction, metadata: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """调查步里来的动作：共享终端整个关着，工具退回去，让它改用文字说。
-
-        这里既不执行也不花动作预算——这一步本来就不该产生动作；`pause` 必须是 False，
-        否则 Claude Code 会把这次退回当成"这一次请求的动作"。
-        """
-        with self.lock:
-            self.store.refresh()
-            self.store.append_event(
-                "action",
-                "harness",
-                self.store.meeting.phase,
-                content=INVESTIGATION_CLOSED_MESSAGE,
-                data={
-                    "action_id": "tool-action-" + uuid.uuid4().hex,
-                    "status": "rejected",
-                    "reason": "investigation_step",
-                    "step": "investigate",
-                    "action": asdict(action),
-                    "dynamic_tool": True,
-                },
-            )
-            self._last_action_success = False
-        return {"success": False, "content": INVESTIGATION_CLOSED_MESSAGE, "pause": False}
+        return self._act_step_banner() + "\n\n" + text
 
     def _run_dynamic_action(
         self,
@@ -1330,6 +1306,7 @@ class InteractiveRunner:
                 cycle_action_count=self.store.meeting.cycle_action_count + 1,
                 agent_turn_id=metadata.get("turn_id") or self.store.meeting.agent_turn_id,
             )
+        executed = False
         try:
             should_pause = self._execute(
                 action_id,
@@ -1337,6 +1314,7 @@ class InteractiveRunner:
                 budget_final,
                 generation,
             )
+            executed = True
         except (RunnerError, TmuxError, MeetingError, AgentProtocolError) as exc:
             with self.lock:
                 self.store.refresh()
@@ -1349,8 +1327,14 @@ class InteractiveRunner:
                     data={"action_id": action_id, "status": "rejected"},
                 )
                 if isinstance(exc, TmuxError):
-                    self._fail_terminal(str(exc))
-                    should_pause = True
+                    if action.type == "command":
+                        # A failed command transmission is recoverable: reject only
+                        # this action so the agent can retry without killing the meeting.
+                        self.store.update(phase="agent_thinking")
+                        should_pause = False
+                    else:
+                        self._fail_terminal(str(exc))
+                        should_pause = True
                 else:
                     self.store.update(phase="agent_thinking")
                     should_pause = False
@@ -1372,6 +1356,10 @@ class InteractiveRunner:
                 "success": self._last_action_success,
                 "content": json.dumps(result, ensure_ascii=False),
                 "pause": should_pause or self.store.meeting.control_owner != self.agent_name,
+                # 动作真做了（只是没做全，比如 diff 还差几个文件）：这一次工具调用就是这一枪
+                # 的动作，别让 backend 把它当成"动作被退回"而把整轮判成协议错误。结果里
+                # `status`、`action_result.retcode` 都写着没做全，模型照着补就行。
+                "executed": executed,
             }
 
     def _observation(
@@ -1382,7 +1370,7 @@ class InteractiveRunner:
     ) -> str:
         relevant = []
         for event in self._with_attachment_files(unread):
-            if event.get("kind") in {"screen", "score"}:
+            if event.get("kind") == "screen":
                 continue
             if (
                 event.get("kind") == "chat"
@@ -1414,7 +1402,7 @@ class InteractiveRunner:
                 [
                     event
                     for event in self.store.events()
-                    if event.get("kind") not in {"screen", "chat", "score"}
+                    if event.get("kind") not in {"screen", "chat"}
                 ],
                 include_action_details=True,
             )
@@ -1436,6 +1424,13 @@ class InteractiveRunner:
             },
             "new_events": relevant,
             "terminal": {
+                # The screen is an event like a chat is: a `done` that quotes the
+                # lines proving the claim needs its seq, and the terminal block
+                # was the one place the model could not see it. Without it the
+                # model quotes the newest seq it *can* see -- an action event --
+                # and the reference is refused for naming the wrong kind.
+                "seq": screen.get("seq"),
+                "event_id": screen.get("event_id", ""),
                 "current_command": screen_data.get("current_command", ""),
                 "current_path": screen_data.get("current_path", ""),
                 "content_sha256": screen_data.get("content_sha256", ""),
@@ -1538,10 +1533,6 @@ class InteractiveRunner:
         """Keep stateless Responses prompts useful without unbounded growth."""
         records = []
         for event in events:
-            # Scores are human annotations only; never expose them to Agent
-            # prompts, even when a caller supplies an unfiltered event list.
-            if event.get("kind") == "score":
-                continue
             record: Dict[str, Any] = {
                 "seq": event.get("seq"),
                 "captured_at": event.get("captured_at"),
@@ -1643,7 +1634,13 @@ class InteractiveRunner:
                 self._complete_action(action_id)
                 self.store.update(phase="completion_proposed", control_owner="none")
                 self.store.append_event(
-                    "state", "harness", "completion_proposed", data={"reason": "agent_done"}
+                    "state", "harness", "completion_proposed",
+                    data={
+                        "reason": "agent_done",
+                        "evidence": bool(done_references or self._last_terminal_evidence),
+                        "evidence_type": self._last_terminal_evidence,
+                        "reference_count": len(done_references),
+                    },
                 )
                 return True
 
@@ -1703,6 +1700,9 @@ class InteractiveRunner:
                     "kind": "cmd",
                     "cmd": action.command,
                     "retcode": result.retcode,
+                    # 输出比 tmux 的缓存还长时只给了尾巴：这一项让模型知道自己看的不是全部，
+                    # 别拿"没看见"当成"没发生"。
+                    "truncated": bool(getattr(result, "truncated", False)),
                     "output_lines": len(result.output_on_screen.splitlines()),
                     "output_tail": _tail_lines(result.output_on_screen, COMMAND_RESULT_LINES),
                 }
@@ -1801,14 +1801,32 @@ class InteractiveRunner:
             with self.lock:
                 self.store.refresh()
                 self._last_action_success = False
+                if isinstance(exc, (tmux_vim.DiffError, tmux_vim.DiffNotAppliable)):
+                    # ADT：ApplyDiff 回一件 AgentCmdResult —— 干跑就过不去时它是 ShellCmdResult
+                    # （可应用性的返回码和它说的话），不是一句抛出来的字符串。写进事件里，
+                    # 结构化后端也能在下一屏观察里读到它。
+                    self._last_action_result = {
+                        "kind": "shell_cmd",
+                        "retcode": "1",
+                        "stdout": "",
+                        "stderr": str(exc),
+                    }
                 self.store.append_event(
                     "action",
                     "harness",
                     "agent_acting",
                     content=str(exc),
-                    data={"action_id": action_id, "status": "rejected"},
+                    data={
+                        "action_id": action_id,
+                        "status": "rejected",
+                        "result": self._last_action_result,
+                    },
                 )
                 if isinstance(exc, TmuxError):
+                    if action.type == "command":
+                        # Keep a single command-send failure local to this action.
+                        self.store.update(phase="agent_thinking")
+                        return False
                     self._fail_terminal(str(exc))
                     return True
                 if isinstance(exc, (tmux_vim.DiffError, tmux_vim.DiffNotAppliable)):

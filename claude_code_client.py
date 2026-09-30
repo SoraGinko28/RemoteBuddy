@@ -64,6 +64,10 @@ REQUIRED_HELP_FLAGS = {
 }
 
 
+# 一次动作最多让它跑多久（`_turn_claimed_action` 期间期限一直顺延，这个上限兜住"卡死"）。
+ACTION_CEILING_SECONDS = 1800.0
+
+
 class ClaudeCodeError(AgentBackendError):
     pass
 
@@ -461,7 +465,12 @@ class ClaudeCodeBackend:
         first_turn = bool(self._first_turn and self._initial_context)
         text = self._initial_context if first_turn else observation
         self._first_turn = False
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
+        # 手上正有动作在执行（`_turn_claimed_action`）时不算"这一枪挂了"：落一份 diff 要一行
+        # 一行敲给人看，几分钟到十几分钟都正常，文件还没落完就把它掐掉，工作区会停在半路。
+        # 所以执行期间把期限顺延（改成"闲多久算挂"），整枪仍有一个上限。
+        ceiling = started + max(timeout * 6.0, ACTION_CEILING_SECONDS)
         try:
             self._send_user_message(text, self._initial_images if first_turn else images)
             self._emit("turn_started", session_id=session_id, turn_id=turn_id, status="inProgress")
@@ -497,6 +506,8 @@ class ClaudeCodeBackend:
                             turn_id=turn_id,
                             executed=True,
                         )
+                    if self._turn_claimed_action is not None and time.monotonic() < ceiling:
+                        deadline = time.monotonic() + timeout
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise ClaudeCodeError("Claude Code turn timed out")
@@ -755,11 +766,15 @@ class ClaudeCodeBackend:
             result = {"success": False, "content": f"action failed: {exc}", "pause": False}
         success = bool(result.get("success", False))
         pause = bool(result.get("pause", False))
+        # 动作做了但没做全（diff 差几个文件、命令返回码非零）和"动作被退回"是两回事：
+        # 前者这一次调用就是这一枪的动作，后者才是这一枪什么都没发生。混为一谈的话，
+        # 一次落不干净的 diff 会把整场会判成 api_error。
+        executed = bool(result.get("executed", False))
         content = self._redact(str(result.get("content", "action completed")))[:64 * 1024]
         with self._condition:
             if action is not None and self._turn_claimed_action == action:
                 self._turn_claimed_action = None
-            if action is not None and (success or pause):
+            if action is not None and (success or pause or executed):
                 self._turn_action = action
                 self._turn_response_id = request_id
                 # Extra tool calls in the same Claude turn are answered by the

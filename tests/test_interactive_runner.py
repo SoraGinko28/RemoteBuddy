@@ -1,3 +1,4 @@
+import re
 import shlex
 import subprocess
 import tempfile
@@ -9,6 +10,9 @@ from unittest import mock
 
 from agent_protocol import AgentActionError, AgentBackendError, AgentRefused
 from interactive_runner import (
+    IDLE_CHAT_LIMIT,
+    MAX_INVALID_ACTION_RETRIES,
+    REFUSED_REASON_LIMIT,
     MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
     RunnerError,
@@ -17,13 +21,13 @@ from interactive_runner import (
     send_line_with_captures,
     send_tokens_with_captures,
 )
+import tmux_vim
 from typing_executor import _send_typing_plan
 from meeting_v2 import MeetingStore, utc_now
 from agent_protocol import AgentActionError
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
-from agent_protocol import (ACT_STEP_JSON_TEXT, ACT_STEP_OPEN_JSON_TEXT, ACT_STEP_TEXT,
-                            INVESTIGATE_STEP_TEXT)
+from agent_protocol import ACT_STEP_JSON_TEXT, ACT_STEP_OPEN_JSON_TEXT, ACT_STEP_TEXT
 
 
 def make_action(action_type="chat", **changes):
@@ -216,7 +220,25 @@ class FakeTransport:
 
     def send_enter(self, pane_id):
         line = self.pending_input
-        parts = shlex.split(line)
+        # harness 给命令那一行挂一个前置标记（只用来切输出），读返回码的 `echo retcode-<tok> $?`
+        # 是紧跟着的另一行；actor 自己写在尾巴上的返回码 echo 会被剥掉。
+        command_line = line
+        marker = None
+        cmd_marker = re.escape(tmux_vim.CMD_MARKER)
+        retcode_marker = re.escape(tmux_vim.RETCODE_MARKER)
+        head = re.match(rf"echo\s+{cmd_marker}([A-Za-z0-9_-]*)\s*>\s*/dev/null\s*;\s*", command_line)
+        if head is not None:
+            command_line = command_line[head.end() :]
+        pure = re.fullmatch(rf"echo\s+{retcode_marker}([A-Za-z0-9_-]*)\s+\$\?", command_line.strip())
+        if pure is not None:
+            marker = pure.group(1)
+            command_line = ""
+        else:
+            folded = re.search(rf";\s*echo\s+{retcode_marker}([A-Za-z0-9_-]*)\s+\$\?\s*$", command_line)
+            if folded is not None:
+                marker = folded.group(1)
+                command_line = command_line[: folded.start()]
+        parts = shlex.split(command_line)
         if parts:
             executable = parts[0]
             command = "python" if executable == "python3" else executable
@@ -228,11 +250,10 @@ class FakeTransport:
                 self.command = "vim"
             elif command == "python":
                 self.command = "python3"
-            # harness 用一行带随机标记的 echo 读返回码：把那一行也演出来。
-            if executable == "echo" and len(parts) > 1 and parts[1].startswith("remotebuddy-retcode-"):
-                self.console += f"{parts[1]} {self.retcode}\n"
-            else:
-                self.console += line + "\n"
+            # 真终端会把敲进去的那一整行回显出来（连两个标记），harness 就是靠前置标记切输出的。
+            self.console += line + "\n"
+        if marker:
+            self.console += f"{tmux_vim.RETCODE_MARKER}{marker} {self.retcode}\n"
         self.pending_input = ""
         self.screen_revision += 1
 
@@ -517,6 +538,17 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(1, len(fresh))
         self.assertIn("干跑", fresh[0]["content"])
         self.assertEqual("completion_proposed", loaded.meeting.phase)
+        # 干跑过不去这件结果按 ADT 是 ShellCmdResult（可应用性的返回码 + 它说的话）
+        applied = [
+            event for event in loaded.events()
+            if event["kind"] == "action"
+            and isinstance((event.get("data") or {}).get("result"), dict)
+            and event["data"]["result"].get("kind") == "shell_cmd"
+        ]
+        self.assertTrue(applied)
+        self.assertEqual("1", applied[0]["data"]["result"]["retcode"])
+        self.assertIn("notes.md", applied[0]["data"]["result"]["stderr"])
+        self.assertIn("这个文件不存在", applied[0]["data"]["result"]["stderr"])
 
     def test_a_tool_the_harness_does_not_offer_does_not_kill_the_cycle(self):
         """模型要联网搜索这类这里没有的东西：记一笔、让它换一条，不许把整轮判死。"""
@@ -539,6 +571,31 @@ class InteractiveRunnerTest(unittest.TestCase):
         ]
         self.assertEqual(1, len(refusals))
         self.assertIn("webSearch", refusals[0]["content"])
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
+
+    def test_three_consecutive_refusals_keep_the_cycle_alive(self):
+        client = FakeClient(
+            [
+                make_action(),
+                AgentRefused("forbidden Codex item type: webSearch"),
+                AgentRefused("forbidden Codex item type: webSearch"),
+                AgentRefused("forbidden Codex item type: webSearch"),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Recovered."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        refusals = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "refused"
+        ]
+        self.assertEqual(3, len(refusals))
+        self.assertEqual(6, len(client.calls))
         self.assertEqual("completion_proposed", loaded.meeting.phase)
         self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
 
@@ -802,6 +859,14 @@ class InteractiveRunnerTest(unittest.TestCase):
         ).start()
         loaded = MeetingStore.load(self.root, "runner-demo")
         self.assertEqual("completion_proposed", loaded.meeting.phase)
+        proposal = [
+            event for event in loaded.events()
+            if event["kind"] == "state" and event["phase"] == "completion_proposed"
+        ]
+        self.assertEqual(1, len(proposal))
+        self.assertTrue(proposal[0]["data"]["evidence"])
+        self.assertEqual("command", proposal[0]["data"]["evidence_type"])
+        self.assertEqual(0, proposal[0]["data"]["reference_count"])
         rejected = [
             event
             for event in loaded.events()
@@ -814,18 +879,144 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(4, len(client.calls))
         self.assertIn("requires a real bash command line", client.calls[2][2])
 
+    def test_command_send_failure_is_rejected_without_killing_the_cycle(self):
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="The pane is still usable."),
+            ]
+        )
+        with mock.patch.object(
+            self.transport,
+            "send_keys",
+            side_effect=tmux_vim.CommandSendError("command line could not be sent"),
+        ):
+            InteractiveRunner(
+                self.store,
+                self.transport,
+                client,
+                action_settle_seconds=0,
+                typing_interval_seconds=0,
+            ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        rejected = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "rejected"
+        ]
+        self.assertTrue(rejected)
+        self.assertIn("command line could not be sent", rejected[0]["content"])
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+
+    def test_a_turn_that_only_answers_ack_parks_instead_of_looping(self):
+        """连着几轮只回 ack：停下来等说话，不许拿预算和钱换同一句话。
+
+        真会里出过：人说「停下」，trae-agent 连回 23 条 `chat[ack]`「保持停止，不执行任何操作。」，
+        每 5 秒一轮，眼看要烧到 60 次动作上限。
+        """
+        client = FakeClient([make_action() for _ in range(12)])
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("waiting_for_user", loaded.meeting.phase)
+        self.assertEqual("none", loaded.meeting.control_owner)
+        self.assertLessEqual(len(client.calls), IDLE_CHAT_LIMIT)
+        stalled = [
+            event
+            for event in loaded.events()
+            if event["kind"] == "action"
+            and (event.get("data") or {}).get("reason") == "idle_chat"
+        ]
+        self.assertEqual(1, len(stalled), loaded.events())
+        self.assertEqual(IDLE_CHAT_LIMIT, stalled[0]["data"]["repeats"])
+
+    def test_a_chat_between_two_real_actions_does_not_park_the_meeting(self):
+        """中间夹一句 chat 不算"只回 ack"：真干活的轮次会把计数清零。"""
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("command", command="git status"),
+                make_action(),
+                make_action("command", command="git diff"),
+                make_action("done", message_type="final", content="Done."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        self.assertEqual([], [
+            event
+            for event in loaded.events()
+            if (event.get("data") or {}).get("reason") == "idle_chat"
+        ])
+
+    def test_a_new_human_message_restarts_the_cycle_budget(self):
+        """一轮时限跑满之后，人再说话就是新的一轮：预算重新算，不许永久停在收尾模式。
+
+        真事：`task-check-165333` 跑了三十多分钟，人叫它清理一处样式，它连交两次 diff 都被
+        "expected chat, or done" 挡回来 —— 因为 runner 手里那个时钟还停在开会那一刻。
+        """
+        runner = InteractiveRunner(
+            self.store, self.transport, FakeClient([]),
+            action_settle_seconds=0, typing_interval_seconds=0,
+        )
+        runner._cycle_started_monotonic = time.monotonic() - 10_000
+        self.assertGreater(runner._cycle_elapsed(), 9_000)
+        self.assertTrue(runner._phase_constraints()[2], "超时了就该是收尾模式")
+
+        self.store.bump_request_generation(cycle_action_count=0, cycle_started_at=utc_now())
+        runner._note_cycle_generation(self.store.meeting.request_generation)
+        self.assertLess(runner._cycle_elapsed(), 5)
+        self.assertFalse(runner._phase_constraints()[2], "人说话了就该能接着干")
+
     def test_consecutive_invalid_actions_still_fail_the_cycle(self):
+        # 容忍几次由 MAX_INVALID_ACTION_RETRIES 定：写死次数的话，改配额就得改用例。
+        retries = MAX_INVALID_ACTION_RETRIES
         client = FakeClient(
             [make_action()]
-            + [AgentActionError(f"invalid action {index}") for index in range(3)]
+            + [AgentActionError(f"invalid action {index}") for index in range(retries)]
         )
         InteractiveRunner(
             self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
         ).start()
         loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual(4, len(client.calls))
+        self.assertEqual(retries + 1, len(client.calls))
         self.assertEqual("api_error", loaded.meeting.phase)
         self.assertTrue(loaded.meeting.recovery_required)
+
+    def test_the_same_refusal_repeated_parks_the_turn_instead_of_spinning(self):
+        """同一个理由连着被拒到上限：驻留并把话说给人听，不再无声地吃额度。
+
+        真事：一场会里 `webSearch` 被拒 61 次，差不多吃掉了整整一轮的动作额度。
+        """
+        reason = "forbidden Codex item type: webSearch"
+        client = FakeClient(
+            [make_action()]
+            + [AgentRefused(reason) for _ in range(REFUSED_REASON_LIMIT)]
+            + [make_action("done", message_type="final", content="never reached")]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        refusals = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "refused"
+        ]
+        self.assertEqual(REFUSED_REASON_LIMIT, len(refusals))
+        self.assertEqual("waiting_for_user", loaded.meeting.phase)
+        reasons = [
+            str((event.get("data") or {}).get("reason") or "")
+            for event in loaded.events() if event["kind"] == "state"
+        ]
+        self.assertTrue(any("does not offer" in item for item in reasons), reasons)
 
     def test_stop_before_worker_start_creates_no_tmux_or_api_conversation(self):
         self.store.request_stop()
@@ -1033,11 +1224,15 @@ class InteractiveRunnerTest(unittest.TestCase):
 
         self.assertIn("sed", typed)
 
-    def test_every_action_is_preceded_by_an_investigation_step(self):
+    def test_every_request_is_an_action_step(self):
+        """不再拆调查步：每一次请求都是行动步，不再有"读文件的另一趟"。
+
+        共享终端现在就是一个 shell（`cmd-…` 标记 + `retcode-…` 那一行），读和写都在这一步里做；
+        原来那套"调查步 → 行动步"每轮白扔一枪，模型还老在调查步里调动作工具、被退回。
+        """
         client = InvestigatingClient(
             [
-                make_action(),
-                make_action("command", command="pwd"),
+                make_action("command", command="git status"),
                 make_action("done", message_type="final", content="Done."),
             ]
         )
@@ -1046,69 +1241,14 @@ class InteractiveRunnerTest(unittest.TestCase):
         ).start()
 
         loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual(3, len(client.investigations))
-        self.assertIn(INVESTIGATE_STEP_TEXT, client.investigations[0])
-        # 行动那一次请求：明说这一步不读，而且带着上一次请求调查的结论。
-        self.assertIn(ACT_STEP_TEXT, client.calls[0][2])
-        self.assertIn("我看了 notes.md", client.calls[1][2])
-        started = [
+        self.assertEqual([], client.investigations, "不该再走调查步")
+        steps = [
             event["data"].get("step")
             for event in loaded.events()
             if event["kind"] == "action" and event["data"].get("status") == "request_started"
         ]
-        self.assertEqual(["investigate", "act", "investigate", "act", "investigate", "act"], started)
-        findings = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "state" and event["data"].get("step") == "investigate"
-        ]
-        self.assertEqual(3, len(findings))
-        self.assertEqual("我看了 notes.md：里面还是空的。", findings[0]["content"])
-
-    def test_a_silent_investigation_leaves_no_record(self):
-        """没什么可查的它会静默：那一刻不留空记录，行动步照样接着走。"""
-        client = InvestigatingClient(
-            [make_action("done", message_type="final", content="Done.")], findings=""
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        ).start()
-
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual(1, len(client.investigations))
-        findings = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "state" and event["data"].get("step") == "investigate"
-        ]
-        self.assertEqual([], findings)
-        self.assertEqual(
-            ["investigate", "act"],
-            [
-                event["data"].get("step")
-                for event in loaded.events()
-                if event["kind"] == "action" and event["data"].get("status") == "request_started"
-            ],
-        )
-
-    def test_an_action_written_as_text_is_not_a_finding(self):
-        """它在调查步把动作写成文字：那不是结论，别记下来当"我做过了"。"""
-        client = InvestigatingClient(
-            [make_action("command", command="git status")],
-            findings='{"action":"command","command":"git status","path":""}',
-        )
-        InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        ).start()
-
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        findings = [
-            event
-            for event in loaded.events()
-            if event["kind"] == "state" and event["data"].get("step") == "investigate"
-        ]
-        self.assertEqual([], findings)
-        self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
+        self.assertTrue(steps, loaded.events())
+        self.assertEqual({"act"}, set(steps), steps)
 
     def test_the_next_cycle_resumes_the_session_and_does_not_replay_history(self):
         """第二轮带上上一轮的 agent_session_id，而且不再把整段历史重发一遍。"""
@@ -1162,44 +1302,6 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertIn("`remotebuddy_action` tool", observation)
         self.assertNotIn("the response schema asks for", observation)
 
-    def test_a_failed_investigation_does_not_kill_the_cycle(self):
-        """调查步超时/断掉：记一笔就进行动步，别把整轮弄成 api_error。"""
-        client = StuckInvestigationClient([make_action("done", message_type="final", content="Done.")])
-        runner = InteractiveRunner(
-            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
-        )
-        runner.start()
-
-        loaded = MeetingStore.load(self.root, "runner-demo")
-        self.assertEqual("completion_proposed", loaded.meeting.phase)
-        failed = [
-            event for event in loaded.events()
-            if event["kind"] == "state" and event["data"].get("status") == "failed"
-            and event["data"].get("step") == "investigate"
-        ]
-        self.assertEqual(1, len(failed))
-        self.assertIn("直接进行动步", failed[0]["content"])
-        self.assertTrue(self.transport.commands or client.calls)
-
-    def test_the_investigation_step_refuses_every_action(self):
-        runner = InteractiveRunner(
-            self.store, self.transport, InvestigatingClient([]),
-            action_settle_seconds=0, typing_interval_seconds=0,
-        )
-        answer = runner._investigation_refusal(make_action("command", command="pwd"), {})
-
-        self.assertFalse(answer["success"])
-        # pause 必须是 False：True 会让 Claude Code 把这次退回当成"这一次请求的动作"。
-        self.assertFalse(answer["pause"])
-        self.assertIn("closed in the investigation step", answer["content"])
-        rejected = [
-            event
-            for event in self.store.events()
-            if event["kind"] == "action" and event["data"].get("reason") == "investigation_step"
-        ]
-        self.assertEqual(1, len(rejected))
-        self.assertEqual(0, self.store.meeting.cycle_action_count)
-
     def test_a_backend_without_read_tools_has_no_investigation_step(self):
         """没有自己读工具的 backend：终端就是它唯一的读路，两步拆不开，每一次请求都是行动步。"""
         client = FakeClient([make_action("done", message_type="final", content="Done.")])
@@ -1241,6 +1343,23 @@ class InteractiveRunnerTest(unittest.TestCase):
             if event["kind"] == "action" and event["data"].get("dynamic_tool")
         ]
         self.assertEqual(2, len(dynamic_received))
+        # 动作真做了就写 `executed`：backend 据此认下"这一枪的动作就是它"，不会因为结果
+        # 不成功（比如 diff 没落全）把整轮判成协议错误。
+        answers = [call for call in backend.calls if call[0] == "results"][0][1:]
+        self.assertEqual(2, len(answers))
+        for answer in answers:
+            self.assertTrue(answer["executed"], answer)
+        # 命令那条结果里带着"输出是不是被 tmux 缓存裁过"这一项：模型据此知道自己看的是不是全部。
+        cmd_results = [
+            event["data"]["result"]
+            for event in loaded.events()
+            if event["kind"] == "action"
+            and (event.get("data") or {}).get("status") == "result"
+            and ((event.get("data") or {}).get("result") or {}).get("kind") == "cmd"
+        ]
+        self.assertTrue(cmd_results, loaded.events())
+        self.assertIn("truncated", cmd_results[0])
+        self.assertFalse(cmd_results[0]["truncated"])
 
 
 if __name__ == "__main__":

@@ -30,6 +30,10 @@ from agent_protocol import (
 
 CONFIG_LIMIT = 64 * 1024
 AUTH_LIMIT = 16 * 1024
+# 一次请求最多安静多久（秒）。上限跟 harness 那边一轮的上限对齐：一轮 1800 秒
+# （`interactive_runner.CYCLE_LIMIT_SECONDS`），单次安静不该超过一整轮。
+MIN_REQUEST_TIMEOUT_SECONDS = 1.0
+MAX_REQUEST_TIMEOUT_SECONDS = 1800.0
 CLIENT_USER_AGENT = "RemoteBuddy/0.2"
 REQUIRED_CONFIG_KEYS = {
     "model",
@@ -141,8 +145,15 @@ class ModelApiConfig:
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise ModelConfigError("request_timeout_seconds must be numeric")
         timeout = float(timeout)
-        if not math.isfinite(timeout) or timeout < 1 or timeout > 300:
-            raise ModelConfigError("request_timeout_seconds must be between 1 and 300")
+        if (
+            not math.isfinite(timeout)
+            or timeout < MIN_REQUEST_TIMEOUT_SECONDS
+            or timeout > MAX_REQUEST_TIMEOUT_SECONDS
+        ):
+            raise ModelConfigError(
+                "request_timeout_seconds must be between "
+                f"{MIN_REQUEST_TIMEOUT_SECONDS:g} and {MAX_REQUEST_TIMEOUT_SECONDS:g}"
+            )
         if effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
             raise ModelConfigError("reasoning_effort is not supported")
         if agent_backend not in SUPPORTED_BACKENDS:

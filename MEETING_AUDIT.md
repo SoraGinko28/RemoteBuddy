@@ -5,7 +5,7 @@
 
 ## 逐会议结果
 
-| run | events | chat | screen | keystroke | score | terminal_control | violations | 结论 |
+| run | events | chat | screen | keystroke | terminal_control | violations | 结论 |
 |---|---|---|---|---|---|---|---|---|
 | 20260901-153749-ae1f76 | 2 | 1 | - | - | - | 0 | 0 | ok |
 | 20260901-154558-f4d81c | 2 | 1 | - | - | - | 0 | 0 | ok |
@@ -33,10 +33,10 @@
 1. **screen 帧归一化**：journal 的屏幕文本逐行右去尾空格、剥末尾空行，不足 pane_height 时空行补齐 → 投影后的 ScreenCapture 满足 ADT 全部帧断言（plain_of==screen_data / 行数==height / 行宽≤width）。
 2. **harness 不算终端占有者**：actor=harness 的 acquired 只是 RemoteBuddy 会话层接管，不构成 TerminalControl（tmux 拥有者仍是 human 或 actor agent）。
 3. **role map 推断**：现 journal 无角色元数据，出现的 agent 一律推断为 actor（单 agent 会议成立）。
-4. **缺流即空流**：无逐键/评分事件的会议不落 keystroke/score chunk，校验按空流处理（等价语义）。
+4. **缺流即空流**：无逐键事件的会议不落 keystroke chunk，校验按空流处理（等价语义）。
 
 ## 给 ADT/存储的修订建议（不改代码，只做标注）
 
 1. MeetingData 的 `sorted_stream_chunks` 允许缺流（缺 = 空流）宜在 ADT 文档点明。
 2. `agent_name2role` 应随会议持久化（建议写入清单），不要再靠推断；将来多 agent / 审核链需要真实角色。
-3. journal 需要开始记录逐键事件与评分事件，keystroke/score 流才有数据可验。
+3. journal 需要开始记录逐键事件，keystroke 流才有数据可验。
