@@ -985,6 +985,19 @@ class HTTPBoundaryTest(unittest.TestCase):
         self.assertEqual(404, status)
         status, _payload = self.error_status("/api/meetings/..%2Fescape/snapshot")
         self.assertIn(status, {400, 404})
+
+        self.start_meeting("scores-removed")
+        before = len(self.service.load_store("scores-removed").events())
+        status, _payload = self.error_status(
+            "/api/meetings/scores-removed/scores",
+            method="POST",
+            body=json.dumps({"tag": "competent"}),
+            csrf=True,
+        )
+        self.assertEqual(404, status)
+        after = len(self.service.load_store("scores-removed").events())
+        self.assertEqual(before, after)
+
         huge = json.dumps({"message": "x" * (1024 * 1024 + 1)})
         status, _payload = self.error_status(
             "/api/meetings", method="POST", body=huge, csrf=True
