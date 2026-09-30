@@ -119,38 +119,6 @@
                 </div>
               </form>
 
-              <section id="evaluation-panel" class="evaluation-panel" hidden aria-labelledby="evaluation-title">
-                <header class="evaluation-header">
-                  <div>
-                    <p class="pane-kicker">REVIEW</p>
-                    <h3 id="evaluation-title">评价选中内容</h3>
-                  </div>
-                  <button id="evaluation-back-button" class="command-button" type="button">返回对话框</button>
-                </header>
-                <blockquote id="evaluation-excerpt" class="evaluation-excerpt"></blockquote>
-                <form id="evaluation-form" class="evaluation-form">
-                  <fieldset class="evaluation-choices">
-                    <legend>评价</legend>
-                    <label class="evaluation-choice competent">
-                      <input type="radio" name="evaluation-tag" value="competent">
-                      <span class="square-control" aria-hidden="true"></span>
-                      <span>胜任</span>
-                    </label>
-                    <label class="evaluation-choice incompetent">
-                      <input type="radio" name="evaluation-tag" value="incompetent">
-                      <span class="square-control" aria-hidden="true"></span>
-                      <span>不胜任</span>
-                    </label>
-                  </fieldset>
-                  <label class="evaluation-comment-label" for="evaluation-comment">评论（可选）</label>
-                  <textarea id="evaluation-comment" rows="3" maxlength="1048576" placeholder="补充说明"></textarea>
-                  <div id="evaluation-error" class="form-error" hidden></div>
-                  <footer class="evaluation-footer">
-                    <button id="evaluation-cancel-button" class="command-button" type="button">取消</button>
-                    <button id="evaluation-submit-button" class="primary-command" type="submit">保存评价</button>
-                  </footer>
-                </form>
-              </section>
             </div>
           </section>
 
@@ -333,7 +301,6 @@
   </dialog>
 
   <div id="selection-menu" class="selection-menu" hidden role="toolbar" aria-label="选区操作">
-    <button type="button" data-selection-action="evaluate" class="score-action evaluate">评价</button>
     <button type="button" data-selection-action="add-to-conversation" class="score-action add-to-conversation">添加到对话</button>
   </div>
 

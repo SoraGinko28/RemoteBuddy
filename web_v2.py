@@ -3124,10 +3124,14 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 current = parse_qs(parsed.query).get("version", [""])[0]
                 deadline = time.monotonic() + 30
                 while True:
-                    versions = {
-                        name: hashlib.sha256((frontend / name).read_bytes()).hexdigest()[:24]
-                        for name in names
-                    }
+                    try:
+                        versions = {
+                            name: hashlib.sha256((frontend / name).read_bytes()).hexdigest()[:24]
+                            for name in names
+                        }
+                    except FileNotFoundError:
+                        self._json({"version": "", "assets": {}})
+                        return
                     version = ":".join(versions[name] for name in names)
                     if version != current or time.monotonic() >= deadline:
                         self._json({"version": version, "assets": versions})

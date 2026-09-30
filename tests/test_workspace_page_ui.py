@@ -9,8 +9,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import socket
+import signal
 import subprocess
 import sys
 import tempfile
@@ -81,6 +83,66 @@ class _Page:
 class _PageTestCase(unittest.TestCase):
     """起一个真服务、一个无头 Chrome、一条 CDP 连接；具体查什么由子类说。"""
 
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profile = tempfile.mkdtemp(prefix="page-ui-chrome-")
+        cls.debug_port = _free_port()
+        cls.chrome = subprocess.Popen(
+            [
+                CHROME,
+                "--headless=new",
+                f"--remote-debugging-port={cls.debug_port}",
+                f"--user-data-dir={cls.profile}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-gpu",
+                "--remote-allow-origins=*",
+                "--window-size=1280,900",
+                "about:blank",
+            ],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        cls.page = _Page(cls._target_url())
+        cls.page.call("Page.enable")
+        cls._previous_signal_handlers = {
+            signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)
+        }
+        for signum in cls._previous_signal_handlers:
+            signal.signal(signum, cls._handle_interrupt)
+
+    @classmethod
+    def _handle_interrupt(cls, signum: int, _frame: Any) -> None:
+        cls.tearDownClass()
+        os._exit(128 + signum)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        page = getattr(cls, "page", None)
+        if page is not None:
+            page.close()
+        chrome = getattr(cls, "chrome", None)
+        if chrome is not None and chrome.poll() is None:
+            try:
+                os.killpg(chrome.pid, signal.SIGTERM)
+                chrome.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(chrome.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                try:
+                    chrome.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+        shutil.rmtree(getattr(cls, "profile", ""), ignore_errors=True)
+        for signum, handler in getattr(cls, "_previous_signal_handlers", {}).items():
+            try:
+                signal.signal(signum, handler)
+            except ValueError:
+                pass
+
     def setUp(self) -> None:
         import web_v2
         from meeting_v2 import MeetingStore
@@ -112,50 +174,27 @@ class _PageTestCase(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
+        def cleanup_tmux() -> None:
+            try:
+                self.service._transport().kill_session(self._store().meeting.session_name)
+            except Exception:  # noqa: BLE001 - the meeting may already be deleted
+                pass
+        self.addCleanup(cleanup_tmux)
 
-        self.profile = tempfile.mkdtemp(prefix="page-ui-chrome-")
-        self.addCleanup(shutil.rmtree, self.profile, ignore_errors=True)
-        self.debug_port = _free_port()
-        self.chrome = subprocess.Popen(
-            [
-                CHROME,
-                "--headless=new",
-                f"--remote-debugging-port={self.debug_port}",
-                f"--user-data-dir={self.profile}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-gpu",
-                "--remote-allow-origins=*",
-                "--window-size=1280,900",
-                f"http://127.0.0.1:{self.port}/",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self.addCleanup(self._kill_chrome)
-        self.page = _Page(self._target_url())
-        self.addCleanup(self.page.close)
-        self.page.call("Page.enable")
+        self.page = type(self).page
+        self.page.call("Page.navigate", url=f"http://127.0.0.1:{self.port}/")
 
-    def _kill_chrome(self) -> None:
-        self.chrome.terminate()
-        try:
-            self.chrome.wait(timeout=10)
-        except Exception:  # noqa: BLE001
-            self.chrome.kill()
-
-    def _target_url(self) -> str:
+    @classmethod
+    def _target_url(cls) -> str:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             try:
                 with urllib.request.urlopen(
-                    f"http://127.0.0.1:{self.debug_port}/json/list", timeout=5
+                    f"http://127.0.0.1:{cls.debug_port}/json/list", timeout=5
                 ) as response:
                     targets: List[Dict[str, Any]] = json.loads(response.read().decode("utf-8"))
                 for target in targets:
-                    if target.get("type") == "page" and str(target.get("url", "")).startswith(
-                        f"http://127.0.0.1:{self.port}"
-                    ):
+                    if target.get("type") == "page":
                         return str(target["webSocketDebuggerUrl"])
             except Exception:  # noqa: BLE001 - Chrome 还没起来
                 pass
@@ -200,6 +239,34 @@ class HeaderNoticeTest(_PageTestCase):
             "document.querySelector('#phase-label').textContent.includes('思考')", 10,
             what="选区还在时阶段跟着变",
         )
+
+    def test_appending_events_does_not_leave_a_toast(self):
+        self.page.wait_for(
+            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30,
+            what="页面画出这场会",
+        )
+        self.page.wait_for(
+            "document.querySelector('#toast').textContent === ''", 10,
+            what="追加事件后无错误提示",
+        )
+
+    def test_repeated_identical_toasts_eventually_hide(self):
+        self.page.wait_for(
+            "typeof globalThis.workspaceToast === 'function'",
+            30,
+            what="toast 函数加载完成",
+        )
+        result = self.page.js(
+            """(async () => {
+                const repeat = setInterval(() => window.workspaceToast('重复错误'), 700);
+                window.workspaceToast('重复错误');
+                await new Promise((resolve) => setTimeout(resolve, 4200));
+                clearInterval(repeat);
+                await new Promise((resolve) => setTimeout(resolve, 1200));
+                return document.querySelector('#toast').hidden;
+            })()"""
+        )
+        self.assertTrue(result)
 
 
 class ComposerTest(_PageTestCase):
@@ -595,6 +662,81 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
 """)
         self.assertLessEqual(measurements["scroll"], measurements["client"], measurements)
         self.assertEqual([], measurements["overflowing"], measurements)
+
+
+class TerminalTakeoverTest(_PageTestCase):
+    """真 tmux pane 的长行不能在真浏览器的终端里静默消失。"""
+
+    def test_long_tmux_line_keeps_every_character_and_tail_after_layout_changes(self):
+        store = self._store()
+        store.update(phase="agent_thinking")
+        pane_id = self.service._transport().create_workspace_session(
+            store.meeting.session_name, store.workspace_path
+        )
+        store.set_session(pane_id)
+        self.service.acquire(self.meeting_id)
+
+        body = "A" * 300 + "TAIL-9f3c"
+        command = f"printf '%s\\n' '{body}'"
+        self.service.terminal_input(
+            self.meeting_id,
+            {"bytes": (command + "\r").encode("utf-8").hex()},
+        )
+
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen .xterm') && window.__takeoverReady === true",
+            20,
+            what="页面接上真 tmux takeover",
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('TAIL-9f3c')",
+            20,
+            what="页面看得到长行尾巴",
+        )
+        self._assert_long_line(body)
+
+        self.page.call(
+            "Emulation.setDeviceMetricsOverride",
+            width=420,
+            height=900,
+            deviceScaleFactor=1,
+            mobile=False,
+        )
+        self.page.js("document.querySelector('.agent-state')?.click(); 'opened'")
+        self.page.js("document.querySelector('#member-panel-close')?.click(); 'closed'")
+        self.page.call(
+            "Emulation.setDeviceMetricsOverride",
+            width=1280,
+            height=900,
+            deviceScaleFactor=1,
+            mobile=False,
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('TAIL-9f3c')",
+            20,
+            what="resize 和成员面板开合后尾巴仍在",
+        )
+        self._assert_long_line(body)
+
+    def _assert_long_line(self, body: str) -> None:
+        visible = self.page.js("document.querySelector('#terminal-screen').innerText") or ""
+        result = self.page.js(
+            """(() => {
+                const viewport = document.querySelector('#terminal-screen');
+                const tail = [...viewport.querySelectorAll('.xterm-rows > div')]
+                    .find((row) => row.innerText.includes('TAIL-9f3c'));
+                const tailRect = tail?.getBoundingClientRect();
+                const box = viewport.getBoundingClientRect();
+                return {
+                    tailVisible: Boolean(tailRect && tailRect.right <= box.right + 1),
+                    scrollable: viewport.scrollWidth > viewport.clientWidth
+                        && getComputedStyle(viewport).overflowX !== 'hidden',
+                    tailText: tail?.innerText || '',
+                };
+            })()"""
+        )
+        self.assertIn("TAIL-9f3c", result["tailText"])
+        self.assertTrue(result["tailVisible"] or result["scrollable"], result)
 
 
 if __name__ == "__main__":

@@ -23,11 +23,11 @@ const el = Object.fromEntries([
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "reference-card", "composer-shell",
   "attach-image-button", "image-input", "attachment-strip",
-  "image-lightbox", "image-lightbox-image", "image-lightbox-close", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
+  "image-lightbox", "image-lightbox-image", "image-lightbox-close", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
-  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form", "delete-dialog", "delete-form", "close-delete-dialog", "cancel-delete", "confirm-delete", "delete-message", "delete-error",
+  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "selection-menu", "new-dialog", "new-form", "delete-dialog", "delete-form", "close-delete-dialog", "cancel-delete", "confirm-delete", "delete-message", "delete-error",
   "close-dialog", "cancel-new", "initial-message", "workspace-input", "choose-directory", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "skill-cell", "reload-skill-button", "restart-agent-button",
@@ -81,6 +81,7 @@ const state = {
   liveScreenQueue: [],
   chatFilter: "all",
   toastTimer: null,
+  toastMessage: "",
   references: [],
   // Legacy alias kept for extensions that still read the old singular field.
   reference: null,
@@ -90,11 +91,7 @@ const state = {
   selectionTimer: null,
   selectionMenuDelay: 0,
   keyboardSelection: null,
-  evaluationSelection: null,
-  evaluationBusy: false,
-  scoreOverlayIds: new Set(),
   playbackHoverIndex: null,
-  judgeName: "human",
   health: null,
   pointerSelecting: false,
   // Which member's details the header strip is showing; null = closed.
@@ -109,7 +106,6 @@ const labels = {
   phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "{agent} 思考中", agent_acting: "{agent} 操作中", waiting_for_user: "等待你的消息", completion_proposed: "{agent} 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", skill_reload: "正在更新 Skill", agent_restart: "正在重启 {agent} 进程", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
   owner: { agent: "{agent} 控制", human: "你在控制", none: "无人控制" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
-  score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
   agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常", updating: "更新", restarting: "重启" },
@@ -401,7 +397,11 @@ async function apiConditional(path, etag) {
 // `kind` 决定颜色：报错是红的，办成了是绿的，其余（"没变"、"已复制"这种）
 // 是中性色——把"Skill 没变"画成红色会让人以为出事了。
 function toast(message, kind = "error") {
+  const sameVisibleToast = state.toastMessage === message
+    && [el.toast, el.welcome_toast].some((node) => node && !node.hidden);
+  if (sameVisibleToast) return;
   clearTimeout(state.toastTimer);
+  state.toastMessage = message;
   // 两个位置同一句话：会话里那个在上边栏靠左，欢迎卡片上那个没有上边栏，贴左上角。
   const visible = [el.toast, el.welcome_toast].filter(Boolean);
   for (const node of visible) {
@@ -413,6 +413,7 @@ function toast(message, kind = "error") {
     for (const node of visible) node.hidden = true;
   }, 5000);
 }
+globalThis.workspaceToast = toast;
 
 function formatFullTime(value) {
   const date = new Date(value);
@@ -480,7 +481,7 @@ function eventsAtPlayback() {
   return state.timeline.filter((event, index) => {
     const eventSequence = Number(event.seq);
     const visible = Number.isFinite(eventSequence) ? eventSequence <= sequence : index <= state.playbackIndex;
-    return visible || (event.kind === "score" && state.scoreOverlayIds.has(event.event_id));
+    return visible;
   });
 }
 
@@ -776,21 +777,10 @@ function renderHeader() {
   }
 
   const terminalState = ["completed", "failed", "interrupted"].includes(meeting.status);
-  const evaluateAction = el.selection_menu?.querySelector('[data-selection-action="evaluate"]');
   const addAction = el.selection_menu?.querySelector('[data-selection-action="add-to-conversation"]');
-  // Historical sessions remain rateable; only adding a new chat reference is
-  // blocked once the meeting is terminal because the composer is read-only.
-  // Human-authored chat is never rateable, so keep the evaluate button in
-  // sync with the current selection even when the meeting re-renders.
-  if (evaluateAction) {
-    const humanChat = selectionIsHumanChat(state.pendingSelection);
-    evaluateAction.disabled = humanChat;
-    evaluateAction.title = humanChat ? "人类消息不能被评价" : "";
-  }
   if (addAction) addAction.disabled = terminalState;
   el.message_input.disabled = terminalState;
   el.send_message_button.disabled = terminalState;
-  if (el.evaluation_submit_button) el.evaluation_submit_button.disabled = false;
   el.complete_button.disabled = terminalState || ["created", "starting"].includes(meeting.status) || meeting.phase === "starting";
   el.stop_button.disabled = terminalState;
   el.complete_button.hidden = terminalState;
@@ -915,103 +905,6 @@ function sourceEventForRoot(root) {
   return latest?.event_id === eventId ? latest : null;
 }
 
-function scoreAnnotationsForSource(source, visibleEvents = eventsAtPlayback()) {
-  if (!source) return [];
-  const latestByRegion = new Map();
-  for (const event of visibleEvents) {
-    if (event.kind !== "score") continue;
-    const data = event.data && typeof event.data === "object" ? event.data : {};
-    const reference = data.reference;
-    const region = reference?.region;
-    if (
-      reference?.event_id !== source.event_id
-      || (reference?.kind && reference.kind !== source.kind)
-      || !region
-      || (data.tag !== "competent" && data.tag !== "incompetent")
-    ) continue;
-    const start = Number(region.start);
-    const end = Number(region.end);
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) continue;
-    const key = `${start}:${end}`;
-    const sequence = Number(event.seq) || 0;
-    const previous = latestByRegion.get(key);
-    if (previous && previous.seq > sequence) continue;
-    latestByRegion.set(key, {
-      start,
-      end,
-      tag: data.tag,
-      judge_name: typeof data.judge_name === "string" ? data.judge_name : "human",
-      comment: typeof data.comment === "string" ? data.comment : "",
-      seq: sequence,
-      event_id: event.event_id,
-    });
-  }
-  return [...latestByRegion.values()]
-    .filter((item) => item.tag === "competent" || item.tag === "incompetent")
-    .sort((left, right) => left.start - right.start || left.end - right.end || left.seq - right.seq);
-}
-
-function scoreReferenceAtPlayback() {
-  if (state.followLive) return null;
-  const event = eventAt(state.playbackIndex);
-  const reference = event?.kind === "score" ? event.data?.reference : null;
-  if (
-    !reference
-    || (reference.kind !== "chat" && reference.kind !== "screen")
-    || typeof reference.event_id !== "string"
-  ) return null;
-  return reference;
-}
-
-function appendAnnotatedText(root, content, annotations) {
-  const text = String(content ?? "");
-  const chars = codePoints(text);
-  if (!annotations.length) {
-    root.append(document.createTextNode(text));
-    return;
-  }
-  const boundaries = new Set([0, chars.length]);
-  for (const annotation of annotations) {
-    const start = Math.max(0, Math.min(chars.length, annotation.start));
-    const end = Math.max(start, Math.min(chars.length, annotation.end));
-    if (end > start) boundaries.add(start), boundaries.add(end);
-  }
-  const points = [...boundaries].sort((left, right) => left - right);
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const start = points[index];
-    const end = points[index + 1];
-    if (end <= start) continue;
-    const active = annotations.filter((item) => item.start <= start && item.end >= end);
-    const segment = chars.slice(start, end).join("");
-    if (!active.length) {
-      root.append(document.createTextNode(segment));
-      continue;
-    }
-    const tags = [...new Set(active.map((item) => item.tag))].sort();
-    const mark = node(
-      "span",
-      `score-annotation ${tags.map((tag) => `score-${tag}`).join(" ")}${active.length > 1 ? " score-overlap" : ""}`,
-      segment,
-    );
-    mark.dataset.scoreTags = tags.join(" ");
-    mark.dataset.scoreCount = String(active.length);
-    mark.title = tags.map((tag) => labels.score[tag] || tag).join(" / ");
-    root.append(mark);
-  }
-}
-
-function scoreSummary(annotations) {
-  if (!annotations.length) return null;
-  const summary = node("div", "score-summary");
-  for (const annotation of annotations) {
-    const judge = annotation.judge_name ? ` · ${annotation.judge_name}` : "";
-    const badge = node("span", `score-badge ${annotation.tag}`, `${labels.score[annotation.tag] || annotation.tag}${judge}`);
-    if (annotation.comment) badge.title = annotation.comment;
-    summary.append(badge);
-  }
-  return summary;
-}
-
 function referencesForEvent(event) {
   const data = event?.data && typeof event.data === "object" ? event.data : {};
   const raw = Array.isArray(data.references)
@@ -1044,7 +937,6 @@ function jumpToChatTime(chatEvent) {
     screenIndex = state.timeline.findIndex((item) => item.kind === "screen");
   }
   if (screenIndex < 0) return;
-  state.scoreOverlayIds.clear();
   hidePlaybackHover();
   markPlaybackFrozen();
   state.followLive = false;
@@ -1068,8 +960,6 @@ function jumpToChatTime(chatEvent) {
 function renderChat() {
   if (activeSourceSelection()) return;
   const previousScrollTop = el.chat_list.scrollTop;
-  const replayReference = scoreReferenceAtPlayback();
-  let replayTarget = null;
   let cursorArticle = null;
   // Playback chat cursor: the transcript is never clipped, but during
   // playback the last message at or before the current replay point is
@@ -1080,11 +970,6 @@ function renderChat() {
   try {
     el.chat_list.replaceChildren();
     const chats = visibleChats();
-    // Score overlays annotate the transcript wherever the evaluation marker
-    // lives; chat text stays annotated regardless of the playback cursor.
-    const visibleScores = state.timeline.filter(
-      (event) => event.kind === "score" && state.scoreOverlayIds.has(event.event_id),
-    );
     for (const event of chats) {
       if (isTerminalControl(event)) {
         const line = node("div", "chat-control-line");
@@ -1130,13 +1015,12 @@ function renderChat() {
         head.append(node("span", evidence ? "completion-evidence" : "completion-no-evidence",
           evidence ? "完成提议 · 有证据" : "完成提议 · 无证据"));
       }
-      const annotations = scoreAnnotationsForSource(event, visibleScores);
       const images = messageImages(event);
       const body = node("p", "message-content");
       body.dataset.eventId = event.event_id || "";
       body.tabIndex = 0;
       body.setAttribute("aria-label", "聊天消息文本");
-      appendAnnotatedText(body, event.content, annotations);
+      body.append(document.createTextNode(String(event.content ?? "")));
       article.append(head);
       const references = referencesForEvent(event);
       // 引用和图片都放在正文前面：先看见"这句话在说哪一段、盯着哪张图"，再读这句话。
@@ -1151,7 +1035,6 @@ function renderChat() {
         quote.addEventListener("click", () => {
           const index = state.timeline.findIndex((item) => item.event_id === reference.event_id);
           if (index < 0) return;
-          state.scoreOverlayIds.clear();
           hidePlaybackHover();
           markPlaybackFrozen();
           state.followLive = false;
@@ -1170,12 +1053,6 @@ function renderChat() {
       });
       if (images) article.append(images);
       if (event.content) article.append(body);
-      const summary = scoreSummary(annotations);
-      if (summary) article.append(summary);
-      if (replayReference?.kind === "chat" && replayReference.event_id === event.event_id) {
-        article.classList.add("score-replay-target");
-        replayTarget = article;
-      }
       el.chat_list.append(article);
       const eventSequence = Number(event.seq);
       if (
@@ -1202,12 +1079,7 @@ function renderChat() {
       state.chatScrollApplied = target;
       el.chat_list.scrollTop = target;
     };
-    if (replayTarget) {
-      const listRect = el.chat_list.getBoundingClientRect();
-      const targetRect = replayTarget.getBoundingClientRect();
-      const targetTop = el.chat_list.scrollTop + targetRect.top - listRect.top;
-      scrollChatTo(targetTop - (el.chat_list.clientHeight - targetRect.height) / 2);
-    } else if (state.chatFollow) {
+    if (state.chatFollow) {
       if (state.followLive || !cursorDivider) {
         scrollChatTo(el.chat_list.scrollHeight);
       } else {
@@ -1650,6 +1522,7 @@ function startTerminalTakeover() {
   const engine = rebuildTerminalEngine();
   if (!engine) return;
   takeoverStream.active = true;
+  globalThis.__takeoverReady = true;
   takeoverRepaintPending = false;
   takeoverRepaintForceReset = false;
   stopLiveScreenQueue();
@@ -1721,6 +1594,7 @@ function startTerminalTakeover() {
 function stopTerminalTakeover(flushPending) {
   if (!takeoverStream.active) return;
   takeoverStream.active = false;
+  globalThis.__takeoverReady = false;
   if (takeoverStream.flushTimer !== null) {
     clearTimeout(takeoverStream.flushTimer);
     takeoverStream.flushTimer = null;
@@ -1986,18 +1860,10 @@ function renderTerminal() {
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
   // A clicked citation is also a reason to show a particular frame: the quote
   // points at the moment the rules judged, so the terminal has to go there.
-  // A score replay, when one is running, still wins.
-  const replayReference = scoreReferenceAtPlayback()
-    || (state.highlightReference?.kind === "screen" ? state.highlightReference : null);
-  const replaySource = replayReference?.kind === "screen"
-    ? state.timeline.find(
-      (event) => event.kind === "screen" && event.event_id === replayReference.event_id,
-    )
-    : null;
   // Live mode always shows the newest captured frame: replaying the backlog
   // frame-by-frame made the terminal lag seconds behind the chat, which had
   // already rendered the agent's finished reply.
-  const latest = replaySource || screens.at(-1);
+  const latest = screens.at(-1);
   const fallback = state.followLive ? state.snapshot?.latest_screen : null;
   const source = latest || fallback;
   const terminal = source?.data || {};
@@ -2006,7 +1872,6 @@ function renderTerminal() {
     ? terminal.current_path.split("/").slice(-2).join("/")
     : "workspace";
   const hasScreenContent = Boolean(source && typeof source.content === "string" && source.content.length);
-  const sourceAnnotations = source ? scoreAnnotationsForSource(source) : [];
   const engine = ensureTerminalEngine();
   if (engine) {
     initializeTerminalCursor(engine);
@@ -2084,7 +1949,7 @@ function renderTerminal() {
     const previousScrollTop = el.terminal_screen.scrollTop;
     el.terminal_screen.replaceChildren();
     if (hasScreenContent) {
-      appendAnnotatedText(el.terminal_screen, source.content, sourceAnnotations);
+      el.terminal_screen.append(document.createTextNode(source.content));
     } else {
       el.terminal_screen.append(document.createTextNode("等待终端画面…"));
     }
@@ -2100,12 +1965,8 @@ function renderTerminal() {
     "reference-target",
     Boolean(
       (state.highlightReference?.kind === "screen" && source?.event_id === state.highlightReference.event_id)
-      || (replayReference?.kind === "screen" && source?.event_id === replayReference.event_id)
     ),
   );
-  el.terminal_score_status.replaceChildren();
-  const terminalSummary = scoreSummary(sourceAnnotations);
-  if (terminalSummary) el.terminal_score_status.append(...terminalSummary.childNodes);
   const changeKind = terminal.change_kind;
   el.typing_state.textContent = changeKind === "paste" ? `${agentName(state.snapshot?.meeting)} 正在粘贴` : (changeKind === "typing" ? `${agentName(state.snapshot?.meeting)} 输入中` : "");
   el.typing_state.hidden = !["typing", "paste"].includes(changeKind);
@@ -2158,27 +2019,11 @@ function revealTerminalCursor(terminal) {
   }
 }
 
-function scoreStatusForEvent(event) {
-  if (!event) return "unscored";
-  if (event.kind === "score") {
-    return event.data?.tag === "competent" || event.data?.tag === "incompetent"
-      ? event.data.tag
-      : "unscored";
-  }
-  if (event.kind !== "chat" && event.kind !== "screen") return "unscored";
-  const annotations = scoreAnnotationsForSource(event, state.timeline);
-  if (!annotations.length) return "unscored";
-  return annotations.reduce(
-    (latest, annotation) => (annotation.seq >= latest.seq ? annotation : latest),
-    annotations[0],
-  ).tag;
-}
-
 function hidePlaybackHover() {
   state.playbackHoverIndex = null;
   el.playback_hover.hidden = true;
   el.playback_hover.removeAttribute("data-status");
-  el.playback_slider.title = "移动鼠标查看评价状态";
+  el.playback_slider.title = "移动鼠标查看位置";
 }
 
 function showPlaybackHover(event) {
@@ -2194,18 +2039,15 @@ function showPlaybackHover(event) {
   const usableWidth = Math.max(1, sliderRect.width - inset * 2);
   const position = Math.max(0, Math.min(usableWidth, clientX - sliderRect.left - inset));
   const index = Math.max(0, Math.min(max, Math.round((position / usableWidth) * max)));
-  const status = scoreStatusForEvent(eventAt(index));
-  const label = labels.score[status] || labels.score.unscored;
-
   state.playbackHoverIndex = index;
-  el.playback_hover.textContent = label;
-  el.playback_hover.dataset.status = status;
+  el.playback_hover.textContent = `${index + 1} / ${state.timeline.length}`;
+  el.playback_hover.removeAttribute("data-status");
   el.playback_hover.hidden = false;
   const halfWidth = Math.min(el.playback_hover.offsetWidth / 2, trackRect.width / 2);
   const rawLeft = clientX - trackRect.left;
   const left = Math.max(halfWidth, Math.min(trackRect.width - halfWidth, rawLeft));
   el.playback_hover.style.left = `${left}px`;
-  el.playback_slider.title = `${index + 1} / ${state.timeline.length} · ${label}`;
+  el.playback_slider.title = `${index + 1} / ${state.timeline.length}`;
 }
 
 function renderPlayback() {
@@ -2398,8 +2240,7 @@ function sourceRootFromNode(value) {
   if (!element) return null;
   if (terminalEngine) {
     // Under xterm.js the terminal has no text DOM to select or annotate;
-    // evaluation of terminal text is re-added on top of xterm selection
-    // later. Chat message text stays selectable.
+    // Chat message text stays selectable.
     return element.closest?.(".message-content, .chat-control-line") || null;
   }
   return element?.closest?.(".message-content, .chat-control-line, #terminal-screen") || null;
@@ -2683,17 +2524,13 @@ function selectionIsHumanChat(candidate) {
 }
 
 function showSelectionMenu(candidate) {
-  if (!candidate || !el.selection_menu || state.selectionBusy || state.evaluationSelection) return;
+  if (!candidate || !el.selection_menu || state.selectionBusy) return;
   state.pendingSelection = candidate;
   const terminal = ["completed", "failed", "interrupted"].includes(state.snapshot?.meeting?.status);
-  const humanChat = selectionIsHumanChat(candidate);
   el.selection_menu.querySelectorAll("[data-selection-action]").forEach((button) => {
     if (button.dataset.selectionAction === "add-to-conversation") {
       button.disabled = terminal;
       button.title = terminal ? "会话已结束，无法继续发消息" : "";
-    } else if (button.dataset.selectionAction === "evaluate") {
-      button.disabled = humanChat;
-      button.title = humanChat ? "人类消息不能被评价" : "";
     }
   });
   el.selection_menu.hidden = false;
@@ -2732,103 +2569,12 @@ function scheduleSelectionMenu(clickCount = 1) {
   }, delay);
 }
 
-function openEvaluationPanel(candidate) {
-  if (!candidate || !el.evaluation_panel) return;
-  state.evaluationSelection = candidate;
-  state.pendingSelection = null;
-  el.evaluation_error.hidden = true;
-  el.evaluation_excerpt.textContent = candidate.excerpt || "";
-  el.evaluation_form.querySelectorAll('input[name="evaluation-tag"]').forEach((input) => {
-    input.checked = false;
-    input.disabled = false;
-  });
-  el.evaluation_comment.value = "";
-  el.message_form.hidden = true;
-  el.evaluation_panel.hidden = false;
-  clearBrowserSelection();
-  hideSelectionMenu(false);
-  requestAnimationFrame(() => el.evaluation_form.querySelector('input[name="evaluation-tag"]')?.focus());
-}
-
-function closeEvaluationPanel() {
-  state.evaluationSelection = null;
-  state.evaluationBusy = false;
-  if (el.evaluation_form) {
-    el.evaluation_form.querySelectorAll('input[name="evaluation-tag"]').forEach((input) => {
-      input.checked = false;
-      input.disabled = false;
-    });
-  }
-  if (el.evaluation_comment) el.evaluation_comment.value = "";
-  if (el.evaluation_error) el.evaluation_error.hidden = true;
-  if (el.evaluation_panel) el.evaluation_panel.hidden = true;
-  if (el.message_form) el.message_form.hidden = false;
-}
 
 
-async function submitEvaluation(event) {
-  event?.preventDefault();
-  const selected = state.evaluationSelection;
-  if (!selected || !state.selectedId || state.evaluationBusy) return;
-  const tag = el.evaluation_form.querySelector('input[name="evaluation-tag"]:checked')?.value;
-  if (!tag) {
-    el.evaluation_error.textContent = "请选择胜任或不胜任";
-    el.evaluation_error.hidden = false;
-    return;
-  }
-  const comment = el.evaluation_comment.value.trim();
-  state.evaluationBusy = true;
-  el.evaluation_submit_button.disabled = true;
-  el.evaluation_back_button.disabled = true;
-  el.evaluation_cancel_button.disabled = true;
-  el.evaluation_error.hidden = true;
-  try {
-    const response = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/scores`, {
-      method: "POST",
-      body: JSON.stringify({
-        tag,
-        comment: comment || null,
-        reference: {
-          kind: selected.kind,
-          event_id: selected.event_id,
-          region: { start: selected.start, end: selected.end },
-        },
-      }),
-    });
-    const scoreEvent = response?.event;
-    if (!state.followLive && scoreEvent?.event_id) state.scoreOverlayIds.add(scoreEvent.event_id);
-    if (scoreEvent) mergeTimelineEvents([scoreEvent]);
-    closeEvaluationPanel();
-    clearBrowserSelection();
-    renderAll();
-    try {
-      await refreshSelected();
-      toast(`已记录${labels.score[tag]}评价`, "success");
-    } catch (refreshError) {
-      toast(`评价已保存，页面刷新失败：${refreshError.message}`);
-    }
-  } catch (error) {
-    el.evaluation_error.textContent = error.message;
-    el.evaluation_error.hidden = false;
-  } finally {
-    state.evaluationBusy = false;
-    el.evaluation_submit_button.disabled = false;
-    el.evaluation_back_button.disabled = false;
-    el.evaluation_cancel_button.disabled = false;
-  }
-}
 
 async function handleSelectionAction(action) {
   const selected = state.pendingSelection;
-  if (!selected || state.selectionBusy || state.evaluationSelection) return;
-  if (action === "evaluate") {
-    if (selectionIsHumanChat(selected)) {
-      toast("人类消息不能被评价", "info");
-      return;
-    }
-    openEvaluationPanel(selected);
-    return;
-  }
+  if (!selected || state.selectionBusy) return;
   if (action === "add-to-conversation") {
     if (["completed", "failed", "interrupted"].includes(state.snapshot?.meeting?.status)) return;
     const added = addReference({
@@ -3010,11 +2756,9 @@ async function selectMeeting(meetingId) {
   hideSelectionMenu();
   hidePlaybackHover();
   clearBrowserSelection();
-  closeEvaluationPanel();
   setReferences([]);
   // 待发的图属于上一场会：换会议就丢掉，否则会混进另一场。
   setAttachments([]);
-  state.scoreOverlayIds.clear();
   state.selectedId = meetingId;
   state.snapshotEtag = "";
   state.eventsEtag = "";
@@ -3093,7 +2837,7 @@ async function refreshSelected() {
   if (!changed) return;
   // Re-rendering replaces the chat/terminal DOM and would collapse an
   // in-progress text selection — the app's core scoring interaction.
-  if (state.pointerSelecting || state.pendingSelection || state.evaluationSelection) return;
+  if (state.pointerSelecting || state.pendingSelection) return;
   if (hasLiveSelection()) return; // 用户正在选中/复制：本 tick 放弃重绘
   renderAll();
 }
@@ -3695,15 +3439,6 @@ function openNewDialog() {
   el.initial_message.focus();
 }
 
-// The judge name has no UI any more (the gear it lived behind carried nothing
-// else); the stored value still labels the scores this client writes.
-async function loadSettings() {
-  const payload = await api("/api/settings");
-  state.judgeName = typeof payload.judge_name === "string" && payload.judge_name.trim()
-    ? payload.judge_name.trim()
-    : "human";
-}
-
 function bind() {
   el.add_workspace_button?.addEventListener("click", addWorkspace);
   el.workspace_menu?.querySelector('[data-workspace-action="rename"]')?.addEventListener("click", () => {
@@ -3741,9 +3476,6 @@ function bind() {
   el.backend_select.addEventListener("change", () => syncBackendSelectors(true));
   el.provider_select.addEventListener("change", () => syncBackendSelectors(true));
   el.cli_default_model?.addEventListener("change", () => syncCliDefaultModel());
-  el.evaluation_form.addEventListener("submit", submitEvaluation);
-  el.evaluation_back_button.addEventListener("click", closeEvaluationPanel);
-  el.evaluation_cancel_button.addEventListener("click", closeEvaluationPanel);
   el.new_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     el.start_button.disabled = true;
@@ -3950,7 +3682,7 @@ function bind() {
     container.addEventListener("focusin", handleSourceFocus);
     container.addEventListener("keydown", handleKeyboardSelection);
   }
-  // Release anywhere (even outside the containers) ends the drag; re-evaluate
+  // Release anywhere (even outside the containers) ends the drag; refresh
   // the selection once so the menu appears exactly at mouse release.
   document.addEventListener("pointerup", (event) => {
     if (!state.pointerSelecting) return;
@@ -4015,9 +3747,6 @@ function bind() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      if (state.evaluationSelection && !state.evaluationBusy) {
-        closeEvaluationPanel();
-      }
       closeMemberDetails();
       hideSelectionMenu();
       hideWorkspaceMenu();
@@ -4070,7 +3799,7 @@ function bind() {
   // start (drag, double-click and Shift+arrows all die; copy returns nothing).
   function isTextSelectionSurface(node) {
     const selectors = [".message-content", ".chat-control-line", ".session-identity",
-                       ".presence-strip", ".evaluation-excerpt"];
+                       ".presence-strip"];
     for (const selector of selectors) {
       if (node && node.closest && node.closest(selector)) return true;
     }
@@ -4117,7 +3846,6 @@ function bind() {
   el.playback_slider.addEventListener("mouseleave", hidePlaybackHover);
   el.playback_slider.addEventListener("pointercancel", hidePlaybackHover);
   el.playback_slider.addEventListener("input", () => {
-    state.scoreOverlayIds.clear();
     hidePlaybackHover();
     // Moving the view on purpose releases a clicked citation: otherwise the
     // terminal stays pinned to the frame that quote pointed at.
@@ -4131,7 +3859,6 @@ function bind() {
     renderAll();
   });
   el.live_button.addEventListener("click", () => {
-    state.scoreOverlayIds.clear();
     hidePlaybackHover();
     state.highlightReference = null;      // back to live: the citation is released
     state.playbackFreezeAt = 0;
@@ -4147,7 +3874,6 @@ function bind() {
   el.play_button.addEventListener("click", () => {
     state.highlightReference = null;      // playing moves the view: release the pin
     if (state.playing) { stopPlayback(); return; }
-    state.scoreOverlayIds.clear();
     hidePlaybackHover();
     markPlaybackFrozen();
     state.chatFollow = true;
@@ -4239,7 +3965,7 @@ async function boot() {
     // seconds) and only gates the new-session button, so it must never hold
     // up opening a meeting: start it and let it land whenever it lands.
     loadHealth().catch((error) => toast(error.message));
-    await Promise.all([loadMeetings(), loadSettings()]);
+    await loadMeetings();
     // 刷新回到上次打开的那一场（存在浏览器里）；它要是没了，才退回"最近活动的第一场"。
     // 一场都没有的时候欢迎卡片留着，人来选工作区。
     const known = new Set(state.meetings.map((one) => one.meeting_id));
