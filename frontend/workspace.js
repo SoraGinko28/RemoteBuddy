@@ -1465,7 +1465,7 @@ function takeoverGrid(engine) {
   const cellHeight = terminalCellHeight(engine);
   let cols = 80;
   if (panelWidth > 0 && charWidth > 0) {
-    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth) - 2));
+    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth) - 4));
     // Keep the panel's client width available for measuring the grid. The
     // discarded fraction is real leftover space, so center the xterm screen
     // inside it instead of adding padding to the panel (which would change
