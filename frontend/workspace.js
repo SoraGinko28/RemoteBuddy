@@ -1257,8 +1257,8 @@ function ensureTerminalEngine() {
         background: "#101413",
         foreground: "#e7eee9",
         cursor: "#c5cdc8",
-        selectionBackground: "#5b7fd4",
-        selectionForeground: "#ffffff",
+        selectionBackground: "#6091ff",
+        selectionForeground: "#101413",
         black: "#1c1f1e", red: "#e06c75", green: "#98c379", yellow: "#d19a66",
         blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#abb2bf",
         brightBlack: "#5c6370", brightRed: "#e06c75", brightGreen: "#98c379",
@@ -1267,6 +1267,7 @@ function ensureTerminalEngine() {
       },
     });
     el.terminal_screen.replaceChildren();
+    el.terminal_screen.dataset.geometryReady = "false";
     term.open(el.terminal_screen);
     installTerminalClipboard();
   } catch (_error) {
@@ -1436,6 +1437,21 @@ function queueTakeoverInput(text, urgent = false) {
 // this grid before the stream opens (real clients resize the pty to the
 // client). Rows/cols are derived from the measured panel and cell box, never
 // guessed.
+function centerTerminalScreen(engine) {
+  const panelWidth = el.terminal_screen.clientWidth || 0;
+  const cellWidth = (() => {
+    try {
+      const width = Number(engine?._core?._renderService?.dimensions?.css?.cell?.width);
+      return width > 0 ? width : TERMINAL_FONT_SIZE * 0.6;
+    } catch (_error) {
+      return TERMINAL_FONT_SIZE * 0.6;
+    }
+  })();
+  const leftover = Math.max(0, panelWidth - engine.cols * cellWidth);
+  const screen = el.terminal_screen.querySelector(".xterm-screen");
+  if (screen) screen.style.marginLeft = `${Math.floor(leftover / 2)}px`;
+}
+
 function takeoverGrid(engine) {
   const panelWidth = el.terminal_screen.clientWidth || 0;
   const panelHeight = el.terminal_screen.clientHeight || 0;
@@ -1454,9 +1470,7 @@ function takeoverGrid(engine) {
     // discarded fraction is real leftover space, so center the xterm screen
     // inside it instead of adding padding to the panel (which would change
     // clientWidth and make the pty grid calculation inconsistent).
-    const leftover = Math.max(0, panelWidth - cols * charWidth);
-    const screen = el.terminal_screen.querySelector(".xterm-screen");
-    if (screen) screen.style.marginLeft = `${leftover / 2}px`;
+    centerTerminalScreen(engine);
   }
   let rows = 24;
   if (panelHeight > 0 && cellHeight > 0) rows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
@@ -1587,6 +1601,9 @@ function startTerminalTakeover() {
   // would steal gutter width and push the rightmost columns underneath it.
   engine.options.scrollback = 0;
   if (engine.cols !== grid.cols || engine.rows !== grid.rows) engine.resize(grid.cols, grid.rows);
+  // The takeover stream must not expose xterm before its first real seed has
+  // been laid out; otherwise the old cell width can be visible briefly.
+  el.terminal_screen.dataset.geometryReady = "false";
   termRowsState = null;
   engine.reset();
   bindTakeoverInput(engine);
@@ -1611,6 +1628,14 @@ function startTerminalTakeover() {
     engine.reset();
     engine.write(new Uint8Array(decodeBase64(event.data)));
     engine.scrollToBottom();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (takeoverStream.active && takeoverStream.source === source) {
+          centerTerminalScreen(engine);
+          el.terminal_screen.dataset.geometryReady = "true";
+        }
+      });
+    });
   });
   source.addEventListener("data", (event) => {
     if (!takeoverStream.active) return;
@@ -1988,6 +2013,17 @@ function renderTerminal() {
       if (Number.isFinite(cursorX) && Number.isFinite(cursorY)) {
         const visibleRow = Math.min(viewRows, Math.max(1, cursorY - rowOffset + 1));
         engine.write(`\x1b[${visibleRow};${Math.min(cursorX + 1, width)}H`);
+      }
+      // Normal playback has no takeover seed event to flip the gate. Reveal
+      // it only after the first frame has been laid out and painted, so the
+      // terminal is centered before its first visible frame.
+      if (el.terminal_screen.dataset.geometryReady !== "true") {
+        requestAnimationFrame(() => {
+          if (!takeoverStream.active && terminalEngine?.term === engine) {
+            centerTerminalScreen(engine);
+            el.terminal_screen.dataset.geometryReady = "true";
+          }
+        });
       }
     }
     if (state.viewportMode === "follow") engine.scrollToBottom();
@@ -2559,8 +2595,21 @@ function positionSelectionMenu(candidate) {
   const gutter = 8;
   const left = Math.max(gutter, Math.min(window.innerWidth - menuRect.width - gutter, rect.left + rect.width / 2 - menuRect.width / 2));
   let top = rect.top - menuRect.height - 10;
-  if (top < gutter) top = Math.min(window.innerHeight - menuRect.height - gutter, rect.bottom + 10);
-  menu.style.left = `${Math.max(gutter, left)}px`;
+  let menuLeft = left;
+  if (top < gutter) {
+    // Keep the toolbar away from the release point. A toolbar below a short
+    // selection sits exactly where the next drag commonly starts.
+    top = rect.top;
+    menuLeft = rect.right + 10;
+    if (menuLeft + menuRect.width > window.innerWidth - gutter) {
+      menuLeft = rect.left - menuRect.width - 10;
+    }
+    if (menuLeft < gutter) {
+      menuLeft = left;
+      top = Math.min(window.innerHeight - menuRect.height - gutter, rect.bottom + 10);
+    }
+  }
+  menu.style.left = `${Math.max(gutter, Math.min(window.innerWidth - menuRect.width - gutter, menuLeft))}px`;
   menu.style.top = `${Math.max(gutter, top)}px`;
 }
 

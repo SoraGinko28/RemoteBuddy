@@ -667,6 +667,25 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
 class TerminalTakeoverTest(_PageTestCase):
     """真 tmux pane 的长行不能在真浏览器的终端里静默消失。"""
 
+    def test_opening_page_alone_reveals_populated_terminal_without_resize(self):
+        started = time.monotonic()
+        self.page.wait_for(
+            """(() => {
+                const viewport = document.querySelector('#terminal-screen');
+                const terminal = viewport?.querySelector('.xterm');
+                const rows = viewport?.querySelector('.xterm-rows');
+                return viewport?.dataset.geometryReady === 'true'
+                    && terminal
+                    && getComputedStyle(terminal).visibility === 'visible'
+                    && rows
+                    && rows.textContent.trim().length > 0;
+            })()""",
+            3,
+            what="只打开页面后终端在三秒内可见且有内容",
+        )
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        self.assertLessEqual(elapsed_ms, 3000)
+
     def test_long_tmux_line_keeps_every_character_and_tail_after_layout_changes(self):
         store = self._store()
         store.update(phase="agent_thinking")

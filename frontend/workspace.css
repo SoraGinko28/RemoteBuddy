@@ -295,10 +295,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .terminal-screen.xterm-host .xterm .xterm-viewport { max-width: 100%; overflow: hidden; }
 .terminal-screen.xterm-host .xterm .xterm-viewport { background: transparent; }
 .terminal-screen.xterm-host .xterm .xterm-screen { background: transparent; }
-.terminal-screen.xterm-host .xterm .xterm-selection div {
-  background: rgb(96 145 255 / .55) !important;
-  color: #ffffff !important;
-}
+.terminal-screen.xterm-host[data-geometry-ready="false"] { visibility: hidden; }
+.terminal-screen.xterm-host[data-geometry-ready="false"] .xterm { visibility: hidden; }
 .terminal-screen.xterm-host .xterm .xterm-viewport::-webkit-scrollbar-track { background: var(--terminal); }
 .copy-fallback-overlay { position: fixed; inset: 0; background: rgb(0 0 0 / .6); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 20px; }
 .copy-fallback-panel { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 14px 16px; max-width: min(720px, 92vw); width: 100%; box-shadow: 0 10px 30px rgb(0 0 0 / .5); }
