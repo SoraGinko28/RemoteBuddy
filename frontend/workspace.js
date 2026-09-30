@@ -316,6 +316,11 @@ function renderMemberDetails(meeting) {
   el.member_terminal_label.textContent = role === "actor" ? "可写" : "只读";
   el.member_chat_label.textContent = `${stats.count} 条`;
   el.member_last_label.textContent = stats.last ? fmtTime(stats.last) : "—";
+  if (stats.last) {
+    el.member_last_label.title = formatFullTime(stats.last);
+  } else {
+    el.member_last_label.removeAttribute("title");
+  }
   // Skill 那两个按钮只对 actor 有意义：这场会的那份 Skill 是它的说明书，
   // 助理和批判者跑在各自的过程里，不读它。
   if (el.skill_cell) el.skill_cell.hidden = role !== "actor";
@@ -407,6 +412,15 @@ function toast(message, kind = "error") {
   state.toastTimer = setTimeout(() => {
     for (const node of visible) node.hidden = true;
   }, 5000);
+}
+
+function formatFullTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+  }).format(date);
 }
 
 function fmtTime(value) {
@@ -1087,7 +1101,7 @@ function renderChat() {
       article.dataset.eventId = event.event_id || "";
       const head = node("header", "message-head");
       const timeEl = node("time", "", fmtTime(event.captured_at));
-      timeEl.title = new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "medium" }).format(new Date(event.captured_at));
+      timeEl.title = formatFullTime(event.captured_at);
       timeEl.addEventListener("click", () => jumpToChatTime(event));
       const meetingSnapshot = state.snapshot?.meeting;
       // Show the record's own speaker names: human = 你, every agent (and
