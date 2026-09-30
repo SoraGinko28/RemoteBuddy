@@ -446,6 +446,7 @@ class MeetingWebService:
         self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = {}
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
+        self.capture_stops: Dict[str, threading.Event] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
         # 正在跑的 runner（一场会同时最多一个）：页面上"更新 / 重启"两个按钮
         # 要能戳到它，见 reload_skill / restart_agent。
@@ -1970,19 +1971,22 @@ class MeetingWebService:
             current = self.capture_jobs.get(meeting_id)
             if current and current.is_alive():
                 return
+            stop = threading.Event()
             worker = threading.Thread(
                 target=self._capture_human_control,
-                args=(meeting_id,),
+                args=(meeting_id, stop),
                 name=f"remotebuddy-capture-{meeting_id}",
                 daemon=True,
             )
             self.capture_jobs[meeting_id] = worker
+            self.capture_stops[meeting_id] = stop
             worker.start()
 
-    def _capture_human_control(self, meeting_id: str) -> None:
+    def _capture_human_control(self, meeting_id: str, stop: Optional[threading.Event] = None) -> None:
         transport = self._transport()
         try:
-            while True:
+            stop = stop or threading.Event()
+            while not stop.is_set():
                 with self._meeting_lock(meeting_id):
                     store = self.load_store(meeting_id)
                     if store.meeting.status in TERMINAL_STATUSES:
@@ -2025,6 +2029,19 @@ class MeetingWebService:
             with self.lock:
                 if self.capture_jobs.get(meeting_id) is threading.current_thread():
                     self.capture_jobs.pop(meeting_id, None)
+                    self.capture_stops.pop(meeting_id, None)
+
+    def shutdown(self) -> None:
+        with self.lock:
+            stops = list(self.capture_stops.values())
+            workers = list(self.capture_jobs.values())
+            self.capture_stops.clear()
+        for stop in stops:
+            stop.set()
+        current = threading.current_thread()
+        for worker in workers:
+            if worker is not current:
+                worker.join(timeout=5)
 
     def set_reasoning_effort(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -2541,6 +2558,7 @@ class MeetingWebService:
                 self.jobs.pop(meeting_id, None)
                 self.queued_jobs.pop(meeting_id, None)
                 self.capture_jobs.pop(meeting_id, None)
+                self.capture_stops.pop(meeting_id, None)
                 self.active_backends.pop(meeting_id, None)
                 self.active_runners.pop(meeting_id, None)
                 self.human_pipes.pop(meeting_id, None)
@@ -2802,6 +2820,10 @@ class MeetingWebService:
 
 class RemoteBuddyHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+
+    def shutdown(self) -> None:
+        self.service.shutdown()
+        super().shutdown()
 
     def __init__(self, server_address: Tuple[str, int], service: MeetingWebService):
         self.service = service
