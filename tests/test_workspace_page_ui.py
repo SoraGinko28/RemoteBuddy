@@ -695,6 +695,9 @@ class TerminalTakeoverTest(_PageTestCase):
         )
         self._assert_long_line(body)
 
+        # Resize 对准属于观看态；先结束 takeover，避免流式终端与观看态对准互相抢尺寸。
+        self.page.js("stopTerminalTakeover(false); 'released'")
+        self.page.wait_for("window.__takeoverReady === false", 10, what="退出 takeover 回到观看态")
         self.page.call(
             "Emulation.setDeviceMetricsOverride",
             width=420,
@@ -702,6 +705,31 @@ class TerminalTakeoverTest(_PageTestCase):
             deviceScaleFactor=1,
             mobile=False,
         )
+        self.page.wait_for(
+            """(() => {
+                const viewport = document.querySelector('#terminal-screen');
+                const terminal = viewport?.querySelector('.xterm');
+                if (!viewport || !terminal) return false;
+                const rows = viewport.querySelector('.xterm-rows');
+                return rows && terminal.scrollWidth <= terminal.clientWidth + 1;
+            })()""",
+            20,
+            what="resize 应答后立即按 pane 尺寸重画",
+        )
+        immediate = self.page.js(
+            """(() => {
+                const viewport = document.querySelector('#terminal-screen');
+                const terminal = viewport.querySelector('.xterm');
+                const rows = viewport.querySelector('.xterm-rows');
+                return {
+                    paneWidth: terminal?.clientWidth || 0,
+                    renderedWidth: rows?.getBoundingClientRect().width || 0,
+                    scrollWidth: terminal?.scrollWidth || 0,
+                    clientWidth: terminal?.clientWidth || 0,
+                };
+            })()"""
+        )
+        self.assertLessEqual(immediate["scrollWidth"], immediate["clientWidth"] + 1, immediate)
         self.page.js("document.querySelector('.agent-state')?.click(); 'opened'")
         self.page.js("document.querySelector('#member-panel-close')?.click(); 'closed'")
         self.page.call(
@@ -764,14 +792,14 @@ class TerminalTakeoverTest(_PageTestCase):
             })()"""
         )
         self.assertIn("TAIL-9f3c", result["tailText"])
-        self.assertIn(result["overflowX"], {"auto", "scroll"}, result)
-        if result["maxScrollLeft"] == 0:
-            self.assertTrue(result["contentVisibleWithoutScroll"], result)
-        else:
-            self.assertTrue(
-                result["contentVisibleAfterScroll"],
-                result,
-            )
+        self.assertNotIn(result["overflowX"], {"auto", "scroll"}, result)
+        self.assertLessEqual(
+            result["xtermScroll"] - result["xtermClient"],
+            7.225,
+            result,
+        )
+        self.assertTrue(result["contentVisibleWithoutScroll"], result)
+        self.assertTrue(result["tailRight"] <= result["boxRight"] + 1, result)
 
 
 if __name__ == "__main__":

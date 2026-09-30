@@ -782,6 +782,29 @@ class MeetingWebService:
             "pane_height": pane_height,
         }
 
+    def resize_terminal(self, meeting_id: str, cols: int, rows: int) -> Dict[str, int]:
+        if not isinstance(cols, int) or not isinstance(rows, int):
+            raise WebError(400, "terminal resize size must be integers")
+        if cols < 40 or cols > 300 or rows < 12 or rows > 120:
+            raise WebError(400, "terminal resize size is outside supported bounds")
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                raise WebError(409, "meeting is already finished")
+            if not store.meeting.pane_id:
+                raise WebError(409, "workspace pane is not available")
+            transport = self._transport()
+            try:
+                info = transport.pane_info(store.meeting.pane_id)
+                current_cols = int(info["pane_width"])
+                current_rows = int(info["pane_height"])
+                if current_cols != cols or current_rows != rows:
+                    transport.resize_workspace_session(store.meeting.session_name, cols, rows)
+                info = transport.pane_info(store.meeting.pane_id)
+            except (TmuxError, OSError, ValueError) as exc:
+                raise WebError(502, f"cannot resize workspace: {exc}") from exc
+            return {"pane_width": int(info["pane_width"]), "pane_height": int(info["pane_height"])}
+
     def load_store(self, meeting_id: str) -> MeetingStore:
         if not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
@@ -3293,6 +3316,16 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             if match:
                 store = self.service.terminal_input(unquote(match.group(1)), self._read_json())
                 self._json({"meeting": _public_manifest(store)})
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/terminal/resize", path)
+            if match:
+                payload = self._read_json() or {}
+                cols = payload.get("cols")
+                rows = payload.get("rows")
+                if not isinstance(cols, int) or not isinstance(rows, int):
+                    raise WebError(400, "terminal resize size must be integers")
+                result = self.service.resize_terminal(unquote(match.group(1)), cols, rows)
+                self._json(result)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/tickets/([^/]+)", path)
             if match:

@@ -1311,7 +1311,45 @@ function refitTerminal() {
   terminalEngine.term._cellHeight = null;
   termRowsState = null;
   state.terminalFrameKey = null;
+  scheduleHumanTerminalResize();
   renderTerminal();
+}
+
+let humanTerminalResizeTimer = null;
+let humanTerminalResizeKey = "";
+let humanTerminalResizeInFlight = false;
+
+function scheduleHumanTerminalResize() {
+  if (!state.selectedId || !terminalEngine || (typeof takeoverStream !== "undefined" && takeoverStream.active)) return;
+  if (humanTerminalResizeTimer !== null) clearTimeout(humanTerminalResizeTimer);
+  humanTerminalResizeTimer = setTimeout(() => {
+    humanTerminalResizeTimer = null;
+    resizeHumanTerminal().catch(() => {});
+  }, 120);
+}
+
+async function resizeHumanTerminal() {
+  if (!state.selectedId || !terminalEngine || (typeof takeoverStream !== "undefined" && takeoverStream.active)) return;
+  const grid = takeoverGrid(terminalEngine.term);
+  const key = `${state.selectedId}:${grid.cols}x${grid.rows}`;
+  if (humanTerminalResizeInFlight || key === humanTerminalResizeKey) return;
+  humanTerminalResizeInFlight = true;
+  try {
+    const result = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/resize`, {
+      method: "POST",
+      body: JSON.stringify(grid),
+    });
+    const engine = terminalEngine.term;
+    if (engine.cols !== result.pane_width || engine.rows !== result.pane_height) {
+      engine.resize(result.pane_width, result.pane_height);
+    }
+    termRowsState = null;
+    state.terminalFrameKey = null;
+    humanTerminalResizeKey = `${state.selectedId}:${result.pane_width}x${result.pane_height}`;
+    renderTerminal();
+  } finally {
+    humanTerminalResizeInFlight = false;
+  }
 }
 
 // Tracks takeover-panel visibility between renders so the terminal refits
@@ -1410,7 +1448,16 @@ function takeoverGrid(engine) {
   if (!Number.isFinite(charWidth) || charWidth <= 0) charWidth = TERMINAL_FONT_SIZE * 0.6;
   const cellHeight = terminalCellHeight(engine);
   let cols = 80;
-  if (panelWidth > 0 && charWidth > 0) cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth)));
+  if (panelWidth > 0 && charWidth > 0) {
+    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth) - 1));
+    // Keep the panel's client width available for measuring the grid. The
+    // discarded fraction is real leftover space, so center the xterm screen
+    // inside it instead of adding padding to the panel (which would change
+    // clientWidth and make the pty grid calculation inconsistent).
+    const leftover = Math.max(0, panelWidth - cols * charWidth);
+    const screen = el.terminal_screen.querySelector(".xterm-screen");
+    if (screen) screen.style.marginLeft = `${leftover / 2}px`;
+  }
   let rows = 24;
   if (panelHeight > 0 && cellHeight > 0) rows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
   rows = Math.max(12, Math.min(120, rows));
