@@ -28,7 +28,8 @@ MeetingData =
   * $file_desktop FileDesktop
   * Appendix[{
       user_names = every mc.UserName that appears in any chunk
-                     (screen.owner / chat.user_name / terminal_control.user_name)
+                     (screen.owner / chat.user_name / score.judge_name /
+                      terminal_control.user_name)
                    ∪ every mc.Versioned.author in the file layer
                      (the three chains of file_kv_store / file_desktop's $reorder_indexes)
     }]
@@ -36,7 +37,7 @@ MeetingData =
   * Hint[{
       reply reminder: ∀ chat message m in the chat stream, if m carries
                  $at_user_name == P and role(P) == $critic,
-                 then ∃ a later record r (a chat produced by P)
+                 then ∃ a later record r (a chat or score produced by P)
                    : r carries an mc.ContentReference that resolves to m
     }]
   * Appendix[{
@@ -125,6 +126,7 @@ StreamChunk =
     Oneof
   | $screen_stream_chunk ScreenStreamChunk
   | $chat_stream_chunk ChatStreamChunk
+  | $score_stream_chunk ScoreStreamChunk
   | $agent_cmd_stream_chunk AgentCmdStreamChunk
   | $terminal_control_stream_chunk TerminalControlStreamChunk
 
@@ -144,6 +146,10 @@ ChatStreamChunk =
                     (a view for the display layer; every item still belongs to
                      its own stream)
     }]
+
+ScoreStreamChunk =
+    DataClass
+  * $chunks list[mc.ScoreMessage]
 
 AgentCmdStreamChunk =
     DataClass
@@ -196,7 +202,7 @@ TerminalControl =
 
 ScreenCapture =
     DataClass
-  * $screen_data str                       # plain text (the coordinates the model / references use); every row right-trimmed
+  * $screen_data str                       # plain text (the coordinates the model / references / scores use); every row right-trimmed
   * $terminal_text_content list[mc.TerminalTextSegment]
   * $cursor_x int                          # cell coordinates (0-based); the renderer converts to character coordinates with wcwidth
   * $cursor_y int
@@ -224,7 +230,7 @@ ScreenCapture =
 ## Stable types — meeting_core.viba
 
 The small, stable types are gathered in this chapter: time, identity, versions,
-text regions, colors, references and chat records. They do not change as
+text regions, colors, references, chat and score records. They do not change as
 the work goes on, and the record layers of the later chapters are built on them.
 
 ```bash
@@ -323,7 +329,7 @@ FileState =
   * $content str
 
 # ---------------------------------------------------------------- #
-# 3. References and chat records
+# 3. References, chat and score records
 # ---------------------------------------------------------------- #
 
 FileId =
@@ -361,12 +367,28 @@ ImageAttachment =
   * $sha256 str
   * $byte_count int
 
+ScoreMessage =
+    Object
+  * $tag str
+  * $score Optional[float]
+  * $comment Optional[str]
+  * $judge_name UserName
+  * $time datetime
+  * $reference ContentReference
+  * Appendix[{
+      summon_chained = role($judge_name) != $critic
+                        ∨ this message's $reference resolves to a message that
+                          summoned it
+    }]
+  * Assert[{ summon_chained }]
+
 ContentReference =
     Oneof
   * Assert[{
       one kind per StreamChunk:
         screen_stream_chunk            ↔ screen_ref
         chat_stream_chunk              ↔ chat_ref
+        score_stream_chunk             ↔ score_ref
         terminal_control_stream_chunk  ↔ terminal_control_ref
     }]
   * Hint[{
@@ -378,6 +400,7 @@ ContentReference =
     }]
   | $screen_ref ScreenReference
   | $chat_ref ChatReference
+  | $score_ref ScoreReference
   | $terminal_control_ref TerminalControlReference
   | $versioned_file_ref VersionedFileReference
   | $versioned_file_content_ref VersionedFileContentReference
@@ -422,6 +445,16 @@ ChatReference =
         resolve($chat_ref) = the record in the chat stream that satisfies
             (ChatMessage.time == $chat_ref.msg_time
              ∧ ChatMessage.user_name == $chat_ref.user_name)
+    }]
+
+ScoreReference =
+    Object
+  * $judge_time datetime
+  * $judge_name UserName
+  * Appendix[{
+        resolve($score_ref) = the record in the score stream that satisfies
+            (ScoreMessage.judge_name == $score_ref.judge_name
+             ∧ ScoreMessage.time == $score_ref.judge_time)
     }]
 
 TerminalControlReference =
@@ -525,11 +558,17 @@ streams_between[Ctx] =
   <- $end mc.datetime
 
 # ---------------------------------------------------------------- #
-# Chat
+# Chat and scores
 # ---------------------------------------------------------------- #
 
 chat_messages[Ctx] =
     mc.Result[list[mc.ChatMessage]]
+  <- $ctx Ctx
+  <- $start mc.datetime
+  <- $end mc.datetime
+
+score_messages[Ctx] =
+    mc.Result[list[mc.ScoreMessage]]
   <- $ctx Ctx
   <- $start mc.datetime
   <- $end mc.datetime
@@ -550,11 +589,22 @@ resolve_chat_content_reference[Ctx] =
   <- $ctx Ctx
   <- $ref mc.ChatReference
 
+resolve_score_reference[Ctx] =
+    mc.Result[mc.ScoreMessage]
+  <- $ctx Ctx
+  <- $ref mc.ScoreReference
+
 chat_message_references[Ctx] =
     mc.Result[list[mc.ContentReference]]       # the references this message carries, in order
   <- $ctx Ctx
   <- $time mc.datetime
   <- $user mc.UserName
+
+score_message_reference[Ctx] =
+    mc.Result[mc.ContentReference]             # the reference this score carries
+  <- $ctx Ctx
+  <- $time mc.datetime
+  <- $judge mc.UserName
 
 first_chunk_time[Ctx] =
     mc.Result[mc.datetime]                     # the moment of the meeting's first chunk
@@ -669,6 +719,11 @@ make_chat_reference =
   <- $msg_time mc.datetime
   <- $user_name mc.UserName
   <- $region mc.TextRegion
+
+make_score_reference =
+    mc.ScoreReference
+  <- $judge_time mc.datetime
+  <- $judge_name mc.UserName
 
 make_terminal_control_reference =
     mc.TerminalControlReference
