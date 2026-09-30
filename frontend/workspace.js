@@ -23,17 +23,18 @@ const el = Object.fromEntries([
   "resume-button", "complete-button", "cleanup-button", "stop-button", "chat-list", "message-form",
   "message-input", "send-message-button", "reference-card", "composer-shell",
   "attach-image-button", "image-input", "attachment-strip",
-  "image-lightbox", "image-lightbox-image", "image-lightbox-close", "evaluation-panel", "evaluation-form", "evaluation-excerpt", "evaluation-comment", "evaluation-error", "evaluation-submit-button", "evaluation-back-button", "evaluation-cancel-button", "terminal-command", "terminal-path",
+  "image-lightbox", "image-lightbox-image", "image-lightbox-close", "terminal-command", "terminal-path",
   "terminal-screen", "typing-state", "terminal-readonly", "control-label", "acquire-button", "release-button",
   "terminal-copy-button", "terminal-copy-ansi-button",
   "play-button",
-  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "terminal-score-status", "selection-menu", "new-dialog", "new-form",
+  "playback-track", "playback-slider", "playback-position", "playback-hover", "live-button", "inspect-button", "free-scroll-button", "follow-scroll-button", "selection-menu", "new-dialog", "new-form", "delete-dialog", "delete-form", "close-delete-dialog", "cancel-delete", "confirm-delete", "delete-message", "delete-error",
   "close-dialog", "cancel-new", "initial-message", "workspace-input", "choose-directory", "backend-select", "provider-select", "model-input", "cli-default-model-row", "cli-default-model", "api-credential-fields", "effort-select", "effort-live-select", "start-button", "new-error",
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "skill-cell", "reload-skill-button", "restart-agent-button",
   "event-dialog", "event-title", "event-content", "close-event", "toast", "welcome-toast",
   "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
   "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
+  "rename-dialog", "rename-form", "rename-input", "rename-error", "rename-close", "rename-cancel", "rename-submit",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
 const state = {
@@ -45,6 +46,11 @@ const state = {
   workspaceTitles: {},
   workspaceMenuPath: "",
   meetingMenuId: "",
+  // 正开着重命名弹框的那场会（空串 = 没开）；renameBound 是弹框按钮只接一次线的开关。
+  renameMeetingId: "",
+  renameBound: false,
+  // 正开着删除确认框的那场会（空串 = 没开）。
+  deleteMeetingId: "",
   // 正在拖的那一样：kind（meeting/workspace）、node、scope、起点和落点（见 beginDrag）。
   drag: null,
   suppressClickUntil: 0,
@@ -75,6 +81,7 @@ const state = {
   liveScreenQueue: [],
   chatFilter: "all",
   toastTimer: null,
+  toastMessage: "",
   references: [],
   // Legacy alias kept for extensions that still read the old singular field.
   reference: null,
@@ -84,11 +91,7 @@ const state = {
   selectionTimer: null,
   selectionMenuDelay: 0,
   keyboardSelection: null,
-  evaluationSelection: null,
-  evaluationBusy: false,
-  scoreOverlayIds: new Set(),
   playbackHoverIndex: null,
-  judgeName: "human",
   health: null,
   pointerSelecting: false,
   // Which member's details the header strip is showing; null = closed.
@@ -103,7 +106,6 @@ const labels = {
   phase: { created: "等待启动", starting: "正在打开终端", agent_thinking: "{agent} 思考中", agent_acting: "{agent} 操作中", waiting_for_user: "等待你的消息", completion_proposed: "{agent} 提议完成", human_control: "由你控制", api_error: "模型连接中断", cycle_timeout: "本轮已超时", skill_reload: "正在更新 Skill", agent_restart: "正在重启 {agent} 进程", completed: "已结束", failed: "执行失败", interrupted: "已中止" },
   owner: { agent: "{agent} 控制", human: "你在控制", none: "无人控制" },
   typing: { demo: "演示", balanced: "平衡", fast: "快速" },
-  score: { competent: "胜任", incompetent: "不胜任", unscored: "无评分" },
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
   agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常", updating: "更新", restarting: "重启" },
@@ -310,6 +312,11 @@ function renderMemberDetails(meeting) {
   el.member_terminal_label.textContent = role === "actor" ? "可写" : "只读";
   el.member_chat_label.textContent = `${stats.count} 条`;
   el.member_last_label.textContent = stats.last ? fmtTime(stats.last) : "—";
+  if (stats.last) {
+    el.member_last_label.title = formatFullTime(stats.last);
+  } else {
+    el.member_last_label.removeAttribute("title");
+  }
   // Skill 那两个按钮只对 actor 有意义：这场会的那份 Skill 是它的说明书，
   // 助理和批判者跑在各自的过程里，不读它。
   if (el.skill_cell) el.skill_cell.hidden = role !== "actor";
@@ -390,7 +397,11 @@ async function apiConditional(path, etag) {
 // `kind` 决定颜色：报错是红的，办成了是绿的，其余（"没变"、"已复制"这种）
 // 是中性色——把"Skill 没变"画成红色会让人以为出事了。
 function toast(message, kind = "error") {
+  const sameVisibleToast = state.toastMessage === message
+    && [el.toast, el.welcome_toast].some((node) => node && !node.hidden);
+  if (sameVisibleToast) return;
   clearTimeout(state.toastTimer);
+  state.toastMessage = message;
   // 两个位置同一句话：会话里那个在上边栏靠左，欢迎卡片上那个没有上边栏，贴左上角。
   const visible = [el.toast, el.welcome_toast].filter(Boolean);
   for (const node of visible) {
@@ -402,12 +413,30 @@ function toast(message, kind = "error") {
     for (const node of visible) node.hidden = true;
   }, 5000);
 }
+globalThis.workspaceToast = toast;
+
+function formatFullTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+  }).format(date);
+}
 
 function fmtTime(value) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date);
+  const seconds = Math.floor(Math.max(0, Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return "刚刚";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}天前`;
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date);
 }
 
 function duration(value) {
@@ -452,7 +481,7 @@ function eventsAtPlayback() {
   return state.timeline.filter((event, index) => {
     const eventSequence = Number(event.seq);
     const visible = Number.isFinite(eventSequence) ? eventSequence <= sequence : index <= state.playbackIndex;
-    return visible || (event.kind === "score" && state.scoreOverlayIds.has(event.event_id));
+    return visible;
   });
 }
 
@@ -687,9 +716,20 @@ function hasLiveSelection() {
   return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
 }
 
+function selectionInside(node) {
+  const selection = window.getSelection && window.getSelection();
+  if (!selection || !selection.rangeCount || selection.isCollapsed || !node) return false;
+  const anchor = selection.anchorNode;
+  const element = anchor && anchor.nodeType === 1 ? anchor : anchor && anchor.parentNode;
+  return Boolean(element && node.contains(element));
+}
+
 function renderHeader() {
   if (!state.snapshot) return;
-  if (state.pointerSelecting || hasLiveSelection()) return;
+  if (state.pointerSelecting) return;
+  // 只在上边栏自己被选中时让路。整页只要有一个选区就把 header 冻住是错的：人在对话里选一段
+  // 文字看，会那边已经又跑起来了，上边栏还挂着上一条错误提示（阶段、状态、提示全是旧的）。
+  if (selectionInside(document.querySelector(".session-header"))) return;
   const meeting = state.snapshot.meeting;
   if (el.agent_states) {
     renderMemberStates(meeting);
@@ -737,21 +777,10 @@ function renderHeader() {
   }
 
   const terminalState = ["completed", "failed", "interrupted"].includes(meeting.status);
-  const evaluateAction = el.selection_menu?.querySelector('[data-selection-action="evaluate"]');
   const addAction = el.selection_menu?.querySelector('[data-selection-action="add-to-conversation"]');
-  // Historical sessions remain rateable; only adding a new chat reference is
-  // blocked once the meeting is terminal because the composer is read-only.
-  // Human-authored chat is never rateable, so keep the evaluate button in
-  // sync with the current selection even when the meeting re-renders.
-  if (evaluateAction) {
-    const humanChat = selectionIsHumanChat(state.pendingSelection);
-    evaluateAction.disabled = humanChat;
-    evaluateAction.title = humanChat ? "人类消息不能被评价" : "";
-  }
   if (addAction) addAction.disabled = terminalState;
   el.message_input.disabled = terminalState;
   el.send_message_button.disabled = terminalState;
-  if (el.evaluation_submit_button) el.evaluation_submit_button.disabled = false;
   el.complete_button.disabled = terminalState || ["created", "starting"].includes(meeting.status) || meeting.phase === "starting";
   el.stop_button.disabled = terminalState;
   el.complete_button.hidden = terminalState;
@@ -876,103 +905,6 @@ function sourceEventForRoot(root) {
   return latest?.event_id === eventId ? latest : null;
 }
 
-function scoreAnnotationsForSource(source, visibleEvents = eventsAtPlayback()) {
-  if (!source) return [];
-  const latestByRegion = new Map();
-  for (const event of visibleEvents) {
-    if (event.kind !== "score") continue;
-    const data = event.data && typeof event.data === "object" ? event.data : {};
-    const reference = data.reference;
-    const region = reference?.region;
-    if (
-      reference?.event_id !== source.event_id
-      || (reference?.kind && reference.kind !== source.kind)
-      || !region
-      || (data.tag !== "competent" && data.tag !== "incompetent")
-    ) continue;
-    const start = Number(region.start);
-    const end = Number(region.end);
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) continue;
-    const key = `${start}:${end}`;
-    const sequence = Number(event.seq) || 0;
-    const previous = latestByRegion.get(key);
-    if (previous && previous.seq > sequence) continue;
-    latestByRegion.set(key, {
-      start,
-      end,
-      tag: data.tag,
-      judge_name: typeof data.judge_name === "string" ? data.judge_name : "human",
-      comment: typeof data.comment === "string" ? data.comment : "",
-      seq: sequence,
-      event_id: event.event_id,
-    });
-  }
-  return [...latestByRegion.values()]
-    .filter((item) => item.tag === "competent" || item.tag === "incompetent")
-    .sort((left, right) => left.start - right.start || left.end - right.end || left.seq - right.seq);
-}
-
-function scoreReferenceAtPlayback() {
-  if (state.followLive) return null;
-  const event = eventAt(state.playbackIndex);
-  const reference = event?.kind === "score" ? event.data?.reference : null;
-  if (
-    !reference
-    || (reference.kind !== "chat" && reference.kind !== "screen")
-    || typeof reference.event_id !== "string"
-  ) return null;
-  return reference;
-}
-
-function appendAnnotatedText(root, content, annotations) {
-  const text = String(content ?? "");
-  const chars = codePoints(text);
-  if (!annotations.length) {
-    root.append(document.createTextNode(text));
-    return;
-  }
-  const boundaries = new Set([0, chars.length]);
-  for (const annotation of annotations) {
-    const start = Math.max(0, Math.min(chars.length, annotation.start));
-    const end = Math.max(start, Math.min(chars.length, annotation.end));
-    if (end > start) boundaries.add(start), boundaries.add(end);
-  }
-  const points = [...boundaries].sort((left, right) => left - right);
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const start = points[index];
-    const end = points[index + 1];
-    if (end <= start) continue;
-    const active = annotations.filter((item) => item.start <= start && item.end >= end);
-    const segment = chars.slice(start, end).join("");
-    if (!active.length) {
-      root.append(document.createTextNode(segment));
-      continue;
-    }
-    const tags = [...new Set(active.map((item) => item.tag))].sort();
-    const mark = node(
-      "span",
-      `score-annotation ${tags.map((tag) => `score-${tag}`).join(" ")}${active.length > 1 ? " score-overlap" : ""}`,
-      segment,
-    );
-    mark.dataset.scoreTags = tags.join(" ");
-    mark.dataset.scoreCount = String(active.length);
-    mark.title = tags.map((tag) => labels.score[tag] || tag).join(" / ");
-    root.append(mark);
-  }
-}
-
-function scoreSummary(annotations) {
-  if (!annotations.length) return null;
-  const summary = node("div", "score-summary");
-  for (const annotation of annotations) {
-    const judge = annotation.judge_name ? ` · ${annotation.judge_name}` : "";
-    const badge = node("span", `score-badge ${annotation.tag}`, `${labels.score[annotation.tag] || annotation.tag}${judge}`);
-    if (annotation.comment) badge.title = annotation.comment;
-    summary.append(badge);
-  }
-  return summary;
-}
-
 function referencesForEvent(event) {
   const data = event?.data && typeof event.data === "object" ? event.data : {};
   const raw = Array.isArray(data.references)
@@ -1005,7 +937,6 @@ function jumpToChatTime(chatEvent) {
     screenIndex = state.timeline.findIndex((item) => item.kind === "screen");
   }
   if (screenIndex < 0) return;
-  state.scoreOverlayIds.clear();
   hidePlaybackHover();
   markPlaybackFrozen();
   state.followLive = false;
@@ -1029,8 +960,6 @@ function jumpToChatTime(chatEvent) {
 function renderChat() {
   if (activeSourceSelection()) return;
   const previousScrollTop = el.chat_list.scrollTop;
-  const replayReference = scoreReferenceAtPlayback();
-  let replayTarget = null;
   let cursorArticle = null;
   // Playback chat cursor: the transcript is never clipped, but during
   // playback the last message at or before the current replay point is
@@ -1041,11 +970,6 @@ function renderChat() {
   try {
     el.chat_list.replaceChildren();
     const chats = visibleChats();
-    // Score overlays annotate the transcript wherever the evaluation marker
-    // lives; chat text stays annotated regardless of the playback cursor.
-    const visibleScores = state.timeline.filter(
-      (event) => event.kind === "score" && state.scoreOverlayIds.has(event.event_id),
-    );
     for (const event of chats) {
       if (isTerminalControl(event)) {
         const line = node("div", "chat-control-line");
@@ -1062,7 +986,7 @@ function renderChat() {
       article.dataset.eventId = event.event_id || "";
       const head = node("header", "message-head");
       const timeEl = node("time", "", fmtTime(event.captured_at));
-      timeEl.title = "跳转到相近终端画面";
+      timeEl.title = formatFullTime(event.captured_at);
       timeEl.addEventListener("click", () => jumpToChatTime(event));
       const meetingSnapshot = state.snapshot?.meeting;
       // Show the record's own speaker names: human = 你, every agent (and
@@ -1074,25 +998,33 @@ function renderChat() {
         node("strong", "", speaker),
         timeEl,
       );
-      const annotations = scoreAnnotationsForSource(event, visibleScores);
+      if (event.message_type === "final") {
+        const eventSeq = Number(event.seq);
+        const nextFinalSeq = state.timeline
+          .filter((item) => item.kind === "chat"
+            && item.message_type === "final"
+            && Number(item.seq) > eventSeq)
+          .map((item) => Number(item.seq))
+          .sort((a, b) => a - b)[0] ?? Infinity;
+        const completion = state.timeline.find((item) => item.kind === "state"
+          && item.phase === "completion_proposed"
+          && Number(item.seq) > eventSeq
+          && Number(item.seq) < nextFinalSeq);
+        const evidence = Boolean((event.references && event.references.length)
+          || completion?.data?.evidence === true);
+        head.append(node("span", evidence ? "completion-evidence" : "completion-no-evidence",
+          evidence ? "完成提议 · 有证据" : "完成提议 · 无证据"));
+      }
       const images = messageImages(event);
       const body = node("p", "message-content");
       body.dataset.eventId = event.event_id || "";
       body.tabIndex = 0;
       body.setAttribute("aria-label", "聊天消息文本");
-      appendAnnotatedText(body, event.content, annotations);
+      body.append(document.createTextNode(String(event.content ?? "")));
       article.append(head);
-      // 先字后图：图是给这句话作证的，不该把话压在下面。
-      // 只有图片没有字的消息，也不必留一个空段落。
-      if (event.content) article.append(body);
-      if (images) article.append(images);
-      const summary = scoreSummary(annotations);
-      if (summary) article.append(summary);
-      if (replayReference?.kind === "chat" && replayReference.event_id === event.event_id) {
-        article.classList.add("score-replay-target");
-        replayTarget = article;
-      }
       const references = referencesForEvent(event);
+      // 引用和图片都放在正文前面：先看见"这句话在说哪一段、盯着哪张图"，再读这句话。
+      // 只有图片没有字的消息，也不留一个空段落。
       references.forEach((reference, referenceIndex) => {
         if (!reference?.excerpt) return;
         // The quote stands on its own: no "引用" label in front of it, only a
@@ -1103,7 +1035,6 @@ function renderChat() {
         quote.addEventListener("click", () => {
           const index = state.timeline.findIndex((item) => item.event_id === reference.event_id);
           if (index < 0) return;
-          state.scoreOverlayIds.clear();
           hidePlaybackHover();
           markPlaybackFrozen();
           state.followLive = false;
@@ -1120,6 +1051,8 @@ function renderChat() {
         if (state.highlightReference?.event_id === reference.event_id) quote.classList.add("highlighted");
         article.append(quote);
       });
+      if (images) article.append(images);
+      if (event.content) article.append(body);
       el.chat_list.append(article);
       const eventSequence = Number(event.seq);
       if (
@@ -1146,12 +1079,7 @@ function renderChat() {
       state.chatScrollApplied = target;
       el.chat_list.scrollTop = target;
     };
-    if (replayTarget) {
-      const listRect = el.chat_list.getBoundingClientRect();
-      const targetRect = replayTarget.getBoundingClientRect();
-      const targetTop = el.chat_list.scrollTop + targetRect.top - listRect.top;
-      scrollChatTo(targetTop - (el.chat_list.clientHeight - targetRect.height) / 2);
-    } else if (state.chatFollow) {
+    if (state.chatFollow) {
       if (state.followLive || !cursorDivider) {
         scrollChatTo(el.chat_list.scrollHeight);
       } else {
@@ -1329,8 +1257,8 @@ function ensureTerminalEngine() {
         background: "#101413",
         foreground: "#e7eee9",
         cursor: "#c5cdc8",
-        selectionBackground: "#5b7fd4",
-        selectionForeground: "#ffffff",
+        selectionBackground: "#6091ff",
+        selectionForeground: "#101413",
         black: "#1c1f1e", red: "#e06c75", green: "#98c379", yellow: "#d19a66",
         blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#abb2bf",
         brightBlack: "#5c6370", brightRed: "#e06c75", brightGreen: "#98c379",
@@ -1339,6 +1267,7 @@ function ensureTerminalEngine() {
       },
     });
     el.terminal_screen.replaceChildren();
+    el.terminal_screen.dataset.geometryReady = "false";
     term.open(el.terminal_screen);
     installTerminalClipboard();
   } catch (_error) {
@@ -1383,7 +1312,45 @@ function refitTerminal() {
   terminalEngine.term._cellHeight = null;
   termRowsState = null;
   state.terminalFrameKey = null;
+  scheduleHumanTerminalResize();
   renderTerminal();
+}
+
+let humanTerminalResizeTimer = null;
+let humanTerminalResizeKey = "";
+let humanTerminalResizeInFlight = false;
+
+function scheduleHumanTerminalResize() {
+  if (!state.selectedId || !terminalEngine || (typeof takeoverStream !== "undefined" && takeoverStream.active)) return;
+  if (humanTerminalResizeTimer !== null) clearTimeout(humanTerminalResizeTimer);
+  humanTerminalResizeTimer = setTimeout(() => {
+    humanTerminalResizeTimer = null;
+    resizeHumanTerminal().catch(() => {});
+  }, 120);
+}
+
+async function resizeHumanTerminal() {
+  if (!state.selectedId || !terminalEngine || (typeof takeoverStream !== "undefined" && takeoverStream.active)) return;
+  const grid = takeoverGrid(terminalEngine.term);
+  const key = `${state.selectedId}:${grid.cols}x${grid.rows}`;
+  if (humanTerminalResizeInFlight || key === humanTerminalResizeKey) return;
+  humanTerminalResizeInFlight = true;
+  try {
+    const result = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/resize`, {
+      method: "POST",
+      body: JSON.stringify(grid),
+    });
+    const engine = terminalEngine.term;
+    if (engine.cols !== result.pane_width || engine.rows !== result.pane_height) {
+      engine.resize(result.pane_width, result.pane_height);
+    }
+    termRowsState = null;
+    state.terminalFrameKey = null;
+    humanTerminalResizeKey = `${state.selectedId}:${result.pane_width}x${result.pane_height}`;
+    renderTerminal();
+  } finally {
+    humanTerminalResizeInFlight = false;
+  }
 }
 
 // Tracks takeover-panel visibility between renders so the terminal refits
@@ -1470,6 +1437,21 @@ function queueTakeoverInput(text, urgent = false) {
 // this grid before the stream opens (real clients resize the pty to the
 // client). Rows/cols are derived from the measured panel and cell box, never
 // guessed.
+function centerTerminalScreen(engine) {
+  const panelWidth = el.terminal_screen.clientWidth || 0;
+  const cellWidth = (() => {
+    try {
+      const width = Number(engine?._core?._renderService?.dimensions?.css?.cell?.width);
+      return width > 0 ? width : TERMINAL_FONT_SIZE * 0.6;
+    } catch (_error) {
+      return TERMINAL_FONT_SIZE * 0.6;
+    }
+  })();
+  const leftover = Math.max(0, panelWidth - engine.cols * cellWidth);
+  const screen = el.terminal_screen.querySelector(".xterm-screen");
+  if (screen) screen.style.marginLeft = `${Math.floor(leftover / 2)}px`;
+}
+
 function takeoverGrid(engine) {
   const panelWidth = el.terminal_screen.clientWidth || 0;
   const panelHeight = el.terminal_screen.clientHeight || 0;
@@ -1482,7 +1464,14 @@ function takeoverGrid(engine) {
   if (!Number.isFinite(charWidth) || charWidth <= 0) charWidth = TERMINAL_FONT_SIZE * 0.6;
   const cellHeight = terminalCellHeight(engine);
   let cols = 80;
-  if (panelWidth > 0 && charWidth > 0) cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth)));
+  if (panelWidth > 0 && charWidth > 0) {
+    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth) - 2));
+    // Keep the panel's client width available for measuring the grid. The
+    // discarded fraction is real leftover space, so center the xterm screen
+    // inside it instead of adding padding to the panel (which would change
+    // clientWidth and make the pty grid calculation inconsistent).
+    centerTerminalScreen(engine);
+  }
   let rows = 24;
   if (panelHeight > 0 && cellHeight > 0) rows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
   rows = Math.max(12, Math.min(120, rows));
@@ -1594,6 +1583,7 @@ function startTerminalTakeover() {
   const engine = rebuildTerminalEngine();
   if (!engine) return;
   takeoverStream.active = true;
+  globalThis.__takeoverReady = true;
   takeoverRepaintPending = false;
   takeoverRepaintForceReset = false;
   stopLiveScreenQueue();
@@ -1611,6 +1601,9 @@ function startTerminalTakeover() {
   // would steal gutter width and push the rightmost columns underneath it.
   engine.options.scrollback = 0;
   if (engine.cols !== grid.cols || engine.rows !== grid.rows) engine.resize(grid.cols, grid.rows);
+  // The takeover stream must not expose xterm before its first real seed has
+  // been laid out; otherwise the old cell width can be visible briefly.
+  el.terminal_screen.dataset.geometryReady = "false";
   termRowsState = null;
   engine.reset();
   bindTakeoverInput(engine);
@@ -1635,6 +1628,14 @@ function startTerminalTakeover() {
     engine.reset();
     engine.write(new Uint8Array(decodeBase64(event.data)));
     engine.scrollToBottom();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (takeoverStream.active && takeoverStream.source === source) {
+          centerTerminalScreen(engine);
+          el.terminal_screen.dataset.geometryReady = "true";
+        }
+      });
+    });
   });
   source.addEventListener("data", (event) => {
     if (!takeoverStream.active) return;
@@ -1665,6 +1666,7 @@ function startTerminalTakeover() {
 function stopTerminalTakeover(flushPending) {
   if (!takeoverStream.active) return;
   takeoverStream.active = false;
+  globalThis.__takeoverReady = false;
   if (takeoverStream.flushTimer !== null) {
     clearTimeout(takeoverStream.flushTimer);
     takeoverStream.flushTimer = null;
@@ -1930,18 +1932,10 @@ function renderTerminal() {
   const screens = eventsAtPlayback().filter((event) => event.kind === "screen");
   // A clicked citation is also a reason to show a particular frame: the quote
   // points at the moment the rules judged, so the terminal has to go there.
-  // A score replay, when one is running, still wins.
-  const replayReference = scoreReferenceAtPlayback()
-    || (state.highlightReference?.kind === "screen" ? state.highlightReference : null);
-  const replaySource = replayReference?.kind === "screen"
-    ? state.timeline.find(
-      (event) => event.kind === "screen" && event.event_id === replayReference.event_id,
-    )
-    : null;
   // Live mode always shows the newest captured frame: replaying the backlog
   // frame-by-frame made the terminal lag seconds behind the chat, which had
   // already rendered the agent's finished reply.
-  const latest = replaySource || screens.at(-1);
+  const latest = screens.at(-1);
   const fallback = state.followLive ? state.snapshot?.latest_screen : null;
   const source = latest || fallback;
   const terminal = source?.data || {};
@@ -1950,7 +1944,6 @@ function renderTerminal() {
     ? terminal.current_path.split("/").slice(-2).join("/")
     : "workspace";
   const hasScreenContent = Boolean(source && typeof source.content === "string" && source.content.length);
-  const sourceAnnotations = source ? scoreAnnotationsForSource(source) : [];
   const engine = ensureTerminalEngine();
   if (engine) {
     initializeTerminalCursor(engine);
@@ -2021,6 +2014,17 @@ function renderTerminal() {
         const visibleRow = Math.min(viewRows, Math.max(1, cursorY - rowOffset + 1));
         engine.write(`\x1b[${visibleRow};${Math.min(cursorX + 1, width)}H`);
       }
+      // Normal playback has no takeover seed event to flip the gate. Reveal
+      // it only after the first frame has been laid out and painted, so the
+      // terminal is centered before its first visible frame.
+      if (el.terminal_screen.dataset.geometryReady !== "true") {
+        requestAnimationFrame(() => {
+          if (!takeoverStream.active && terminalEngine?.term === engine) {
+            centerTerminalScreen(engine);
+            el.terminal_screen.dataset.geometryReady = "true";
+          }
+        });
+      }
     }
     if (state.viewportMode === "follow") engine.scrollToBottom();
   } else {
@@ -2028,7 +2032,7 @@ function renderTerminal() {
     const previousScrollTop = el.terminal_screen.scrollTop;
     el.terminal_screen.replaceChildren();
     if (hasScreenContent) {
-      appendAnnotatedText(el.terminal_screen, source.content, sourceAnnotations);
+      el.terminal_screen.append(document.createTextNode(source.content));
     } else {
       el.terminal_screen.append(document.createTextNode("等待终端画面…"));
     }
@@ -2044,12 +2048,8 @@ function renderTerminal() {
     "reference-target",
     Boolean(
       (state.highlightReference?.kind === "screen" && source?.event_id === state.highlightReference.event_id)
-      || (replayReference?.kind === "screen" && source?.event_id === replayReference.event_id)
     ),
   );
-  el.terminal_score_status.replaceChildren();
-  const terminalSummary = scoreSummary(sourceAnnotations);
-  if (terminalSummary) el.terminal_score_status.append(...terminalSummary.childNodes);
   const changeKind = terminal.change_kind;
   el.typing_state.textContent = changeKind === "paste" ? `${agentName(state.snapshot?.meeting)} 正在粘贴` : (changeKind === "typing" ? `${agentName(state.snapshot?.meeting)} 输入中` : "");
   el.typing_state.hidden = !["typing", "paste"].includes(changeKind);
@@ -2102,27 +2102,11 @@ function revealTerminalCursor(terminal) {
   }
 }
 
-function scoreStatusForEvent(event) {
-  if (!event) return "unscored";
-  if (event.kind === "score") {
-    return event.data?.tag === "competent" || event.data?.tag === "incompetent"
-      ? event.data.tag
-      : "unscored";
-  }
-  if (event.kind !== "chat" && event.kind !== "screen") return "unscored";
-  const annotations = scoreAnnotationsForSource(event, state.timeline);
-  if (!annotations.length) return "unscored";
-  return annotations.reduce(
-    (latest, annotation) => (annotation.seq >= latest.seq ? annotation : latest),
-    annotations[0],
-  ).tag;
-}
-
 function hidePlaybackHover() {
   state.playbackHoverIndex = null;
   el.playback_hover.hidden = true;
   el.playback_hover.removeAttribute("data-status");
-  el.playback_slider.title = "移动鼠标查看评价状态";
+  el.playback_slider.title = "移动鼠标查看位置";
 }
 
 function showPlaybackHover(event) {
@@ -2138,18 +2122,15 @@ function showPlaybackHover(event) {
   const usableWidth = Math.max(1, sliderRect.width - inset * 2);
   const position = Math.max(0, Math.min(usableWidth, clientX - sliderRect.left - inset));
   const index = Math.max(0, Math.min(max, Math.round((position / usableWidth) * max)));
-  const status = scoreStatusForEvent(eventAt(index));
-  const label = labels.score[status] || labels.score.unscored;
-
   state.playbackHoverIndex = index;
-  el.playback_hover.textContent = label;
-  el.playback_hover.dataset.status = status;
+  el.playback_hover.textContent = `${index + 1} / ${state.timeline.length}`;
+  el.playback_hover.removeAttribute("data-status");
   el.playback_hover.hidden = false;
   const halfWidth = Math.min(el.playback_hover.offsetWidth / 2, trackRect.width / 2);
   const rawLeft = clientX - trackRect.left;
   const left = Math.max(halfWidth, Math.min(trackRect.width - halfWidth, rawLeft));
   el.playback_hover.style.left = `${left}px`;
-  el.playback_slider.title = `${index + 1} / ${state.timeline.length} · ${label}`;
+  el.playback_slider.title = `${index + 1} / ${state.timeline.length}`;
 }
 
 function renderPlayback() {
@@ -2342,8 +2323,7 @@ function sourceRootFromNode(value) {
   if (!element) return null;
   if (terminalEngine) {
     // Under xterm.js the terminal has no text DOM to select or annotate;
-    // evaluation of terminal text is re-added on top of xterm selection
-    // later. Chat message text stays selectable.
+    // Chat message text stays selectable.
     return element.closest?.(".message-content, .chat-control-line") || null;
   }
   return element?.closest?.(".message-content, .chat-control-line, #terminal-screen") || null;
@@ -2615,8 +2595,21 @@ function positionSelectionMenu(candidate) {
   const gutter = 8;
   const left = Math.max(gutter, Math.min(window.innerWidth - menuRect.width - gutter, rect.left + rect.width / 2 - menuRect.width / 2));
   let top = rect.top - menuRect.height - 10;
-  if (top < gutter) top = Math.min(window.innerHeight - menuRect.height - gutter, rect.bottom + 10);
-  menu.style.left = `${Math.max(gutter, left)}px`;
+  let menuLeft = left;
+  if (top < gutter) {
+    // Keep the toolbar away from the release point. A toolbar below a short
+    // selection sits exactly where the next drag commonly starts.
+    top = rect.top;
+    menuLeft = rect.right + 10;
+    if (menuLeft + menuRect.width > window.innerWidth - gutter) {
+      menuLeft = rect.left - menuRect.width - 10;
+    }
+    if (menuLeft < gutter) {
+      menuLeft = left;
+      top = Math.min(window.innerHeight - menuRect.height - gutter, rect.bottom + 10);
+    }
+  }
+  menu.style.left = `${Math.max(gutter, Math.min(window.innerWidth - menuRect.width - gutter, menuLeft))}px`;
   menu.style.top = `${Math.max(gutter, top)}px`;
 }
 
@@ -2627,17 +2620,13 @@ function selectionIsHumanChat(candidate) {
 }
 
 function showSelectionMenu(candidate) {
-  if (!candidate || !el.selection_menu || state.selectionBusy || state.evaluationSelection) return;
+  if (!candidate || !el.selection_menu || state.selectionBusy) return;
   state.pendingSelection = candidate;
   const terminal = ["completed", "failed", "interrupted"].includes(state.snapshot?.meeting?.status);
-  const humanChat = selectionIsHumanChat(candidate);
   el.selection_menu.querySelectorAll("[data-selection-action]").forEach((button) => {
     if (button.dataset.selectionAction === "add-to-conversation") {
       button.disabled = terminal;
       button.title = terminal ? "会话已结束，无法继续发消息" : "";
-    } else if (button.dataset.selectionAction === "evaluate") {
-      button.disabled = humanChat;
-      button.title = humanChat ? "人类消息不能被评价" : "";
     }
   });
   el.selection_menu.hidden = false;
@@ -2676,103 +2665,12 @@ function scheduleSelectionMenu(clickCount = 1) {
   }, delay);
 }
 
-function openEvaluationPanel(candidate) {
-  if (!candidate || !el.evaluation_panel) return;
-  state.evaluationSelection = candidate;
-  state.pendingSelection = null;
-  el.evaluation_error.hidden = true;
-  el.evaluation_excerpt.textContent = candidate.excerpt || "";
-  el.evaluation_form.querySelectorAll('input[name="evaluation-tag"]').forEach((input) => {
-    input.checked = false;
-    input.disabled = false;
-  });
-  el.evaluation_comment.value = "";
-  el.message_form.hidden = true;
-  el.evaluation_panel.hidden = false;
-  clearBrowserSelection();
-  hideSelectionMenu(false);
-  requestAnimationFrame(() => el.evaluation_form.querySelector('input[name="evaluation-tag"]')?.focus());
-}
-
-function closeEvaluationPanel() {
-  state.evaluationSelection = null;
-  state.evaluationBusy = false;
-  if (el.evaluation_form) {
-    el.evaluation_form.querySelectorAll('input[name="evaluation-tag"]').forEach((input) => {
-      input.checked = false;
-      input.disabled = false;
-    });
-  }
-  if (el.evaluation_comment) el.evaluation_comment.value = "";
-  if (el.evaluation_error) el.evaluation_error.hidden = true;
-  if (el.evaluation_panel) el.evaluation_panel.hidden = true;
-  if (el.message_form) el.message_form.hidden = false;
-}
 
 
-async function submitEvaluation(event) {
-  event?.preventDefault();
-  const selected = state.evaluationSelection;
-  if (!selected || !state.selectedId || state.evaluationBusy) return;
-  const tag = el.evaluation_form.querySelector('input[name="evaluation-tag"]:checked')?.value;
-  if (!tag) {
-    el.evaluation_error.textContent = "请选择胜任或不胜任";
-    el.evaluation_error.hidden = false;
-    return;
-  }
-  const comment = el.evaluation_comment.value.trim();
-  state.evaluationBusy = true;
-  el.evaluation_submit_button.disabled = true;
-  el.evaluation_back_button.disabled = true;
-  el.evaluation_cancel_button.disabled = true;
-  el.evaluation_error.hidden = true;
-  try {
-    const response = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/scores`, {
-      method: "POST",
-      body: JSON.stringify({
-        tag,
-        comment: comment || null,
-        reference: {
-          kind: selected.kind,
-          event_id: selected.event_id,
-          region: { start: selected.start, end: selected.end },
-        },
-      }),
-    });
-    const scoreEvent = response?.event;
-    if (!state.followLive && scoreEvent?.event_id) state.scoreOverlayIds.add(scoreEvent.event_id);
-    if (scoreEvent) mergeTimelineEvents([scoreEvent]);
-    closeEvaluationPanel();
-    clearBrowserSelection();
-    renderAll();
-    try {
-      await refreshSelected();
-      toast(`已记录${labels.score[tag]}评价`, "success");
-    } catch (refreshError) {
-      toast(`评价已保存，页面刷新失败：${refreshError.message}`);
-    }
-  } catch (error) {
-    el.evaluation_error.textContent = error.message;
-    el.evaluation_error.hidden = false;
-  } finally {
-    state.evaluationBusy = false;
-    el.evaluation_submit_button.disabled = false;
-    el.evaluation_back_button.disabled = false;
-    el.evaluation_cancel_button.disabled = false;
-  }
-}
 
 async function handleSelectionAction(action) {
   const selected = state.pendingSelection;
-  if (!selected || state.selectionBusy || state.evaluationSelection) return;
-  if (action === "evaluate") {
-    if (selectionIsHumanChat(selected)) {
-      toast("人类消息不能被评价", "info");
-      return;
-    }
-    openEvaluationPanel(selected);
-    return;
-  }
+  if (!selected || state.selectionBusy) return;
   if (action === "add-to-conversation") {
     if (["completed", "failed", "interrupted"].includes(state.snapshot?.meeting?.status)) return;
     const added = addReference({
@@ -2954,11 +2852,9 @@ async function selectMeeting(meetingId) {
   hideSelectionMenu();
   hidePlaybackHover();
   clearBrowserSelection();
-  closeEvaluationPanel();
   setReferences([]);
   // 待发的图属于上一场会：换会议就丢掉，否则会混进另一场。
   setAttachments([]);
-  state.scoreOverlayIds.clear();
   state.selectedId = meetingId;
   state.snapshotEtag = "";
   state.eventsEtag = "";
@@ -3037,7 +2933,7 @@ async function refreshSelected() {
   if (!changed) return;
   // Re-rendering replaces the chat/terminal DOM and would collapse an
   // in-progress text selection — the app's core scoring interaction.
-  if (state.pointerSelecting || state.pendingSelection || state.evaluationSelection) return;
+  if (state.pointerSelecting || state.pendingSelection) return;
   if (hasLiveSelection()) return; // 用户正在选中/复制：本 tick 放弃重绘
   renderAll();
 }
@@ -3099,7 +2995,9 @@ async function uploadImages(files) {
 function renderAttachments() {
   if (!el.attachment_strip) return;
   el.attachment_strip.replaceChildren();
-  el.attachment_strip.hidden = state.pendingAttachments.length === 0;
+  const hasAttachments = state.pendingAttachments.length > 0;
+  // The hidden attribute owns visibility; CSS supplies the strip layout only while it is present.
+  el.attachment_strip.hidden = !hasAttachments;
   state.pendingAttachments.forEach((attachment, index) => {
     const item = node("div", "attachment-chip");
     const image = node("img", "attachment-thumb");
@@ -3175,10 +3073,11 @@ function attachmentUrl(name) {
 }
 
 async function postMeetingAction(suffix, body = {}) {
-  if (!state.selectedId) return;
-  await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/${suffix}`, { method: "POST", body: JSON.stringify(body) });
+  if (!state.selectedId) return null;
+  const answer = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/${suffix}`, { method: "POST", body: JSON.stringify(body) });
   await refreshSelected();
   await loadMeetings();
+  return answer;
 }
 
 // 系统（Finder）的选目录框：浏览器自己的 showDirectoryPicker 拿不到绝对路径，
@@ -3327,12 +3226,36 @@ function toggleMeetingMenu(meeting, anchor) {
 }
 
 // 删除会话：数据、终端、那一行一起走。删除按钮在浮层里，问一句再动手。
-async function deleteMeeting(meetingId) {
+// 删除会话：跟重命名一样弹页面里的 modal，不用原生 confirm —— 原生框套在暗色界面外面，
+// 标题、按钮、底色都是它自己的，跟这个工作区对不上。
+function deleteMeeting(meetingId) {
   hideMeetingMenu();
+  if (!el.delete_dialog) return;
   const summary = state.meetings.find((one) => one.meeting_id === meetingId);
   const name = summary ? meetingLabel(summary) : meetingId;
-  if (!window.confirm(`删除会话「${name}」？它的对话、终端和数据都会删掉。`)) return;
-  await api(`/api/meetings/${encodeURIComponent(meetingId)}/delete`, { method: "POST" });
+  state.deleteMeetingId = meetingId;
+  el.delete_message.textContent = `确定要删除会话「${name}」吗？对话、终端和数据都会被删除。`;
+  if (el.delete_error) { el.delete_error.hidden = true; el.delete_error.textContent = ""; }
+  el.delete_dialog.showModal();
+}
+
+async function confirmDeleteMeeting() {
+  const meetingId = state.deleteMeetingId;
+  if (!meetingId) { el.delete_dialog?.close(); return; }
+  el.confirm_delete.disabled = true;
+  try {
+    // 正文要带上（哪怕是个空对象）：这些接口读的是 JSON 正文，不带就是 400。
+    await api(`/api/meetings/${encodeURIComponent(meetingId)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  } catch (error) {
+    // 删不掉要说清为什么，框留着让人重试（另一个服务在驱动这场会时就是这条）。
+    if (el.delete_error) { el.delete_error.textContent = error.message || String(error); el.delete_error.hidden = false; }
+    return;
+  } finally {
+    el.confirm_delete.disabled = false;
+  }
   if (state.selectedId === meetingId) {
     // 删掉的正是打开着的那一场：回到"没开会"的样子，而不是继续轮询一个不存在的会。
     state.selectedId = null;
@@ -3341,22 +3264,62 @@ async function deleteMeeting(meetingId) {
     state.timeline = [];
     rememberMeeting("");
   }
+  state.deleteMeetingId = "";
+  el.delete_dialog?.close();
   await loadMeetings();
   renderAll();
 }
 
-async function renameMeeting(meetingId) {
+// 重命名会话：弹页面里的 modal，不用原生 prompt——原生框套在暗色界面外面，标题、按钮、
+// 底色都是它自己的，跟这个工作区对不上。
+// 输入框不预填：没改过名时会话那一行的 label 就是首消息全文，预填等于把整段请求塞进去。
+function renameMeeting(meetingId) {
   hideMeetingMenu();
-  const summary = state.meetings.find((one) => one.meeting_id === meetingId);
-  const current = summary ? meetingLabel(summary) : "";
-  const name = window.prompt("会话名称", current);
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  await api(`/api/meetings/${encodeURIComponent(meetingId)}/rename`, {
-    method: "POST",
-    body: JSON.stringify({ name: trimmed }),
+  if (!el.rename_dialog) return;
+  state.renameMeetingId = meetingId;
+  if (el.rename_error) { el.rename_error.hidden = true; el.rename_error.textContent = ""; }
+  el.rename_input.value = "";
+  bindRenameDialog();
+  el.rename_dialog.showModal();
+  el.rename_input.focus();
+}
+
+// 弹框上那几颗只接一次线：dialog 是常驻元素，每开一次重接一遍监听会越叠越多。
+function bindRenameDialog() {
+  if (state.renameBound) return;
+  state.renameBound = true;
+  el.rename_close?.addEventListener("click", closeRenameDialog);
+  el.rename_cancel?.addEventListener("click", closeRenameDialog);
+  el.rename_form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitRename().catch((error) => toast(error.message));
   });
+  el.rename_dialog?.addEventListener("close", () => { state.renameMeetingId = ""; });
+}
+
+function closeRenameDialog() {
+  state.renameMeetingId = "";
+  if (el.rename_dialog?.open) el.rename_dialog.close();
+}
+
+async function submitRename() {
+  const meetingId = state.renameMeetingId;
+  if (!meetingId) { closeRenameDialog(); return; }
+  const name = (el.rename_input?.value || "").trim();
+  if (!name) {
+    if (el.rename_error) { el.rename_error.textContent = "名字不能是空的"; el.rename_error.hidden = false; }
+    return;
+  }
+  try {
+    await api(`/api/meetings/${encodeURIComponent(meetingId)}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  } catch (error) {
+    if (el.rename_error) { el.rename_error.textContent = error.message || String(error); el.rename_error.hidden = false; }
+    return;
+  }
+  closeRenameDialog();
   await loadMeetings();
   renderAll();
 }
@@ -3572,15 +3535,6 @@ function openNewDialog() {
   el.initial_message.focus();
 }
 
-// The judge name has no UI any more (the gear it lived behind carried nothing
-// else); the stored value still labels the scores this client writes.
-async function loadSettings() {
-  const payload = await api("/api/settings");
-  state.judgeName = typeof payload.judge_name === "string" && payload.judge_name.trim()
-    ? payload.judge_name.trim()
-    : "human";
-}
-
 function bind() {
   el.add_workspace_button?.addEventListener("click", addWorkspace);
   el.workspace_menu?.querySelector('[data-workspace-action="rename"]')?.addEventListener("click", () => {
@@ -3595,6 +3549,13 @@ function bind() {
   el.meeting_menu?.querySelector('[data-meeting-action="delete"]')?.addEventListener("click", () => {
     deleteMeeting(state.meetingMenuId).catch((error) => toast(error.message));
   });
+  el.close_delete_dialog?.addEventListener("click", () => { state.deleteMeetingId = ""; el.delete_dialog?.close(); });
+  el.cancel_delete?.addEventListener("click", () => { state.deleteMeetingId = ""; el.delete_dialog?.close(); });
+  el.delete_form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    confirmDeleteMeeting().catch((error) => toast(error.message));
+  });
+  el.delete_dialog?.addEventListener("close", () => { state.deleteMeetingId = ""; });
   el.welcome_new_button.addEventListener("click", openWorkspace);
   el.welcome_advanced_button?.addEventListener("click", openNewDialog);
   const railMore = document.getElementById("rail-more-button");
@@ -3611,9 +3572,6 @@ function bind() {
   el.backend_select.addEventListener("change", () => syncBackendSelectors(true));
   el.provider_select.addEventListener("change", () => syncBackendSelectors(true));
   el.cli_default_model?.addEventListener("change", () => syncCliDefaultModel());
-  el.evaluation_form.addEventListener("submit", submitEvaluation);
-  el.evaluation_back_button.addEventListener("click", closeEvaluationPanel);
-  el.evaluation_cancel_button.addEventListener("click", closeEvaluationPanel);
   el.new_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     el.start_button.disabled = true;
@@ -3703,15 +3661,24 @@ function bind() {
     setReferences([]);
     setAttachments([]);
     try {
-      await postMeetingAction("messages", payload);
+      const answer = await postMeetingAction("messages", payload);
+      if (answer && answer.agent_error) {
+        // 话已经收下了，只是 Agent 没能起来（配置读不出来之类）。不把文字塞回输入框 ——
+        // 人会以为没发出去，再发一遍，真会里就这么重复了三条。原因说一句，会议状态里也有。
+        toast(`消息收到了，但 Agent 没能起来：${answer.agent_error}`);
+      }
     }
     catch (error) {
-      // The message never made it, so give the text and the pictures back
-      // instead of losing them.
-      el.message_input.value = message;
-      growMessageInput();
-      setReferences(references);
-      setAttachments(attachments);
+      // Only hand the text back when the request was actually refused. A 5xx (or a
+      // dropped connection) can happen after the message was already stored, and
+      // putting it back in the box makes the human send it twice.
+      const refused = !error.status || (error.status >= 400 && error.status < 500);
+      if (refused) {
+        el.message_input.value = message;
+        growMessageInput();
+        setReferences(references);
+        setAttachments(attachments);
+      }
       toast(error.message);
     }
     finally { el.send_message_button.disabled = false; }
@@ -3783,6 +3750,11 @@ function bind() {
   // Refit the terminal when the window/panel size changes (DevTools dock,
   // pane resize), so rows are never clipped and the cursor stays visible.
   window.addEventListener("resize", () => refitTerminal());
+  // Layout changes can resize the terminal without resizing the window.
+  if (typeof ResizeObserver === "function" && el.terminal_screen) {
+    const terminalResizeObserver = new ResizeObserver(() => refitTerminal());
+    terminalResizeObserver.observe(el.terminal_screen);
+  }
   el.resume_button.addEventListener("click", () => postMeetingAction("agent/resume").catch((error) => toast(error.message)));
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
@@ -3806,7 +3778,7 @@ function bind() {
     container.addEventListener("focusin", handleSourceFocus);
     container.addEventListener("keydown", handleKeyboardSelection);
   }
-  // Release anywhere (even outside the containers) ends the drag; re-evaluate
+  // Release anywhere (even outside the containers) ends the drag; refresh
   // the selection once so the menu appears exactly at mouse release.
   document.addEventListener("pointerup", (event) => {
     if (!state.pointerSelecting) return;
@@ -3871,9 +3843,6 @@ function bind() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      if (state.evaluationSelection && !state.evaluationBusy) {
-        closeEvaluationPanel();
-      }
       closeMemberDetails();
       hideSelectionMenu();
       hideWorkspaceMenu();
@@ -3926,7 +3895,7 @@ function bind() {
   // start (drag, double-click and Shift+arrows all die; copy returns nothing).
   function isTextSelectionSurface(node) {
     const selectors = [".message-content", ".chat-control-line", ".session-identity",
-                       ".presence-strip", ".evaluation-excerpt"];
+                       ".presence-strip"];
     for (const selector of selectors) {
       if (node && node.closest && node.closest(selector)) return true;
     }
@@ -3973,7 +3942,6 @@ function bind() {
   el.playback_slider.addEventListener("mouseleave", hidePlaybackHover);
   el.playback_slider.addEventListener("pointercancel", hidePlaybackHover);
   el.playback_slider.addEventListener("input", () => {
-    state.scoreOverlayIds.clear();
     hidePlaybackHover();
     // Moving the view on purpose releases a clicked citation: otherwise the
     // terminal stays pinned to the frame that quote pointed at.
@@ -3987,7 +3955,6 @@ function bind() {
     renderAll();
   });
   el.live_button.addEventListener("click", () => {
-    state.scoreOverlayIds.clear();
     hidePlaybackHover();
     state.highlightReference = null;      // back to live: the citation is released
     state.playbackFreezeAt = 0;
@@ -4003,7 +3970,6 @@ function bind() {
   el.play_button.addEventListener("click", () => {
     state.highlightReference = null;      // playing moves the view: release the pin
     if (state.playing) { stopPlayback(); return; }
-    state.scoreOverlayIds.clear();
     hidePlaybackHover();
     markPlaybackFrozen();
     state.chatFollow = true;
@@ -4040,6 +4006,44 @@ function bind() {
   el.close_event.addEventListener("click", () => el.event_dialog.close());
 }
 
+let assetVersion = "";
+
+async function watchAssetChanges() {
+  while (true) {
+    try {
+      const response = await fetch(`/api/assets/changes?version=${encodeURIComponent(assetVersion)}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const answer = await response.json();
+      if (!assetVersion) {
+        assetVersion = answer.version;
+        continue;
+      }
+      const [oldCss, oldJs] = assetVersion.split(":");
+      if (answer.assets["workspace.css"] !== oldCss) {
+        const link = document.querySelector('link[rel="stylesheet"][href*="workspace.css"]');
+        if (link) {
+          const replacement = document.createElement("link");
+          replacement.rel = "stylesheet";
+          replacement.href = `/assets/workspace.css?v=${encodeURIComponent(answer.assets["workspace.css"])}`;
+          replacement.onload = () => link.remove();
+          link.after(replacement);
+        }
+      }
+      if (answer.assets["workspace.js"] !== oldJs
+          && document.visibilityState === "hidden"
+          && !isEditableFocusTarget(document.activeElement)) {
+        location.reload();
+        return;
+      }
+      assetVersion = answer.version;
+    } catch (_error) {
+      return;
+    }
+  }
+}
+
+watchAssetChanges();
+
 function stopPlayback() {
   state.playing = false;
   clearTimeout(state.timer);
@@ -4057,7 +4061,7 @@ async function boot() {
     // seconds) and only gates the new-session button, so it must never hold
     // up opening a meeting: start it and let it land whenever it lands.
     loadHealth().catch((error) => toast(error.message));
-    await Promise.all([loadMeetings(), loadSettings()]);
+    await loadMeetings();
     // 刷新回到上次打开的那一场（存在浏览器里）；它要是没了，才退回"最近活动的第一场"。
     // 一场都没有的时候欢迎卡片留着，人来选工作区。
     const known = new Set(state.meetings.map((one) => one.meeting_id));

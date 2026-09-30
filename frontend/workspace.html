@@ -106,9 +106,10 @@
             <div id="composer-shell" class="composer-shell">
               <form id="message-form" class="message-form">
                 <label class="sr-only" for="message-input">发送消息</label>
-                <textarea id="message-input" rows="3" maxlength="1048576" placeholder="继续说明、纠正或打断 Agent…"></textarea>
+                <!-- 引用和图片放在文字前面：它们是这句话的前提，人在打字之前先看到。 -->
                 <div id="attachment-strip" class="attachment-strip" hidden></div>
                 <div id="reference-card" class="reference-card" hidden></div>
+                <textarea id="message-input" rows="3" maxlength="1048576" placeholder="继续说明、纠正或打断 Agent…"></textarea>
                 <div class="composer-footer">
                   <button id="attach-image-button" class="icon-button" type="button" title="加图片（也可以直接粘贴）" aria-label="加图片">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
@@ -118,38 +119,6 @@
                 </div>
               </form>
 
-              <section id="evaluation-panel" class="evaluation-panel" hidden aria-labelledby="evaluation-title">
-                <header class="evaluation-header">
-                  <div>
-                    <p class="pane-kicker">REVIEW</p>
-                    <h3 id="evaluation-title">评价选中内容</h3>
-                  </div>
-                  <button id="evaluation-back-button" class="command-button" type="button">返回对话框</button>
-                </header>
-                <blockquote id="evaluation-excerpt" class="evaluation-excerpt"></blockquote>
-                <form id="evaluation-form" class="evaluation-form">
-                  <fieldset class="evaluation-choices">
-                    <legend>评价</legend>
-                    <label class="evaluation-choice competent">
-                      <input type="radio" name="evaluation-tag" value="competent">
-                      <span class="square-control" aria-hidden="true"></span>
-                      <span>胜任</span>
-                    </label>
-                    <label class="evaluation-choice incompetent">
-                      <input type="radio" name="evaluation-tag" value="incompetent">
-                      <span class="square-control" aria-hidden="true"></span>
-                      <span>不胜任</span>
-                    </label>
-                  </fieldset>
-                  <label class="evaluation-comment-label" for="evaluation-comment">评论（可选）</label>
-                  <textarea id="evaluation-comment" rows="3" maxlength="1048576" placeholder="补充说明"></textarea>
-                  <div id="evaluation-error" class="form-error" hidden></div>
-                  <footer class="evaluation-footer">
-                    <button id="evaluation-cancel-button" class="command-button" type="button">取消</button>
-                    <button id="evaluation-submit-button" class="primary-command" type="submit">保存评价</button>
-                  </footer>
-                </form>
-              </section>
             </div>
           </section>
 
@@ -172,7 +141,7 @@
                 </div>
               </div>
             </header>
-            <div id="terminal-screen" class="terminal-screen xterm-host" tabindex="0">等待终端画面…</div>
+            <div id="terminal-screen" class="terminal-screen xterm-host" data-geometry-ready="false" tabindex="0">等待终端画面…</div>
 
             <div class="control-bar">
               <div class="playback-bar terminal-playback">
@@ -285,6 +254,23 @@
     </form>
   </dialog>
 
+  <dialog id="rename-dialog" class="rename-dialog">
+    <form id="rename-form">
+      <header>
+        <div>
+          <h2>重命名会话</h2>
+        </div>
+        <button id="rename-close" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <input id="rename-input" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="给这一场会起个名字">
+      <p id="rename-error" class="form-error" hidden></p>
+      <footer>
+        <button id="rename-cancel" class="command-button" type="button">取消</button>
+        <button id="rename-submit" class="primary-command" type="submit">重命名</button>
+      </footer>
+    </form>
+  </dialog>
+
   <div id="workspace-menu" class="workspace-menu" hidden role="menu" aria-label="工作区操作">
     <button type="button" data-workspace-action="rename" role="menuitem">重命名</button>
     <button type="button" data-workspace-action="delete" role="menuitem">删除工作区</button>
@@ -297,8 +283,24 @@
     <button type="button" data-meeting-action="delete" role="menuitem">删除会话</button>
   </div>
 
+  <dialog id="delete-dialog" class="new-dialog">
+    <form id="delete-form" method="dialog">
+      <header>
+        <div>
+          <h2>删除会话</h2>
+        </div>
+        <button id="close-delete-dialog" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <p id="delete-message">确定要删除这个会话吗？对话、终端和数据都会被删除。</p>
+      <p id="delete-error" class="form-error" hidden></p>
+      <footer>
+        <button id="cancel-delete" class="command-button" type="button">取消</button>
+        <button id="confirm-delete" class="danger-button" type="submit">删除会话</button>
+      </footer>
+    </form>
+  </dialog>
+
   <div id="selection-menu" class="selection-menu" hidden role="toolbar" aria-label="选区操作">
-    <button type="button" data-selection-action="evaluate" class="score-action evaluate">评价</button>
     <button type="button" data-selection-action="add-to-conversation" class="score-action add-to-conversation">添加到对话</button>
   </div>
 
