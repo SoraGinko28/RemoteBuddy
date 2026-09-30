@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from meeting_v2 import MeetingStore
+from meeting import MeetingStore
 from terminal_text import encode_segments, parse_segments, plain_of
 from workspace_capture import capture_workspace, strip_ansi
 

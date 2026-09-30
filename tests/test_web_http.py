@@ -11,8 +11,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from meeting_v2 import MAX_ATTACHMENT_BYTES, MeetingStore
-from web_v2 import CSRF_HEADER, MeetingWebService, RemoteBuddyHTTPServer, WebError
+from meeting import MAX_ATTACHMENT_BYTES, MeetingStore
+from web import CSRF_HEADER, MeetingWebService, RemoteBuddyHTTPServer, WebError
 
 
 class FakeClient:

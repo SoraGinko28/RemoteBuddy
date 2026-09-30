@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from interactive_runner import HISTORY_BYTES_LIMIT, HISTORY_EVENT_LIMIT, InteractiveRunner
-from meeting_v2 import MeetingStore
+from meeting import MeetingStore
 
 
 def record(seq, kind="chat", actor="human", content="hello", message_type="request"):

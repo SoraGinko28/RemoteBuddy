@@ -35,8 +35,8 @@ from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_i
                          at_key as viba_at_key, by_field_index as viba_by_field_index,
                          by_tag as viba_by_tag)
 from viba.type import VibaProgramErr, Ok
-from meeting_v2 import MeetingStore
-from web_v2 import MeetingWebService, RemoteBuddyHTTPServer
+from meeting import MeetingStore
+from web import MeetingWebService, RemoteBuddyHTTPServer
 
 MEETING_ID = "20260919-120000-remote"
 PORT = 0                      # let the os pick a free port

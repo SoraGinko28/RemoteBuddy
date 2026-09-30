@@ -6,7 +6,7 @@
 
 这个脚本不是流程本身，它只干三件事（流程在 `ticket_centered/` 里）：
 
-1. 开一场真会（`web_v2.MeetingWebService` + model_api 里的 claude-code/deepseek），人类说一句题面；
+1. 开一场真会（`web.MeetingWebService` + model_api 里的 claude-code/deepseek），人类说一句题面；
 2. **只走页面那几条 HTTP 面**：assistant 那一步（`--words`）、工单板（`GET /api/meetings/<id>/tickets`）、
    发一张（`POST /api/meetings/<id>/tickets/<工单>`）——发单是服务那一侧干的：`Meeting.publish` 发给会上
    每个成员，然后每个成员起一个进程（`python -m ticket_centered.<角色> --bundle …`），各人跑自己那份；
@@ -74,14 +74,14 @@ class MeetingService:
             self.port = parsed.port or 80
             self.service = None
         else:
-            import web_v2
+            import web
 
             self.host = "127.0.0.1"
-            self.service = web_v2.MeetingWebService(
+            self.service = web.MeetingWebService(
                 project_root=self.project_root,
                 workspace=self.workspace_root,
             )
-            self.server = web_v2.build_server("127.0.0.1", free_port(), service=self.service)
+            self.server = web.build_server("127.0.0.1", free_port(), service=self.service)
             threading.Thread(target=self.server.serve_forever, daemon=True).start()
             self.port = self.server.server_address[1]
         self.csrf = ""

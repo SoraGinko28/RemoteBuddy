@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import demo_v2
-from meeting_v2 import MeetingError, MeetingStore
+import demo
+from meeting import MeetingError, MeetingStore
 
 
 class DemoV2CliTest(unittest.TestCase):
@@ -32,7 +32,7 @@ class DemoV2CliTest(unittest.TestCase):
         )
 
     def test_parser_exposes_management_commands_but_no_run(self):
-        parser = demo_v2.build_parser()
+        parser = demo.build_parser()
         action = next(
             item for item in parser._actions if isinstance(item, argparse._SubParsersAction)
         )
@@ -47,11 +47,11 @@ class DemoV2CliTest(unittest.TestCase):
             session_state="retained",
         )
         args = argparse.Namespace(meeting_id="cli-demo")
-        with mock.patch.object(demo_v2, "PROJECT_ROOT", self.root), mock.patch(
-            "demo_v2.shutil.which", return_value=None
+        with mock.patch.object(demo, "PROJECT_ROOT", self.root), mock.patch(
+            "demo.shutil.which", return_value=None
         ):
             with self.assertRaises(MeetingError):
-                demo_v2.command_stop(args)
+                demo.command_stop(args)
 
         loaded = MeetingStore.load(self.root, "cli-demo")
         self.assertEqual("interrupted", loaded.meeting.status)

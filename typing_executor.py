@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional, Sequence
 
-from meeting_v2 import MeetingStore
+from meeting import MeetingStore
 from tmux_transport import TmuxTransport, workspace_command_text
 from typing_policy import TypingPlan, plan_input
 from workspace_capture import TypingInterrupted, capture_workspace

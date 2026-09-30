@@ -18,10 +18,10 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from meeting_v2 import MeetingStore  # noqa: E402
-from web_v2 import WORKSPACE_INDEX, MeetingWebService, WebError, _as_workspace  # noqa: E402
+from meeting import MeetingStore  # noqa: E402
+from web import WORKSPACE_INDEX, MeetingWebService, WebError, _as_workspace  # noqa: E402
 
-from tests.test_web_v2_http import FakeClient, FakeTransport, RecordingRunner, write_model_config  # noqa: E402
+from tests.test_web_http import FakeClient, FakeTransport, RecordingRunner, write_model_config  # noqa: E402
 
 
 class AsWorkspaceTest(unittest.TestCase):
@@ -262,7 +262,7 @@ class ChooseDirectoryTest(unittest.TestCase):
 
     def run_osascript(self, stdout="", returncode=0):
         done = mock.Mock(returncode=returncode, stdout=stdout, stderr="")
-        return mock.patch("web_v2.subprocess.run", return_value=done)
+        return mock.patch("web.subprocess.run", return_value=done)
 
     def test_the_chosen_directory_is_returned_without_the_trailing_slash(self):
         with self.run_osascript("/tmp/some project/\n") as run:
@@ -290,6 +290,6 @@ class ChooseDirectoryTest(unittest.TestCase):
         self.assertNotIn("default location", run.call_args.args[0][-1])
 
     def test_osascript_missing_is_reported(self):
-        with mock.patch("web_v2.subprocess.run", side_effect=FileNotFoundError()):
+        with mock.patch("web.subprocess.run", side_effect=FileNotFoundError()):
             with self.assertRaisesRegex(WebError, "osascript"):
                 self.service.choose_directory({})

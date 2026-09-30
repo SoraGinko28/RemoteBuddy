@@ -23,7 +23,7 @@ from interactive_runner import (
 )
 import tmux_vim
 from typing_executor import _send_typing_plan
-from meeting_v2 import MeetingStore, utc_now
+from meeting import MeetingStore, utc_now
 from agent_protocol import AgentActionError
 from model_api_client import AgentAction, AgentProtocolError, AgentResponse, ModelApiError
 from typing_policy import plan_input
