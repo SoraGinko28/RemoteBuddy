@@ -782,6 +782,29 @@ class MeetingWebService:
             "pane_height": pane_height,
         }
 
+    def resize_terminal(self, meeting_id: str, cols: int, rows: int) -> Dict[str, int]:
+        if not isinstance(cols, int) or not isinstance(rows, int):
+            raise WebError(400, "terminal resize size must be integers")
+        if cols < 40 or cols > 300 or rows < 12 or rows > 120:
+            raise WebError(400, "terminal resize size is outside supported bounds")
+        with self._meeting_lock(meeting_id):
+            store = self.load_store(meeting_id)
+            if store.meeting.status in TERMINAL_STATUSES:
+                raise WebError(409, "meeting is already finished")
+            if not store.meeting.pane_id:
+                raise WebError(409, "workspace pane is not available")
+            transport = self._transport()
+            try:
+                info = transport.pane_info(store.meeting.pane_id)
+                current_cols = int(info["pane_width"])
+                current_rows = int(info["pane_height"])
+                if current_cols != cols or current_rows != rows:
+                    transport.resize_workspace_session(store.meeting.session_name, cols, rows)
+                info = transport.pane_info(store.meeting.pane_id)
+            except (TmuxError, OSError, ValueError) as exc:
+                raise WebError(502, f"cannot resize workspace: {exc}") from exc
+            return {"pane_width": int(info["pane_width"]), "pane_height": int(info["pane_height"])}
+
     def load_store(self, meeting_id: str) -> MeetingStore:
         if not MEETING_ID_RE.fullmatch(meeting_id):
             raise WebError(400, "invalid meeting id")
@@ -2073,7 +2096,7 @@ class MeetingWebService:
             found.append({"name": name})
         return found
 
-    def message(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
+    def message(self, meeting_id: str, payload: Dict[str, Any]) -> Tuple[MeetingStore, str]:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
             if not isinstance(payload, dict) or not set(payload).issubset(
@@ -2124,7 +2147,7 @@ class MeetingWebService:
                 # instruction: hand control back AND resume the Agent with it.
                 self._ensure_terminal(store)
                 self._sync_human_pipe(store)
-                return self._resume_agent_from_human(meeting_id)
+                return self._resume_agent_from_human(meeting_id), ""
             # 2b routing: @mention summons the named non-actor member;
             # the actor is NOT woken for that message (single-writer rule).
             # If the actor is mid-turn, interrupt it and summon the
@@ -2146,16 +2169,35 @@ class MeetingWebService:
                 store.update(failure=None)
             if delivery == "interrupt":
                 self._interrupt_backend(meeting_id)
+            # 从这里往后都是"这话已经收下了"之后的事：Agent 起不来（配置读不出来、终端开不出来）
+            # 不能回一个错误 —— 前端会把刚发出去的话塞回输入框，人以为没发出去，再发一遍。
+            # 真会里就这么重复发出去了三条。起不来就照实记在会议状态里（页面上那条红字），
+            # 再把原因随响应带给前端。
+            agent_error = ""
             if wake_agent or delivery == "interrupt":
-                config = self._config_for_store(store)
-                store.update(status="running", phase="agent_thinking", control_owner=store.meeting.actor_name())
-                self._ensure_worker(
-                    store,
-                    config,
-                    resume=not starting_fresh,
-                    fresh_conversation=fresh_conversation,
-                )
-        return store
+                try:
+                    config = self._config_for_store(store)
+                    store.update(
+                        status="running",
+                        phase="agent_thinking",
+                        control_owner=store.meeting.actor_name(),
+                    )
+                    self._ensure_worker(
+                        store,
+                        config,
+                        resume=not starting_fresh,
+                        fresh_conversation=fresh_conversation,
+                    )
+                except WebError as exc:
+                    agent_error = exc.message
+                    store.update(
+                        status="running",
+                        phase="api_error",
+                        control_owner="none",
+                        failure=agent_error,
+                        recovery_required=True,
+                    )
+        return store, agent_error
 
     def score(self, meeting_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Append a validated score without waking or mutating Agent state."""
@@ -2446,9 +2488,15 @@ class MeetingWebService:
                 self.queued_jobs.pop(meeting_id, None)
         return store
 
-    def stop(self, meeting_id: str) -> MeetingStore:
+    def stop(self, meeting_id: str, *, force: bool = False) -> MeetingStore:
+        """中止这场会（杀掉它的 tmux 会话、把状态写成 interrupted）。
+
+        `force=True` 跳过"这场会现在归谁驱动"的检查：删除会话用得上 —— 两个服务共用一块工作区时，
+        声明在别人手里也得能删（删除是数据的事，不该被"谁在开"挡住）。
+        """
         initial = self.load_store(meeting_id)
-        self._ensure_driver(initial)
+        if not force:
+            self._ensure_driver(initial)
         # Publish the durable interrupt before contending on meeting/state
         # locks. The typing loop checks this file at every burst boundary.
         if initial.meeting.session_state == "stopped" and initial.meeting.status == "interrupted":
@@ -2478,7 +2526,10 @@ class MeetingWebService:
                 )
             except (TmuxError, OSError) as exc:
                 store.append_event("error", "harness", "interrupted", content=str(exc))
-                raise WebError(502, "meeting stopped, but tmux cleanup failed") from exc
+                if not force:
+                    raise WebError(502, "meeting stopped, but tmux cleanup failed") from exc
+                # 删除这条路上会话可能早就不在了（没开过终端、或者已经被别处收掉）：
+                # 收不掉也得接着删，数据才是这一趟的目的。
             store.mark_session_stopped()
             store.append_event("state", "human", "interrupted", data={"status": "interrupted"})
             with self.lock:
@@ -2512,7 +2563,9 @@ class MeetingWebService:
         """
         store = self.load_store(meeting_id)
         if store.meeting.status not in TERMINAL_STATUSES:
-            self.stop(meeting_id)
+            # 强制停：这场会可能正被另一个服务驱动（两个服务共用工作区），但删除是数据的事，
+            # 不该被那份声明挡住 —— 先停信号写下去、把 tmux 会话收掉，再删。
+            self.stop(meeting_id, force=True)
         elif store.meeting.session_state != "stopped":
             self.cleanup(meeting_id)
         with self._meeting_lock(meeting_id):
@@ -2892,6 +2945,10 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
         data = self.rfile.read(length)
         if len(data) != length:
             raise WebError(400, "incomplete request body")
+        if not data.strip():
+            # 没带正文的 POST 当成 `{}`：`/delete`、`/stop` 这类"没有参数"的接口，
+            # 客户端很容易漏掉正文 —— 前端就这么漏了一次，删除一直回 400、点了没反应。
+            return {}
         try:
             payload = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -3084,6 +3141,25 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                     raise WebError(404, "static file not found")
                 self._static(relative)
                 return
+            if path == "/api/assets/changes":
+                frontend = self.service.project_root / "frontend"
+                names = ("workspace.css", "workspace.js")
+                current = parse_qs(parsed.query).get("version", [""])[0]
+                deadline = time.monotonic() + 30
+                while True:
+                    try:
+                        versions = {
+                            name: hashlib.sha256((frontend / name).read_bytes()).hexdigest()[:24]
+                            for name in names
+                        }
+                    except FileNotFoundError:
+                        self._json({"version": "", "assets": {}})
+                        return
+                    version = ":".join(versions[name] for name in names)
+                    if version != current or time.monotonic() >= deadline:
+                        self._json({"version": version, "assets": versions})
+                        return
+                    time.sleep(0.25)
             if path == "/api/session":
                 self._json({"csrf_token": self.service.csrf_token, "csrf_header": CSRF_HEADER})
                 return
@@ -3222,8 +3298,14 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/messages", path)
             if match:
-                store = self.service.message(unquote(match.group(1)), self._read_json())
-                self._json({"meeting": _public_manifest(store)})
+                store, agent_error = self.service.message(
+                    unquote(match.group(1)), self._read_json()
+                )
+                payload = {"meeting": _public_manifest(store)}
+                if agent_error:
+                    # 消息收下了，Agent 没起来 —— 200 + 原因，让前端别再把它塞回输入框。
+                    payload["agent_error"] = agent_error
+                self._json(payload)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/effort", path)
             if match:
@@ -3234,6 +3316,16 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             if match:
                 store = self.service.terminal_input(unquote(match.group(1)), self._read_json())
                 self._json({"meeting": _public_manifest(store)})
+                return
+            match = re.fullmatch(r"/api/meetings/([^/]+)/terminal/resize", path)
+            if match:
+                payload = self._read_json() or {}
+                cols = payload.get("cols")
+                rows = payload.get("rows")
+                if not isinstance(cols, int) or not isinstance(rows, int):
+                    raise WebError(400, "terminal resize size must be integers")
+                result = self.service.resize_terminal(unquote(match.group(1)), cols, rows)
+                self._json(result)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/tickets/([^/]+)", path)
             if match:
