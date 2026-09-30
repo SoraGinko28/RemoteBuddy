@@ -1113,6 +1113,23 @@ function renderChat() {
         node("strong", "", speaker),
         timeEl,
       );
+      if (event.message_type === "final") {
+        const eventSeq = Number(event.seq);
+        const nextFinalSeq = state.timeline
+          .filter((item) => item.kind === "chat"
+            && item.message_type === "final"
+            && Number(item.seq) > eventSeq)
+          .map((item) => Number(item.seq))
+          .sort((a, b) => a - b)[0] ?? Infinity;
+        const completion = state.timeline.find((item) => item.kind === "state"
+          && item.phase === "completion_proposed"
+          && Number(item.seq) > eventSeq
+          && Number(item.seq) < nextFinalSeq);
+        const evidence = Boolean((event.references && event.references.length)
+          || completion?.data?.evidence === true);
+        head.append(node("span", evidence ? "completion-evidence" : "completion-no-evidence",
+          evidence ? "完成提议 · 有证据" : "完成提议 · 无证据"));
+      }
       const annotations = scoreAnnotationsForSource(event, visibleScores);
       const images = messageImages(event);
       const body = node("p", "message-content");
@@ -3905,6 +3922,11 @@ function bind() {
   // Refit the terminal when the window/panel size changes (DevTools dock,
   // pane resize), so rows are never clipped and the cursor stays visible.
   window.addEventListener("resize", () => refitTerminal());
+  // Layout changes can resize the terminal without resizing the window.
+  if (typeof ResizeObserver === "function" && el.terminal_screen) {
+    const terminalResizeObserver = new ResizeObserver(() => refitTerminal());
+    terminalResizeObserver.observe(el.terminal_screen);
+  }
   el.resume_button.addEventListener("click", () => postMeetingAction("agent/resume").catch((error) => toast(error.message)));
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
@@ -4161,6 +4183,44 @@ function bind() {
   });
   el.close_event.addEventListener("click", () => el.event_dialog.close());
 }
+
+let assetVersion = "";
+
+async function watchAssetChanges() {
+  while (true) {
+    try {
+      const response = await fetch(`/api/assets/changes?version=${encodeURIComponent(assetVersion)}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const answer = await response.json();
+      if (!assetVersion) {
+        assetVersion = answer.version;
+        continue;
+      }
+      const [oldCss, oldJs] = assetVersion.split(":");
+      if (answer.assets["workspace.css"] !== oldCss) {
+        const link = document.querySelector('link[rel="stylesheet"][href*="workspace.css"]');
+        if (link) {
+          const replacement = document.createElement("link");
+          replacement.rel = "stylesheet";
+          replacement.href = `/assets/workspace.css?v=${encodeURIComponent(answer.assets["workspace.css"])}`;
+          replacement.onload = () => link.remove();
+          link.after(replacement);
+        }
+      }
+      if (answer.assets["workspace.js"] !== oldJs
+          && document.visibilityState === "hidden"
+          && !isEditableFocusTarget(document.activeElement)) {
+        location.reload();
+        return;
+      }
+      assetVersion = answer.version;
+    } catch (_error) {
+      return;
+    }
+  }
+}
+
+watchAssetChanges();
 
 function stopPlayback() {
   state.playing = false;

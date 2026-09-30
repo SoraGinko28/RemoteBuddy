@@ -3118,6 +3118,21 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                     raise WebError(404, "static file not found")
                 self._static(relative)
                 return
+            if path == "/api/assets/changes":
+                frontend = self.service.project_root / "frontend"
+                names = ("workspace.css", "workspace.js")
+                current = parse_qs(parsed.query).get("version", [""])[0]
+                deadline = time.monotonic() + 30
+                while True:
+                    versions = {
+                        name: hashlib.sha256((frontend / name).read_bytes()).hexdigest()[:24]
+                        for name in names
+                    }
+                    version = ":".join(versions[name] for name in names)
+                    if version != current or time.monotonic() >= deadline:
+                        self._json({"version": version, "assets": versions})
+                        return
+                    time.sleep(0.25)
             if path == "/api/session":
                 self._json({"csrf_token": self.service.csrf_token, "csrf_header": CSRF_HEADER})
                 return

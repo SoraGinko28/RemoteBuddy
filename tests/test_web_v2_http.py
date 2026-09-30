@@ -7,6 +7,7 @@ import time
 import unittest
 from unittest import mock
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -942,6 +943,22 @@ class HTTPBoundaryTest(unittest.TestCase):
             body=json.dumps({"message": "topic"}),
         )
         self.assertEqual(403, status)
+
+    def test_asset_change_is_observable_without_reloading_the_page(self):
+        first = json.load(self.request("/api/assets/changes"))
+        css = self.root / "frontend" / "workspace.css"
+        css.write_text("body { color: rgb(1, 2, 3); }", encoding="utf-8")
+        changed = json.load(self.request(
+            "/api/assets/changes?version=" + urllib.parse.quote(first["version"])
+        ))
+        self.assertNotEqual(first["version"], changed["version"])
+        self.assertNotEqual(
+            first["assets"]["workspace.css"], changed["assets"]["workspace.css"]
+        )
+        with self.request(
+            "/assets/workspace.css?v=" + changed["assets"]["workspace.css"]
+        ) as response:
+            self.assertIn("rgb(1, 2, 3)", response.read().decode("utf-8"))
 
     def test_create_events_etag_and_boundaries(self):
         response = self.request(

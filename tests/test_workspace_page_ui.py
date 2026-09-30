@@ -87,6 +87,8 @@ class _PageTestCase(unittest.TestCase):
 
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
+        self.test_project_root = Path(self.temporary.name) / "project"
+        shutil.copytree(REPO_ROOT / "frontend", self.test_project_root / "frontend")
         self.workspace = Path(self.temporary.name) / "workspace"
         self.workspace.mkdir()
         self.meeting_id = "page-notice-0001"
@@ -102,7 +104,9 @@ class _PageTestCase(unittest.TestCase):
         # 停在"等人说话"：这一条不查终端，就别让页面去把 tmux 会话开出来。
         store.update(phase="waiting_for_user")
 
-        self.service = web_v2.MeetingWebService(workspace=self.workspace, project_root=REPO_ROOT)
+        self.service = web_v2.MeetingWebService(
+            workspace=self.workspace, project_root=self.test_project_root
+        )
         self.port = _free_port()
         self.server = web_v2.build_server("127.0.0.1", self.port, service=self.service)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -385,6 +389,35 @@ class DeleteDialogTest(_PageTestCase):
         )
 
 
+class AssetReloadTest(_PageTestCase):
+    """页面已打开时，磁盘上的 CSS 变化会自动落到现有 DOM。"""
+
+    def test_open_page_applies_css_changed_on_disk_without_reload(self):
+        self.page.wait_for(
+            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30,
+            what="页面画出这场会",
+        )
+        baseline = self.page.js(
+            "getComputedStyle(document.querySelector('#chat-list')).marginBottom"
+        )
+        repository_css = REPO_ROOT / "frontend" / "workspace.css"
+        repository_before = repository_css.read_bytes()
+        css_path = self.service.project_root / "frontend" / "workspace.css"
+        original = css_path.read_text(encoding="utf-8")
+        self.addCleanup(css_path.write_text, original, encoding="utf-8")
+        css_path.write_text(
+            original + "\n#chat-list { margin-bottom: 13.5px !important; }\n",
+            encoding="utf-8",
+        )
+        self.page.wait_for(
+            "getComputedStyle(document.querySelector('#chat-list')).marginBottom === '13.5px'",
+            40,
+            what="页面自动换上磁盘里的新 CSS",
+        )
+        self.assertNotEqual(baseline, "13.5px")
+        self.assertEqual(repository_before, repository_css.read_bytes())
+
+
 class OrderOfImagesAndQuotesTest(_PageTestCase):
     """引用和图片放在文字前面 —— 聊天区和输入框都是。"""
 
@@ -429,8 +462,19 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
             ],
             attachments=[{"name": attachment["name"]}],
         )
+        self._store().append_chat(
+            "human",
+            "",
+            "request",
+            attachments=[{"name": attachment["name"]}],
+        )
         self.page.wait_for(
             "document.body.innerText.includes('带引用和图片的一条')", 20, what="这条消息画出来"
+        )
+        self.page.wait_for(
+            "document.querySelectorAll('#chat-list article .message-images').length >= 2",
+            20,
+            what="两条图片消息画出来",
         )
         order = self.page.js("""
 (() => {
@@ -442,12 +486,115 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
   const images = article.querySelector('.message-images');
   if (!text || !quote || !images) return null;
   const before = (node) => Boolean(node.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING);
-  return {quote: before(quote), images: before(images)};
+  const rect = (node) => node.getBoundingClientRect();
+  const gap = (upper, lower) => rect(lower).top - rect(upper).bottom;
+  const head = article.querySelector('.message-head');
+  const image = images.querySelector('.message-image');
+  const imageOnly = [...document.querySelectorAll('#chat-list article .message-images')]
+    .map((one) => one.closest('article'))
+    .find((one) => one && one !== article && !(one.querySelector('.message-content')?.textContent || '').trim());
+  const imageOnlyHead = imageOnly?.querySelector('.message-head');
+  const imageOnlyImages = imageOnly?.querySelector('.message-images');
+  if (!head || !image || !imageOnlyHead || !imageOnlyImages) return null;
+  return {
+    quote: before(quote),
+    images: before(images),
+    quoteFits: quote.scrollWidth <= quote.clientWidth,
+    articleFits: article.scrollWidth <= article.clientWidth,
+    nameToQuote: gap(head, quote),
+    quoteToImage: gap(quote, images),
+    imageToText: gap(images, text),
+    imageOnlyNameToImage: gap(imageOnlyHead, imageOnlyImages),
+  };
 })()
 """)
         self.assertIsNotNone(order, "这条消息该带引用、图片和正文")
         self.assertTrue(order["quote"], "引用该在正文前面")
+        self.assertTrue(order["quoteFits"], "引用不得横向溢出")
+        self.assertTrue(order["articleFits"], "消息不得被引用撑宽")
         self.assertTrue(order["images"], "图片该在正文前面")
+        self.assertEqual(8, order["nameToQuote"], "名字到引用应为 8px")
+        self.assertEqual(8, order["quoteToImage"], "引用到图片应为 8px")
+        self.assertEqual(8, order["imageToText"], "图片到正文应为 8px")
+        self.assertEqual(8, order["imageOnlyNameToImage"], "只有图片时名字到图片应为 8px")
+
+    def test_completion_proposals_show_whether_they_have_evidence(self):
+        self.page.wait_for(
+            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 20,
+            what="页面画出这场会",
+        )
+        store = self._store()
+        agent = next(iter(store.meeting.agent_names()))
+        store.append_chat(agent, "裸完成提议", "final")
+        store.append_event(
+            "state", "harness", "completion_proposed",
+            data={"reason": "agent_done", "evidence": False, "evidence_type": None, "reference_count": 0},
+        )
+        store.append_chat(
+            agent, "有证据完成提议", "final",
+            references=[{"kind": "screen", "seq": 1}],
+        )
+        store.append_event(
+            "state", "harness", "completion_proposed",
+            data={"reason": "agent_done", "evidence": True, "evidence_type": "command", "reference_count": 1},
+        )
+        store.update(phase="completion_proposed", control_owner="none")
+
+        self.page.wait_for(
+            "document.body.innerText.includes('裸完成提议') && document.body.innerText.includes('有证据完成提议')",
+            20,
+            what="两条完成提议画出来",
+        )
+        badges = self.page.js("""
+(() => [...document.querySelectorAll('.completion-evidence, .completion-no-evidence')]
+  .map((node) => ({className: node.className, text: node.textContent})))()
+""")
+        self.assertEqual(
+            [
+                {"className": "completion-no-evidence", "text": "完成提议 · 无证据"},
+                {"className": "completion-evidence", "text": "完成提议 · 有证据"},
+            ],
+            badges[-2:],
+        )
+        self.assertEqual("completion_proposed", store.meeting.phase)
+
+    def test_chat_never_overflows_horizontally_for_adversarial_content(self):
+        self.page.call("Emulation.setDeviceMetricsOverride", width=420, height=900, deviceScaleFactor=1, mobile=False)
+        self.page.js("""
+(() => {
+  const list = document.querySelector('#chat-list');
+  const make = (text, quote, imageWidth) => {
+    const article = document.createElement('article');
+    article.className = 'message human';
+    article.innerHTML = `<div class="message-head"><strong>human</strong><time>now</time></div>
+      <div class="message-reference">${quote}</div>
+      <div class="message-images"><img class="message-image" alt="wide" src="data:image/svg+xml,
+        <svg xmlns='http://www.w3.org/2000/svg' width='${imageWidth}' height='40'></svg>"></div>
+      <p class="message-content">${text}</p>`;
+    list.append(article);
+  };
+  make('X'.repeat(300), 'reference-' + 'R'.repeat(600), 1600);
+  make('正文-' + 'Y'.repeat(800), 'quote-' + 'Q'.repeat(500), 1400);
+  return 'injected';
+})()
+""")
+        self.page.wait_for("document.querySelectorAll('#chat-list article').length >= 2", 5)
+        measurements = self.page.js("""
+(() => {
+  const list = document.querySelector('#chat-list');
+  const nodes = [list, ...list.querySelectorAll('*')];
+  return {
+    viewport: window.innerWidth,
+    client: list.clientWidth,
+    scroll: list.scrollWidth,
+    overflowing: nodes.filter((node) => node.scrollWidth > node.clientWidth).map((node) => ({
+      tag: node.tagName, className: node.className, client: node.clientWidth, scroll: node.scrollWidth,
+    })),
+  };
+})()
+""")
+        self.assertLessEqual(measurements["scroll"], measurements["client"], measurements)
+        self.assertEqual([], measurements["overflowing"], measurements)
 
 
 if __name__ == "__main__":

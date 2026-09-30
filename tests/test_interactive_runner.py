@@ -572,6 +572,31 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual("completion_proposed", loaded.meeting.phase)
         self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
 
+    def test_three_consecutive_refusals_keep_the_cycle_alive(self):
+        client = FakeClient(
+            [
+                make_action(),
+                AgentRefused("forbidden Codex item type: webSearch"),
+                AgentRefused("forbidden Codex item type: webSearch"),
+                AgentRefused("forbidden Codex item type: webSearch"),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="Recovered."),
+            ]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        refusals = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "refused"
+        ]
+        self.assertEqual(3, len(refusals))
+        self.assertEqual(6, len(client.calls))
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
+        self.assertTrue(any(item[1] == "git" for item in self.transport.commands))
+
     def test_an_interactive_command_is_refused_with_something_the_model_can_act_on(self):
         # 模型真的会这么发：客户端在造动作那一步就把它退回去（`vim` 会一直等人敲键盘）。
         client = FakeClient(
@@ -832,6 +857,14 @@ class InteractiveRunnerTest(unittest.TestCase):
         ).start()
         loaded = MeetingStore.load(self.root, "runner-demo")
         self.assertEqual("completion_proposed", loaded.meeting.phase)
+        proposal = [
+            event for event in loaded.events()
+            if event["kind"] == "state" and event["phase"] == "completion_proposed"
+        ]
+        self.assertEqual(1, len(proposal))
+        self.assertTrue(proposal[0]["data"]["evidence"])
+        self.assertEqual("command", proposal[0]["data"]["evidence_type"])
+        self.assertEqual(0, proposal[0]["data"]["reference_count"])
         rejected = [
             event
             for event in loaded.events()
@@ -843,6 +876,36 @@ class InteractiveRunnerTest(unittest.TestCase):
         # can correct itself.
         self.assertEqual(4, len(client.calls))
         self.assertIn("requires a real bash command line", client.calls[2][2])
+
+    def test_command_send_failure_is_rejected_without_killing_the_cycle(self):
+        client = FakeClient(
+            [
+                make_action(),
+                make_action("command", command="git status"),
+                make_action("done", message_type="final", content="The pane is still usable."),
+            ]
+        )
+        with mock.patch.object(
+            self.transport,
+            "send_keys",
+            side_effect=tmux_vim.CommandSendError("command line could not be sent"),
+        ):
+            InteractiveRunner(
+                self.store,
+                self.transport,
+                client,
+                action_settle_seconds=0,
+                typing_interval_seconds=0,
+            ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        rejected = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("status") == "rejected"
+        ]
+        self.assertTrue(rejected)
+        self.assertIn("command line could not be sent", rejected[0]["content"])
+        self.assertEqual("completion_proposed", loaded.meeting.phase)
 
     def test_a_turn_that_only_answers_ack_parks_instead_of_looping(self):
         """连着几轮只回 ack：停下来等说话，不许拿预算和钱换同一句话。

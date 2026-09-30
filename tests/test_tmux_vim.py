@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import tmux_vim
+from tmux_transport import TmuxError
 from tmux_vim import (
     CommandTimeout,
     DiffError,
@@ -912,6 +913,22 @@ class ParseEdgeTest(unittest.TestCase):
         )
         self.assertEqual("pkg/store.py", patches[0].path)
         self.assertEqual(("-old", "+new", " keep"), patches[0].hunks[0].lines)
+        for marker in ("***", "*** End Patch", "*** End diff", "*** End of File"):
+            patches = tmux_vim.parse_unified_diff(
+                "*** Begin Patch\n"
+                "*** Update File: pkg/store.py\n"
+                "@@ -1,2 +1,2 @@\n"
+                "-old\n+new\n keep\n"
+                f"{marker}\n"
+            )
+            self.assertEqual(
+                ("-old", "+new", " keep"), patches[0].hunks[0].lines
+            )
+
+        patches = tmux_vim.parse_unified_diff(
+            "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+        )
+        self.assertEqual(("-a", "+b"), patches[0].hunks[0].lines)
         added = tmux_vim.parse_unified_diff(
             "*** Begin Patch\n*** Add File: fresh.py\n@@ -0,0 +1,1 @@\n+one\n*** End Patch\n"
         )
@@ -2363,6 +2380,26 @@ class RealTmuxEdgeTest(unittest.TestCase):
         failed = tmux_vim.run_command(transport, None, pane, "sh -c 'exit 7'")
         self.assertEqual("7", failed.retcode)
 
+    def test_command_send_failure_is_reported_as_a_local_action_error(self):
+        class FailingTransport:
+            def pane_info(self, _pane_id):
+                return {"command": "bash"}
+
+            def send_enter(self, _pane_id):
+                return None
+
+            def send_keys(self, _pane_id, _text):
+                raise TmuxError("tmux send-keys failed: command too long")
+
+
+        with self.assertRaises(tmux_vim.CommandSendError) as raised:
+            tmux_vim.run_command(
+                FailingTransport(), None, "pane", "x" * 400
+            )
+
+        self.assertIsInstance(raised.exception, TmuxError)
+        self.assertIn("command was not sent", str(raised.exception))
+
     def test_run_command_keeps_the_whole_scrollback(self):
         case = _case_by_name("2files_1hunks_replace")
         work = repo_with_case(self, case)
@@ -2479,4 +2516,27 @@ class MultiFileMultiLineGuardTest(unittest.TestCase):
                 if len(edits) >= 3:
                     return
         self.fail("用例表里得有一份文件带三个以上 hunk 的用例")
+
+
+class ApplyPatchDiagnosticTest(unittest.TestCase):
+    def test_hunk_failure_reports_partial_match_and_first_mismatch(self):
+        diff = (
+            "--- a/example.py\n"
+            "+++ b/example.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " one\n"
+            " two\n"
+            " three\n"
+        )
+        patch = tmux_vim.parse_unified_diff(diff)[0]
+        with self.assertRaises(DiffNotAppliable) as raised:
+            tmux_vim._apply_patches(
+                [patch],
+                {"example.py": "one\ntwo\nchanged\n"},
+            )
+        message = str(raised.exception)
+        self.assertIn("文件从第 1 行开始对上 2 行", message)
+        self.assertIn("第 3 行开始不对", message)
+        self.assertIn("补丁要 'three'", message)
+        self.assertIn("文件里是 'changed'", message)
 

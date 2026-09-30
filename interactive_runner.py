@@ -142,6 +142,7 @@ class InteractiveRunner:
         self._screen_before_think: Optional[tuple] = None
         self._stale_action_streak = 0
         self._invalid_action_streak = 0
+        self._refused_action_streak = 0
         self._dynamic_action_active = threading.Event()
         self._cycle_started_monotonic = time.monotonic()
         # 记着"这个预算属于哪一代请求"：人每说一句话 generation 就顶一格，那是新的一轮，
@@ -212,6 +213,7 @@ class InteractiveRunner:
         self._include_agent_chat_once = False
         self._last_action_success = True
         self._invalid_action_streak = 0
+        self._refused_action_streak = 0
         self._idle_chat_streak = 0
 
     @staticmethod
@@ -717,7 +719,7 @@ class InteractiveRunner:
                         self.store.refresh()
                         self._check_stop()
                         self._last_action_success = False
-                        self._invalid_action_streak += 1
+                        self._refused_action_streak += 1
                         next_count = self.store.meeting.cycle_action_count + 1
                         self.store.append_event(
                             "action",
@@ -738,7 +740,9 @@ class InteractiveRunner:
                         if next_count >= ACTION_LIMIT:
                             self._wait_for_user("action_budget_exhausted")
                             return
-                    if self._invalid_action_streak < MAX_INVALID_ACTION_RETRIES:
+                    # A refused capability is recoverable independently of malformed actions;
+                    # three consecutive refusals must keep the meeting alive.
+                    if self._refused_action_streak < ACTION_LIMIT:
                         continue
                 if isinstance(exc, AgentActionError):
                     # The model produced an invalid action (for example
@@ -784,6 +788,7 @@ class InteractiveRunner:
             with self.lock:
                 self.store.refresh()
                 self._invalid_action_streak = 0
+                self._refused_action_streak = 0
                 stale = self._is_stale(generation)
                 self.store.update(
                     last_response_id=response.response_id,
@@ -1303,8 +1308,14 @@ class InteractiveRunner:
                     data={"action_id": action_id, "status": "rejected"},
                 )
                 if isinstance(exc, TmuxError):
-                    self._fail_terminal(str(exc))
-                    should_pause = True
+                    if action.type == "command":
+                        # A failed command transmission is recoverable: reject only
+                        # this action so the agent can retry without killing the meeting.
+                        self.store.update(phase="agent_thinking")
+                        should_pause = False
+                    else:
+                        self._fail_terminal(str(exc))
+                        should_pause = True
                 else:
                     self.store.update(phase="agent_thinking")
                     should_pause = False
@@ -1608,7 +1619,13 @@ class InteractiveRunner:
                 self._complete_action(action_id)
                 self.store.update(phase="completion_proposed", control_owner="none")
                 self.store.append_event(
-                    "state", "harness", "completion_proposed", data={"reason": "agent_done"}
+                    "state", "harness", "completion_proposed",
+                    data={
+                        "reason": "agent_done",
+                        "evidence": bool(done_references or self._last_terminal_evidence),
+                        "evidence_type": self._last_terminal_evidence,
+                        "reference_count": len(done_references),
+                    },
                 )
                 return True
 
@@ -1791,6 +1808,10 @@ class InteractiveRunner:
                     },
                 )
                 if isinstance(exc, TmuxError):
+                    if action.type == "command":
+                        # Keep a single command-send failure local to this action.
+                        self.store.update(phase="agent_thinking")
+                        return False
                     self._fail_terminal(str(exc))
                     return True
                 if isinstance(exc, (tmux_vim.DiffError, tmux_vim.DiffNotAppliable)):

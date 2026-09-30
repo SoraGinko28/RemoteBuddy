@@ -36,6 +36,12 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 # {"kind": "text"|"ctrl", "value": ...}
 KeyToken = Dict[str, Any]
 Runner = Callable[..., Any]
+from tmux_transport import TmuxError
+
+
+class CommandSendError(TmuxError):
+    """The command line or its return marker could not be injected."""
+
 
 # 每一步写几行文本。一行一行的：人在屏上看得见每一行的到来，也能在两行之间叫停。
 MAX_LINES_PER_STEP = 1
@@ -247,6 +253,15 @@ _CODEX_WRAPPERS = ("*** Begin Patch", "*** End Patch")
 _CODEX_FILE = re.compile(r"^\*\*\* (Update|Add|Delete) File: (.+)$")
 
 
+def _is_patch_end_marker(line: str) -> bool:
+    return line.strip().lower() in {
+        "***",
+        "*** end patch",
+        "*** end diff",
+        "*** end of file",
+    }
+
+
 def _normalize_diff_lines(text: str) -> List[str]:
     """把常见的手写变体归一到标准 unified diff，再交给下面那段严格的读法。
 
@@ -256,6 +271,8 @@ def _normalize_diff_lines(text: str) -> List[str]:
     lines: List[str] = []
     for raw in text.splitlines():
         line = raw.rstrip("\r")
+        if _is_patch_end_marker(line):
+            continue
         if line.strip() in _CODEX_WRAPPERS:
             continue
         match = _CODEX_FILE.match(line)
@@ -394,7 +411,12 @@ def _parse_hunk(lines: Sequence[str], index: int) -> Tuple[Hunk, int]:
         # 到头只有这几种：下一个 hunk、下一个文件的头、或者空行。**不按 hunk 头里写的行数停**：
         # 手写的 diff 常把行数写少，按它停就会把后面的行甩出去，读成"这一段不属于任何文件"
         # （真会里就这么连撞三次、把一场会撞死）。正文到下一个头为止，行数最后统一重数。
-        if line.startswith(("@@", "--- ", "+++ ", "diff --git ", "diff --cc ")):
+        is_file_header = (
+            line.startswith("--- ")
+            and cursor + 1 < len(lines)
+            and lines[cursor + 1].startswith(("+++ ", "--- "))
+        )
+        if line.startswith(("@@", "diff --git ", "diff --cc ")) or is_file_header:
             break
         if not line:
             # 空白上下文行被写成了彻底的空行；数已经够了就当这一段到头了（后面多半是新文件或收尾的话）。
@@ -917,10 +939,15 @@ def run_command(
         raise Interrupted("还没开始跑命令就被打断了")
     token = uuid.uuid4().hex[:12]
     typed = command_line(command, token)
-    if type_line is not None:
-        type_line(pane_id, typed)
-    else:
-        transport.send_keys(pane_id, typed)
+    try:
+        if type_line is not None:
+            type_line(pane_id, typed)
+        else:
+            transport.send_keys(pane_id, typed)
+    except TmuxError as exc:
+        raise CommandSendError(
+            f"command was not sent to pane; retry this action: {exc}"
+        ) from exc
     # 读返回码那句另起一行，用同一个 token（`command_output` 靠一前一后两个标记切输出）。
     retcode = _read_retcode(
         transport, pane_id, interrupt_check, token=token, timeout=timeout
@@ -1077,7 +1104,12 @@ def _read_retcode(
 ) -> str:
     """单独敲一行带标记的 `echo` 再等它。`token` 给的就是这一枪那个（两处标记同号才切得出输出）。"""
     token = token or uuid.uuid4().hex[:12]
-    transport.send_keys(pane_id, _retcode_command(token))
+    try:
+        transport.send_keys(pane_id, _retcode_command(token))
+    except TmuxError as exc:
+        raise CommandSendError(
+            f"command return-code marker was not sent; retry this action: {exc}"
+        ) from exc
     return _await_retcode(transport, pane_id, interrupt_check, token, timeout=timeout)
 
 
@@ -1506,9 +1538,37 @@ def _apply_patches(
             located = _locate(lines, block, start)
             if located is None:
                 wanted = block[0] if block else "（空 hunk）"
+                best_at = max(0, min(start, len(lines)))
+                best_matched = 0
+                for candidate in range(len(lines) + 1):
+                    matched = 0
+                    while (
+                        matched < len(block)
+                        and candidate + matched < len(lines)
+                        and lines[candidate + matched] == block[matched]
+                    ):
+                        matched += 1
+                    if matched > best_matched or (
+                        matched == best_matched
+                        and abs(candidate - start) < abs(best_at - start)
+                    ):
+                        best_at, best_matched = candidate, matched
+                mismatch_line = best_at + best_matched + 1
+                expected = (
+                    block[best_matched]
+                    if best_matched < len(block)
+                    else "（文件到头了）"
+                )
+                actual = (
+                    lines[best_at + best_matched]
+                    if best_at + best_matched < len(lines)
+                    else "（文件到头了）"
+                )
                 raise DiffNotAppliable(
-                    f"{name}: 找不到这个 hunk 要改的那一段 —— 补丁的第一行是 {wanted!r}，"
-                    f"文件里没有。这个文件现在（第 {max(start + 1, 1)} 行附近）是这样：\n"
+                    f"{name}: 找不到这个 hunk 要改的那一段 —— 补丁的第一行是 {wanted!r}；"
+                    f"文件从第 {best_at + 1} 行开始对上 {best_matched} 行，"
+                    f"第 {mismatch_line} 行开始不对：补丁要 {expected!r}，文件里是 {actual!r}。"
+                    f"这个文件现在（第 {max(start + 1, 1)} 行附近）是这样：\n"
                     f"{_snippet(lines, start)}\n"
                     f"照这些行重写这一版，别照你上一版补丁里的行写。"
                 )
