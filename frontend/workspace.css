@@ -291,17 +291,18 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .viewport-mode .segment { min-height: 26px; padding: 0 7px; font-size: 10px; }
 .terminal-screen { min-height: 0; margin: 0; overflow: auto; padding: 14px 16px; background: var(--terminal); color: var(--terminal-ink); white-space: pre; tab-size: 4; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; scrollbar-color: #3a403c var(--terminal); }
 .terminal-screen.xterm-host { padding: 0; overflow: hidden; }
-.terminal-screen.xterm-host .xterm { width: 100%; max-width: 100%; height: 100%; overflow: hidden; }
-.terminal-screen.xterm-host .xterm .xterm-viewport { max-width: 100%; overflow-x: auto; }
+.terminal-screen.xterm-host .xterm { width: 100%; max-width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-color: #3a403c var(--terminal); }
+.terminal-screen.xterm-host .xterm .xterm-viewport { max-width: 100%; overflow: hidden; }
 .terminal-screen.xterm-host .xterm .xterm-viewport { background: transparent; }
+.terminal-screen.xterm-host .xterm .xterm-rows > div { width: max-content !important; min-width: 100% !important; }
 .terminal-screen.xterm-host .xterm .xterm-screen { background: transparent; }
 .terminal-screen.xterm-host .xterm .xterm-selection div {
   background: rgb(96 145 255 / .55) !important;
   color: #ffffff !important;
 }
-.terminal-screen.xterm-host .xterm .xterm-viewport::-webkit-scrollbar { width: 10px; }
+.terminal-screen.xterm-host .xterm::-webkit-scrollbar { width: 10px; height: 10px; }
 .terminal-screen.xterm-host .xterm .xterm-viewport::-webkit-scrollbar-track { background: var(--terminal); }
-.terminal-screen.xterm-host .xterm .xterm-viewport::-webkit-scrollbar-thumb { background: #3a403c; border-radius: 5px; }
+.terminal-screen.xterm-host .xterm::-webkit-scrollbar-thumb { background: #3a403c; border-radius: 5px; }
 .copy-fallback-overlay { position: fixed; inset: 0; background: rgb(0 0 0 / .6); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 20px; }
 .copy-fallback-panel { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 14px 16px; max-width: min(720px, 92vw); width: 100%; box-shadow: 0 10px 30px rgb(0 0 0 / .5); }
 .copy-fallback-panel p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }

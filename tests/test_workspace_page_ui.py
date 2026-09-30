@@ -676,7 +676,7 @@ class TerminalTakeoverTest(_PageTestCase):
         store.set_session(pane_id)
         self.service.acquire(self.meeting_id)
 
-        body = "A" * 300 + "TAIL-9f3c"
+        body = "A" * 140 + "，" + "B" * 140 + "、TAIL-9f3c"
         command = f"printf '%s\\n' '{body}'"
         self.service.terminal_input(
             self.meeting_id,
@@ -719,24 +719,59 @@ class TerminalTakeoverTest(_PageTestCase):
         self._assert_long_line(body)
 
     def _assert_long_line(self, body: str) -> None:
-        visible = self.page.js("document.querySelector('#terminal-screen').innerText") or ""
         result = self.page.js(
             """(() => {
                 const viewport = document.querySelector('#terminal-screen');
-                const tail = [...viewport.querySelectorAll('.xterm-rows > div')]
-                    .find((row) => row.innerText.includes('TAIL-9f3c'));
+                const terminal = viewport.querySelector('.xterm');
+                const rows = [...viewport.querySelectorAll('.xterm-rows > div')];
+                const tail = rows.find((row) => row.innerText.includes('TAIL-9f3c'));
+                const textRight = (row) => {
+                    const kids = row.children;
+                    const last = kids[kids.length - 1];
+                    return (last || row).getBoundingClientRect().right;
+                };
+                const contentRight = rows.reduce((right, row) =>
+                    Math.max(right, textRight(row)), 0);
                 const tailRect = tail?.getBoundingClientRect();
                 const box = viewport.getBoundingClientRect();
+                const overflowX = terminal ? getComputedStyle(terminal).overflowX : '';
+                const tailRight = tailRect?.right ?? 0;
+                const boxRight = box.right;
+                const contentVisibleWithoutScroll = contentRight <= boxRight + 1;
+                const maxScrollLeft = terminal
+                    ? terminal.scrollWidth - terminal.clientWidth : 0;
+                const previousScrollLeft = terminal?.scrollLeft || 0;
+                if (terminal && maxScrollLeft > 0) terminal.scrollLeft = maxScrollLeft;
+                const scrolledContentRight = rows.reduce((right, row) =>
+                    Math.max(right, textRight(row)), 0);
+                const contentVisibleAfterScroll = scrolledContentRight <= boxRight + 1;
+                if (terminal) terminal.scrollLeft = previousScrollLeft;
                 return {
-                    tailVisible: Boolean(tailRect && tailRect.right <= box.right + 1),
-                    scrollable: viewport.scrollWidth > viewport.clientWidth
-                        && getComputedStyle(viewport).overflowX !== 'hidden',
+                    viewportClient: viewport.clientWidth,
+                    viewportScroll: viewport.scrollWidth,
+                    xtermClient: terminal?.clientWidth || 0,
+                    xtermScroll: terminal?.scrollWidth || 0,
+                    overflowX,
+                    maxScrollLeft,
+                    contentRight,
+                    scrolledContentRight,
+                    tailRight,
+                    boxRight,
+                    contentVisibleWithoutScroll,
+                    contentVisibleAfterScroll,
                     tailText: tail?.innerText || '',
                 };
             })()"""
         )
         self.assertIn("TAIL-9f3c", result["tailText"])
-        self.assertTrue(result["tailVisible"] or result["scrollable"], result)
+        self.assertIn(result["overflowX"], {"auto", "scroll"}, result)
+        if result["maxScrollLeft"] == 0:
+            self.assertTrue(result["contentVisibleWithoutScroll"], result)
+        else:
+            self.assertTrue(
+                result["contentVisibleAfterScroll"],
+                result,
+            )
 
 
 if __name__ == "__main__":
