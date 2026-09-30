@@ -132,7 +132,6 @@
               <span id="terminal-readonly" class="readonly-badge">只读预览</span>
               <button id="terminal-copy-button" class="command-button compact" type="button" title="复制当前画面文本">复制文本</button>
               <button id="terminal-copy-ansi-button" class="command-button compact" type="button" title="Shift+右键 也可">复制 ANSI</button>
-              <div id="terminal-score-status" class="score-summary" aria-live="polite"></div>
               <div class="viewport-mode" role="group" aria-label="内容滚动模式">
                 <span class="viewport-mode-label">视野</span>
                 <div class="segmented">
@@ -301,7 +300,7 @@
   </dialog>
 
   <div id="selection-menu" class="selection-menu" hidden role="toolbar" aria-label="选区操作">
-    <button type="button" data-selection-action="add-to-conversation" class="score-action add-to-conversation">添加到对话</button>
+    <button type="button" data-selection-action="add-to-conversation" class="add-to-conversation">添加到对话</button>
   </div>
 
   <dialog id="event-dialog" class="event-dialog">

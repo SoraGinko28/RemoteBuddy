@@ -53,7 +53,6 @@ from meeting_v2 import (
     MEETING_ID_RE,
     SCHEMA_VERSION,
     VALID_REASONING_EFFORTS,
-    VALID_SCORE_TAGS,
     MeetingError,
     MeetingStore,
     UnsupportedMeetingError,
@@ -119,20 +118,6 @@ BACKEND_PROBE_CACHE_SECONDS = 60.0
 DEFAULT_JUDGE_NAME = "human"
 MAX_JUDGE_NAME_BYTES = 200
 LOCAL_SETTINGS_PATH = ".remotebuddy/settings.local.json"
-SCORE_IGNORED_FIELDS = frozenset(
-    {
-        "score",
-        "value",
-        "numeric_score",
-        "rating",
-        "judge_name",
-        "judge",
-        "excerpt",
-        "source_sha256",
-        "source_hash",
-    }
-)
-MAX_SCORE_COMMENT_BYTES = MAX_MESSAGE_BYTES
 BACKEND_COMBINATIONS = {
     ("responses", "openai"): "Responses API",
     ("codex-app-server", "openai"): "Codex App Server",
@@ -1456,8 +1441,6 @@ class MeetingWebService:
         if store.meeting.control_owner == "human":
             self._ensure_capture_worker(store)
             self._sync_human_pipe(store)
-        # One parse serves the whole payload. The frontend rebuilds chat and
-        # scores from its own timeline, so they are not shipped per poll.
         events = store.events()
         latest_screen = next(
             (event for event in reversed(events) if event.get("kind") == "screen"), None
@@ -2198,34 +2181,6 @@ class MeetingWebService:
                         recovery_required=True,
                     )
         return store, agent_error
-
-    def score(self, meeting_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Append a validated score without waking or mutating Agent state."""
-        with self._meeting_lock(meeting_id):
-            store = self.load_store(meeting_id)
-            allowed_fields = {"tag", "reference", "comment"} | set(SCORE_IGNORED_FIELDS)
-            if not isinstance(payload, dict) or not set(payload).issubset(allowed_fields):
-                raise WebError(400, "score request contains unsupported fields")
-            tag = payload.get("tag")
-            if not isinstance(tag, str) or tag not in VALID_SCORE_TAGS:
-                raise WebError(400, "tag must be competent or incompetent")
-            if "reference" not in payload:
-                raise WebError(400, "score reference is required")
-            reference = self._validated_reference(store, payload.get("reference"))
-            if reference is None:
-                raise WebError(422, "score reference is required")
-            comment = payload.get("comment")
-            if comment is not None:
-                if not isinstance(comment, str):
-                    raise WebError(400, "comment must be a string or null")
-                comment = comment.strip() or None
-                if comment is not None and len(comment.encode("utf-8")) > MAX_SCORE_COMMENT_BYTES:
-                    raise WebError(413, "comment is too large")
-            judge_name = _read_judge_name(self.project_root)
-            try:
-                return store.append_score(tag, reference, judge_name, score=None, comment=comment)
-            except MeetingError as exc:
-                raise WebError(422, str(exc)) from exc
 
     def acquire(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -3289,12 +3244,6 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 payload = self._read_json() or {}
                 self._json(self.service.sdk_call(unquote(match.group(1)), match.group(2),
                                                  payload.get("args") or {}))
-                return
-            match = re.fullmatch(r"/api/meetings/([^/]+)/scores", path)
-            if match:
-                meeting_id = unquote(match.group(1))
-                event = self.service.score(meeting_id, self._read_json())
-                self._json({"event": event, "meeting": _public_manifest(self.service.load_store(meeting_id))})
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/messages", path)
             if match:
