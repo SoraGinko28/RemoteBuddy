@@ -2400,6 +2400,30 @@ class RealTmuxEdgeTest(unittest.TestCase):
         self.assertIsInstance(raised.exception, TmuxError)
         self.assertIn("command was not sent", str(raised.exception))
 
+    def test_a_command_reports_a_closed_pane_instead_of_timing_out(self):
+        class ClosedPaneTransport:
+            def pane_info(self, _pane_id):
+                return {"command": "bash"}
+
+            def send_enter(self, _pane_id):
+                return None
+
+            def send_keys(self, _pane_id, _text):
+                return None
+
+            def pane_alive(self, _pane_id):
+                return False
+
+            def capture(self, _pane_id):
+                return ""
+
+        with self.assertRaises(tmux_vim.PaneClosedError) as raised:
+            tmux_vim.run_command(
+                ClosedPaneTransport(), None, "pane", "exit", timeout=5.0
+            )
+
+        self.assertIn("窗格没了", str(raised.exception))
+
     def test_run_command_keeps_the_whole_scrollback(self):
         case = _case_by_name("2files_1hunks_replace")
         work = repo_with_case(self, case)
