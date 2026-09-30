@@ -447,6 +447,7 @@ class MeetingWebService:
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
         self.capture_stops: Dict[str, threading.Event] = {}
+        self.snapshot_capture_at: Dict[str, float] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
         # 正在跑的 runner（一场会同时最多一个）：页面上"更新 / 重启"两个按钮
         # 要能戳到它，见 reload_skill / restart_agent。
@@ -1439,8 +1440,19 @@ class MeetingWebService:
     def snapshot(self, meeting_id: str) -> Dict[str, Any]:
         store = self.load_store(meeting_id)
         self._open_terminal_if_needed(store)
+        if store.meeting.pane_id and store.meeting.control_owner != "human":
+            now = time.monotonic()
+            with self.lock:
+                last_capture = self.snapshot_capture_at.get(meeting_id, 0.0)
+                should_capture = now - last_capture >= 0.5
+                if should_capture:
+                    self.snapshot_capture_at[meeting_id] = now
+            if should_capture:
+                try:
+                    capture_workspace(store, self._transport())
+                except (RunnerError, TmuxError, OSError):
+                    pass
         if store.meeting.control_owner == "human":
-            self._ensure_capture_worker(store)
             self._sync_human_pipe(store)
         events = store.events()
         latest_screen = next(
@@ -1987,6 +1999,8 @@ class MeetingWebService:
         try:
             stop = stop or threading.Event()
             while not stop.is_set():
+                if stop.wait(0.25):
+                    return
                 with self._meeting_lock(meeting_id):
                     store = self.load_store(meeting_id)
                     if store.meeting.status in TERMINAL_STATUSES:
@@ -2020,7 +2034,7 @@ class MeetingWebService:
                                 store.mark_session_stopped()
                             self._sync_human_pipe(store)
                             return
-                    elif store.meeting.control_requested != "human":
+                    elif store.meeting.control_owner != "human":
                         return
                 time.sleep(0.25)
         except (WebError, MeetingError, OSError):
@@ -2253,6 +2267,10 @@ class MeetingWebService:
             # picking the pane up, it records that nobody holds it.
             store.note_terminal_control(None)
             self._sync_human_pipe(store)
+            with self.lock:
+                capture_stop = self.capture_stops.get(meeting_id)
+            if capture_stop is not None:
+                capture_stop.set()
             return self.load_store(meeting_id)
 
     def _resume_agent_from_human(self, meeting_id: str) -> MeetingStore:
@@ -2275,6 +2293,10 @@ class MeetingWebService:
         store.append_event("control", "human", "agent_thinking", data={"status": "released"})
         store.note_terminal_control(store.meeting.actor_name())
         self._sync_human_pipe(store)
+        with self.lock:
+            capture_stop = self.capture_stops.get(meeting_id)
+        if capture_stop is not None:
+            capture_stop.set()
         self._ensure_worker(
             store,
             config,
