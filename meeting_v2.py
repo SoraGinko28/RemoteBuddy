@@ -104,8 +104,7 @@ DEFAULT_AGENT_ROLE_MAP = {
 # Pre-identity manifests recorded the lone agent as "agent"; loading them
 # keeps that exact name so historical records stay coherent.
 LEGACY_AGENT_NAME = "agent"
-VALID_EVENT_KINDS = {"chat", "screen", "score", "action", "control", "state", "error"}
-VALID_SCORE_TAGS = {"competent", "incompetent"}
+VALID_EVENT_KINDS = {"chat", "screen", "action", "control", "state", "error"}
 VALID_AGENT_BACKENDS = {"responses", "codex-app-server", "claude-code", "trae-agent", "trae-acp"}
 VALID_AGENT_PROVIDERS = {"openai", "deepseek"}
 # Mirrors the effort levels accepted by model_api_client; None on a meeting
@@ -954,65 +953,6 @@ class MeetingStore:
             "chat", actor, self.meeting.phase, content=content.strip(), message_type=message_type, data=data
         )
 
-    def append_score(
-        self,
-        tag: str,
-        reference: Any = None,
-        judge_name: Any = "human",
-        score: Optional[float] = None,
-        comment: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Append an immutable human score without entering the chat flow."""
-        # The public signature is ``(tag, reference, judge_name)``.  Keep accepting
-        # the earlier ``(tag, judge_name, reference)`` positional order so
-        # existing callers can upgrade without rewriting their call sites.
-        if isinstance(reference, str) and isinstance(judge_name, Mapping):
-            reference, judge_name = judge_name, reference
-        if not isinstance(tag, str) or tag not in VALID_SCORE_TAGS:
-            raise MeetingError("invalid score tag")
-        if not isinstance(judge_name, str) or not judge_name.strip():
-            raise MeetingError("judge name must be non-empty")
-        if comment is not None:
-            if not isinstance(comment, str):
-                raise MeetingError("score comment must be text or null")
-            comment = comment.strip() or None
-            if comment is not None and len(comment.encode("utf-8")) > MAX_MESSAGE_BYTES:
-                raise MeetingError(f"score comment exceeds {MAX_MESSAGE_BYTES} bytes")
-        if not isinstance(reference, Mapping):
-            raise MeetingError("score reference must be an object")
-        reference = dict(reference)
-        source_event = next(
-            (event for event in self.events() if event.get("event_id") == reference.get("event_id")),
-            None,
-        )
-        if source_event is None:
-            raise MeetingError("score reference source event was not found")
-        # Scores judge the Agent's observable work. A human-authored chat
-        # message must never be scoreable — neither by the human who wrote it
-        # nor by anyone else — while screen output and Agent chat remain fair
-        # targets.
-        if source_event.get("kind") == "chat" and source_event.get("actor") == "human":
-            raise MeetingError("human chat messages cannot be scored")
-        try:
-            reference = reference_from_event(source_event, reference)
-        except (TypeError, ValueError) as exc:
-            raise MeetingError(str(exc)) from exc
-        # V5 scores are categorical annotations.  Keep the field for forward
-        # compatibility, but never trust or persist a caller-provided value.
-        score = None
-        return self.append_event(
-            "score",
-            "human",
-            self.meeting.phase,
-            data={
-                "tag": tag,
-                "score": score,
-                "judge_name": judge_name.strip(),
-                "reference": dict(reference),
-                "comment": comment,
-            },
-        )
-
     def note_terminal_control(self, user_name: Optional[str]) -> None:
         """Record who controls the shared pane from now on.
 
@@ -1122,9 +1062,6 @@ class MeetingStore:
 
     def chat_messages(self) -> List[Dict[str, Any]]:
         return [event for event in self.events() if event.get("kind") == "chat"]
-
-    def score_messages(self) -> List[Dict[str, Any]]:
-        return [event for event in self.events() if event.get("kind") == "score"]
 
     def render_conversation(self, events: Optional[List[Dict[str, Any]]] = None) -> None:
         source = events if events is not None else self.events()

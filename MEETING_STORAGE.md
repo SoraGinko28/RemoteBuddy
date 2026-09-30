@@ -35,7 +35,6 @@ MeetingData 清单里 `sorted_stream_chunks` 是这些 chunk JSON 的列表，�
 |---|---|---|
 | screen | `owner_user_name`, `chunks[]` | `ScreenCapture`：`screen_data`(纯文本满帧) / `terminal_text_content[]`(带样式段) / `cursor_x,y` / `screen_width,height` / `captured_at`(ISO8601 UTC, `Z`) |
 | chat | `chunks[]` | `ChatMessage`：`user_name` / `time` / `message[]`，段元素 = `{"raw": str}` \| `{"at_user_name": str}` \| `{"ref": <ContentReference>}`（ref 键由 G8 加入） |
-| score | `chunks[]` | `ScoreMessage`：`tag` / `score`\|`comment`(nullable) / `judge_name` / `time` / `reference` |
 | keystroke | `chunks[]` | `Keystroke`：`data`(={text\|ctrl\|rest.ms}) / `user_name` / `stroke_time` |
 | terminal_control | `chunks[]` | `TerminalControl`：`tmux_window_name` / `tmux_pane` / `user_name` / `start_time` |
 
@@ -47,7 +46,6 @@ MeetingData 清单里 `sorted_stream_chunks` 是这些 chunk JSON 的列表，�
 ContentReference 单键信封：
 `{"screen_ref": {capture_time, stream_name, region:{start,end}}}`
 `{"chat_ref":   {msg_time, user_name, region:{start,end}}}`
-`{"score_ref":  {judge_time, judge_name}}`
 **引用只存键，不存目标内容副本**；resolve 靠同会流内按键查找（`resolve_*`）。
 
 ## 3. events.jsonl kind ↔ 五流映射
@@ -58,7 +56,7 @@ ContentReference 单键信封：
 | `screen` | screen | content 经**帧归一化**（§5）→ ScreenCapture；cursor/尺寸取 data |
 | `control` (data.status=acquired, actor≠harness) | terminal_control | acquired 时刻即区间起点；release 只推进不落记录 |
 | `action` / `state` / `error` | — | 运营噪音，跳过 |
-| （无事件 kind） | keystroke / score | **缺流即空流**，不落 chunk |
+| （无事件 kind） | keystroke | **缺流即空流**，不落 chunk |
 
 ## 4. 会议清单（meeting.json 语义 → MeetingData）
 
@@ -86,7 +84,7 @@ screen content 进入 ADT 前：
 ## 6. 空流 / 空 chunk
 
 无事件的流可以整流缺失（等价空流），也可以显式落空 chunk
-（如 `ScoreStreamChunk(chunks=[])`）；两种表示校验等价。
+（如 `ChatStreamChunk(chunks=[])`）；两种表示校验等价。
 
 ## 7. 校验入口
 
@@ -97,4 +95,4 @@ screen content 进入 ADT 前：
 
 1. ADT 文档点明 `sorted_stream_chunks` 允许缺流。
 2. role map 随清单持久化，替代推断。
-3. journal 开始记录逐键与评分事件，keystroke/score 流才有数据。
+3. journal 开始记录逐键事件，keystroke 流才有数据。
