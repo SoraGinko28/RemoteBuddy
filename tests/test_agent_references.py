@@ -54,7 +54,6 @@ class AgentReferenceProtocolTest(unittest.TestCase):
 
     def test_invalid_references_are_rejected(self):
         cases = [
-            [{"kind": "score", "seq": 1, "region": None}],
             [{"kind": "chat", "region": None}],
             [{"kind": "chat", "seq": 0, "region": None}],
             [{"kind": "chat", "seq": 1, "region": {"start": 3, "end": 3}}],

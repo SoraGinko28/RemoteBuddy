@@ -12,6 +12,7 @@ from agent_protocol import AgentActionError, AgentBackendError, AgentRefused
 from interactive_runner import (
     IDLE_CHAT_LIMIT,
     MAX_INVALID_ACTION_RETRIES,
+    REFUSED_REASON_LIMIT,
     MAX_IMAGE_BYTES_PER_TURN,
     InteractiveRunner,
     RunnerError,
@@ -988,6 +989,34 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertEqual(retries + 1, len(client.calls))
         self.assertEqual("api_error", loaded.meeting.phase)
         self.assertTrue(loaded.meeting.recovery_required)
+
+    def test_the_same_refusal_repeated_parks_the_turn_instead_of_spinning(self):
+        """同一个理由连着被拒到上限：驻留并把话说给人听，不再无声地吃额度。
+
+        真事：一场会里 `webSearch` 被拒 61 次，差不多吃掉了整整一轮的动作额度。
+        """
+        reason = "forbidden Codex item type: webSearch"
+        client = FakeClient(
+            [make_action()]
+            + [AgentRefused(reason) for _ in range(REFUSED_REASON_LIMIT)]
+            + [make_action("done", message_type="final", content="never reached")]
+        )
+        InteractiveRunner(
+            self.store, self.transport, client, action_settle_seconds=0, typing_interval_seconds=0
+        ).start()
+
+        loaded = MeetingStore.load(self.root, "runner-demo")
+        refusals = [
+            event for event in loaded.events()
+            if event["kind"] == "action" and event["data"].get("reason") == "refused"
+        ]
+        self.assertEqual(REFUSED_REASON_LIMIT, len(refusals))
+        self.assertEqual("waiting_for_user", loaded.meeting.phase)
+        reasons = [
+            str((event.get("data") or {}).get("reason") or "")
+            for event in loaded.events() if event["kind"] == "state"
+        ]
+        self.assertTrue(any("does not offer" in item for item in reasons), reasons)
 
     def test_stop_before_worker_start_creates_no_tmux_or_api_conversation(self):
         self.store.request_stop()

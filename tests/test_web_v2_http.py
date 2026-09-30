@@ -225,7 +225,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(["web-demo"], [item["meeting_id"] for item in listing["meetings"]])
         self.assertTrue(listing["warnings"])
         snapshot = self.service.snapshot("web-demo")
-        # Chat and scores are rebuilt client-side from the event timeline and
+        # Chat is rebuilt client-side from the event timeline and
         # are intentionally absent from the per-poll snapshot payload.
         self.assertNotIn("chat", snapshot)
         self.assertTrue(snapshot["latest_screen"]["content"])

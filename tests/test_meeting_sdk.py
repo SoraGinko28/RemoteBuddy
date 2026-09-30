@@ -103,7 +103,6 @@ def _api_calls():
     content_ref = remote.make_versioned_file_content_reference(file_ref,
                                                               remote.make_text_region(0, 5))
     chat_ref = remote.make_chat_reference(last, "bob", remote.make_text_region(0, 2))
-    score_ref = remote.make_score_reference(last, "bob")
     screen_ref = remote.make_screen_reference(first, "screen", remote.make_text_region(0, 2))
     control_ref = remote.make_terminal_control_reference(first, "alice",
                                                         remote.make_text_region(0, 3))
@@ -111,13 +110,10 @@ def _api_calls():
         ("chunk_times", (data, first, last)),
         ("streams_between", (data, first, last)),
         ("chat_messages", (data, first, last)),
-        ("score_messages", (data, first, last)),
         ("chat_message_at", (data, last, "bob")),
         ("resolve_chat_reference", (data, chat_ref)),
         ("resolve_chat_content_reference", (data, chat_ref)),
-        ("resolve_score_reference", (data, score_ref)),
         ("chat_message_references", (data, first, "alice")),
-        ("score_message_reference", (data, last, "bob")),
         ("first_chunk_time", (data,)),
         ("last_chunk_time", (data,)),
         ("screen_at", (data, first)),
@@ -141,9 +137,9 @@ def _api_calls():
 # classes of its own (RawMessage / AtUserMessage) and the binding does not land
 # them on the design's branches ($raw_msg str / $at_user_name UserName).
 WALKABLE = (
-    "chunk_times", "streams_between", "score_messages",
-    "resolve_chat_content_reference", "resolve_score_reference",
-    "chat_message_references", "score_message_reference",
+    "chunk_times", "streams_between",
+    "resolve_chat_content_reference",
+    "chat_message_references",
     "first_chunk_time", "last_chunk_time", "screen_at", "resolve_screen_reference",
     "participants", "roles", "owner_at", "control_owner_of", "file_id_by_path",
     "file_datetimes", "files_at", "latest_file",
@@ -235,11 +231,11 @@ def test_the_make_group_is_local_and_identical() -> None:
             assert getattr(remote, name) is getattr(server, name)
 
 
-def test_the_contract_is_the_same_34() -> None:
+def test_the_contract_is_the_same_30() -> None:
     """screen_times arrived for the critic: it needs the screen stream's
     moments, not just the first one."""
     assert remote.__all__ == server.__all__
-    assert len(remote.__all__) == 34
+    assert len(remote.__all__) == 30
 
 
 def test_every_data_api_has_a_return_type() -> None:

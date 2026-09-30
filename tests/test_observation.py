@@ -21,16 +21,6 @@ def record(seq, kind="chat", actor="human", content="hello", message_type="reque
 
 
 class BoundedHistoryTest(unittest.TestCase):
-    def test_scores_are_never_exposed_to_agent_prompts(self):
-        events = [
-            record(1),
-            record(2, kind="score", actor="human", content="secret annotation"),
-            record(3, kind="action", actor="actor", content=""),
-        ]
-        records = InteractiveRunner._bounded_history(events)
-        self.assertEqual([1, 3], [item["seq"] for item in records])
-        self.assertNotIn("secret annotation", json.dumps(records))
-
     def test_event_limit_keeps_the_first_record_and_the_tail(self):
         events = [record(seq) for seq in range(1, HISTORY_EVENT_LIMIT + 51)]
         records = InteractiveRunner._bounded_history(events)
@@ -134,7 +124,7 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(screen["seq"], packet["terminal"]["seq"])
         self.assertEqual(screen["event_id"], packet["terminal"]["event_id"])
 
-    def test_scores_and_screens_are_filtered_from_new_events(self):
+    def test_screens_are_filtered_from_new_events(self):
         unread = [
             record(10, kind="screen", actor="workspace", content="frame"),
             record(11, kind="chat", actor="human", content="New request"),

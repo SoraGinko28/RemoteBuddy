@@ -63,7 +63,6 @@ def _samples():
             capture_time=v, stream_name="screen", region=adt.TextRegion(0, 2))),
         ("ChatReference", adt.ChatReference(
             msg_time=v, user_name="alice", region=adt.TextRegion(0, 2))),
-        ("ScoreReference", adt.ScoreReference(judge_time=v, judge_name="bob")),
         ("TerminalControlReference", adt.TerminalControlReference(
             start_time=v, user_name="alice", region=adt.TextRegion(0, 3))),
         ("VersionedFileReference", file_ref),
@@ -71,9 +70,6 @@ def _samples():
             versioned_file_ref=file_ref, region=adt.TextRegion(0, 5))),
         ("ContentReference", adt.ChatReference(
             msg_time=v, user_name="alice", region=adt.TextRegion(0, 2))),
-        ("ScoreMessage", adt.ScoreMessage(
-            tag="correctness", score=1.0, comment="ok", judge_name="bob", time=v,
-            reference=adt.ScoreReference(judge_time=v, judge_name="bob"))),
     ]
 
 

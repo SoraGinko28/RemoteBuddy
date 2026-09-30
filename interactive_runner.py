@@ -78,6 +78,11 @@ MAX_INVALID_ACTION_RETRIES = 5
 # a usable result, park the turn instead of looping ("not every dynamic tool
 # completes; once the threshold is hit, move on").
 DYNAMIC_STALL_LIMIT = 3
+# 同一个理由连着被拒这么多次，就不再让它无声地吃额度：驻留并把话说给人听。
+# 这不是"整轮判死"（那条由 MAX_INVALID_ACTION_RETRIES 管），而是"这个后端一直在
+# 要一个这里没有的能力，别再空转"——真事：一场会里 `webSearch` 被拒 61 次，
+# 差不多吃掉了整整一轮的动作额度。
+REFUSED_REASON_LIMIT = 8
 SHELL_COMMANDS = {"bash", "zsh", "sh"}
 # 只有这两条 backend 自己有读工具：claude-code 是 Read/Glob/Grep，trae-acp 是它自己的读
 # 工具加只读 shell（2026-09-27 在真会上验过：它读了文件，终端一个字符没动）。别的
@@ -143,6 +148,8 @@ class InteractiveRunner:
         self._stale_action_streak = 0
         self._invalid_action_streak = 0
         self._refused_action_streak = 0
+        self._refused_reason = ""
+        self._refused_reason_streak = 0
         self._dynamic_action_active = threading.Event()
         self._cycle_started_monotonic = time.monotonic()
         # 记着"这个预算属于哪一代请求"：人每说一句话 generation 就顶一格，那是新的一轮，
@@ -214,6 +221,8 @@ class InteractiveRunner:
         self._last_action_success = True
         self._invalid_action_streak = 0
         self._refused_action_streak = 0
+        self._refused_reason = ""
+        self._refused_reason_streak = 0
         self._idle_chat_streak = 0
 
     @staticmethod
@@ -610,11 +619,9 @@ class InteractiveRunner:
                 capture_workspace(self.store, self.transport)
                 if self.store.meeting.pane_id:
                     self._screen_before_think = self._pane_snapshot(self.store.meeting.pane_id)
-                unread = [
-                    event
-                    for event in self.store.events_after(self.store.meeting.agent_cursor)
-                    if event.get("kind") != "score"
-                ]
+                unread = list(
+                    self.store.events_after(self.store.meeting.agent_cursor)
+                )
                 latest_sequence = max(
                     self.store.last_event_sequence(), self.store.meeting.agent_cursor
                 )
@@ -720,6 +727,12 @@ class InteractiveRunner:
                         self._check_stop()
                         self._last_action_success = False
                         self._refused_action_streak += 1
+                        reason = str(exc)
+                        if reason == self._refused_reason:
+                            self._refused_reason_streak += 1
+                        else:
+                            self._refused_reason = reason
+                            self._refused_reason_streak = 1
                         next_count = self.store.meeting.cycle_action_count + 1
                         self.store.append_event(
                             "action",
@@ -743,6 +756,12 @@ class InteractiveRunner:
                     # A refused capability is recoverable independently of malformed actions;
                     # three consecutive refusals must keep the meeting alive.
                     if self._refused_action_streak < ACTION_LIMIT:
+                        if self._refused_reason_streak >= REFUSED_REASON_LIMIT:
+                            self._wait_for_user(
+                                "the Agent backend keeps asking for something this "
+                                f"workspace does not offer: {exc}"
+                            )
+                            return
                         continue
                 if isinstance(exc, AgentActionError):
                     # The model produced an invalid action (for example
@@ -1351,7 +1370,7 @@ class InteractiveRunner:
     ) -> str:
         relevant = []
         for event in self._with_attachment_files(unread):
-            if event.get("kind") in {"screen", "score"}:
+            if event.get("kind") == "screen":
                 continue
             if (
                 event.get("kind") == "chat"
@@ -1383,7 +1402,7 @@ class InteractiveRunner:
                 [
                     event
                     for event in self.store.events()
-                    if event.get("kind") not in {"screen", "chat", "score"}
+                    if event.get("kind") not in {"screen", "chat"}
                 ],
                 include_action_details=True,
             )
@@ -1514,10 +1533,6 @@ class InteractiveRunner:
         """Keep stateless Responses prompts useful without unbounded growth."""
         records = []
         for event in events:
-            # Scores are human annotations only; never expose them to Agent
-            # prompts, even when a caller supplies an unfiltered event list.
-            if event.get("kind") == "score":
-                continue
             record: Dict[str, Any] = {
                 "seq": event.get("seq"),
                 "captured_at": event.get("captured_at"),

@@ -7,7 +7,7 @@ Design intent (finalized in MEETING_ADT.md; this module is its executable spec):
 - Once frozen, data is immutable; increments only append, never mutate in place.
 - Type changes must stay consistent with the ADT document; the document leads.
 
-Stream order is fixed: screen/chat/score/agent_cmd/terminal_control (shared by replay and validation).
+Stream order is fixed: screen/chat/agent_cmd/terminal_control (shared by replay and validation).
 Keystrokes are not a stream: they live in the harness and are never persisted.
 """
 
@@ -21,14 +21,12 @@ from typing import Callable, Final, Generic, Optional, TypeVar
 # Stream names: the ADT's streams, order fixed; do not add, remove, or reorder them.
 SCREEN_STREAM_NAME = "screen"
 CHAT_STREAM_NAME = "chat"
-SCORE_STREAM_NAME = "score"
 AGENT_CMD_STREAM_NAME = "agent_cmd"
 TERMINAL_CONTROL_STREAM_NAME = "terminal_control"
 
 STREAM_NAMES: Final[tuple[str, ...]] = (
     SCREEN_STREAM_NAME,
     CHAT_STREAM_NAME,
-    SCORE_STREAM_NAME,
     AGENT_CMD_STREAM_NAME,
     TERMINAL_CONTROL_STREAM_NAME,
 )
@@ -36,7 +34,6 @@ STREAM_NAMES: Final[tuple[str, ...]] = (
 __all__ = [
     "SCREEN_STREAM_NAME",
     "CHAT_STREAM_NAME",
-    "SCORE_STREAM_NAME",
     "AGENT_CMD_STREAM_NAME",
     "TERMINAL_CONTROL_STREAM_NAME",
     "STREAM_NAMES",
@@ -479,8 +476,7 @@ def chat_stream_chunk_from_dict(payload: dict) -> ChatStreamChunk:
 # TextRegion = DataClass $start int $end int
 # ScreenReference = $capture_time datetime $stream_name str $region TextRegion
 # ChatReference   = $msg_time datetime $user_name UserName $region TextRegion
-# ScoreReference  = $judge_time datetime $judge_name UserName
-# ContentReference = Oneof | $screen_ref | $chat_ref | $score_ref
+# ContentReference = Oneof | $screen_ref | $chat_ref
 #
 # Storage design: references store keys only (time + user/stream), never a copy of the referenced content;
 # resolve() looks the key up in the same meeting's streams; no match or several matches both count as a dangling reference (raised, for validation to collect).
@@ -488,7 +484,6 @@ def chat_stream_chunk_from_dict(payload: dict) -> ChatStreamChunk:
 # Persisted JSON (the Oneof is disambiguated by a single-key envelope):
 #   {"screen_ref": {"capture_time": iso, "stream_name": s, "region": {start,end}}}
 #   {"chat_ref":   {"msg_time": iso, "user_name": u, "region": {start,end}}}
-#   {"score_ref":  {"judge_time": iso, "judge_name": u}}
 
 @dataclass(frozen=True)
 class TextRegion:
@@ -512,12 +507,6 @@ class ChatReference:
     msg_time: _dt.datetime
     user_name: str
     region: TextRegion
-
-
-@dataclass(frozen=True)
-class ScoreReference:
-    judge_time: _dt.datetime
-    judge_name: str
 
 
 @dataclass(frozen=True)
@@ -550,12 +539,12 @@ class VersionedFileContentReference:
     region: Optional[TextRegion] = None
 
 
-ContentReference = (ScreenReference | ChatReference | ScoreReference
+ContentReference = (ScreenReference | ChatReference
                     | TerminalControlReference | VersionedFileReference
                     | VersionedFileContentReference)
 
 # a part of $message can be a reference (the six of G8)
-_REFERENCE_TYPES = (ScreenReference, ChatReference, ScoreReference,
+_REFERENCE_TYPES = (ScreenReference, ChatReference,
                     TerminalControlReference, VersionedFileReference,
                     VersionedFileContentReference)
 ChatMessagePart = RawMessage | AtUserMessage | ContentReference
@@ -581,11 +570,6 @@ def content_reference_to_dict(reference: ContentReference) -> dict:
             "msg_time": _iso_format(reference.msg_time),
             "user_name": reference.user_name,
             "region": text_region_to_dict(reference.region),
-        }}
-    if isinstance(reference, ScoreReference):
-        return {"score_ref": {
-            "judge_time": _iso_format(reference.judge_time),
-            "judge_name": reference.judge_name,
         }}
     if isinstance(reference, TerminalControlReference):
         return {"terminal_control_ref": {
@@ -620,12 +604,6 @@ def content_reference_from_dict(payload: dict) -> ContentReference:
             msg_time=_iso_parse(inner["msg_time"]),
             user_name=inner["user_name"],
             region=text_region_from_dict(inner["region"]),
-        )
-    if "score_ref" in payload:
-        inner = payload["score_ref"]
-        return ScoreReference(
-            judge_time=_iso_parse(inner["judge_time"]),
-            judge_name=inner["judge_name"],
         )
     if "terminal_control_ref" in payload:
         inner = payload["terminal_control_ref"]
@@ -676,24 +654,13 @@ def resolve_chat_reference(reference: ChatReference,
     return _resolve_matches(matches, "chat message")  # type: ignore[return-value]
 
 
-def resolve_score_reference(reference: ScoreReference,
-                            score_messages: "list[ScoreMessage]") -> "ScoreMessage":
-    """ScoreReference.resolve: match judge_name and time == judge_time (ScoreMessage is defined in G9)."""
-    matches = [m for m in score_messages
-               if m.judge_name == reference.judge_name and m.time == reference.judge_time]
-    return _resolve_matches(matches, "score message")  # type: ignore[return-value]
-
-
 def resolve_content_reference(reference: ContentReference,
                               screen_captures: "list[ScreenCapture]",
-                              chat_messages: "list[ChatMessage]",
-                              score_messages: "list[ScoreMessage]") -> object:
+                              chat_messages: "list[ChatMessage]") -> object:
     if isinstance(reference, ScreenReference):
         return resolve_screen_reference(reference, screen_captures)
     if isinstance(reference, ChatReference):
         return resolve_chat_reference(reference, chat_messages)
-    if isinstance(reference, ScoreReference):
-        return resolve_score_reference(reference, score_messages)
     raise TypeError(f"unknown content reference: {type(reference).__name__}")
 
 
@@ -701,7 +668,6 @@ __all__ += [
     "TextRegion",
     "ScreenReference",
     "ChatReference",
-    "ScoreReference",
     "TerminalControlReference",
     "VersionedFileReference",
     "VersionedFileContentReference",
@@ -711,135 +677,7 @@ __all__ += [
     "content_reference_from_dict",
     "resolve_screen_reference",
     "resolve_chat_reference",
-    "resolve_score_reference",
     "resolve_content_reference",
-]
-
-
-# =====================================================================
-# G9: ScoreMessage / ScoreStreamChunk (score stream)
-# =====================================================================
-#
-# ScoreMessage = DataClass
-#   * $tag str
-#   * $score Optional[float]
-#   * $comment Optional[str]
-#   * $judge_name UserName
-#   * $time datetime
-#   * $reference ContentReference
-#   * Appendix[{
-#       summon_chained = role($judge_name) != $critic
-#                         or the message's $reference resolves to a message that summoned it
-#     }]
-#   * Assert[{ summon_chained }]
-#
-# The real journal has no score events today -> the absent stream is an empty stream: ScoreStreamChunk(chunks=[]).
-# Persisted JSON: {"tag": s, "score": float|null, "comment": str|null,
-#             "judge_name": u, "time": iso, "reference": <ContentReference JSON>}
-
-@dataclass
-class ScoreMessage:
-    tag: str
-    score: Optional[float] = None
-    comment: Optional[str] = None
-    judge_name: str = ""
-    time: Optional[_dt.datetime] = None
-    reference: Optional[ContentReference] = None
-
-
-@dataclass
-class ScoreStreamChunk:
-    stream_name: str = SCORE_STREAM_NAME
-    chunks: list[ScoreMessage] = field(default_factory=list)
-
-
-def score_message_to_dict(message: ScoreMessage) -> dict:
-    payload: dict = {
-        "tag": message.tag,
-        "score": message.score,
-        "comment": message.comment,
-        "judge_name": message.judge_name,
-        "time": _iso_format(message.time) if message.time is not None else None,
-    }
-    if message.reference is not None:
-        payload["reference"] = content_reference_to_dict(message.reference)
-    return payload
-
-
-def score_message_from_dict(payload: dict) -> ScoreMessage:
-    if "tag" not in payload:
-        raise ValueError(f"score message missing tag: {payload!r}")
-    reference = None
-    if "reference" in payload and payload["reference"] is not None:
-        reference = content_reference_from_dict(payload["reference"])
-    time = payload.get("time")
-    return ScoreMessage(
-        tag=payload["tag"],
-        score=payload.get("score"),
-        comment=payload.get("comment"),
-        judge_name=payload.get("judge_name", ""),
-        time=_iso_parse(time) if isinstance(time, str) else None,
-        reference=reference,
-    )
-
-
-def score_stream_chunk_to_dict(chunk: ScoreStreamChunk) -> dict:
-    return {
-        "stream_name": chunk.stream_name,
-        "chunks": [score_message_to_dict(m) for m in chunk.chunks],
-    }
-
-
-def score_stream_chunk_from_dict(payload: dict) -> ScoreStreamChunk:
-    if payload.get("stream_name") != SCORE_STREAM_NAME:
-        raise ValueError(f"not a score chunk: {payload.get('stream_name')!r}")
-    return ScoreStreamChunk(
-        stream_name=payload["stream_name"],
-        chunks=[score_message_from_dict(m) for m in payload["chunks"]],
-    )
-
-
-def score_summon_chained(message: ScoreMessage,
-                         role_of: object,
-                         referenced_message: Optional[object]) -> bool:
-    """A decidable version of the Appendix's summon_chained.
-
-    Role lookup is delegated to the caller-injected role_of (a MeetingData.agent_name2role query),
-    referenced_message is the message the reference resolves to (None when there is no reference).
-    passive check: chained only when the reference resolves to a summoning message that mentions @judge.
-    """
-    role = role_of(message.judge_name) if callable(role_of) else None
-    if role != AgentRole.CRITIC:
-        return True  # actor / active / non-agent (e.g. human) never needs a summon
-    if referenced_message is None:
-        return False
-    mention = getattr(referenced_message, "message", None)
-    if mention is None:
-        return False
-    return any(isinstance(p, AtUserMessage) and p.user_name == message.judge_name
-               for p in mention)
-
-
-def assert_score_summon_chained(message: ScoreMessage,
-                                role_of: object,
-                                referenced_message: Optional[object]) -> None:
-    """Assert[{ summon_chained }]"""
-    if not score_summon_chained(message, role_of, referenced_message):
-        raise AssertionError(
-            f"passive judge {message.judge_name!r} not summon_chained @ {message.time}: "
-            f"reference resolves to no summoning mention"
-        )
-
-
-__all__ += [
-    "ScoreMessage",
-    "ScoreStreamChunk",
-    "score_message_to_dict",
-    "score_message_from_dict",
-    "score_stream_chunk_to_dict",
-    "score_stream_chunk_from_dict",
-    "score_summon_chained",
-    "assert_score_summon_chained",
 ]
 
 
@@ -1747,8 +1585,7 @@ __all__ += [
 #   * $agent_name2role dict[str, AgentRole]
 #   * Appendix[{
 #       user_names = every UserName appearing across all chunks
-#                      (screen.owner / chat.user_name / score.judge_name /
-#                       terminal_control.user_name)
+#                      (screen.owner / chat.user_name / terminal_control.user_name)
 #     }]
 #   * Assert[{ keys($agent_name2role) ⊆ user_names(this record) }]
 #
@@ -1766,7 +1603,7 @@ class ScreenStreamChunk:
     chunks: list[ScreenCapture] = field(default_factory=list)
 
 
-StreamChunk = (ScreenStreamChunk | ChatStreamChunk | ScoreStreamChunk | AgentCmdStreamChunk
+StreamChunk = (ScreenStreamChunk | ChatStreamChunk | AgentCmdStreamChunk
                | TerminalControlStreamChunk)
 
 
@@ -1856,8 +1693,6 @@ def stream_chunk_to_dict(chunk: StreamChunk) -> dict:
         return screen_stream_chunk_to_dict(chunk)
     if isinstance(chunk, ChatStreamChunk):
         return chat_stream_chunk_to_dict(chunk)
-    if isinstance(chunk, ScoreStreamChunk):
-        return score_stream_chunk_to_dict(chunk)
     if isinstance(chunk, AgentCmdStreamChunk):
         return agent_cmd_stream_chunk_to_dict(chunk)
     if isinstance(chunk, TerminalControlStreamChunk):
@@ -1876,8 +1711,6 @@ def stream_chunk_from_dict(payload: dict) -> StreamChunk:
         return screen_stream_chunk_from_dict(payload)
     if stream_name == CHAT_STREAM_NAME:
         return chat_stream_chunk_from_dict(payload)
-    if stream_name == SCORE_STREAM_NAME:
-        return score_stream_chunk_from_dict(payload)
     if stream_name == AGENT_CMD_STREAM_NAME:
         return agent_cmd_stream_chunk_from_dict(payload)
     return terminal_control_stream_chunk_from_dict(payload)
@@ -1914,8 +1747,6 @@ def user_names_of_meeting_data(data: MeetingData) -> set[str]:
                 names.add(chunk.owner_user_name)
         elif isinstance(chunk, ChatStreamChunk):
             names.update(m.user_name for m in chunk.chunks)
-        elif isinstance(chunk, ScoreStreamChunk):
-            names.update(m.judge_name for m in chunk.chunks)
         elif isinstance(chunk, TerminalControlStreamChunk):
             names.update(c.user_name for c in chunk.chunks if c.user_name)
     names.update(v.author for v in _file_layer_versioned(data) if v.author)
@@ -2039,10 +1870,6 @@ def make_screen_reference(capture_time, stream_name: str,
 
 def make_chat_reference(msg_time, user_name: str, region: "TextRegion") -> "ChatReference":
     return ChatReference(msg_time=msg_time, user_name=user_name, region=region)
-
-
-def make_score_reference(judge_time, judge_name: str) -> "ScoreReference":
-    return ScoreReference(judge_time=judge_time, judge_name=judge_name)
 
 
 def make_terminal_control_reference(start_time, user_name, region: "TextRegion"):
