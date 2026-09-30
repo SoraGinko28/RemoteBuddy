@@ -1463,3 +1463,4 @@ class AttachmentObservationTest(unittest.TestCase):
         runner = InteractiveRunner(self.store, FakeTransport(), FakeClient([]),
                                    lock=threading.RLock())
         self.assertEqual([], runner._images_of(self.store.events_after(0)))
+        self.assertIn("超过本轮模型输入上限", self.store.chat_messages()[-1]["content"])
