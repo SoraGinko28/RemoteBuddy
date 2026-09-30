@@ -544,37 +544,6 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
         )
         attachment = self.service.save_attachment(self.meeting_id, "image/png", png)
-
-    def test_dropping_image_uses_upload_path_and_ignores_non_images(self):
-        import base64
-
-        png = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
-        )
-        attachment = self.service.save_attachment(self.meeting_id, "image/png", png)
-        self.page.wait_for(
-            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30,
-            what="页面画出这场会",
-        )
-        result = self.page.js("""
-(() => {
-  const strip = document.querySelector('#attachment-strip');
-  const image = new File(['png'], 'drop.png', {type: 'image/png'});
-  const text = new File(['text'], 'drop.txt', {type: 'text/plain'});
-  const data = new DataTransfer();
-  data.items.add(image);
-  const imageDrop = new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: data});
-  document.dispatchEvent(imageDrop);
-  const textData = new DataTransfer();
-  textData.items.add(text);
-  const textDrop = new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: textData});
-  document.dispatchEvent(textDrop);
-  return {prevented: imageDrop.defaultPrevented, textPrevented: textDrop.defaultPrevented,
-    strip: strip.hidden};
-})()
-""")
-        self.assertTrue(result["prevented"])
-        self.assertTrue(result["textPrevented"])
         source = self._first_event_id()
         # 直接往 journal 里写这一条：走 message() 会把 Agent 叫起来，而这场会没有可用的模型配置，
         # 一叫就进 api_error、输入框被禁用，后面那条输入框的用例就量不到东西了。
@@ -643,6 +612,37 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
         self.assertEqual(8, order["quoteToImage"], "引用到图片应为 8px")
         self.assertEqual(8, order["imageToText"], "图片到正文应为 8px")
         self.assertEqual(8, order["imageOnlyNameToImage"], "只有图片时名字到图片应为 8px")
+
+    def test_dropping_image_uses_upload_path_and_ignores_non_images(self):
+        import base64
+
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        attachment = self.service.save_attachment(self.meeting_id, "image/png", png)
+        self.page.wait_for(
+            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30,
+            what="页面画出这场会",
+        )
+        result = self.page.js("""
+(() => {
+  const strip = document.querySelector('#attachment-strip');
+  const image = new File(['png'], 'drop.png', {type: 'image/png'});
+  const text = new File(['text'], 'drop.txt', {type: 'text/plain'});
+  const data = new DataTransfer();
+  data.items.add(image);
+  const imageDrop = new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: data});
+  document.dispatchEvent(imageDrop);
+  const textData = new DataTransfer();
+  textData.items.add(text);
+  const textDrop = new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: textData});
+  document.dispatchEvent(textDrop);
+  return {prevented: imageDrop.defaultPrevented, textPrevented: textDrop.defaultPrevented,
+    strip: strip.hidden};
+})()
+""")
+        self.assertTrue(result["prevented"])
+        self.assertTrue(result["textPrevented"])
 
     def test_completion_proposals_show_whether_they_have_evidence(self):
         self.page.wait_for(
