@@ -3177,10 +3177,11 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             match = re.fullmatch(r"/api/meetings/([^/]+)/snapshot", path)
             if match:
                 meeting_id = unquote(match.group(1))
-                if self._not_modified_early('"' + self.service.revision(meeting_id) + '"'):
-                    return
                 payload = self.service.snapshot(meeting_id)
-                self._json(payload, etag='"' + payload["revision"] + '"')
+                etag = '"' + payload["revision"] + '"'
+                if self._not_modified_early(etag):
+                    return
+                self._json(payload, etag=etag)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/events", path)
             if match:
