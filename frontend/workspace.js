@@ -1463,19 +1463,30 @@ function renderedTerminalCellWidth(engine) {
   }
 }
 
+// The `.xterm` box carries `margin: 0 4px 4px` (workspace.css). The grid and
+// the fitted line height both have to fit inside that margin: rows laid out
+// past the panel edge are clipped, and the row that gets lost is the one the
+// cursor sits on.
+function terminalPanelBox() {
+  return {
+    width: Math.max(0, (el.terminal_screen.clientWidth || 0) - 2 * TERMINAL_SIDE_MARGIN_PX),
+    height: Math.max(0, (el.terminal_screen.clientHeight || 0) - TERMINAL_BOTTOM_MARGIN_PX),
+  };
+}
+
 function takeoverGrid(engine) {
-  const terminalInner = el.terminal_screen.querySelector(".xterm") || el.terminal_screen;
-  const panelWidth = Math.max(0, (el.terminal_screen.clientWidth || 0) - 8);
-  const panelHeight = el.terminal_screen.clientHeight || 0;
+  const panel = terminalPanelBox();
+  const panelWidth = panel.width;
+  const panelHeight = panel.height;
   const charWidth = renderedTerminalCellWidth(engine);
   const cellHeight = terminalCellHeight(engine);
   let cols = 80;
   if (panelWidth > 0 && charWidth > 0) {
-    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth)));
+    cols = Math.max(40, Math.min(300, Math.floor((panelWidth - charWidth) / charWidth)));
   }
   let rows = 24;
-  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor(panelHeight / TERMINAL_ROW_PX);
-  rows = Math.max(12, Math.min(120, rows));
+  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor(panelHeight / cellHeight);
+  rows = Math.max(1, Math.min(120, rows));
   return { cols, rows };
 }
 
@@ -1557,7 +1568,9 @@ function bindTakeoverInput(engine) {
   ]) {
     document.addEventListener(type, handler, true);
   }
-  try { engine.focus(); } catch (_error) { /* no-op */ }
+  // Focus is raised once the panel is actually visible (see the seed
+  // handler): focusing a `visibility: hidden` textarea leaves Chrome to move
+  // focus later without firing the focus event xterm's cursor needs.
 }
 
 function unbindTakeoverInput() {
@@ -1576,13 +1589,14 @@ function unbindTakeoverInput() {
 
 function startTerminalTakeover() {
   if (takeoverStream.active) return;
-  // Measure the viewport grid on the CURRENT engine (its cell metrics are
-  // already real from frame painting), then hand the stream a brand-new
-  // Terminal so no painted cells survive into the byte-stream mode.
-  const previous = ensureTerminalEngine();
-  const grid = previous ? takeoverGrid(previous) : { cols: 80, rows: 24 };
+  // Hand the stream a brand-new Terminal so no painted cells survive into the
+  // byte-stream mode, then measure the viewport grid on THAT engine: the
+  // previous one may be running a stretched line height fitted to a watched
+  // frame, and its cell box is not the box takeover draws with.
+  ensureTerminalEngine();
   const engine = rebuildTerminalEngine();
   if (!engine) return;
+  const grid = takeoverGrid(engine);
   takeoverStream.active = true;
   takeoverStream.lastEventAt = Date.now();
   globalThis.__takeoverReady = true;
@@ -1609,6 +1623,9 @@ function startTerminalTakeover() {
   termRowsState = null;
   engine.reset();
   bindTakeoverInput(engine);
+  // Keys never reach xterm's own handler here (disableStdin), so takeover has
+  // to raise the focus event that makes xterm draw its cursor.
+  initializeTerminalCursor(engine, true);
 
   const streamUrl = `/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/stream?cols=${grid.cols}&rows=${grid.rows}`;
   const source = new EventSource(streamUrl);
@@ -1636,6 +1653,14 @@ function startTerminalTakeover() {
       requestAnimationFrame(() => {
         if (takeoverStream.active && takeoverStream.source === source) {
           el.terminal_screen.dataset.geometryReady = "true";
+          // Only now is the panel visible, so focusing the terminal raises the
+          // focus event xterm draws its cursor from (the takeover keyboard
+          // path is the app's own, so nothing else ever raises one).
+          setTimeout(() => {
+            if (takeoverStream.active && takeoverStream.source === source) {
+              initializeTerminalCursor(engine, true);
+            }
+          }, 0);
         }
       });
     });
@@ -1760,6 +1785,9 @@ let takeoverRepaintForceReset = false;
 const TERMINAL_FONT_SIZE = 12;
 const TERMINAL_LINE_HEIGHT = 1.42;
 const TERMINAL_ROW_PX = TERMINAL_FONT_SIZE * TERMINAL_LINE_HEIGHT;
+// `.terminal-screen.xterm-host .xterm { margin: 0 4px 4px }` in workspace.css.
+const TERMINAL_SIDE_MARGIN_PX = 4;
+const TERMINAL_BOTTOM_MARGIN_PX = 4;
 let termRowsState = null; // { width, height, plain: string[] } of last painted frame
 
 const TERMINAL_STYLE_CODES = { bold: "1", dim: "2", italic: "3", underline: "4", blink: "5", reverse: "7" };
@@ -1851,10 +1879,29 @@ function paintTerminalFrame(term, rows, width, height, hasWaiting) {
   termRowsState = { width, height, plain: rows.map((row) => row.plain) };
 }
 
+// How tall a row really is by the time it is on screen: `.xterm-rows` lays its
+// rows out at the drawn cell height, which with `lineHeight` set comes out a
+// little taller than xterm's own cell metric.
+function drawnRowHeight(term) {
+  try {
+    const rows = term?.element?.querySelector(".xterm-rows");
+    const count = rows?.children?.length || 0;
+    if (count > 0) {
+      const drawn = rows.getBoundingClientRect().height / count;
+      if (Number.isFinite(drawn) && drawn > 0) return drawn;
+    }
+  } catch (_error) {
+    // not drawn yet
+  }
+  return NaN;
+}
+
 // Real xterm cell height depends on the installed font and the display, so it
-// is measured at runtime (cache per engine) instead of hard-coded; static
-// guesses clip the bottom row on some machines/screens.
+// is measured at runtime instead of hard-coded; static guesses clip the bottom
+// row on some machines/screens.
 function terminalCellHeight(term) {
+  const drawn = drawnRowHeight(term);
+  if (Number.isFinite(drawn)) return drawn;
   if (term && term._cellHeight) return term._cellHeight;
   const fromDims = (() => {
     try {
@@ -1892,15 +1939,37 @@ function terminalCellHeight(term) {
 // invisible forever. Borrow focus once per engine and hand it straight back:
 // the focus handler initializes the cursor, and the previous element (e.g. the
 // chat composer) keeps the keyboard.
-function initializeTerminalCursor(term) {
-  if (terminalEngine?.cursorInitDone) return;
-  if (terminalEngine) terminalEngine.cursorInitDone = true;
+// xterm draws its cursor only after its textarea has seen a focus event
+// (`_showCursor`). Watching mode paints captured frames and takeover sends
+// keys through the app's own handler, so nothing else raises that event, and
+// a terminal rebuilt while its panel is still `visibility: hidden` gets the
+// browser's focus without the event. Raise it here.
+//
+// `takeFocus` is for takeover, where the human is typing into the terminal and
+// it should keep the keyboard. Without it the call only starts xterm's cursor
+// and hands the focus back, so watching never steals the composer's focus.
+function initializeTerminalCursor(term, takeFocus = false) {
+  const textarea = term?.textarea || null;
+  const root = term?.element || null;
+  if (!textarea || !root || root.classList.contains("focus")) return;
+  const previous = document.activeElement;
+  if (!terminalEngine?.cursorInitDone) {
+    if (terminalEngine) terminalEngine.cursorInitDone = true;
+  } else if (!takeFocus && previous !== textarea) {
+    return;
+  }
   try {
-    const previous = document.activeElement;
-    term.focus();
-    if (previous && previous !== document.activeElement && typeof previous.focus === "function") {
+    textarea.focus();
+    if (!root.classList.contains("focus")) {
+      // The browser moved the focus without raising the event xterm waits for
+      // (focus fixup after the panel turns visible); hand it over directly.
+      textarea.dispatchEvent(new FocusEvent("focus"));
+    }
+    if (!takeFocus && previous && previous !== textarea && previous !== document.activeElement) {
       setTimeout(() => {
-        if (document.activeElement === term.textarea) previous.focus();
+        if (document.activeElement === textarea && typeof previous.focus === "function") {
+          previous.focus();
+        }
       }, 0);
     }
   } catch (_error) {
@@ -1976,7 +2045,7 @@ function renderTerminal() {
     // Fixed font size: when the panel is shorter than the captured frame,
     // show the bottom window of the frame (like a terminal scrolled to the
     // bottom) instead of shrinking the font. The cursor line stays visible.
-    const panelHeight = el.terminal_screen.clientHeight || 0;
+    const panelHeight = terminalPanelBox().height;
     const cellHeight = TERMINAL_ROW_PX;
     let fittingRows = fullRows;
     if (panelHeight > 0) {
@@ -1994,7 +2063,8 @@ function renderTerminal() {
         : null;
       if (geometryChanged) engine.resize(width, viewRows);
       if (panelHeight > 0 && viewRows > 0) {
-        const fittedLineHeight = TERMINAL_LINE_HEIGHT * panelHeight / (viewRows * TERMINAL_ROW_PX);
+        const drawnCell = terminalCellHeight(engine);
+        const fittedLineHeight = engine.options.lineHeight * panelHeight / (viewRows * drawnCell);
         if (Number.isFinite(fittedLineHeight) && fittedLineHeight >= 1) {
           engine.options.lineHeight = fittedLineHeight;
           engine.resize(width, viewRows);

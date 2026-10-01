@@ -853,6 +853,79 @@ class TerminalTakeoverTest(_PageTestCase):
         )
         self._assert_long_line(body)
 
+    def test_cursor_and_last_row_stay_inside_the_panel_while_lines_pile_up(self):
+        """光标跟着回车往下走时不许走出面板：以前格子比面板多三行，光标正好在被裁掉的那几行里。"""
+        store = self._store()
+        store.update(phase="agent_thinking")
+        pane_id = self.service._transport().create_workspace_session(
+            store.meeting.session_name, store.workspace_path
+        )
+        store.set_session(pane_id)
+        self.service.acquire(self.meeting_id)
+        self.page.call(
+            "Emulation.setDeviceMetricsOverride",
+            width=1152,
+            height=722,
+            deviceScaleFactor=1,
+            mobile=False,
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen .xterm') && window.__takeoverReady === true",
+            20,
+            what="页面接上真 tmux takeover",
+        )
+        self.service.terminal_input(self.meeting_id, {"bytes": b"echo CURSOR-9f3c\r".hex()})
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('CURSOR-9f3c')",
+            20,
+            what="接管流里有输出",
+        )
+        self.page.wait_for(
+            "document.querySelectorAll('#terminal-screen [class*=xterm-cursor]').length > 0",
+            10,
+            what="终端把光标画出来",
+        )
+
+        # 一直敲回车，让行数超过屏幕高度：真终端这时会把内容顶上去，光标留在最后一行。
+        for _ in range(4):
+            self.service.terminal_input(self.meeting_id, {"bytes": (b"\r" * 10).hex()})
+            time.sleep(0.5)
+
+        geometry = self.page.js(
+            """(() => {
+                const panel = document.querySelector('#terminal-screen');
+                const screen = panel.querySelector('.xterm-screen');
+                const rows = [...panel.querySelectorAll('.xterm-rows > div')];
+                const cursor = panel.querySelector('.xterm-rows [class*=xterm-cursor]');
+                const box = (node) => {
+                    const rect = node.getBoundingClientRect();
+                    return {top: rect.top, bottom: rect.bottom, height: rect.height};
+                };
+                return {
+                    panel: box(panel),
+                    screen: box(screen),
+                    rowCount: rows.length,
+                    rowHeight: rows.length ? box(rows[0]).height : 0,
+                    cursor: cursor ? box(cursor) : null,
+                };
+            })()"""
+        )
+        self.assertIsNotNone(geometry["cursor"], geometry)
+        self.assertLessEqual(
+            geometry["screen"]["bottom"], geometry["panel"]["bottom"] + 1, geometry
+        )
+        self.assertLessEqual(
+            geometry["rowHeight"] * geometry["rowCount"],
+            geometry["panel"]["height"] + 1,
+            geometry,
+        )
+        self.assertLessEqual(
+            geometry["cursor"]["bottom"], geometry["panel"]["bottom"] + 1, geometry
+        )
+        self.assertLessEqual(
+            geometry["cursor"]["top"], geometry["panel"]["bottom"], geometry
+        )
+
     def _assert_long_line(self, body: str) -> None:
         result = self.page.js(
             """(() => {
