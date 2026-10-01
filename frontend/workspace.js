@@ -1799,20 +1799,19 @@ function paintTerminalFrame(term, rows, width, height, hasWaiting) {
     || previousRows.width !== width
     || previousRows.height !== height
     || previousRows.plain.length !== rows.length;
-  if (hasWaiting) {
+  if (hasWaiting || geometryChanged) {
     term.reset();
+    term.write(rows.map((row, index) =>
+      `\x1b[${index + 1};1H` + row.ansi + "\x1b[K"
+    ).join(""));
   } else {
-    const changed = geometryChanged ? rows.map((_, index) => index) : rows.reduce((indexes, row, index) => {
+    const changed = rows.reduce((indexes, row, index) => {
       if (previousRows.plain[index] !== row.plain) indexes.push(index);
       return indexes;
     }, []);
-    for (const index of changed) {
-      term.write(`\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K");
-    }
-    const previousHeight = previousRows?.height || 0;
-    for (let index = rows.length; index < previousHeight; index += 1) {
-      term.write(`\x1b[${index + 1};1H\x1b[K`);
-    }
+    term.write(changed.map((index) =>
+      `\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K"
+    ).join(""));
   }
   termRowsState = { width, height, plain: rows.map((row) => row.plain) };
 }
