@@ -65,17 +65,17 @@ class E2EFailure(AssertionError):
 
 class LiveUserPath:
     def __init__(self, project_root: Path) -> None:
-        import meeting_v2  # noqa: F401  trigger module initialization
-        import web_v2
+        import meeting  # noqa: F401  trigger module initialization
+        import web
 
         self.project_root = project_root
-        service = web_v2.MeetingWebService(
+        service = web.MeetingWebService(
             project_root=project_root,
             model_api_path=REPO_ROOT / "model_api",
             skill_path=REPO_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md",
         )
         self.service = service
-        server = web_v2.build_server("127.0.0.1", _free_port(), service=service)
+        server = web.build_server("127.0.0.1", _free_port(), service=service)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.server = server
@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
             def agent_working() -> dict:
                 events = live.events()["events"]
                 kinds = {e.get("kind") for e in events}
-                # 会议里的 actor 就叫 "actor"（`meeting_v2.DEFAULT_AGENT_ROLE_MAP`），
+                # 会议里的 actor 就叫 "actor"（`meeting.DEFAULT_AGENT_ROLE_MAP`），
                 # 不是 "agent"；这一条原来等的是 "agent"，所以真跑也等不到。
                 agent_chat = any(
                     e.get("kind") == "chat" and e.get("actor") == "actor"

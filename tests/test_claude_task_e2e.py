@@ -16,7 +16,7 @@ from pathlib import Path
 from claude_code_client import ClaudeCodeBackend, TOOL_NAME
 import tmux_vim
 from interactive_runner import InteractiveRunner
-from meeting_v2 import MeetingStore
+from meeting import MeetingStore
 from model_api_client import ModelApiConfig
 from tests.test_interactive_runner import FakeTransport
 

@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from meeting_v2 import MeetingStore
+from meeting import MeetingStore
 from terminal_text import parse_segments, plain_of
 from tmux_transport import TmuxTransport
 

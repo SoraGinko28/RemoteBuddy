@@ -263,7 +263,7 @@ class TestMapping:
 
 def test_a_chat_with_images_keeps_them_on_the_message(tmp_path):
     """journal 里只有名字和指纹；loader 把图挂回那条消息上。"""
-    from meeting_v2 import MeetingStore
+    from meeting import MeetingStore
 
     skill = tmp_path / "SKILL.md"
     skill.write_text("---\nname: workspace-collaborator\n---\n", encoding="utf-8")

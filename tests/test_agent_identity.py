@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import meeting_v2 as m2
+import meeting as m2
 
 REPO = Path(__file__).resolve().parents[1]
 SKILL = REPO / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"

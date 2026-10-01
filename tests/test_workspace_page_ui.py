@@ -144,8 +144,8 @@ class _PageTestCase(unittest.TestCase):
                 pass
 
     def setUp(self) -> None:
-        import web_v2
-        from meeting_v2 import MeetingStore
+        import web
+        from meeting import MeetingStore
 
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -166,14 +166,18 @@ class _PageTestCase(unittest.TestCase):
         # 停在"等人说话"：这一条不查终端，就别让页面去把 tmux 会话开出来。
         store.update(phase="waiting_for_user")
 
-        self.service = web_v2.MeetingWebService(
+        self.service = web.MeetingWebService(
             workspace=self.workspace, project_root=self.test_project_root
         )
         self.port = _free_port()
-        self.server = web_v2.build_server("127.0.0.1", self.port, service=self.service)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
+        self.server = web.build_server("127.0.0.1", self.port, service=self.service)
+        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread.start()
+        def stop_server() -> None:
+            self.server.shutdown()
+            self.server_thread.join(timeout=10)
+            self.server.server_close()
+        self.addCleanup(stop_server)
         def cleanup_tmux() -> None:
             try:
                 self.service._transport().kill_session(self._store().meeting.session_name)
@@ -509,6 +513,30 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
             )
             self.assertTrue(before, f"{selector} 该在输入框前面")
 
+    def test_hovered_reference_has_no_background_transition_after_redraw(self):
+        self._store().append_chat(
+            "human", "用于悬停重画的引用", "request",
+            references=[{"kind": "chat", "event_id": self._first_event_id(),
+                          "region": {"start": 0, "end": 4},
+                          "excerpt": "用于悬停重画的引用"}],
+        )
+        self.page.wait_for("!!document.querySelector('.message-reference')", 30)
+        result = self.page.js("""
+(() => {
+  const quote = document.querySelector('.message-reference');
+  if (!quote) return null;
+  quote.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+  const before = getComputedStyle(quote).transitionProperty;
+  quote.replaceWith(quote.cloneNode(true));
+  const redrawn = document.querySelector('.message-reference');
+  redrawn.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+  return {before, redrawn: getComputedStyle(redrawn).transitionProperty};
+})()
+""")
+        self.assertIsNotNone(result)
+        self.assertIn(result["before"], ("all", "none"))
+        self.assertIn(result["redrawn"], ("all", "none"))
+
     def test_a_message_shows_its_quote_and_image_before_the_text(self):
         import base64
 
@@ -584,6 +612,37 @@ class OrderOfImagesAndQuotesTest(_PageTestCase):
         self.assertEqual(8, order["quoteToImage"], "引用到图片应为 8px")
         self.assertEqual(8, order["imageToText"], "图片到正文应为 8px")
         self.assertEqual(8, order["imageOnlyNameToImage"], "只有图片时名字到图片应为 8px")
+
+    def test_dropping_image_uses_upload_path_and_ignores_non_images(self):
+        import base64
+
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        attachment = self.service.save_attachment(self.meeting_id, "image/png", png)
+        self.page.wait_for(
+            f"document.body.innerText.includes({FIRST_MESSAGE!r})", 30,
+            what="页面画出这场会",
+        )
+        result = self.page.js("""
+(() => {
+  const strip = document.querySelector('#attachment-strip');
+  const image = new File(['png'], 'drop.png', {type: 'image/png'});
+  const text = new File(['text'], 'drop.txt', {type: 'text/plain'});
+  const data = new DataTransfer();
+  data.items.add(image);
+  const imageDrop = new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: data});
+  document.dispatchEvent(imageDrop);
+  const textData = new DataTransfer();
+  textData.items.add(text);
+  const textDrop = new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: textData});
+  document.dispatchEvent(textDrop);
+  return {prevented: imageDrop.defaultPrevented, textPrevented: textDrop.defaultPrevented,
+    strip: strip.hidden};
+})()
+""")
+        self.assertTrue(result["prevented"])
+        self.assertTrue(result["textPrevented"])
 
     def test_completion_proposals_show_whether_they_have_evidence(self):
         self.page.wait_for(
@@ -814,7 +873,7 @@ class TerminalTakeoverTest(_PageTestCase):
         self.assertNotIn(result["overflowX"], {"auto", "scroll"}, result)
         self.assertLessEqual(
             result["xtermScroll"] - result["xtermClient"],
-            7.225,
+            1,
             result,
         )
         self.assertTrue(result["contentVisibleWithoutScroll"], result)

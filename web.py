@@ -46,7 +46,7 @@ from interactive_runner import (
     RunnerError,
     capture_workspace,
 )
-from meeting_v2 import (
+from meeting import (
     MAX_ATTACHMENT_BYTES,
     MAX_CHAT_REFERENCES,
     MAX_MESSAGE_BYTES,
@@ -446,6 +446,8 @@ class MeetingWebService:
         self.queued_jobs: Dict[str, Tuple[MeetingStore, ModelApiConfig, bool, bool, bool]] = {}
         self.meeting_locks: Dict[str, threading.RLock] = {}
         self.capture_jobs: Dict[str, threading.Thread] = {}
+        self.capture_stops: Dict[str, threading.Event] = {}
+        self.snapshot_capture_at: Dict[str, float] = {}
         self.active_backends: Dict[str, AgentBackend] = {}
         # 正在跑的 runner（一场会同时最多一个）：页面上"更新 / 重启"两个按钮
         # 要能戳到它，见 reload_skill / restart_agent。
@@ -1438,8 +1440,19 @@ class MeetingWebService:
     def snapshot(self, meeting_id: str) -> Dict[str, Any]:
         store = self.load_store(meeting_id)
         self._open_terminal_if_needed(store)
+        if store.meeting.pane_id and store.meeting.control_owner != "human":
+            now = time.monotonic()
+            with self.lock:
+                last_capture = self.snapshot_capture_at.get(meeting_id, 0.0)
+                should_capture = now - last_capture >= 0.5
+                if should_capture:
+                    self.snapshot_capture_at[meeting_id] = now
+            if should_capture:
+                try:
+                    capture_workspace(store, self._transport())
+                except (RunnerError, TmuxError, OSError):
+                    pass
         if store.meeting.control_owner == "human":
-            self._ensure_capture_worker(store)
             self._sync_human_pipe(store)
         events = store.events()
         latest_screen = next(
@@ -1970,19 +1983,24 @@ class MeetingWebService:
             current = self.capture_jobs.get(meeting_id)
             if current and current.is_alive():
                 return
+            stop = threading.Event()
             worker = threading.Thread(
                 target=self._capture_human_control,
-                args=(meeting_id,),
+                args=(meeting_id, stop),
                 name=f"remotebuddy-capture-{meeting_id}",
                 daemon=True,
             )
             self.capture_jobs[meeting_id] = worker
+            self.capture_stops[meeting_id] = stop
             worker.start()
 
-    def _capture_human_control(self, meeting_id: str) -> None:
+    def _capture_human_control(self, meeting_id: str, stop: Optional[threading.Event] = None) -> None:
         transport = self._transport()
         try:
-            while True:
+            stop = stop or threading.Event()
+            while not stop.is_set():
+                if stop.wait(0.25):
+                    return
                 with self._meeting_lock(meeting_id):
                     store = self.load_store(meeting_id)
                     if store.meeting.status in TERMINAL_STATUSES:
@@ -2016,7 +2034,7 @@ class MeetingWebService:
                                 store.mark_session_stopped()
                             self._sync_human_pipe(store)
                             return
-                    elif store.meeting.control_requested != "human":
+                    elif store.meeting.control_owner != "human":
                         return
                 time.sleep(0.25)
         except (WebError, MeetingError, OSError):
@@ -2025,6 +2043,19 @@ class MeetingWebService:
             with self.lock:
                 if self.capture_jobs.get(meeting_id) is threading.current_thread():
                     self.capture_jobs.pop(meeting_id, None)
+                    self.capture_stops.pop(meeting_id, None)
+
+    def shutdown(self) -> None:
+        with self.lock:
+            stops = list(self.capture_stops.values())
+            workers = list(self.capture_jobs.values())
+            self.capture_stops.clear()
+        for stop in stops:
+            stop.set()
+        current = threading.current_thread()
+        for worker in workers:
+            if worker is not current:
+                worker.join(timeout=5)
 
     def set_reasoning_effort(self, meeting_id: str, payload: Dict[str, Any]) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -2236,6 +2267,10 @@ class MeetingWebService:
             # picking the pane up, it records that nobody holds it.
             store.note_terminal_control(None)
             self._sync_human_pipe(store)
+            with self.lock:
+                capture_stop = self.capture_stops.get(meeting_id)
+            if capture_stop is not None:
+                capture_stop.set()
             return self.load_store(meeting_id)
 
     def _resume_agent_from_human(self, meeting_id: str) -> MeetingStore:
@@ -2258,6 +2293,10 @@ class MeetingWebService:
         store.append_event("control", "human", "agent_thinking", data={"status": "released"})
         store.note_terminal_control(store.meeting.actor_name())
         self._sync_human_pipe(store)
+        with self.lock:
+            capture_stop = self.capture_stops.get(meeting_id)
+        if capture_stop is not None:
+            capture_stop.set()
         self._ensure_worker(
             store,
             config,
@@ -2541,6 +2580,7 @@ class MeetingWebService:
                 self.jobs.pop(meeting_id, None)
                 self.queued_jobs.pop(meeting_id, None)
                 self.capture_jobs.pop(meeting_id, None)
+                self.capture_stops.pop(meeting_id, None)
                 self.active_backends.pop(meeting_id, None)
                 self.active_runners.pop(meeting_id, None)
                 self.human_pipes.pop(meeting_id, None)
@@ -2803,6 +2843,10 @@ class MeetingWebService:
 class RemoteBuddyHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
+    def shutdown(self) -> None:
+        self.service.shutdown()
+        super().shutdown()
+
     def __init__(self, server_address: Tuple[str, int], service: MeetingWebService):
         self.service = service
         super().__init__(server_address, RemoteBuddyRequestHandler)
@@ -2884,7 +2928,7 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
     def _internal_error(self, exc: Exception) -> None:
         # Exception text can carry absolute filesystem paths; keep it out of
         # the response and log it server-side instead.
-        print(f"[web_v2] internal error on {self.command} {self.path}: {exc!r}", file=sys.stderr, flush=True)
+        print(f"[web] internal error on {self.command} {self.path}: {exc!r}", file=sys.stderr, flush=True)
         self._error(500, "internal error")
 
     def _read_json(self) -> Dict[str, Any]:

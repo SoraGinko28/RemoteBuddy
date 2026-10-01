@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from web_v2 import MeetingWebService, build_server
+from web import MeetingWebService, build_server
 
 
 class WebV2GuardTest(unittest.TestCase):

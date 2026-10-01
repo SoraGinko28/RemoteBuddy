@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 from unittest import mock
 
-from meeting_v2 import MeetingError, MeetingStore, UnsupportedMeetingError
+from meeting import MeetingError, MeetingStore, UnsupportedMeetingError
 
 
 class MeetingStoreV2Test(unittest.TestCase):
@@ -155,7 +155,7 @@ class MeetingStoreV2Test(unittest.TestCase):
                 raise OSError("simulated atomic replace failure")
             return real_replace(source, destination)
 
-        with mock.patch("meeting_v2.os.replace", side_effect=fail_manifest):
+        with mock.patch("meeting.os.replace", side_effect=fail_manifest):
             with self.assertRaises(OSError):
                 self.store.update(status="running")
 

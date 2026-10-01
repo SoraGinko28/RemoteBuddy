@@ -7,7 +7,7 @@
 它只做三件事：
 
 1. 在一块真工作区（`--workspace`，默认 `~/workspace/remotebuddy-agent-cmd-e2e`）上升起
-   `web_v2.MeetingWebService`，开一场真会，人类只说一句题面；
+   `web.MeetingWebService`，开一场真会，人类只说一句题面；
 2. 等 agent 把活干完或停下来（`completion_proposed` / `waiting_for_user`）；
 3. 验收：文件真在、`pytest` 真过、journal 里 diff 那条路的返回码是 0、没有按键类动作。
 
@@ -47,10 +47,10 @@ def free_port() -> int:
 
 class LiveMeeting:
     def __init__(self, workspace: Path, backend: str, provider: str) -> None:
-        import web_v2
+        import web
 
         self.workspace = workspace
-        service = web_v2.MeetingWebService(
+        service = web.MeetingWebService(
             project_root=workspace,
             model_api_path=REPO_ROOT / "model_api",
             skill_path=REPO_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md",
@@ -59,7 +59,7 @@ class LiveMeeting:
             default_provider=provider,
         )
         self.service = service
-        server = web_v2.build_server("127.0.0.1", free_port(), service=service)
+        server = web.build_server("127.0.0.1", free_port(), service=service)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.port = server.server_address[1]
         self.csrf = ""

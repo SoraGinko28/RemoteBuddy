@@ -1465,7 +1465,7 @@ function takeoverGrid(engine) {
   const cellHeight = terminalCellHeight(engine);
   let cols = 80;
   if (panelWidth > 0 && charWidth > 0) {
-    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth) - 2));
+    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth) - 4));
     // Keep the panel's client width available for measuring the grid. The
     // discarded fraction is real leftover space, so center the xterm screen
     // inside it instead of adding padding to the panel (which would change
@@ -3634,6 +3634,21 @@ function bind() {
       .filter(Boolean);
     if (!files.length) return;
     event.preventDefault();
+    uploadImages(files);
+  });
+  // 拖到页面上的图片：阻止浏览器打开文件，只把图片交给同一条上传路径。
+  document.addEventListener("dragover", (event) => {
+    if (Array.from(event.dataTransfer?.items || []).some((item) => item.kind === "file" && item.type.startsWith("image/"))) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    }
+  });
+  document.addEventListener("drop", (event) => {
+    const droppedFiles = Array.from(event.dataTransfer?.files || []);
+    if (!droppedFiles.length) return;
+    event.preventDefault();
+    const files = droppedFiles.filter((file) => String(file.type || "").startsWith("image/"));
+    if (!files.length) return;
     uploadImages(files);
   });
   el.message_form.addEventListener("submit", async (event) => {
