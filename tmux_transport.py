@@ -58,10 +58,12 @@ def _workspace_environment() -> Dict[str, str]:
         environment.update(
             {
                 "CONDA_PREFIX": str(prefix),
-                "CONDA_DEFAULT_ENV": prefix.name,
+                "CONDA_DEFAULT_ENV": os.environ.get("CONDA_DEFAULT_ENV", prefix.name),
                 "CONDA_SHLVL": os.environ.get("CONDA_SHLVL", "1"),
             }
         )
+    else:
+        environment["CONDA_DEFAULT_ENV"] = os.environ.get("CONDA_DEFAULT_ENV", "remotebuddy")
     return environment
 
 
