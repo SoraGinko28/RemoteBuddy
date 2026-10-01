@@ -763,7 +763,7 @@ class InteractiveRunner:
                             )
                             return
                         continue
-                if isinstance(exc, AgentActionError):
+                if isinstance(exc, (AgentActionError, AgentProtocolError)):
                     # The model produced an invalid action (for example
                     # ``type=command, command="none"``). That is correctable:
                     # journal the rejection so the next observation carries
