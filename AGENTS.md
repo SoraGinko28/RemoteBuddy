@@ -52,8 +52,6 @@
 - 数据是共享的：core 的 `.meeting/` 里只有一份工作区索引，second（还有别的目录）在索引里列着，所以 8765 的侧边栏也能看到 second 里那些会（两台显示的场数不一定一样，看各自索引）。**同一场会别同时从两个端口发消息**：谁收到消息谁起 runner。
 - 部署 8765 = 把核过的提交合进 core 的 main，再重启 8765。重启后确认 `curl -s localhost:8765/api/meetings` 的 `warnings` 是空的，并核一下线上给的 `assets/workspace.js` 和 core 里那份同哈希：`curl -s localhost:8765/assets/workspace.js | shasum` 对 `shasum frontend/workspace.js`。
 - 部署 8766 不用做：它就是 actor 那棵树，改完（或它自己提交完）重启一下即可。
-- 重启（旧写法，仅当副本还没建时用）：`kill <旧 PID>`，在 actor 那棵树的根下 `nohup .venv/bin/python web.py --port 8766 --harness=trae > /tmp/web_page.log 2>&1 &`（2026-09-30 把 `web_v2.py` 改名成 `web.py`；旧进程用的是旧文件名，改名不影响已经在跑的那个进程，下次重启才走新名字），再确认 `curl -s localhost:8766/api/meetings` 的 `warnings` 是空的。**重启有代价**：进程里那些 runner 会没，下一次有人说话时会议按"孤儿 agent"接回来，而 `orphaned_agent` 会走 `fresh_conversation=True`——等于把 agent 那一轮的会话上下文丢了。所以重启排进队列空档，别在它干活时重启。
-
 ## 提交前先分辨这是不是 actor 改的（教训，长期有效）
 - 会有时候就开在这个仓库里，**actor 改的就是当前这棵工作树**。`git add -A` / `git add .` 会把它的改动一起提交——2026-09-26 就这么把 actor 改坏的 `frontend/workspace.css` 提交进了 `8606a6a`（文件开头的 `/*` 被删、`.toast` 整条没了、`.app-shell` 被挪出 980px 的媒体查询）。
 - 提交前逐条看 `git status` 和 `git diff`，**只 `git add` 自己动过的那几个文件**，不要用 `-A`。有会正在跑的时候尤其如此。
