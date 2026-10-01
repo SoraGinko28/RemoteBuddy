@@ -804,6 +804,43 @@ class TerminalTakeoverTest(_PageTestCase):
         self.page.js("stopTerminalTakeover(false); 'released'")
         self.page.wait_for("window.__takeoverReady === false", 10, what="退出 takeover 回到观看态")
 
+    def test_takeover_stops_when_server_takes_control(self):
+        store = self._store()
+        store.update(phase="agent_thinking")
+        pane_id = self.service._transport().create_workspace_session(
+            store.meeting.session_name, store.workspace_path
+        )
+        store.set_session(pane_id)
+        self.service.acquire(self.meeting_id)
+
+        self.service.terminal_input(
+            self.meeting_id,
+            {"bytes": b"echo HI-9f3c\r".hex()},
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('HI-9f3c')",
+            20,
+            what="收权前页面看得到命令输出",
+        )
+        acquired_before = sum(
+            event["kind"] == "control" and event["actor"] == "human"
+            and event["data"].get("status") == "acquired"
+            for event in store.events()
+        )
+        store.update(phase="agent_thinking", control_owner="actor")
+        time.sleep(1.5)
+        self.service.close_human_pipe(self.meeting_id)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            self.assertFalse(self.page.js("window.__takeoverReady === true"))
+        acquired_after = sum(
+            event["kind"] == "control" and event["actor"] == "human"
+            and event["data"].get("status") == "acquired"
+            for event in store.events()
+        )
+        self.assertEqual(acquired_after, acquired_before)
+
     def test_cursor_and_last_row_stay_inside_the_panel_while_lines_pile_up(self):
         """光标跟着回车往下走时不许走出面板：以前格子比面板多三行，光标正好在被裁掉的那几行里。"""
         store = self._store()

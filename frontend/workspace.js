@@ -1685,9 +1685,15 @@ function startTerminalTakeover() {
       stopTerminalTakeover(false);
     }
   });
-  source.onerror = () => {
+  source.onerror = async () => {
     // The server closes the stream with a 4xx when takeover ended; do not
     // let EventSource reconnect forever once control is no longer human.
+    try {
+      await refreshSelected();
+    } catch (_error) {
+      // The existing snapshot is still sufficient for the reconnect decision.
+    }
+    if (!takeoverStream.active || takeoverStream.source !== source) return;
     const meeting = state.snapshot?.meeting;
     if (!meeting || meeting.control_owner !== "human" || meeting.phase !== "human_control") {
       takeoverStream.yieldedFor = state.selectedId || null;
@@ -2998,6 +3004,11 @@ async function refreshSelected() {
   if (!snapshotResult.notModified) {
     state.snapshot = snapshotResult.payload;
     state.snapshotEtag = snapshotResult.etag;
+    const meeting = state.snapshot.meeting;
+    if (takeoverStream.active && (meeting.control_owner !== "human" || meeting.phase !== "human_control")) {
+      takeoverStream.yieldedFor = state.selectedId || null;
+      stopTerminalTakeover(false);
+    }
     changed = true;
   }
   if (ticketsResult && !ticketsResult.notModified) {
@@ -3039,7 +3050,7 @@ function schedulePoll() {
   clearTimeout(state.pollTimer);
   if (!state.selectedId) return;
   const active = state.snapshot && !["completed", "failed", "interrupted"].includes(state.snapshot.meeting.status)
-    && !["api_error", "cycle_timeout", "waiting_for_user", "completion_proposed", "human_control"].includes(state.snapshot.meeting.phase);
+    && !["api_error", "cycle_timeout", "waiting_for_user", "completion_proposed"].includes(state.snapshot.meeting.phase);
   state.pollTimer = setTimeout(async () => {
     try {
       await refreshSelected();
