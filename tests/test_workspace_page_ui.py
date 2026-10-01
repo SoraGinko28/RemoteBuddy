@@ -791,7 +791,7 @@ class TerminalTakeoverTest(_PageTestCase):
             20,
             what="断流前页面看得到命令输出",
         )
-        self.page.js("takeoverStream.source.close(); 'closed'")
+        self.service.close_human_pipe(self.meeting_id)
         self.service.terminal_input(
             self.meeting_id,
             {"bytes": b"echo TWO-9f3c\r".hex()},
