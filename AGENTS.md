@@ -55,6 +55,11 @@
   - `8766` = `RemoteBuddy-second` 的代码 + second 的数据（`cd ~/workspace/RemoteBuddy-second && nohup .venv/bin/python web.py --port 8766 --harness=trae > /tmp/web_8766.log 2>&1 &`）——actor 干活、我发消息用的是这一台。
   - **不再用 `/tmp/port_forward.py` 把 8765 转发到 8766**（那是 2026-10-01 我改坏的，已删）。两台各自现读自己树里的 `frontend/*`：actor 在 second 那棵树上随便改，都不会漏到用户看的 8765 上。
 - 数据是共享的：core 的 `.meeting/` 里只有一份工作区索引，second（还有别的目录）在索引里列着，所以 8765 的侧边栏也能看到 second 里那些会（两台显示的场数不一定一样，看各自索引）。**同一场会别同时从两个端口发消息**：谁收到消息谁起 runner。
+- **给 actor 发消息前先看谁握着 driver**：`<会议目录>/driver.json` 里写的那台服务才肯执行；发错端口会被拒，
+  会议还会被标成 `api_error`（“这场会正由另一个服务驱动”）。用户页面在 8765，driver 通常就是 8765，
+  所以给 actor 的消息从 **8765** 发：`python3 /tmp/rb_drive.py 8765 say <会议> "..."`。
+- actor 改的是 second 那棵树，而用户页面吃的是 **core** 的 `frontend/*`：它每提交一笔，我就 `git rebase` core 到那个
+  commit（core 工作树立刻变），用户刷新页面就看得到；只有 Python 改动才需要重启 8765。
 - 部署 8765 = 把核过的提交合进 core 的 main，再重启 8765。重启后确认 `curl -s localhost:8765/api/meetings` 的 `warnings` 是空的，并核一下线上给的 `assets/workspace.js` 和 core 里那份同哈希：`curl -s localhost:8765/assets/workspace.js | shasum` 对 `shasum frontend/workspace.js`。
 - 部署 8766 不用做：它就是 actor 那棵树，改完（或它自己提交完）重启一下即可。
 ## 提交前先分辨这是不是 actor 改的（教训，长期有效）
