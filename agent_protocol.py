@@ -1033,15 +1033,15 @@ def _decode_action_text(
             value, end = decoder.raw_decode(remaining)
             values.append(value)
             if len(values) > 4:
-                raise AgentProtocolError("model output repeated the action too many times")
+                raise AgentActionError("model output repeated the action too many times")
             remaining = remaining[end:].lstrip()
     except json.JSONDecodeError as exc:
-        raise AgentProtocolError(
+        raise AgentActionError(
             "model output is not valid action JSON (" + str(exc).splitlines()[0] + "): "
             "整套动作要是一个 JSON 对象，字符串里的换行写成 \\n，补丁放在 `diff` 里"
         ) from exc
     if any(value != values[0] for value in values[1:]):
-        raise AgentProtocolError("model output contains multiple different actions")
+        raise AgentActionError("model output contains multiple different actions")
     payload = unwrap_action_envelope(values[0])
     return AgentAction.from_dict(payload, allowed_types, allowed_message_types)
 
