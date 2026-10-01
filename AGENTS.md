@@ -45,11 +45,13 @@
 
 ## 本地那个页面（教训，长期有效）
 - 页面是**长驻进程**，内存里是它启动那一刻的代码：改角色名、改 manifest 字段这类东西之后必须重启它，否则它拿旧校验把新数据判成非法——列表里会凭空少掉一批会议（这次把角色改成 `actor`，77 场会议就从列表里消失了）。静态文件（`frontend/*`）是每次请求现读的，所以**改了前端不重启也生效，改了 Python 必须重启**。
-- **只有一台服务**：端口 8766。会议数据、tmux 会话、`runs/` 全在 actor 那棵树（`RemoteBuddy-second`），所以起服务时**必须**带 `--workspace ~/workspace/RemoteBuddy-second`；不带就是在 `RemoteBuddy-core` 自己的 `.meeting/` 上起一个空壳，列表和真页面对不上。
-- 8765 是**转发**到 8766 的同一个服务（`python3 /tmp/port_forward.py 8765 8766`，改写 Host/Origin 后短连接送进去），两个地址看到的是同一份东西。不许在两棵树各起一台——同一个 pane 会被两个 runner 抢。
-- **线上跑的是 `RemoteBuddy-core` 的代码，数据在 actor 那棵树**（用户 2026-10-01 定的）：`web.py` 从 `RemoteBuddy-core` 起（那是我合并核过提交的那棵），`--workspace` 指向 `RemoteBuddy-second`（会议数据、`.meeting/`、tmux 会话、`runs/` 全在那儿）。actor 那边改什么都不会漏到线上页面——它保存一次前端文件，线上不会跟着抖。
-  `cd ~/workspace/RemoteBuddy-core && nohup .venv/bin/python web.py --port 8766 --workspace ~/workspace/RemoteBuddy-second --harness=trae > /tmp/web_page.log 2>&1 &`
-- **部署 = 把核过的提交合进 core 的 main，再重启**。重启后确认 `curl -s localhost:8766/api/meetings` 的 `warnings` 是空的，并核一下线上给的 `assets/workspace.js` 和 core 里那份同哈希：`curl -s localhost:8766/assets/workspace.js | shasum` 对 `shasum frontend/workspace.js`。
+- **两台服务，各跑各的代码**（用户从一开始就定的，2026-10-01 又重申）：
+  - `8765` = `RemoteBuddy-core` 的代码 + core 自己的数据（`cd ~/workspace/RemoteBuddy-core && nohup .venv/bin/python web.py --port 8765 --harness=trae > /tmp/web_8765.log 2>&1 &`）——**用户看的是这一台**。
+  - `8766` = `RemoteBuddy-second` 的代码 + second 的数据（`cd ~/workspace/RemoteBuddy-second && nohup .venv/bin/python web.py --port 8766 --harness=trae > /tmp/web_8766.log 2>&1 &`）——actor 干活、我发消息用的是这一台。
+  - **不再用 `/tmp/port_forward.py` 把 8765 转发到 8766**（那是 2026-10-01 我改坏的，已删）。两台各自现读自己树里的 `frontend/*`：actor 在 second 那棵树上随便改，都不会漏到用户看的 8765 上。
+- 数据是共享的：core 的 `.meeting/` 里只有一份工作区索引，second（还有别的目录）在索引里列着，所以 8765 的侧边栏也能看到 second 里那些会（两台显示的场数不一定一样，看各自索引）。**同一场会别同时从两个端口发消息**：谁收到消息谁起 runner。
+- 部署 8765 = 把核过的提交合进 core 的 main，再重启 8765。重启后确认 `curl -s localhost:8765/api/meetings` 的 `warnings` 是空的，并核一下线上给的 `assets/workspace.js` 和 core 里那份同哈希：`curl -s localhost:8765/assets/workspace.js | shasum` 对 `shasum frontend/workspace.js`。
+- 部署 8766 不用做：它就是 actor 那棵树，改完（或它自己提交完）重启一下即可。
 - 重启（旧写法，仅当副本还没建时用）：`kill <旧 PID>`，在 actor 那棵树的根下 `nohup .venv/bin/python web.py --port 8766 --harness=trae > /tmp/web_page.log 2>&1 &`（2026-09-30 把 `web_v2.py` 改名成 `web.py`；旧进程用的是旧文件名，改名不影响已经在跑的那个进程，下次重启才走新名字），再确认 `curl -s localhost:8766/api/meetings` 的 `warnings` 是空的。**重启有代价**：进程里那些 runner 会没，下一次有人说话时会议按"孤儿 agent"接回来，而 `orphaned_agent` 会走 `fresh_conversation=True`——等于把 agent 那一轮的会话上下文丢了。所以重启排进队列空档，别在它干活时重启。
 
 ## 提交前先分辨这是不是 actor 改的（教训，长期有效）
