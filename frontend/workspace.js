@@ -1380,6 +1380,11 @@ const takeoverStream = {
   flushTimer: null,
   reconnectTimer: null,
   watchdogTimer: null,
+  // Meeting whose terminal the server took back from us (the agent resumed).
+  // Until the human asks for it again, the page must not re-acquire: every
+  // acquire interrupts the agent's turn, so trading it back and forth leaves
+  // the agent permanently interrupted.
+  yieldedFor: null,
   lastEventAt: 0,
   flushing: false,
   lastFlushErrorAt: 0,
@@ -1675,13 +1680,17 @@ function startTerminalTakeover() {
     if (!takeoverStream.active) return;
     takeoverStream.lastEventAt = Date.now();
     if (event.data === "reset") engine.reset();
-    if (event.data === "released") stopTerminalTakeover(false);
+    if (event.data === "released") {
+      takeoverStream.yieldedFor = state.selectedId || null;
+      stopTerminalTakeover(false);
+    }
   });
   source.onerror = () => {
     // The server closes the stream with a 4xx when takeover ended; do not
     // let EventSource reconnect forever once control is no longer human.
     const meeting = state.snapshot?.meeting;
     if (!meeting || meeting.control_owner !== "human" || meeting.phase !== "human_control") {
+      takeoverStream.yieldedFor = state.selectedId || null;
       stopTerminalTakeover(false);
       return;
     }
@@ -1699,6 +1708,7 @@ function startTerminalTakeover() {
     if (!takeoverStream.active || Date.now() - takeoverStream.lastEventAt < 20000) return;
     const current = state.snapshot?.meeting;
     if (current?.control_owner !== "human" || current.phase !== "human_control") {
+      takeoverStream.yieldedFor = state.selectedId || null;
       stopTerminalTakeover(false);
       return;
     }
@@ -1769,7 +1779,7 @@ function stopTerminalTakeover(flushPending) {
 }
 
 function syncTerminalTakeover(live) {
-  if (live && !takeoverStream.active) {
+  if (live && !takeoverStream.active && takeoverStream.yieldedFor !== state.selectedId) {
     startTerminalTakeover();
   } else if (!live && takeoverStream.active) {
     stopTerminalTakeover(true);
@@ -3850,7 +3860,10 @@ function bind() {
     } catch (error) { toast(error.message); }
     finally { el.restart_agent_button.disabled = false; }
   });
-  el.acquire_button.addEventListener("click", () => postMeetingAction("control/acquire").catch((error) => toast(error.message)));
+  el.acquire_button.addEventListener("click", () => {
+    takeoverStream.yieldedFor = null;
+    postMeetingAction("control/acquire").catch((error) => toast(error.message));
+  });
   el.release_button.addEventListener("click", () => postMeetingAction("control/release").catch((error) => toast(error.message)));
   el.terminal_copy_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalPlainText));
   el.terminal_copy_ansi_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalAnsiText || lastTerminalPlainText));
