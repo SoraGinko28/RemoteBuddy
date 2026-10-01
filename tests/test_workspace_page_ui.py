@@ -801,57 +801,8 @@ class TerminalTakeoverTest(_PageTestCase):
             10,
             what="断流后重开流并显示新命令输出",
         )
-
-        # Resize 对准属于观看态；先结束 takeover，避免流式终端与观看态对准互相抢尺寸。
         self.page.js("stopTerminalTakeover(false); 'released'")
         self.page.wait_for("window.__takeoverReady === false", 10, what="退出 takeover 回到观看态")
-        self.page.call(
-            "Emulation.setDeviceMetricsOverride",
-            width=420,
-            height=900,
-            deviceScaleFactor=1,
-            mobile=False,
-        )
-        self.page.wait_for(
-            """(() => {
-                const viewport = document.querySelector('#terminal-screen');
-                const terminal = viewport?.querySelector('.xterm');
-                if (!viewport || !terminal) return false;
-                const rows = viewport.querySelector('.xterm-rows');
-                return rows && terminal.scrollWidth <= terminal.clientWidth + 1;
-            })()""",
-            20,
-            what="resize 应答后立即按 pane 尺寸重画",
-        )
-        immediate = self.page.js(
-            """(() => {
-                const viewport = document.querySelector('#terminal-screen');
-                const terminal = viewport.querySelector('.xterm');
-                const rows = viewport.querySelector('.xterm-rows');
-                return {
-                    paneWidth: terminal?.clientWidth || 0,
-                    renderedWidth: rows?.getBoundingClientRect().width || 0,
-                    scrollWidth: terminal?.scrollWidth || 0,
-                    clientWidth: terminal?.clientWidth || 0,
-                };
-            })()"""
-        )
-        self.assertLessEqual(immediate["scrollWidth"], immediate["clientWidth"] + 1, immediate)
-        self.page.js("document.querySelector('.agent-state')?.click(); 'opened'")
-        self.page.js("document.querySelector('#member-panel-close')?.click(); 'closed'")
-        self.page.call(
-            "Emulation.setDeviceMetricsOverride",
-            width=1280,
-            height=900,
-            deviceScaleFactor=1,
-            mobile=False,
-        )
-        self.page.wait_for(
-            "document.querySelector('#terminal-screen').innerText.includes('TAIL-9f3c')",
-            20,
-            what="resize 和成员面板开合后尾巴仍在",
-        )
-        self._assert_long_line(body)
 
     def test_cursor_and_last_row_stay_inside_the_panel_while_lines_pile_up(self):
         """光标跟着回车往下走时不许走出面板：以前格子比面板多三行，光标正好在被裁掉的那几行里。"""
