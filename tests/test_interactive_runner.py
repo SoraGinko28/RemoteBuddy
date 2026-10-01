@@ -975,7 +975,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertLess(runner._cycle_elapsed(), 5)
         self.assertFalse(runner._phase_constraints()[2], "人说话了就该能接着干")
 
-    def test_consecutive_invalid_actions_still_fail_the_cycle(self):
+    def test_consecutive_invalid_actions_park_the_cycle(self):
         # 容忍几次由 MAX_INVALID_ACTION_RETRIES 定：写死次数的话，改配额就得改用例。
         retries = MAX_INVALID_ACTION_RETRIES
         client = FakeClient(
