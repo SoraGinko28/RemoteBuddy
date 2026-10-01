@@ -1471,7 +1471,7 @@ function takeoverGrid(engine) {
     cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth)));
   }
   let rows = 24;
-  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
+  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor(panelHeight / TERMINAL_ROW_PX);
   rows = Math.max(12, Math.min(120, rows));
   return { cols, rows };
 }
@@ -1721,10 +1721,6 @@ let takeoverRepaintForceReset = false;
 const TERMINAL_FONT_SIZE = 12;
 const TERMINAL_LINE_HEIGHT = 1.42;
 const TERMINAL_ROW_PX = TERMINAL_FONT_SIZE * TERMINAL_LINE_HEIGHT;
-// Real xterm row height is slightly larger than the nominal product, so an
-// exact floor() can clip the last row below the panel edge. Reserve a few
-// pixels so the bottom line (and the prompt/cursor) is always fully visible.
-const TERMINAL_BOTTOM_RESERVE_PX = 14;
 let termRowsState = null; // { width, height, plain: string[] } of last painted frame
 
 const TERMINAL_STYLE_CODES = { bold: "1", dim: "2", italic: "3", underline: "4", blink: "5", reverse: "7" };
@@ -1942,13 +1938,10 @@ function renderTerminal() {
     // show the bottom window of the frame (like a terminal scrolled to the
     // bottom) instead of shrinking the font. The cursor line stays visible.
     const panelHeight = el.terminal_screen.clientHeight || 0;
-    const cellHeight = terminalCellHeight(engine);
+    const cellHeight = TERMINAL_ROW_PX;
     let fittingRows = fullRows;
     if (panelHeight > 0) {
-      fittingRows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
-      // Squeeze one extra row when it overflows by at most 2px, so the panel
-      // is filled without an awkward empty strip under the prompt.
-      if ((fittingRows + 1) * cellHeight - panelHeight <= 2) fittingRows += 1;
+      fittingRows = Math.floor(panelHeight / cellHeight);
       fittingRows = Math.max(4, Math.min(fullRows, fittingRows));
     }
     const viewRows = Math.min(fullRows, fittingRows);
@@ -1961,6 +1954,13 @@ function renderTerminal() {
         ? { event_id: source.event_id || "", content: source.content }
         : null;
       if (geometryChanged) engine.resize(width, viewRows);
+      if (panelHeight > 0 && viewRows > 0) {
+        const fittedLineHeight = TERMINAL_LINE_HEIGHT * panelHeight / (viewRows * TERMINAL_ROW_PX);
+        if (Number.isFinite(fittedLineHeight) && fittedLineHeight >= 1) {
+          engine.options.lineHeight = fittedLineHeight;
+          engine.resize(width, viewRows);
+        }
+      }
       const ansi = typeof terminal.ansi === "string" ? terminal.ansi : "";
       const waiting = !ansi && !hasScreenContent;
       const cursorX = Number(terminal.cursor_x);
