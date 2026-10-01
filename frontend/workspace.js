@@ -1462,7 +1462,7 @@ function renderedTerminalCellWidth(engine) {
 
 function takeoverGrid(engine) {
   const terminalInner = el.terminal_screen.querySelector(".xterm") || el.terminal_screen;
-  const panelWidth = Math.max(0, (el.terminal_screen.clientWidth || 0) - 16);
+  const panelWidth = Math.max(0, (el.terminal_screen.clientWidth || 0) - 8);
   const panelHeight = el.terminal_screen.clientHeight || 0;
   const charWidth = renderedTerminalCellWidth(engine);
   const cellHeight = terminalCellHeight(engine);
