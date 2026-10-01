@@ -987,8 +987,9 @@ class InteractiveRunnerTest(unittest.TestCase):
         ).start()
         loaded = MeetingStore.load(self.root, "runner-demo")
         self.assertEqual(retries + 1, len(client.calls))
-        self.assertEqual("api_error", loaded.meeting.phase)
-        self.assertTrue(loaded.meeting.recovery_required)
+        self.assertEqual("waiting_for_user", loaded.meeting.phase)
+        self.assertFalse(loaded.meeting.recovery_required)
+        self.assertFalse(any(event["kind"] == "error" for event in loaded.events()))
 
     def test_the_same_refusal_repeated_parks_the_turn_instead_of_spinning(self):
         """同一个理由连着被拒到上限：驻留并把话说给人听，不再无声地吃额度。
