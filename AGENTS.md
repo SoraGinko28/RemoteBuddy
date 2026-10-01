@@ -47,7 +47,12 @@
 - 页面是**长驻进程**，内存里是它启动那一刻的代码：改角色名、改 manifest 字段这类东西之后必须重启它，否则它拿旧校验把新数据判成非法——列表里会凭空少掉一批会议（这次把角色改成 `actor`，77 场会议就从列表里消失了）。静态文件（`frontend/*`）是每次请求现读的，所以**改了前端不重启也生效，改了 Python 必须重启**。
 - **只有一台服务**：端口 8766，工作目录是 actor 那棵树（`RemoteBuddy-second`）——会议数据、tmux 会话、`runs/` 全在那儿。`RemoteBuddy-core` 只是我用来做 git 操作的代码镜像，**它没有会议数据，不许在它那儿起服务**（起了就是个空壳，列表和真页面对不上）。
 - 8765 是**转发**到 8766 的同一个服务（`python3 /tmp/port_forward.py 8765 8766`，改写 Host/Origin 后短连接送进去），两个地址看到的是同一份东西。不许在两棵树各起一台——同一个 pane 会被两个 runner 抢。
-- 重启：`kill <旧 PID>`，在 actor 那棵树的根下 `nohup .venv/bin/python web.py --port 8766 --harness=trae > /tmp/web_page.log 2>&1 &`（2026-09-30 把 `web_v2.py` 改名成 `web.py`；旧进程用的是旧文件名，改名不影响已经在跑的那个进程，下次重启才走新名字），再确认 `curl -s localhost:8766/api/meetings` 的 `warnings` 是空的。**重启有代价**：进程里那些 runner 会没，下一次有人说话时会议按"孤儿 agent"接回来，而 `orphaned_agent` 会走 `fresh_conversation=True`——等于把 agent 那一轮的会话上下文丢了。所以重启排进队列空档，别在它干活时重启。
+- **线上跑的是部署副本，不是 actor 的工作树**（2026-10-01 改的）：actor 一边干活一边改 `frontend/*`，而前端文件是每次请求现读的——线上服务要是直接吃它那棵树，人就会看到半成品，页面一跳一跳。现在线上一律从 `~/workspace/RemoteBuddy-live` 起（一份按已核过的 commit 导出的代码），会议数据仍指向 actor 那棵树：
+  `cd ~/workspace/RemoteBuddy-live && nohup .venv/bin/python web.py --port 8766 --workspace ~/workspace/RemoteBuddy-second --harness=trae > /tmp/web_page.log 2>&1 &`
+  （`.venv` 和 `viba` 是指向 actor 那棵树的软链；`--workspace` 才是数据目录，工作区索引、`.meeting/`、tmux 会话、`runs/` 都在那儿。）
+- 部署 = 把副本刷到核过的 commit 再重启：
+  `git -C ~/workspace/RemoteBuddy-second archive <commit> | tar -x -C ~/workspace/RemoteBuddy-live`，然后照上面重启，再确认 `curl -s localhost:8766/api/meetings` 的 `warnings` 是空的。
+- 重启（旧写法，仅当副本还没建时用）：`kill <旧 PID>`，在 actor 那棵树的根下 `nohup .venv/bin/python web.py --port 8766 --harness=trae > /tmp/web_page.log 2>&1 &`（2026-09-30 把 `web_v2.py` 改名成 `web.py`；旧进程用的是旧文件名，改名不影响已经在跑的那个进程，下次重启才走新名字），再确认 `curl -s localhost:8766/api/meetings` 的 `warnings` 是空的。**重启有代价**：进程里那些 runner 会没，下一次有人说话时会议按"孤儿 agent"接回来，而 `orphaned_agent` 会走 `fresh_conversation=True`——等于把 agent 那一轮的会话上下文丢了。所以重启排进队列空档，别在它干活时重启。
 
 ## 提交前先分辨这是不是 actor 改的（教训，长期有效）
 - 会有时候就开在这个仓库里，**actor 改的就是当前这棵工作树**。`git add -A` / `git add .` 会把它的改动一起提交——2026-09-26 就这么把 actor 改坏的 `frontend/workspace.css` 提交进了 `8606a6a`（文件开头的 `/*` 被删、`.toast` 整条没了、`.app-shell` 被挪出 980px 的媒体查询）。
