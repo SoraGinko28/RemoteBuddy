@@ -65,6 +65,11 @@
   页面可能拿到新旧混着的资源，看着就是“页面老不稳定”。要 rebase 就一次做完，做完立刻让用户刷新。
 - 部署 8765 = 把核过的提交合进 core 的 main，再重启 8765。重启后确认 `curl -s localhost:8765/api/meetings` 的 `warnings` 是空的，并核一下线上给的 `assets/workspace.js` 和 core 里那份同哈希：`curl -s localhost:8765/assets/workspace.js | shasum` 对 `shasum frontend/workspace.js`。
 - 部署 8766 不用做：它就是 actor 那棵树，改完（或它自己提交完）重启一下即可。
+- **不许在真页面上开无头浏览器**（2026-10-01 血的教训）：窗格是**共享的**，页面一加载就按自己的面板
+  发 `/terminal/resize`；我的无头窗口比用户的小，于是把用户的窗格改成我的格子（93×30），用户那边就
+  左边右边都是留白、下面还空一大片。CDP 拦 `Fetch` 也拦不干净。要看页面就用测试里自己的会议
+  （`tests/test_workspace_page_ui.py` 那套），或者看 `/tmp` 里的副本树。
+
 ## 提交前先分辨这是不是 actor 改的（教训，长期有效）
 - 会有时候就开在这个仓库里，**actor 改的就是当前这棵工作树**。`git add -A` / `git add .` 会把它的改动一起提交——2026-09-26 就这么把 actor 改坏的 `frontend/workspace.css` 提交进了 `8606a6a`（文件开头的 `/*` 被删、`.toast` 整条没了、`.app-shell` 被挪出 980px 的媒体查询）。
 - 提交前逐条看 `git status` 和 `git diff`，**只 `git add` 自己动过的那几个文件**，不要用 `-A`。有会正在跑的时候尤其如此。
