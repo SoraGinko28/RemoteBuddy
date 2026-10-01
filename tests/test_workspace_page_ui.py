@@ -842,6 +842,20 @@ class TerminalTakeoverTest(_PageTestCase):
             self.service.terminal_input(self.meeting_id, {"bytes": (b"\r" * 10).hex()})
             time.sleep(0.5)
 
+        captured_tail = [
+            line.rstrip()
+            for line in self.service._transport().capture(pane_id).splitlines()[-8:]
+        ]
+        rendered_tail = self.page.js(
+            """(() => [...document.querySelectorAll('#terminal-screen .xterm-rows > div')]
+                .slice(-8).map((row) => row.innerText.trimEnd()))()"""
+        )
+        self.assertEqual(
+            rendered_tail,
+            captured_tail,
+            "接管态页面底部文字必须逐字等于 tmux capture-pane 的底部几行",
+        )
+
         geometry = self.page.js(
             """(() => {
                 const panel = document.querySelector('#terminal-screen');
