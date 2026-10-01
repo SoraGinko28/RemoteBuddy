@@ -2056,10 +2056,10 @@ function renderTerminal() {
     // show the bottom window of the frame (like a terminal scrolled to the
     // bottom) instead of shrinking the font. The cursor line stays visible.
     const panelHeight = terminalPanelBox().height;
-    const cellHeight = TERMINAL_ROW_PX;
     let fittingRows = fullRows;
     if (panelHeight > 0) {
-      fittingRows = Math.floor(panelHeight / cellHeight);
+      const drawnCell = terminalCellHeight(engine);
+      if (drawnCell > 0) fittingRows = Math.floor(panelHeight / drawnCell);
       fittingRows = Math.max(4, Math.min(fullRows, fittingRows));
     }
     const viewRows = Math.min(fullRows, fittingRows);
@@ -2072,14 +2072,9 @@ function renderTerminal() {
         ? { event_id: source.event_id || "", content: source.content }
         : null;
       if (geometryChanged) engine.resize(width, viewRows);
-      if (panelHeight > 0 && viewRows > 0) {
-        const drawnCell = terminalCellHeight(engine);
-        const fittedLineHeight = engine.options.lineHeight * panelHeight / (viewRows * drawnCell);
-        if (Number.isFinite(fittedLineHeight) && fittedLineHeight >= 1) {
-          engine.options.lineHeight = fittedLineHeight;
-          engine.resize(width, viewRows);
-        }
-      }
+      // The line height stays fixed: stretching it to fill the panel made the
+      // drawn cell depend on the previous frame, and the grid taken from that
+      // cell then shrank the pane a little more on every round.
       const ansi = typeof terminal.ansi === "string" ? terminal.ansi : "";
       const waiting = !ansi && !hasScreenContent;
       const cursorX = Number(terminal.cursor_x);
