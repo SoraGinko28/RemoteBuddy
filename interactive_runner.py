@@ -798,6 +798,10 @@ class InteractiveRunner:
                             return
                     if self._invalid_action_streak < MAX_INVALID_ACTION_RETRIES:
                         continue
+                    self._wait_for_user(
+                        "模型连续提交了无法执行的动作，请检查后再继续。"
+                    )
+                    return
                 self._api_error(request_id, exc)
                 return
             finally:
