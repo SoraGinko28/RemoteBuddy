@@ -1329,11 +1329,13 @@ function scheduleHumanTerminalResize() {
   }, 120);
 }
 
-async function resizeHumanTerminal() {
+async function resizeHumanTerminal(force = false) {
   if (!state.selectedId || !terminalEngine || (typeof takeoverStream !== "undefined" && takeoverStream.active)) return;
   const grid = takeoverGrid(terminalEngine.term);
   const key = `${state.selectedId}:${grid.cols}x${grid.rows}`;
-  if (humanTerminalResizeInFlight || key === humanTerminalResizeKey) return;
+  const pane = state.snapshot?.latest_screen?.data || {};
+  const paneMatchesGrid = Number(pane.pane_width) === grid.cols && Number(pane.pane_height) === grid.rows;
+  if (humanTerminalResizeInFlight || (!force && key === humanTerminalResizeKey) || (force && paneMatchesGrid)) return;
   humanTerminalResizeInFlight = true;
   try {
     const result = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/resize`, {
@@ -2901,6 +2903,7 @@ async function refreshSelected() {
   if (!snapshotResult.notModified) {
     state.snapshot = snapshotResult.payload;
     state.snapshotEtag = snapshotResult.etag;
+    resizeHumanTerminal(true).catch(() => {});
     changed = true;
   }
   if (ticketsResult && !ticketsResult.notModified) {
