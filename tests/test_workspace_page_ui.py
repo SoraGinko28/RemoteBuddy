@@ -773,6 +773,35 @@ class TerminalTakeoverTest(_PageTestCase):
         )
         self._assert_long_line(body)
 
+    def test_takeover_reopens_stream_after_server_disconnect(self):
+        store = self._store()
+        store.update(phase="agent_thinking")
+        pane_id = self.service._transport().create_workspace_session(
+            store.meeting.session_name, store.workspace_path
+        )
+        store.set_session(pane_id)
+        self.service.acquire(self.meeting_id)
+
+        self.service.terminal_input(
+            self.meeting_id,
+            {"bytes": b"echo HI-9f3c\r".hex()},
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('HI-9f3c')",
+            20,
+            what="断流前页面看得到命令输出",
+        )
+        self.page.js("takeoverStream.source.close(); 'closed'")
+        self.service.terminal_input(
+            self.meeting_id,
+            {"bytes": b"echo TWO-9f3c\r".hex()},
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('TWO-9f3c')",
+            10,
+            what="断流后重开流并显示新命令输出",
+        )
+
         # Resize 对准属于观看态；先结束 takeover，避免流式终端与观看态对准互相抢尺寸。
         self.page.js("stopTerminalTakeover(false); 'released'")
         self.page.wait_for("window.__takeoverReady === false", 10, what="退出 takeover 回到观看态")

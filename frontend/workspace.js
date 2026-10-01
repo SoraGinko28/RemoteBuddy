@@ -1378,6 +1378,9 @@ const takeoverStream = {
   source: null,
   inputHex: "",
   flushTimer: null,
+  reconnectTimer: null,
+  watchdogTimer: null,
+  lastEventAt: 0,
   flushing: false,
   lastFlushErrorAt: 0,
   keyHandler: null,
@@ -1581,6 +1584,7 @@ function startTerminalTakeover() {
   const engine = rebuildTerminalEngine();
   if (!engine) return;
   takeoverStream.active = true;
+  takeoverStream.lastEventAt = Date.now();
   globalThis.__takeoverReady = true;
   takeoverRepaintPending = false;
   takeoverRepaintForceReset = false;
@@ -1611,6 +1615,7 @@ function startTerminalTakeover() {
   takeoverStream.source = source;
   source.addEventListener("size", (event) => {
     if (!takeoverStream.active) return;
+    takeoverStream.lastEventAt = Date.now();
     const match = /^(\d+)x(\d+)$/.exec(event.data || "");
     if (!match) return;
     const paneWidth = Number(match[1]);
@@ -1623,6 +1628,7 @@ function startTerminalTakeover() {
   });
   source.addEventListener("seed", (event) => {
     if (!takeoverStream.active) return;
+    takeoverStream.lastEventAt = Date.now();
     engine.reset();
     engine.write(new Uint8Array(decodeBase64(event.data)));
     engine.scrollToBottom();
@@ -1636,11 +1642,13 @@ function startTerminalTakeover() {
   });
   source.addEventListener("data", (event) => {
     if (!takeoverStream.active) return;
+    takeoverStream.lastEventAt = Date.now();
     engine.write(new Uint8Array(decodeBase64(event.data)));
     engine.scrollToBottom();
   });
   source.addEventListener("control", (event) => {
     if (!takeoverStream.active) return;
+    takeoverStream.lastEventAt = Date.now();
     if (event.data === "reset") engine.reset();
     if (event.data === "released") stopTerminalTakeover(false);
   });
@@ -1650,8 +1658,35 @@ function startTerminalTakeover() {
     const meeting = state.snapshot?.meeting;
     if (!meeting || meeting.control_owner !== "human" || meeting.phase !== "human_control") {
       stopTerminalTakeover(false);
+      return;
     }
+    if (takeoverStream.reconnectTimer !== null) return;
+    stopTerminalTakeover(false);
+    takeoverStream.reconnectTimer = setTimeout(() => {
+      takeoverStream.reconnectTimer = null;
+      const current = state.snapshot?.meeting;
+      if (current?.control_owner === "human" && current.phase === "human_control") {
+        startTerminalTakeover();
+      }
+    }, 500);
   };
+  takeoverStream.watchdogTimer = setInterval(() => {
+    if (!takeoverStream.active || Date.now() - takeoverStream.lastEventAt < 20000) return;
+    const current = state.snapshot?.meeting;
+    if (current?.control_owner !== "human" || current.phase !== "human_control") {
+      stopTerminalTakeover(false);
+      return;
+    }
+    if (takeoverStream.reconnectTimer !== null) return;
+    stopTerminalTakeover(false);
+    takeoverStream.reconnectTimer = setTimeout(() => {
+      takeoverStream.reconnectTimer = null;
+      const latest = state.snapshot?.meeting;
+      if (latest?.control_owner === "human" && latest.phase === "human_control") {
+        startTerminalTakeover();
+      }
+    }, 500);
+  }, 5000);
   // Bring focus in so typing starts working immediately after 接管.
   setTimeout(() => {
     if (takeoverStream.active) {
@@ -1663,6 +1698,10 @@ function startTerminalTakeover() {
 function stopTerminalTakeover(flushPending) {
   if (!takeoverStream.active) return;
   takeoverStream.active = false;
+  if (takeoverStream.watchdogTimer !== null) {
+    clearInterval(takeoverStream.watchdogTimer);
+    takeoverStream.watchdogTimer = null;
+  }
   globalThis.__takeoverReady = false;
   if (takeoverStream.flushTimer !== null) {
     clearTimeout(takeoverStream.flushTimer);
