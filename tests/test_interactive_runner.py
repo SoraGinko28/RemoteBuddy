@@ -975,7 +975,7 @@ class InteractiveRunnerTest(unittest.TestCase):
         self.assertLess(runner._cycle_elapsed(), 5)
         self.assertFalse(runner._phase_constraints()[2], "人说话了就该能接着干")
 
-    def test_consecutive_invalid_actions_still_fail_the_cycle(self):
+    def test_consecutive_invalid_actions_park_the_cycle(self):
         # 容忍几次由 MAX_INVALID_ACTION_RETRIES 定：写死次数的话，改配额就得改用例。
         retries = MAX_INVALID_ACTION_RETRIES
         client = FakeClient(
@@ -987,8 +987,9 @@ class InteractiveRunnerTest(unittest.TestCase):
         ).start()
         loaded = MeetingStore.load(self.root, "runner-demo")
         self.assertEqual(retries + 1, len(client.calls))
-        self.assertEqual("api_error", loaded.meeting.phase)
-        self.assertTrue(loaded.meeting.recovery_required)
+        self.assertEqual("waiting_for_user", loaded.meeting.phase)
+        self.assertFalse(loaded.meeting.recovery_required)
+        self.assertFalse(any(event["kind"] == "error" for event in loaded.events()))
 
     def test_the_same_refusal_repeated_parks_the_turn_instead_of_spinning(self):
         """同一个理由连着被拒到上限：驻留并把话说给人听，不再无声地吃额度。
