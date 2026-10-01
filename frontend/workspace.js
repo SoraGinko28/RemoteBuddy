@@ -2885,7 +2885,6 @@ async function refreshSelected() {
   if (!snapshotResult.notModified) {
     state.snapshot = snapshotResult.payload;
     state.snapshotEtag = snapshotResult.etag;
-    resizeHumanTerminal(true).catch(() => {});
     changed = true;
   }
   if (ticketsResult && !ticketsResult.notModified) {
