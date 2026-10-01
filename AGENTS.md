@@ -58,8 +58,9 @@
 - **给 actor 发消息前先看谁握着 driver**：`<会议目录>/driver.json` 里写的那台服务才肯执行；发错端口会被拒，
   会议还会被标成 `api_error`（“这场会正由另一个服务驱动”）。用户页面在 8765，driver 通常就是 8765，
   所以给 actor 的消息从 **8765** 发：`python3 /tmp/rb_drive.py 8765 say <会议> "..."`。
-- actor 改的是 second 那棵树，而用户页面吃的是 **core** 的 `frontend/*`：它每提交一笔，我就 `git rebase` core 到那个
-  commit（core 工作树立刻变），用户刷新页面就看得到；只有 Python 改动才需要重启 8765。
+- actor 改的是 second 那棵树，而用户页面吃的是 **core** 的 `frontend/*`。**别急着同步**（用户 2026-10-01 说的）：
+  不要它一提交就 rebase，等用户说同步、或一笔事彻底定稿了再同步；同步本身会重写 core 的工作树文件，
+  正在用页面的人会看到跳。只有 Python 改动才需要重启 8765。
 - **别在用户正用页面的时候 rebase core**：rebase 会重写 core 的工作树文件，而 8765 是每次请求现读——那几秒里
   页面可能拿到新旧混着的资源，看着就是“页面老不稳定”。要 rebase 就一次做完，做完立刻让用户刷新。
 - 部署 8765 = 把核过的提交合进 core 的 main，再重启 8765。重启后确认 `curl -s localhost:8765/api/meetings` 的 `warnings` 是空的，并核一下线上给的 `assets/workspace.js` 和 core 里那份同哈希：`curl -s localhost:8765/assets/workspace.js | shasum` 对 `shasum frontend/workspace.js`。
