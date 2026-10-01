@@ -769,7 +769,9 @@ class MeetingWebService:
             "pane_height": pane_height,
         }
 
-    def resize_terminal(self, meeting_id: str, cols: int, rows: int) -> Dict[str, int]:
+    def resize_terminal(self, meeting_id: str, cols: int, rows: int, diagnostics: Optional[Mapping[str, Any]] = None) -> Dict[str, int]:
+        if diagnostics:
+            print(f"terminal resize diagnostics meeting={meeting_id} {dict(diagnostics)}", file=sys.stderr, flush=True)
         if not isinstance(cols, int) or not isinstance(rows, int):
             raise WebError(400, "terminal resize size must be integers")
         if cols < 40 or cols > 300 or rows < 12 or rows > 120:
@@ -3177,10 +3179,11 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
             match = re.fullmatch(r"/api/meetings/([^/]+)/snapshot", path)
             if match:
                 meeting_id = unquote(match.group(1))
-                if self._not_modified_early('"' + self.service.revision(meeting_id) + '"'):
-                    return
                 payload = self.service.snapshot(meeting_id)
-                self._json(payload, etag='"' + payload["revision"] + '"')
+                etag = '"' + payload["revision"] + '"'
+                if self._not_modified_early(etag):
+                    return
+                self._json(payload, etag=etag)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/events", path)
             if match:
@@ -3315,9 +3318,10 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 payload = self._read_json() or {}
                 cols = payload.get("cols")
                 rows = payload.get("rows")
+                diagnostics = payload.get("diagnostics")
                 if not isinstance(cols, int) or not isinstance(rows, int):
                     raise WebError(400, "terminal resize size must be integers")
-                result = self.service.resize_terminal(unquote(match.group(1)), cols, rows)
+                result = self.service.resize_terminal(unquote(match.group(1)), cols, rows, diagnostics)
                 self._json(result)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/tickets/([^/]+)", path)

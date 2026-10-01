@@ -1329,16 +1329,30 @@ function scheduleHumanTerminalResize() {
   }, 120);
 }
 
-async function resizeHumanTerminal() {
+async function resizeHumanTerminal(force = false) {
   if (!state.selectedId || !terminalEngine || (typeof takeoverStream !== "undefined" && takeoverStream.active)) return;
   const grid = takeoverGrid(terminalEngine.term);
+  const panel = el.terminal_screen;
   const key = `${state.selectedId}:${grid.cols}x${grid.rows}`;
-  if (humanTerminalResizeInFlight || key === humanTerminalResizeKey) return;
+  const pane = state.snapshot?.latest_screen?.data || {};
+  const paneMatchesGrid = Number(pane.pane_width) === grid.cols && Number(pane.pane_height) === grid.rows;
+  if (humanTerminalResizeInFlight || (!force && key === humanTerminalResizeKey) || (force && paneMatchesGrid)) return;
   humanTerminalResizeInFlight = true;
   try {
     const result = await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/resize`, {
       method: "POST",
-      body: JSON.stringify(grid),
+      body: JSON.stringify({
+        ...grid,
+        diagnostics: {
+          panel_width: panel?.clientWidth || 0,
+          panel_height: panel?.clientHeight || 0,
+          cols: grid.cols,
+          rows: grid.rows,
+          window_width: window.innerWidth,
+          window_height: window.innerHeight,
+          device_pixel_ratio: window.devicePixelRatio,
+        },
+      }),
     });
     const engine = terminalEngine.term;
     if (engine.cols !== result.pane_width || engine.rows !== result.pane_height) {
@@ -1437,43 +1451,27 @@ function queueTakeoverInput(text, urgent = false) {
 // this grid before the stream opens (real clients resize the pty to the
 // client). Rows/cols are derived from the measured panel and cell box, never
 // guessed.
-function centerTerminalScreen(engine) {
-  const panelWidth = el.terminal_screen.clientWidth || 0;
-  const cellWidth = (() => {
-    try {
-      const width = Number(engine?._core?._renderService?.dimensions?.css?.cell?.width);
-      return width > 0 ? width : TERMINAL_FONT_SIZE * 0.6;
-    } catch (_error) {
-      return TERMINAL_FONT_SIZE * 0.6;
-    }
-  })();
-  const leftover = Math.max(0, panelWidth - engine.cols * cellWidth);
-  const screen = el.terminal_screen.querySelector(".xterm-screen");
-  if (screen) screen.style.marginLeft = `${Math.floor(leftover / 2)}px`;
+function renderedTerminalCellWidth(engine) {
+  try {
+    const width = Number(engine?._core?._renderService?.dimensions?.css?.cell?.width);
+    return width > 0 ? width : TERMINAL_FONT_SIZE * 0.6;
+  } catch (_error) {
+    return TERMINAL_FONT_SIZE * 0.6;
+  }
 }
 
 function takeoverGrid(engine) {
-  const panelWidth = el.terminal_screen.clientWidth || 0;
+  const terminalInner = el.terminal_screen.querySelector(".xterm") || el.terminal_screen;
+  const panelWidth = Math.max(0, (el.terminal_screen.clientWidth || 0) - 8);
   const panelHeight = el.terminal_screen.clientHeight || 0;
-  let charWidth = Number.NaN;
-  try {
-    charWidth = Number(engine?._core?._renderService?.dimensions?.css?.cell?.width);
-  } catch (_error) {
-    // fall through to the estimate
-  }
-  if (!Number.isFinite(charWidth) || charWidth <= 0) charWidth = TERMINAL_FONT_SIZE * 0.6;
+  const charWidth = renderedTerminalCellWidth(engine);
   const cellHeight = terminalCellHeight(engine);
   let cols = 80;
   if (panelWidth > 0 && charWidth > 0) {
-    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth) - 4));
-    // Keep the panel's client width available for measuring the grid. The
-    // discarded fraction is real leftover space, so center the xterm screen
-    // inside it instead of adding padding to the panel (which would change
-    // clientWidth and make the pty grid calculation inconsistent).
-    centerTerminalScreen(engine);
+    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth)));
   }
   let rows = 24;
-  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
+  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor(panelHeight / TERMINAL_ROW_PX);
   rows = Math.max(12, Math.min(120, rows));
   return { cols, rows };
 }
@@ -1631,7 +1629,6 @@ function startTerminalTakeover() {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (takeoverStream.active && takeoverStream.source === source) {
-          centerTerminalScreen(engine);
           el.terminal_screen.dataset.geometryReady = "true";
         }
       });
@@ -1724,10 +1721,6 @@ let takeoverRepaintForceReset = false;
 const TERMINAL_FONT_SIZE = 12;
 const TERMINAL_LINE_HEIGHT = 1.42;
 const TERMINAL_ROW_PX = TERMINAL_FONT_SIZE * TERMINAL_LINE_HEIGHT;
-// Real xterm row height is slightly larger than the nominal product, so an
-// exact floor() can clip the last row below the panel edge. Reserve a few
-// pixels so the bottom line (and the prompt/cursor) is always fully visible.
-const TERMINAL_BOTTOM_RESERVE_PX = 14;
 let termRowsState = null; // { width, height, plain: string[] } of last painted frame
 
 const TERMINAL_STYLE_CODES = { bold: "1", dim: "2", italic: "3", underline: "4", blink: "5", reverse: "7" };
@@ -1797,36 +1790,24 @@ function buildTerminalRows(segments, plainText, height) {
 }
 
 function paintTerminalFrame(term, rows, width, height, hasWaiting) {
-  if (
-    hasWaiting
-    || !termRowsState
-    || termRowsState.width !== width
-    || termRowsState.height !== height
-    || termRowsState.plain.length !== rows.length
-  ) {
-    // Full repaint writes every row at its absolute position. Streaming a
-    // whole frame through the terminal instead would scroll by the frame's
-    // own line count and drift away from the cursor/offset math.
+  const previousRows = termRowsState;
+  const geometryChanged = !previousRows
+    || previousRows.width !== width
+    || previousRows.height !== height
+    || previousRows.plain.length !== rows.length;
+  if (hasWaiting || geometryChanged) {
     term.reset();
-    for (let index = 0; index < rows.length; index += 1) {
-      term.write(`\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K");
-    }
+    term.write(rows.map((row, index) =>
+      `\x1b[${index + 1};1H` + row.ansi + "\x1b[K"
+    ).join(""));
   } else {
-    const changed = [];
-    for (let index = 0; index < rows.length; index += 1) {
-      if (termRowsState.plain[index] !== rows[index].plain) changed.push(index);
-    }
-    if (changed.length && changed.length * 2 < rows.length) {
-      for (const index of changed) {
-        term.write(`\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K");
-      }
-    } else if (changed.length) {
-      // Too many rows changed: a full repaint is cheaper than many moves.
-      term.reset();
-      for (let index = 0; index < rows.length; index += 1) {
-        term.write(`\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K");
-      }
-    }
+    const changed = rows.reduce((indexes, row, index) => {
+      if (previousRows.plain[index] !== row.plain) indexes.push(index);
+      return indexes;
+    }, []);
+    term.write(changed.map((index) =>
+      `\x1b[${index + 1};1H` + rows[index].ansi + "\x1b[K"
+    ).join(""));
   }
   termRowsState = { width, height, plain: rows.map((row) => row.plain) };
 }
@@ -1957,13 +1938,10 @@ function renderTerminal() {
     // show the bottom window of the frame (like a terminal scrolled to the
     // bottom) instead of shrinking the font. The cursor line stays visible.
     const panelHeight = el.terminal_screen.clientHeight || 0;
-    const cellHeight = terminalCellHeight(engine);
+    const cellHeight = TERMINAL_ROW_PX;
     let fittingRows = fullRows;
     if (panelHeight > 0) {
-      fittingRows = Math.floor((panelHeight - TERMINAL_BOTTOM_RESERVE_PX) / cellHeight);
-      // Squeeze one extra row when it overflows by at most 2px, so the panel
-      // is filled without an awkward empty strip under the prompt.
-      if ((fittingRows + 1) * cellHeight - panelHeight <= 2) fittingRows += 1;
+      fittingRows = Math.floor(panelHeight / cellHeight);
       fittingRows = Math.max(4, Math.min(fullRows, fittingRows));
     }
     const viewRows = Math.min(fullRows, fittingRows);
@@ -1976,6 +1954,13 @@ function renderTerminal() {
         ? { event_id: source.event_id || "", content: source.content }
         : null;
       if (geometryChanged) engine.resize(width, viewRows);
+      if (panelHeight > 0 && viewRows > 0) {
+        const fittedLineHeight = TERMINAL_LINE_HEIGHT * panelHeight / (viewRows * TERMINAL_ROW_PX);
+        if (Number.isFinite(fittedLineHeight) && fittedLineHeight >= 1) {
+          engine.options.lineHeight = fittedLineHeight;
+          engine.resize(width, viewRows);
+        }
+      }
       const ansi = typeof terminal.ansi === "string" ? terminal.ansi : "";
       const waiting = !ansi && !hasScreenContent;
       const cursorX = Number(terminal.cursor_x);
@@ -2015,12 +2000,10 @@ function renderTerminal() {
         engine.write(`\x1b[${visibleRow};${Math.min(cursorX + 1, width)}H`);
       }
       // Normal playback has no takeover seed event to flip the gate. Reveal
-      // it only after the first frame has been laid out and painted, so the
-      // terminal is centered before its first visible frame.
+      // it only after the first frame has been laid out and painted.
       if (el.terminal_screen.dataset.geometryReady !== "true") {
         requestAnimationFrame(() => {
           if (!takeoverStream.active && terminalEngine?.term === engine) {
-            centerTerminalScreen(engine);
             el.terminal_screen.dataset.geometryReady = "true";
           }
         });

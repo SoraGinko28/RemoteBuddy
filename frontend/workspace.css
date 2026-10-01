@@ -290,8 +290,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .viewport-mode-label { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .viewport-mode .segment { min-height: 26px; padding: 0 7px; font-size: 10px; }
 .terminal-screen { min-height: 0; margin: 0; overflow: auto; padding: 14px 16px; background: var(--terminal); color: var(--terminal-ink); white-space: pre; tab-size: 4; font: 12px/1.42 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; scrollbar-color: #3a403c var(--terminal); }
-.terminal-screen.xterm-host { padding: 0; overflow: hidden; }
-.terminal-screen.xterm-host .xterm { width: 100%; max-width: 100%; height: 100%; overflow: hidden; scrollbar-color: #3a403c var(--terminal); }
+.terminal-screen.xterm-host { display: flex; justify-content: center; align-items: stretch; padding: 0; overflow: hidden; }
+.terminal-screen.xterm-host .xterm { width: auto; max-width: none; height: 100%; margin: 0 4px 4px; overflow: hidden; scrollbar-color: #3a403c var(--terminal); }
 .terminal-screen.xterm-host .xterm .xterm-viewport { max-width: 100%; overflow: hidden; }
 .terminal-screen.xterm-host .xterm .xterm-viewport { background: transparent; }
 .terminal-screen.xterm-host .xterm .xterm-screen { background: transparent; }
