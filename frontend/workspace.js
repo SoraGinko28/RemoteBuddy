@@ -1664,10 +1664,6 @@ function stopTerminalTakeover(flushPending) {
   if (!takeoverStream.active) return;
   takeoverStream.active = false;
   globalThis.__takeoverReady = false;
-  // 交还时先把画面藏起来：下面要重建引擎、再抓一次权威快照、画第一帧；这段空档里
-  // 旧引擎留下的帧（还停在它自己的滚动位置）会被人看见，就是那一下"闪现下面的字符"。
-  // 画完第一帧之后 renderTerminal 里的 geometryReady 那段会把它翻回可见。
-  el.terminal_screen.dataset.geometryReady = "false";
   if (takeoverStream.flushTimer !== null) {
     clearTimeout(takeoverStream.flushTimer);
     takeoverStream.flushTimer = null;
