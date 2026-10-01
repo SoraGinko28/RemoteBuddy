@@ -769,7 +769,9 @@ class MeetingWebService:
             "pane_height": pane_height,
         }
 
-    def resize_terminal(self, meeting_id: str, cols: int, rows: int) -> Dict[str, int]:
+    def resize_terminal(self, meeting_id: str, cols: int, rows: int, diagnostics: Optional[Mapping[str, Any]] = None) -> Dict[str, int]:
+        if diagnostics:
+            print(f"terminal resize diagnostics meeting={meeting_id} {dict(diagnostics)}", file=sys.stderr, flush=True)
         if not isinstance(cols, int) or not isinstance(rows, int):
             raise WebError(400, "terminal resize size must be integers")
         if cols < 40 or cols > 300 or rows < 12 or rows > 120:
@@ -3316,9 +3318,10 @@ class RemoteBuddyRequestHandler(BaseHTTPRequestHandler):
                 payload = self._read_json() or {}
                 cols = payload.get("cols")
                 rows = payload.get("rows")
+                diagnostics = payload.get("diagnostics")
                 if not isinstance(cols, int) or not isinstance(rows, int):
                     raise WebError(400, "terminal resize size must be integers")
-                result = self.service.resize_terminal(unquote(match.group(1)), cols, rows)
+                result = self.service.resize_terminal(unquote(match.group(1)), cols, rows, diagnostics)
                 self._json(result)
                 return
             match = re.fullmatch(r"/api/meetings/([^/]+)/tickets/([^/]+)", path)
