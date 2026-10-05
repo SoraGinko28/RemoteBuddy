@@ -12,6 +12,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from ordered_meeting.orders import measured, owed, ticket_of  # noqa: E402
 from ordered_meeting.session import OK, STUCK, Session  # noqa: E402
 from ticket_centered import actor_caps  # noqa: E402
+from ticket_centered.store import Store  # noqa: E402
 
 WORKFLOW = REPO_ROOT / "workflow"
 TICKET = "write_a_draft"
@@ -146,6 +150,56 @@ class OrderedMeetingTest(unittest.TestCase):
         outcome = self.session.run([("an-actor-that-cannot-write", "actor", {})])
         self.assertEqual(outcome.outcome, STUCK)
         self.assertEqual(outcome.rounds, 1)
+
+
+class ActorServiceProcessTest(unittest.TestCase):
+    """actor 是一个服务进程：一条命令、一份共用的 store，没有发给谁的包。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store_root = Path(self._tmp.name) / "store"
+        self.order = "draft-1"
+
+    def run_module(self, *argv):
+        """照真会议那样起一个进程：cwd 在仓库根上，模块才找得到。"""
+        return subprocess.run([sys.executable, "-m", *argv], cwd=str(REPO_ROOT),
+                              capture_output=True, text=True,
+                              env={**os.environ, "PYTHONPATH": str(REPO_ROOT)})
+
+    def last_line(self, finished):
+        self.assertEqual(finished.returncode, 0, finished.stderr)
+        return json.loads(finished.stdout.strip().splitlines()[-1])
+
+    def test_the_assistant_and_the_actor_are_two_processes_on_one_store(self):
+        issued = self.last_line(self.run_module(
+            "ordered_meeting.assistant", "--store", str(self.store_root), "--case", CASE,
+            "--order", self.order, "--workflow", str(WORKFLOW), "--ticket", TICKET,
+            "--words", WORDS))
+        self.assertEqual(issued["wrote"], [[f"{CASE}/greeted", "acknowledge"]])
+
+        answered = self.last_line(self.run_module(
+            "ordered_meeting.actor", "--store", str(self.store_root), "--case", CASE,
+            "--order", self.order, "--writer", "tests.scripted_actor:write"))
+        self.assertEqual(answered["answered"], [[f"{CASE}/greeted", "acknowledge"],
+                                                [f"{CASE}/drafted", "write_code"],
+                                                [f"{CASE}/report_done", "report_done"]])
+
+        store = Store(self.store_root)
+        drafted, ok = store.read(f"{CASE}/drafted", "write_code")
+        self.assertTrue(ok)
+        self.assertEqual(drafted, CODE)
+
+    def test_a_second_actor_process_replays_instead_of_writing_again(self):
+        self.run_module("ordered_meeting.assistant", "--store", str(self.store_root),
+                        "--case", CASE, "--order", self.order, "--workflow", str(WORKFLOW),
+                        "--ticket", TICKET, "--words", WORDS)
+        argv = ("ordered_meeting.actor", "--store", str(self.store_root), "--case", CASE,
+                "--order", self.order, "--writer", "tests.scripted_actor:write")
+        self.run_module(*argv)
+        again = self.last_line(self.run_module(*argv))
+        self.assertEqual(again["answered"], [])
+        self.assertEqual(len(again["replayed"]), 3)
 
 
 if __name__ == "__main__":

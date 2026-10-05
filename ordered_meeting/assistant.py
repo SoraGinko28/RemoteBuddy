@@ -12,6 +12,9 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -66,3 +69,43 @@ def write_work_orders(report: Report, *, store_root, case: str, record_path=None
     env = Store(store_root, record_path).env(step.module_path, str(directory), case=case)
     record_prepare(env, step.func_name, report.duty.call, None)
     return [(step.module_path, step.func_name, report.duty.call)]
+
+
+def main(argv=None) -> int:
+    """assistant 的进程：收消息（`--words`）、发单（`--ticket`）、把做不了的写成工单。
+
+        python -m ordered_meeting.assistant --store <store> --case <案子> --order <工单> \\
+            --workflow workflow --ticket write_a_draft --words "人类说的话"
+
+    一行 JSON 报这一趟：写下了哪几张工单、递延在哪一步。
+    """
+    parser = argparse.ArgumentParser(description="assistant 的进程：收消息、发单")
+    parser.add_argument("--store", required=True, help="共用的 store")
+    parser.add_argument("--case", required=True, help="这张工单跑在哪个案子下")
+    parser.add_argument("--order", required=True, help="哪张工单（`orders/<工单>/`）")
+    parser.add_argument("--workflow", default=None, help="这份流程在哪（发单时把程序抄进 store）")
+    parser.add_argument("--ticket", default=None, help="发哪一张（不给就是只跑已经发出去的那张）")
+    parser.add_argument("--words", default=None, help="人类刚说的话")
+    args = parser.parse_args(argv)
+
+    if args.words:
+        state_the_task(args.store, args.case, args.words)
+    if args.ticket:
+        if not args.workflow:
+            parser.error("发单要同时给 --workflow（程序从那儿抄）")
+        publish(args.store, args.order, args.workflow, args.ticket)
+
+    report, work_orders = issue(store_root=args.store, order=args.order, case=args.case)
+    print(json.dumps({
+        "service": report.service,
+        "order": report.order,
+        "ticket": report.ticket,
+        "wrote": [list(pair[:2]) for pair in work_orders],
+        "deferred": [list(pair) for pair in report.deferred],
+        "failure": report.failure,
+    }, ensure_ascii=False))
+    return 1 if report.failure else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
