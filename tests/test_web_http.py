@@ -343,6 +343,21 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(2, len(started))
         self.assertEqual(2, len(finished))
 
+    def test_the_manual_issue_button_has_no_place_in_orders_mode(self):
+        """工单模式下发单的只有 assistant：手按那一下要当场说清楚，不去动老那一侧。"""
+        service = self.orders_service(lambda _store, _meeting, _target: actor_service(
+            lambda _prompt: DRAFT_ORDERS))
+        service.start({"message": "写一个快速排序，放到 quicksort.py",
+                       "meeting_id": "orders-button"})
+        self.wait_for_orders(service, "orders-button")
+        with self.assertRaises(WebError) as caught:
+            service.issue_ticket("orders-button", "write_a_draft")
+        self.assertEqual(409, caught.exception.status)
+        self.assertIn("assistant 发单", caught.exception.message)
+        # 老那一侧一点没动：没有包，也没有它的 store
+        self.assertFalse((Path(service.load_store("orders-button").run_dir)
+                          / "ticket_centered" / "store").exists())
+
     def test_a_second_message_runs_its_own_pass(self):
         """同一场会里再说一句：再来一趟，有自己的案子。"""
         words = "写一个快速排序，放到 quicksort.py"

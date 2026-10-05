@@ -1602,6 +1602,9 @@ class MeetingWebService:
 
         页面按一下按钮就是这一下。跑在后台，页面照旧轮询工单板：答下的值成员自己抄回会议。
         """
+        if self.orders:
+            # 工单那一侧只有一个发单的人：assistant。手按这一下没有位置。
+            raise WebError(409, "这一场由 assistant 发单：在对话里说一句就行，不用手按")
         store = self.load_store(meeting_id)
         board = _ticket_board(store, self.project_root)
         if ticket not in [one["ticket"] for one in board["tickets"]]:
