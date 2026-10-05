@@ -128,31 +128,46 @@ class Session:
     # ------------------------------------------------------------------
 
     def run(self, services: Sequence[Tuple[str, str, Dict[str, Callable]]],
-            max_rounds: int = 1024) -> Outcome:
+            max_rounds: int = 1024, out: Optional[Callable[[str], None]] = None) -> Outcome:
         """一轮一轮：assistant 跑一遍工单（把下一步的 `$call` 固定成一张工单），服务接单。
 
         一轮只往前走一步：工单里只留得下已经算好的实参，所以下一步的工单要等上一步答完、assistant
         再跑一遍才写得出来。assistant 这一趟没有递延，就说明整张工单跑到了头。
+
+        `out` 给一行一行看的人：每一趟的账（`Report.line`）和最后的结局各一行。
         """
         if not self.published():
             self.publish()
         reports: List[Report] = []
         work_orders: List[Tuple[str, str, Any]] = []
+        outcome = Outcome(UNFINISHED, max_rounds, reports=reports, work_orders=work_orders)
         for index in range(1, max_rounds + 1):
             issued, written = self.issue()
             reports.append(issued)
             work_orders.extend(written)
+            _say(out, issued)
             if issued.failure:
-                return Outcome(BROKEN, index, reports=reports, work_orders=work_orders)
+                outcome = Outcome(BROKEN, index, reports=reports, work_orders=work_orders)
+                break
             if issued.duty is None:
-                return Outcome(OK, index, value=issued.value, reports=reports,
-                               work_orders=work_orders)
+                outcome = Outcome(OK, index, value=issued.value, reports=reports,
+                                  work_orders=work_orders)
+                break
 
             progressed = False
             for name, role, caps in services:
                 answered = self.answer(name, role, caps)
                 reports.append(answered)
+                _say(out, answered)
                 progressed = progressed or bool(answered.answered)
             if not progressed:
-                return Outcome(STUCK, index, reports=reports, work_orders=work_orders)
-        return Outcome(UNFINISHED, max_rounds, reports=reports, work_orders=work_orders)
+                outcome = Outcome(STUCK, index, reports=reports, work_orders=work_orders)
+                break
+        if out is not None:
+            out(outcome.line())
+        return outcome
+
+
+def _say(out: Optional[Callable[[str], None]], report: Report) -> None:
+    if out is not None:
+        out(report.line())

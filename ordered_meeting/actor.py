@@ -51,6 +51,17 @@ def writer_from(spec: str) -> Callable[[str], str]:
     return getattr(module, attribute)
 
 
+def caps_for(*, writer: Optional[str] = None, meeting_url: Optional[str] = None,
+             meeting_id: Optional[str] = None, workspace=None, target: str = "quicksort.py",
+             name: str = "actor") -> Dict[str, Callable]:
+    """这个 actor 服务的能力表：脚本化的那条路（`writer`）或真会议那条路（会议那几项）。"""
+    if writer:
+        return actor_service(writer_from(writer), name)
+    from ticket_centered.actor import AgentChannel
+
+    return live_service(AgentChannel(meeting_url, meeting_id, workspace), target)
+
+
 def report_line(report: Report) -> str:
     """一行 JSON 的账：谁、哪张工单、答了哪几步、还欠着哪一步。"""
     return json.dumps({
@@ -81,15 +92,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.writer:
-        caps = actor_service(writer_from(args.writer), args.name)
+        caps = caps_for(writer=args.writer, name=args.name)
     else:
         for needed in ("meeting_url", "meeting_id", "workspace"):
             if not getattr(args, needed):
                 parser.error(f"要么给 --writer，要么给真会议那几项（缺 --{needed.replace('_', '-')}）")
-        from ticket_centered.actor import AgentChannel
-
-        caps = live_service(AgentChannel(args.meeting_url, args.meeting_id, args.workspace),
-                            args.target)
+        caps = caps_for(meeting_url=args.meeting_url, meeting_id=args.meeting_id,
+                        workspace=args.workspace, target=args.target, name=args.name)
 
     if args.phase == "answer":
         report = answer_service(args.name, "actor", caps, store_root=args.store,

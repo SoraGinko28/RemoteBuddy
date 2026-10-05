@@ -40,6 +40,14 @@ session.publish()                                            # 发 store 说该�
 outcome = session.run([("the-actor", "actor", actor_caps(write=my_writer))])
 ```
 
+会议那一侧要用的就是一条命令：一句话进来，assistant 发单、actor 接单，跑到头（结局只有 `ok` 退出码
+是 0）。真会议里把 `--writer 模块:函数` 换成 `--meeting-url` / `--meeting-id` / `--workspace` / `--target`：
+
+```bash
+python -m ordered_meeting.run --store <store> --case case/quicksort --order draft-1 \
+    --workflow workflow --words "写一个快速排序，放到 quicksort.py" --writer 模块:函数
+```
+
 两个进程也是这两个入口——一条命令一个服务，共用的只有那份 store：
 
 ```bash
@@ -63,6 +71,7 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 | `plan.py` | 该发哪一张：读 store 算（要读的都在、自己还没做过），不是写死的次序 |
 | `actor.py` | actor 的服务进程：一张能力表，接单一趟 |
 | `session.py` | 一轮一轮：发单、服务接单、什么时候算完 |
+| `run.py` | 一句话进来跑到头（会议那一侧调的入口）：消息给 assistant、发单、服务接单、报结局 |
 
 ## 还没做的
 

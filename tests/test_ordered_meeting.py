@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from ordered_meeting.actor import live_service  # noqa: E402
+from ordered_meeting.run import run_message  # noqa: E402
 from ordered_meeting.orders import measured, owed, ticket_of  # noqa: E402
 from ordered_meeting.session import OK, STUCK, Session  # noqa: E402
 from ticket_centered import actor_caps  # noqa: E402
@@ -277,6 +278,44 @@ class ActorServiceProcessTest(unittest.TestCase):
         again = self.last_line(self.run_module(*argv))
         self.assertEqual(again["answered"], [])
         self.assertEqual(len(again["replayed"]), 3)
+
+
+class MessageDriverTest(unittest.TestCase):
+    """一句话进来，剩下的是工单：`python -m ordered_meeting.run`。"""
+
+    def test_one_message_runs_the_whole_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            finished = subprocess.run(
+                [sys.executable, "-m", "ordered_meeting.run", "--store", str(store_root),
+                 "--case", CASE, "--order", "draft-1", "--workflow", str(WORKFLOW),
+                 "--words", WORDS, "--writer", "tests.scripted_actor:write"],
+                cwd=str(REPO_ROOT), capture_output=True, text=True,
+                env={**os.environ, "PYTHONPATH": str(REPO_ROOT)})
+            self.assertEqual(finished.returncode, 0, finished.stderr)
+            lines = finished.stdout.strip().splitlines()
+            self.assertEqual(lines[-1], "结局：ok，4 轮")
+            self.assertEqual(sum(1 for line in lines if line.startswith("assistant")), 4)
+            self.assertEqual(sum(1 for line in lines if line.startswith("actor")), 3)
+
+            store = Store(store_root)
+            drafted, answered = store.read(f"{CASE}/drafted", "write_code")
+            self.assertTrue(answered)
+            self.assertEqual(drafted, CODE)
+
+    def test_a_message_nobody_can_answer_leaves_the_work_order_and_stops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / "store"
+            session_work = run_message(store_root=store_root, case=CASE, order="draft-1",
+                                       workflow=WORKFLOW, words=WORDS, services=[])
+            self.assertEqual(session_work.outcome, STUCK)
+            self.assertEqual(session_work.rounds, 1)
+            # 没人接的那张工单留在 store 里，等会它的服务来
+            self.assertEqual([tuple(pair[:2]) for pair in session_work.work_orders],
+                             [(f"{CASE}/greeted", "acknowledge")])
+            store = Store(store_root)
+            _value, answered = store.read(f"{CASE}/greeted", "acknowledge")
+            self.assertFalse(answered)
 
 
 class LiveActorWiringTest(unittest.TestCase):

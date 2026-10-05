@@ -18,5 +18,7 @@ assistant 手上：它把人类说的话放进 store，再发一张工单（一�
 | `orders.py` | 工单在 store 里的位置：发单（把程序放进 `orders/`）、欠着的步骤（`prepare/` 里 `$measured` 还是 nil 的） |
 | `service.py` | 一个成员作为一个服务：一张能力表，在共用的 store 上跑一张工单，报它答了哪几步 |
 | `assistant.py` | assistant 这一侧：把人类说的话放进 store，跑一遍程序，把做不了的步骤写成工单 |
+| `plan.py` | 该发哪一张：读 store 算 |
 | `session.py` | 一场会的一轮一轮：发单、服务接单、什么时候算完 |
+| `run.py` | 一句话进来跑到头：会议那一侧调的入口 |
 """
