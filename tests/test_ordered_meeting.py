@@ -23,9 +23,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from ordered_meeting.actor import live_service  # noqa: E402
 from ordered_meeting.orders import measured, owed, ticket_of  # noqa: E402
 from ordered_meeting.session import OK, STUCK, Session  # noqa: E402
 from ticket_centered import actor_caps  # noqa: E402
+from ticket_centered.actor import AgentChannel  # noqa: E402
 from ticket_centered.store import Store  # noqa: E402
 
 WORKFLOW = REPO_ROOT / "workflow"
@@ -275,6 +277,60 @@ class ActorServiceProcessTest(unittest.TestCase):
         again = self.last_line(self.run_module(*argv))
         self.assertEqual(again["answered"], [])
         self.assertEqual(len(again["replayed"]), 3)
+
+
+class LiveActorWiringTest(unittest.TestCase):
+    """真会议那张能力表：工单里的实参 → 说给 agent 的题面 → 它交的文件 → 工单的 `$measured`。
+
+    这里把会议那条 HTTP 线换成假的（`say` / 等它干完 / 交文件那三步），能力表本身是真的
+    （`ticket_centered.actor.meeting_actor_caps`）。
+    """
+
+    class Channel(AgentChannel):
+        def __init__(self, workspace, code: str):
+            super().__init__("http://127.0.0.1:1", "meeting-x", workspace)
+            self.said = []
+            self.code = code
+
+        def say(self, message):
+            self.said.append(message)
+            return {}
+
+        def wait_for_turn(self, before, timeout=None):
+            return {"phase": "waiting_for_user", "status": "running"}
+
+        def wait_for_chat(self, message_type, timeout=None):
+            return "知道了" if message_type == "ack" else "做好了"
+
+        def ensure_work(self, instruction, target, **kwargs):
+            self.said.append(instruction)
+            path = self.file(target)
+            path.write_text(self.code, encoding="utf-8")
+            return self.code
+
+    def test_the_work_order_reaches_the_agent_and_its_file_comes_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            channel = self.Channel(workspace, CODE)
+            session = Session(Path(tmp) / "store", CASE, "draft-1", workflow=WORKFLOW)
+            session.state_the_task(WORDS)
+
+            outcome = session.run([("the-actor", "actor", live_service(channel, "quicksort.py"))])
+            self.assertEqual(outcome.outcome, OK)
+
+            drafted, answered = session.store.read(f"{CASE}/drafted", "write_code")
+            self.assertTrue(answered)
+            self.assertEqual(drafted, CODE)              # agent 交的那个文件，落在工单里
+            said, answered = session.store.read(f"{CASE}/greeted", "acknowledge")
+            self.assertTrue(answered)
+            self.assertEqual(said, "知道了")              # 回话读的是 agent 自己说的那句
+
+            told = channel.said[-1]
+            self.assertIn("照这份题面写一版代码", told)
+            self.assertIn("写一个快速排序", told)          # 题面来自工单里的 $task
+            self.assertIn("quicksort.py", told)           # 交到哪个文件
+            self.assertTrue((workspace / "quicksort.py").is_file())
 
 
 if __name__ == "__main__":

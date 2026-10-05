@@ -50,8 +50,10 @@ python -m ordered_meeting.actor --store <store> --case case/quicksort --order dr
 ```
 
 assistant 那一行报它写下了哪几张工单；actor 那一行报它答了哪几步（默认 `--phase answer`：补上欠着的那一步；`--phase run` 是自己跑一遍整
-张单，用来回放核对）。`--writer 模块:函数` 把"写"换成
-一个 `write(prompt) -> code`（测试用它替代那个 agent），真会议里不给这一项，走 `AgentChannel`。
+张单，用来回放核对）。真会议那一侧不给 `--writer`：能力表就是会议里那个 agent —— `acknowledge` /
+`report_done` 读的是它自己在会议里说的那句，`write_code` / `revise_code` 把题面说进会议、等它干完、
+从它的工作区把文件读回来（`ordered_meeting.actor.live_service`）。`--writer 模块:函数` 是脚本化的那条
+路：写只是一个 `write(prompt) -> code`，测试用它替代那个 agent。
 
 | 模块 | 是什么 |
 |---|---|

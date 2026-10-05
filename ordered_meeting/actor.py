@@ -28,8 +28,18 @@ from .service import Report, answer_service, run_service
 
 def actor_service(write: Callable[[str], str], name: str = "actor",
                   say: Optional[Callable[[str, object], None]] = None) -> Dict[str, Callable]:
-    """actor 这个服务的能力表：它会的那几个算子。"""
+    """脚本化的那一张能力表：写只是 `write(prompt) -> code`，回话是编好的。"""
     return actor_caps(write, say)
+
+
+def live_service(channel, target: str = "quicksort.py") -> Dict[str, Callable]:
+    """真会议那一张能力表：四个算子都在，写交给会议里那个 agent。
+
+    这一张表不是围着 `write(prompt) -> code` 转的：`acknowledge` / `report_done` 读的是 agent 自己
+    在会议里说的那句话，`write_code` / `revise_code` 把题面说进会议、等它干完、从它的工作区把文件读
+    回来。工单里那一步的实参（`$task`、`$after`）照旧从 `$call` 来。
+    """
+    return meeting_actor_caps(channel, target)
 
 
 def writer_from(spec: str) -> Callable[[str], str]:
@@ -39,14 +49,6 @@ def writer_from(spec: str) -> Callable[[str], str]:
         raise SystemExit(f"--writer 要写成 模块:函数，收到的是 {spec!r}")
     module = importlib.import_module(module_name)
     return getattr(module, attribute)
-
-
-def meeting_writer(args: argparse.Namespace) -> Callable[[str], str]:
-    """真会议那一侧：说话进会议、等 agent 干完、从工作区读回文件。"""
-    from ticket_centered.actor import AgentChannel
-
-    channel = AgentChannel(args.meeting_url, args.meeting_id, args.workspace)
-    return meeting_actor_caps(channel, args.target)["write_code"]
 
 
 def report_line(report: Report) -> str:
@@ -79,14 +81,16 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.writer:
-        write = writer_from(args.writer)
+        caps = actor_service(writer_from(args.writer), args.name)
     else:
         for needed in ("meeting_url", "meeting_id", "workspace"):
             if not getattr(args, needed):
                 parser.error(f"要么给 --writer，要么给真会议那几项（缺 --{needed.replace('_', '-')}）")
-        write = meeting_writer(args)
+        from ticket_centered.actor import AgentChannel
 
-    caps = actor_service(write, args.name)
+        caps = live_service(AgentChannel(args.meeting_url, args.meeting_id, args.workspace),
+                            args.target)
+
     if args.phase == "answer":
         report = answer_service(args.name, "actor", caps, store_root=args.store,
                                 order=args.order, case=args.case)
