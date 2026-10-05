@@ -18,11 +18,15 @@
 
 ## 一轮
 
-1. **assistant 发单**：跑一遍工单程序。它能力表里没有的那一步，当场写成上面那份工单留在 store 里。
-2. **每个服务跑一遍**：自己会的算子算、store 里已有结果的回放、其余递延。
+1. **assistant 发单**：跑一遍工单程序。已经答过的回放，头一个欠着的那一步当场写成上面那份工单
+   （`$call` 就是它这一步拿到的实参）。
+2. **每个服务接单**：`owed` 里凡是它会的算子，照那份工单的 `$call` 算掉，结果填回 `$measured`。
 
-顺序不能反：上一轮欠着的没补上就跑，只会在同一条数据路径上停第二次。跑到头（程序给出结果）是 `ok`；
-一轮下来谁都没答出东西也没跑完是 `stuck`。
+一轮只往前走一步：一份工单里留得下的是**已经算好的实参**，所以下一步的工单要等上一步答完、assistant
+再跑一遍才写得出来（顺序反了只会在同一条数据路径上停第二次）。assistant 那一趟没有递延，就是整张工单
+跑到了头——`ok`；一轮下来谁都没答出东西也没跑到头，就是 `stuck`。
+
+所以每一份工单在发出时都带着它的 `$call`，答完带着它的 `$measured`；两者都在同一个文件里。
 
 ## 三个模块怎么用
 
@@ -45,13 +49,14 @@ python -m ordered_meeting.actor --store <store> --case case/quicksort --order dr
     --meeting-url http://127.0.0.1:8765 --meeting-id <会议号> --workspace <干活目录> --target quicksort.py
 ```
 
-assistant 那一行报它写下了哪几张工单；actor 那一行报它答了哪几步。`--writer 模块:函数` 把"写"换成
+assistant 那一行报它写下了哪几张工单；actor 那一行报它答了哪几步（默认 `--phase answer`：补上欠着的那一步；`--phase run` 是自己跑一遍整
+张单，用来回放核对）。`--writer 模块:函数` 把"写"换成
 一个 `write(prompt) -> code`（测试用它替代那个 agent），真会议里不给这一项，走 `AgentChannel`。
 
 | 模块 | 是什么 |
 |---|---|
 | `orders.py` | 发单（把程序放进 `orders/`）、欠着的工单（`prepare/` 里 `$measured` 还是 nil 的那些） |
-| `service.py` | 一个服务跑一遍：自己算 / 回放 / 递延，报它答了哪几步 |
+| `service.py` | 一个服务的两件正事：接单（照工单的 `$call` 算，`answer_service`）、自己跑一遍整张单（自己算 / 回放 / 递延，`run_service`） |
 | `assistant.py` | 消息进 store、发单、把做不了的步骤写成工单 |
 | `actor.py` | actor 的服务进程：一张能力表，接单一趟 |
 | `session.py` | 一轮一轮：发单、服务接单、什么时候算完 |
@@ -60,8 +65,5 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 
 * **assistant 还只发一张单**：`write_a_draft` 是发单那一侧点名的。设计里"该发哪一张"要由 assistant
   读 store 算出来。
-* **一路算到头的服务**：actor 跑一遍会把这条链上它会的算子全答掉（后面的步骤因此没有 `$call`，
-  只有 `$measured`）；照 viba 那一轮一轮的写法，一轮只补上一轮欠下的那一步，每一步的 `$call` 都会
-  由发单那一侧先固定下来。
 * **critic 还没有**：critic 的算子（`judge`）接进来，就是同一套——它的能力表里有 `judge`，工单里写上
   这一步，它就在自己的进程里接。

@@ -142,7 +142,39 @@ class OrderedMeetingTest(unittest.TestCase):
         drafted, answered = self.session.store.read(f"{CASE}/drafted", "write_code")
         self.assertTrue(answered)
         self.assertEqual(drafted, CODE)
-        self.assertEqual(len(outcome.work_orders), 1)   # assistant 发出去的那一张
+        # 一轮一步：assistant 每轮把下一步的实参固定成一张工单，一共三张
+        self.assertEqual(outcome.rounds, 4)             # 三步 + 跑到底的那一轮
+        self.assertEqual([tuple(pair[:2]) for pair in outcome.work_orders],
+                         [(f"{CASE}/greeted", "acknowledge"),
+                          (f"{CASE}/drafted", "write_code"),
+                          (f"{CASE}/report_done", "report_done")])
+
+    def test_the_call_is_fixed_before_the_actor_answers(self):
+        self.session.state_the_task(WORDS)
+        self.session.publish()
+        caps = scripted_actor()
+        owed_steps = []
+        for _ in range(3):
+            _report, written = self.session.issue()
+            self.assertEqual(len(written), 1)           # 一轮只往前走一步
+            path, name, _call = written[0]
+            text = (self.store_root / path / "prepare" / f"{name}.viba").read_text(encoding="utf-8")
+            self.assertIn("$call", text)                # 实参已经固定
+            self.assertIn("$measured nil", text)        # 结果还没人算
+            owed_steps.append((path, name))
+            self.assertEqual(self.session.answer("the-actor", "actor", caps).answered,
+                             [(path, name)])
+
+        self.assertEqual(owed_steps, [(f"{CASE}/greeted", "acknowledge"),
+                                      (f"{CASE}/drafted", "write_code"),
+                                      (f"{CASE}/report_done", "report_done")])
+        # 两步实参的调用：工单里按写下来的名字各留一份，填完还是两份都在
+        text = (self.store_root / CASE / "drafted" / "prepare" / "write_code.viba").read_text(
+            encoding="utf-8")
+        self.assertIn("$task", text)
+        self.assertIn("$after", text)
+        self.assertIn("stated_task", text)
+        self.assertNotIn("$measured nil", text)
 
     def test_a_service_that_cannot_do_the_work_leaves_the_order_stuck(self):
         self.session.state_the_task(WORDS)
@@ -172,31 +204,45 @@ class ActorServiceProcessTest(unittest.TestCase):
         return json.loads(finished.stdout.strip().splitlines()[-1])
 
     def test_the_assistant_and_the_actor_are_two_processes_on_one_store(self):
-        issued = self.last_line(self.run_module(
-            "ordered_meeting.assistant", "--store", str(self.store_root), "--case", CASE,
-            "--order", self.order, "--workflow", str(WORKFLOW), "--ticket", TICKET,
-            "--words", WORDS))
+        """一轮一步：assistant 发单、actor 接单，各是一个进程，一份 store。"""
+        issued = self.last_line(self.run_module(*self.assistant_argv()))
         self.assertEqual(issued["wrote"], [[f"{CASE}/greeted", "acknowledge"]])
 
-        answered = self.last_line(self.run_module(
-            "ordered_meeting.actor", "--store", str(self.store_root), "--case", CASE,
-            "--order", self.order, "--writer", "tests.scripted_actor:write"))
-        self.assertEqual(answered["answered"], [[f"{CASE}/greeted", "acknowledge"],
-                                                [f"{CASE}/drafted", "write_code"],
-                                                [f"{CASE}/report_done", "report_done"]])
+        rounds = []
+        for _ in range(3):
+            answered = self.last_line(self.run_module(*self.actor_argv()))
+            rounds.append(answered["answered"])
+            self.last_line(self.run_module(*self.assistant_argv()))    # 答完一步，发下一步
+        self.assertEqual(rounds, [[[f"{CASE}/greeted", "acknowledge"]],
+                                  [[f"{CASE}/drafted", "write_code"]],
+                                  [[f"{CASE}/report_done", "report_done"]]])
 
         store = Store(self.store_root)
         drafted, ok = store.read(f"{CASE}/drafted", "write_code")
         self.assertTrue(ok)
         self.assertEqual(drafted, CODE)
+        # 每一步的工单里都留着它拿到的实参，答完也还在
+        text = (self.store_root / CASE / "drafted" / "prepare" / "write_code.viba").read_text(
+            encoding="utf-8")
+        self.assertIn("$call", text)
+        self.assertIn("$task", text)
+        self.assertIn("stated_task", text)
+        self.assertNotIn("$measured nil", text)
+
+    def assistant_argv(self):
+        return ("ordered_meeting.assistant", "--store", str(self.store_root), "--case", CASE,
+                "--order", self.order, "--workflow", str(WORKFLOW), "--ticket", TICKET,
+                "--words", WORDS)
+
+    def actor_argv(self, *extra):
+        return ("ordered_meeting.actor", "--store", str(self.store_root), "--case", CASE,
+                "--order", self.order, "--writer", "tests.scripted_actor:write", *extra)
 
     def test_a_second_actor_process_replays_instead_of_writing_again(self):
-        self.run_module("ordered_meeting.assistant", "--store", str(self.store_root),
-                        "--case", CASE, "--order", self.order, "--workflow", str(WORKFLOW),
-                        "--ticket", TICKET, "--words", WORDS)
-        argv = ("ordered_meeting.actor", "--store", str(self.store_root), "--case", CASE,
-                "--order", self.order, "--writer", "tests.scripted_actor:write")
-        self.run_module(*argv)
+        self.run_module(*self.assistant_argv())
+        argv = self.actor_argv("--phase", "run")     # 自己跑一遍整张单：一次答三步
+        first = self.last_line(self.run_module(*argv))
+        self.assertEqual(len(first["answered"]), 3)
         again = self.last_line(self.run_module(*argv))
         self.assertEqual(again["answered"], [])
         self.assertEqual(len(again["replayed"]), 3)

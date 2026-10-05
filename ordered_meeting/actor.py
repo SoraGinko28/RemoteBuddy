@@ -23,7 +23,7 @@ from ticket_centered import _viba  # noqa: F401
 
 from ticket_centered.actor import actor_caps, meeting_actor_caps
 
-from .service import Report, run_service
+from .service import Report, answer_service, run_service
 
 
 def actor_service(write: Callable[[str], str], name: str = "actor",
@@ -69,6 +69,8 @@ def main(argv=None) -> int:
     parser.add_argument("--case", required=True, help="这张工单跑在哪个案子下")
     parser.add_argument("--order", required=True, help="哪张工单（`orders/<工单>/`）")
     parser.add_argument("--name", default="actor", help="这个服务叫什么（账里用的名字）")
+    parser.add_argument("--phase", choices=("answer", "run"), default="answer",
+                        help="接单（answer，一轮补上欠着的那一步）还是自己跑一遍整张单（run）")
     parser.add_argument("--writer", default=None, help="写这一步从哪来：`模块:函数`")
     parser.add_argument("--meeting-url", default=None, help="真会议的服务地址")
     parser.add_argument("--meeting-id", default=None, help="真会议的会议号")
@@ -84,8 +86,13 @@ def main(argv=None) -> int:
                 parser.error(f"要么给 --writer，要么给真会议那几项（缺 --{needed.replace('_', '-')}）")
         write = meeting_writer(args)
 
-    report = run_service(args.name, "actor", actor_service(write, args.name),
-                         store_root=args.store, order=args.order, case=args.case)
+    caps = actor_service(write, args.name)
+    if args.phase == "answer":
+        report = answer_service(args.name, "actor", caps, store_root=args.store,
+                                order=args.order, case=args.case)
+    else:
+        report = run_service(args.name, "actor", caps, store_root=args.store,
+                             order=args.order, case=args.case)
     print(report_line(report))
     return 1 if report.failure else 0
 

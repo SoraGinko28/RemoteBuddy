@@ -18,7 +18,7 @@ from ticket_centered.store import Store
 
 from . import assistant as assistant_side
 from .orders import owed, program_dir, ticket_of
-from .service import Report, run_service
+from .service import Report, answer_service, run_service
 
 OK = "ok"
 STUCK = "stuck"
@@ -85,9 +85,14 @@ class Session:
                                     record_path=self.record_path)
 
     def work(self, name: str, role: str, caps: Dict[str, Callable]) -> Report:
-        """一个服务跑一遍这张工单。"""
+        """一个服务自己跑一遍这张工单（它会的算子当场全答掉）。"""
         return run_service(name, role, caps, store_root=self.store_root, order=self.order,
                            case=self.case, record_path=self.record_path)
+
+    def answer(self, name: str, role: str, caps: Dict[str, Callable]) -> Report:
+        """一个服务接单：store 里欠着的、它会的那些算子，照 `$call` 算掉。"""
+        return answer_service(name, role, caps, store_root=self.store_root, order=self.order,
+                              case=self.case, record_path=self.record_path)
 
     def owed(self, caps: Dict[str, Callable]) -> List[Tuple[str, str, Any]]:
         """欠着的工单：还没有结果、而这张能力表做得了的那些步骤。"""
@@ -103,7 +108,11 @@ class Session:
 
     def run(self, services: Sequence[Tuple[str, str, Dict[str, Callable]]],
             max_rounds: int = 1024) -> Outcome:
-        """一轮一轮：assistant 发单，每个服务接一遍。"""
+        """一轮一轮：assistant 跑一遍工单（把下一步的 `$call` 固定成一张工单），服务接单。
+
+        一轮只往前走一步：工单里只留得下已经算好的实参，所以下一步的工单要等上一步答完、assistant
+        再跑一遍才写得出来。assistant 这一趟没有递延，就说明整张工单跑到了头。
+        """
         reports: List[Report] = []
         work_orders: List[Tuple[str, str, Any]] = []
         for index in range(1, max_rounds + 1):
@@ -112,17 +121,15 @@ class Session:
             work_orders.extend(written)
             if issued.failure:
                 return Outcome(BROKEN, index, reports=reports, work_orders=work_orders)
+            if issued.duty is None:
+                return Outcome(OK, index, value=issued.value, reports=reports,
+                               work_orders=work_orders)
 
             progressed = False
             for name, role, caps in services:
-                report = self.work(name, role, caps)
-                reports.append(report)
-                if report.failure:
-                    return Outcome(BROKEN, index, reports=reports, work_orders=work_orders)
-                if report.value is not None:
-                    return Outcome(OK, index, value=report.value, reports=reports,
-                                   work_orders=work_orders)
-                progressed = progressed or report.worked
+                answered = self.answer(name, role, caps)
+                reports.append(answered)
+                progressed = progressed or bool(answered.answered)
             if not progressed:
                 return Outcome(STUCK, index, reports=reports, work_orders=work_orders)
         return Outcome(UNFINISHED, max_rounds, reports=reports, work_orders=work_orders)
