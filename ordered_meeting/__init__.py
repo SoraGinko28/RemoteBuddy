@@ -21,5 +21,6 @@ actor 和 critic 都是这样的服务：`workflow/tickets/` 那五张单一路�
 | `assistant.py` | assistant 这一侧：把人类说的话放进 store，跑一遍程序，把做不了的步骤写成工单 |
 | `plan.py` | 该发哪一张：读 store 算 |
 | `session.py` | 一场会的一轮一轮：发单、服务接单、什么时候算完 |
-| `run.py` | 一句话进来跑到头：会议那一侧调的入口 |
+| `run.py` | 一句话进来跑到头：一条命令那个入口 |
+| `meeting.py` | 会议目录那一侧：`<会议目录>/ordered/` 的 store 与记录 |
 """

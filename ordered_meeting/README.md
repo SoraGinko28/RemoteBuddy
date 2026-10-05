@@ -3,6 +3,18 @@
 消息先到 assistant，它发工单；每个成员是一个**服务**（一张能力表），在**一份共用的 store** 上接单。
 actor 和 critic 都是这样的服务：工单里写着哪一步、要哪个算子，谁的能力表里有那个算子谁就接。
 
+## 会议目录下面
+
+会议那一侧给的是一个目录（`<会议目录>/`），这一侧在它下面另起一份：
+
+```
+<会议目录>/ordered/store/                 共用的 store（上面那三样都在这下面）
+<会议目录>/ordered/meeting_record.md      这场会的记录：谁说了什么、发了哪张单、谁答了哪一步
+```
+
+一条消息进来就跑一趟（`ordered_meeting.meeting.run_for_meeting`）：案子名和 agent 要交的那个文件都从人类
+那句话里来（`case_for` / `target_for`），页面上不另设一遍。
+
 ## store 里有什么
 
 ```
@@ -73,7 +85,8 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 | `actor.py` | actor 的服务进程：一张能力表，接单一趟（脚本化的 `--writer` 或真会议那只 agent） |
 | `critic.py` | critic 的服务进程：`judge` 加上规则那几个算子，接单一趟 |
 | `session.py` | 一轮一轮：发单、服务接单、什么时候算完 |
-| `run.py` | 一句话进来跑到头（会议那一侧调的入口）：消息给 assistant、发单、服务接单、报结局 |
+| `run.py` | 一句话进来跑到头（一条命令那个入口）：消息给 assistant、发单、服务接单、报结局 |
+| `meeting.py` | 会议目录那一侧：`<会议目录>/ordered/` 的 store 与记录、案子名和要交的文件名从人类那句话来 |
 
 ## 还没做的
 

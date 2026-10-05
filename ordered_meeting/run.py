@@ -27,6 +27,7 @@ from ticket_centered import _viba  # noqa: F401
 
 from .actor import caps_for
 from .critic import critic_service
+from .meeting import case_for, target_for
 from .plan import workflow_of
 from .session import OK, Session
 
@@ -45,7 +46,8 @@ def run_message(*, store_root, case: str, order: str, workflow, words: Optional[
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="一句话进来：assistant 发单，actor 接单")
     parser.add_argument("--store", required=True, help="共用的 store")
-    parser.add_argument("--case", required=True, help="这张工单跑在哪个案子下")
+    parser.add_argument("--case", default=None,
+                        help="这张工单跑在哪个案子下（不给就从 --words 里那个文件名来）")
     parser.add_argument("--order", required=True, help="哪张工单（`orders/<工单>/`）")
     parser.add_argument("--workflow", required=True, help="这份流程在哪")
     parser.add_argument("--words", default=None, help="人类刚说的话")
@@ -57,9 +59,13 @@ def main(argv=None) -> int:
     parser.add_argument("--meeting-url", default=None, help="真会议的服务地址")
     parser.add_argument("--meeting-id", default=None, help="真会议的会议号")
     parser.add_argument("--workspace", default=None, help="agent 干活的目录")
-    parser.add_argument("--target", default="quicksort.py", help="agent 要交的文件")
+    parser.add_argument("--target", default=None,
+                        help="agent 要交的文件（不给就从 --words 里那个文件名来）")
     parser.add_argument("--rounds", type=int, default=1024, help="轮数上限")
     args = parser.parse_args(argv)
+
+    case = args.case or case_for(args.words or "")
+    target = args.target or target_for(args.words or "")
 
     if args.writer:
         caps = caps_for(writer=args.writer, name=args.name)
@@ -68,13 +74,13 @@ def main(argv=None) -> int:
             if not getattr(args, needed):
                 parser.error(f"要么给 --writer，要么给真会议那几项（缺 --{needed.replace('_', '-')}）")
         caps = caps_for(meeting_url=args.meeting_url, meeting_id=args.meeting_id,
-                        workspace=args.workspace, target=args.target, name=args.name)
+                        workspace=args.workspace, target=target, name=args.name)
 
     services = [(args.name, "actor", caps)]
     if not args.actor_only:
         services.append((args.critic_name, "critic", critic_service(workflow_of(args.workflow))))
 
-    outcome = run_message(store_root=args.store, case=args.case, order=args.order,
+    outcome = run_message(store_root=args.store, case=case, order=args.order,
                           workflow=args.workflow, words=args.words, services=services,
                           max_rounds=args.rounds, out=print)
     return 0 if outcome.outcome == OK else 1

@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from ordered_meeting.actor import live_service  # noqa: E402
+from ordered_meeting.meeting import case_for, record_path, run_for_meeting, store_root, target_for  # noqa: E402
 from ordered_meeting.run import run_message  # noqa: E402
 from ordered_meeting.orders import measured, owed, ticket_of  # noqa: E402
 from ordered_meeting.session import OK, STUCK, Session  # noqa: E402
@@ -372,6 +373,49 @@ class MessageDriverTest(unittest.TestCase):
             store = Store(store_root)
             _value, answered = store.read(f"{CASE}/greeted", "acknowledge")
             self.assertFalse(answered)
+
+
+class MeetingDirectoryTest(unittest.TestCase):
+    """会议目录那一侧：`<会议目录>/ordered/` 就是这一场会的 store 和记录。"""
+
+    def services(self):
+        return [("the-actor", "actor", scripted_actor()),
+                ("the-critic", "critic", scripted_critic())]
+
+    def test_a_message_runs_inside_a_meeting_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            meeting_dir = Path(tmp) / "runs" / "m-1"
+            meeting_dir.mkdir(parents=True)
+            case = case_for(WORDS)
+            self.assertEqual(case, "case/quicksort")
+            self.assertEqual(target_for(WORDS), "quicksort.py")
+
+            outcome = run_for_meeting(meeting_dir, case=case, words=WORDS, workflow=WORKFLOW,
+                                      services=self.services())
+            self.assertEqual(outcome.outcome, OK)
+
+            store = Store(store_root(meeting_dir))
+            drafted, answered = store.read(f"{case}/drafted", "write_code")
+            self.assertTrue(answered)
+            self.assertEqual(drafted, CODE)
+            # 工单程序放在会议目录下面那份 store 里
+            program = Path(store_root(meeting_dir)) / "orders" / "meeting" / "program"
+            self.assertTrue((program / "ticket").is_file())
+            self.assertTrue((program / "actor_api.viba").is_file())
+
+    def test_the_record_says_who_spoke_and_who_answered_what(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            meeting_dir = Path(tmp) / "runs" / "m-1"
+            meeting_dir.mkdir(parents=True)
+            run_for_meeting(meeting_dir, case=case_for(WORDS), words=WORDS, workflow=WORKFLOW,
+                            services=self.services())
+            record = record_path(meeting_dir).read_text(encoding="utf-8")
+            self.assertIn(f"- 人类说了一句：{WORDS}", record)
+            for ticket in ("write_a_draft", "judge_the_draft", "revise_the_draft",
+                           "judge_the_revision", "close_the_meeting"):
+                self.assertIn(f"- 工单 {ticket}（案子 case/quicksort）", record)
+            self.assertIn("- the-actor（actor）答了 case/quicksort/drafted + write_code", record)
+            self.assertIn("- the-critic（critic）答了 case/quicksort/judged + judge", record)
 
 
 class LiveActorWiringTest(unittest.TestCase):

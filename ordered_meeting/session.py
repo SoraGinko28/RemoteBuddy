@@ -68,6 +68,7 @@ class Session:
         """消息先到 assistant 手上：先把人类说的话放进 store。"""
         assistant_side.state_the_task(self.store_root, self.case, words,
                                       record_path=self.record_path)
+        self.store.record(f"- 人类说了一句：{words}")
 
     @property
     def the_workflow(self) -> Workflow:
@@ -94,6 +95,7 @@ class Session:
         if not ticket:
             raise ValueError("没有该发的工单：它要读的那几步还没答完")
         self.ticket = ticket
+        self.store.record(f"- 工单 {ticket}（案子 {self.case}）")
         return assistant_side.publish(self.store_root, self.order, self.the_workflow, ticket)
 
     # ------------------------------------------------------------------
@@ -112,8 +114,11 @@ class Session:
 
     def answer(self, name: str, role: str, caps: Dict[str, Callable]) -> Report:
         """一个服务接单：store 里欠着的、它会的那些算子，照 `$call` 算掉。"""
-        return answer_service(name, role, caps, store_root=self.store_root, order=self.order,
-                              case=self.case, record_path=self.record_path)
+        report = answer_service(name, role, caps, store_root=self.store_root, order=self.order,
+                                case=self.case, record_path=self.record_path)
+        for module_path, func_name in report.answered:
+            self.store.record(f"- {name}（{role}）答了 {module_path} + {func_name}")
+        return report
 
     def owed(self, caps: Dict[str, Callable]) -> List[Tuple[str, str, Any]]:
         """欠着的工单：还没有结果、而这张能力表做得了的那些步骤。"""
