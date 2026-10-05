@@ -2373,6 +2373,8 @@ class MeetingWebService:
             thread = threading.Thread(target=self._run_orders, args=(meeting_id, message),
                                       daemon=True)
             self.orders_jobs[meeting_id] = thread
+        # 和那条老路一样：谁握着这一场会的租约，谁才动它。另一个服务驱动着的时候这里就拒了。
+        self._ensure_driver(store)
         store.update(status="running", phase="agent_thinking", control_owner="none")
         thread.start()
         return store

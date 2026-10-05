@@ -329,9 +329,19 @@ class MeetingWebServiceTest(unittest.TestCase):
                 break
             time.sleep(0.02)
         self.assertEqual("再写一版，放到 quicksort.py", stored)     # 第二句真跑过了
+        # 两趟都收完尾再走：别让这个用例收场的时候第二趟还在写 store
+        finished: list = []
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            finished = [one for one in service.events("orders-queued", 0)["events"]
+                        if one.get("phase") == "orders_finished"]
+            if len(finished) == 2:
+                break
+            time.sleep(0.02)
         started = [one for one in service.events("orders-queued", 0)["events"]
                    if one.get("phase") == "orders_started"]
         self.assertEqual(2, len(started))
+        self.assertEqual(2, len(finished))
 
     def test_the_scripted_writer_seam_runs_a_whole_meeting(self):
         """`REMOTEBUDDY_ORDERS_WRITER` 把"写"换成脚本化的：这一侧不叫真 agent 也能跑一整场。"""
