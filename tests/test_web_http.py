@@ -1,6 +1,8 @@
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -768,6 +770,12 @@ class MeetingWebServiceTest(unittest.TestCase):
 
         loaded = MeetingStore.load_in_workspace(self.root, "restart-demo")
         loaded.update(phase="agent_thinking", control_owner="actor")
+        # The restarted service owns a live driver lease after resume(); make
+        # this scenario an actual orphan explicitly.
+        (loaded.run_dir / "driver.json").write_text(
+            json.dumps({"pid": 999999, "heartbeat": time.time() - 3600}),
+            encoding="utf-8",
+        )
         # A mid-turn meeting with no live worker is an orphaned Agent, so
         # acquire hands the terminal over immediately instead of waiting.
         store = restarted.acquire("restart-demo")
@@ -780,6 +788,40 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.wait_for_workers()
         self.assertEqual(runners_before + 1, len(RecordingRunner.instances))
         self.assertTrue(RecordingRunner.instances[-1].resume_modes[-1])
+
+    def test_live_remote_driver_is_not_an_orphan_and_release_resumes_old_conversation(self):
+        self.start_meeting("remote-driver-demo")
+        store = MeetingStore.load_in_workspace(self.root, "remote-driver-demo")
+        store.update(
+            phase="agent_thinking",
+            control_owner="actor",
+            recovery_required=False,
+        )
+        (store.run_dir / "driver.json").write_text(
+            json.dumps({"pid": os.getpid(), "heartbeat": time.time()}),
+            encoding="utf-8",
+        )
+
+        acquired = self.service.acquire("remote-driver-demo")
+        self.assertFalse(acquired.meeting.recovery_required)
+        self.assertFalse(self.service._orphaned_agent(acquired, "remote-driver-demo"))
+        acquired.update(phase="human_control", control_owner="human")
+        with mock.patch.object(self.service, "_ensure_worker") as ensure_worker:
+            self.service.release("remote-driver-demo")
+        ensure_worker.assert_called_once()
+        self.assertFalse(ensure_worker.call_args.kwargs["fresh_conversation"])
+
+    def test_dead_remote_driver_is_an_orphan(self):
+        self.start_meeting("dead-driver-demo")
+        store = MeetingStore.load_in_workspace(self.root, "dead-driver-demo")
+        store.update(phase="agent_thinking", control_owner="actor")
+        (store.run_dir / "driver.json").write_text(
+            json.dumps({"pid": 999999, "heartbeat": time.time()}),
+            encoding="utf-8",
+        )
+
+        acquired = self.service.acquire("dead-driver-demo")
+        self.assertTrue(acquired.meeting.recovery_required)
 
     def test_complete_retains_and_cleanup_or_stop_removes_session(self):
         self.start_meeting("complete-demo")
