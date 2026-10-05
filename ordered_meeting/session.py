@@ -142,7 +142,11 @@ class Session:
 
         `out` 给一行一行看的人：每一趟的账（`Report.line`）和最后的结局各一行。
         """
-        if not self.published():
+        # 发出去的那张得是 store 说该发的那张：同一场会里的第二趟是新的案子，得换一张单重来
+        due = self.due_ticket()
+        if due is not None and (not self.published() or self.ticket_name != due):
+            self.publish(due)
+        elif not self.published():
             self.publish()
         reports: List[Report] = []
         work_orders: List[Tuple[str, str, Any]] = []

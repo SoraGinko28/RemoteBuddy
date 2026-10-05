@@ -53,10 +53,15 @@ def target_for(words: str, fallback: str = "quicksort.py") -> str:
     return fallback
 
 
-def case_for(words: str, fallback: str = "meeting") -> str:
-    """这张工单跑在哪个案子下：`case/<那个文件的名字>`，没有就用 fallback。"""
+def case_for(words: str, fallback: str = "meeting", tag=None) -> str:
+    """这张工单跑在哪个案子下：`case/<那个文件的名字>`，没有就用 fallback。
+
+    同一场会里再说一句就再来一趟：`tag` 给这一趟一个序号（`case/<名字>-2`）。五张单的数据路径都
+    相对案子，所以另一趟有自己的那几条路——不然第二句会被"这几步都答过了"挡回去，什么也不做。
+    """
     stem = Path(target_for(words, "")).stem if words else ""
-    return f"{CASE_PREFIX}/{stem or fallback}"
+    name = stem or fallback
+    return f"{CASE_PREFIX}/{name}" if tag is None else f"{CASE_PREFIX}/{name}-{tag}"
 
 
 def run_for_meeting(meeting_dir, *, case: str, words: str, workflow,

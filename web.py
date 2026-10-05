@@ -400,7 +400,10 @@ def _orders_root(store: MeetingStore) -> Path:
 
 
 def _orders_case(reading) -> str:
-    """工单跑在哪个案子下：store 里第一条以 `case/` 开头的数据路径的头两段。"""
+    """工单跑在哪个案子下：store 里以 `case/` 开头的数据路径的头两段，取最后那一个。
+
+    同一场会里说过几句就有几个案子（`case/名字`、`case/名字-2` …）：板子上要的是最后那一趟。
+    """
     cases: List[str] = []
     for data_path, _name in reading.stored():
         parts = data_path.split("/")
@@ -408,7 +411,7 @@ def _orders_case(reading) -> str:
             case = "/".join(parts[:2])
             if case not in cases:
                 cases.append(case)
-    return cases[0] if cases else ""
+    return cases[-1] if cases else ""
 
 
 def _orders_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
@@ -536,6 +539,8 @@ class MeetingWebService:
         self.orders_jobs: Dict[str, threading.Thread] = {}
         # 一趟工单还在跑的时候人又说了话：排到下一趟（和老那条路一样：一场会只留一句待办的）
         self.orders_pending: Dict[str, str] = {}
+        # 这一场会跑过几趟工单：一趟一个案子（`case/<名字>-2` …）
+        self.orders_runs: Dict[str, int] = {}
         self.orders_talking: Dict[str, int] = {}
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
@@ -2402,7 +2407,10 @@ class MeetingWebService:
         try:
             store = self.load_store(meeting_id)
             target = target_for(message)
-            case = case_for(message, fallback=meeting_id)
+            with self.lock:
+                runs = self.orders_runs.get(meeting_id, 0) + 1
+                self.orders_runs[meeting_id] = runs
+            case = case_for(message, fallback=meeting_id, tag=None if runs == 1 else runs)
             workflow = load_workflow(project_root=self.project_root)
             services = [(store.meeting.actor_name() or "actor", "actor",
                          self._orders_actor_caps(store, meeting_id, target)),

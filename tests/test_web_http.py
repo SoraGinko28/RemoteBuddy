@@ -324,7 +324,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         deadline = time.time() + 30
         stored = ""
         while time.time() < deadline:
-            stored, _answered = reading.read("case/quicksort", "stated_task")
+            stored, _answered = reading.read("case/quicksort-2", "stated_task")
             if stored == "再写一版，放到 quicksort.py":
                 break
             time.sleep(0.02)
@@ -342,6 +342,32 @@ class MeetingWebServiceTest(unittest.TestCase):
                    if one.get("phase") == "orders_started"]
         self.assertEqual(2, len(started))
         self.assertEqual(2, len(finished))
+
+    def test_a_second_message_runs_its_own_pass(self):
+        """同一场会里再说一句：再来一趟，有自己的案子。"""
+        words = "写一个快速排序，放到 quicksort.py"
+        service = self.orders_service(lambda _store, _meeting, _target: actor_service(
+            lambda _prompt: DRAFT_ORDERS))
+        store = service.start({"message": words, "meeting_id": "orders-twice"})
+        self.wait_for_orders(service, "orders-twice")
+        service.message("orders-twice", {"message": "再写一版，放到 quicksort.py"})
+        deadline = time.time() + 30
+        finished: list = []
+        while time.time() < deadline:
+            finished = [one for one in service.events("orders-twice", 0)["events"]
+                        if one.get("phase") == "orders_finished"]
+            if len(finished) == 2:
+                break
+            time.sleep(0.02)
+        self.assertEqual(2, len(finished))
+        self.assertEqual(["ok", "ok"], [one["data"]["outcome"] for one in finished])
+
+        reading = Store(Path(store.run_dir) / "ordered" / "store")
+        first, answered = reading.read("case/quicksort/drafted", "write_code")
+        self.assertTrue(answered)
+        second, answered = reading.read("case/quicksort-2/drafted", "write_code")
+        self.assertTrue(answered)                        # 第二趟有自己的那几条路
+        self.assertIn("def quick_sort", second)
 
     def test_the_scripted_writer_seam_runs_a_whole_meeting(self):
         """`REMOTEBUDDY_ORDERS_WRITER` 把"写"换成脚本化的：这一侧不叫真 agent 也能跑一整场。"""
