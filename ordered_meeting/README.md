@@ -1,12 +1,13 @@
 # ordered_meeting 的接口
 
 消息先到 assistant，它发工单；每个成员是一个**服务**（一张能力表），在**一份共用的 store** 上接单。
-这一版只有 actor 参与干活。
+actor 和 critic 都是这样的服务：工单里写着哪一步、要哪个算子，谁的能力表里有那个算子谁就接。
 
 ## store 里有什么
 
 ```
-<store>/orders/<工单>/program/          这份工单的程序：几个 api 加它自己那张单子
+<store>/orders/<工单>/program/          这份工单的程序：它自己那张单子、几个 api、规则那几份，
+                                        还有一份 `ticket`（写着这一目录里是哪张单子）
 <store>/<案子>/prepare/stated_task.viba 人类刚说的那句话（assistant 放进去的）
 <store>/<案子>/<数据路径>/prepare/<算子>.viba   工单：$call 已固定，$measured 还是 nil
 <store>/<案子>/<数据路径>/value.viba    这一步的结果（replayed 读写的文件）
@@ -69,12 +70,14 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 | `service.py` | 一个服务的两件正事：接单（照工单的 `$call` 算，`answer_service`）、自己跑一遍整张单（自己算 / 回放 / 递延，`run_service`） |
 | `assistant.py` | 消息进 store、发单、把做不了的步骤写成工单 |
 | `plan.py` | 该发哪一张：读 store 算（要读的都在、自己还没做过），不是写死的次序 |
-| `actor.py` | actor 的服务进程：一张能力表，接单一趟 |
+| `actor.py` | actor 的服务进程：一张能力表，接单一趟（脚本化的 `--writer` 或真会议那只 agent） |
+| `critic.py` | critic 的服务进程：`judge` 加上规则那几个算子，接单一趟 |
 | `session.py` | 一轮一轮：发单、服务接单、什么时候算完 |
 | `run.py` | 一句话进来跑到头（会议那一侧调的入口）：消息给 assistant、发单、服务接单、报结局 |
 
 ## 还没做的
 
-* **critic 还没有**：写完之后 store 说该发的是 `judge_the_draft`，它的算子是 critic 的。critic 接进来
-  就是同一套——它的能力表里有 `judge`，那张单里写上这一步，它就在自己的进程里接；接不上时这一轮谁也
-  没答出东西，账上是 `stuck`，不会假装跑完。
+* **只有这几张单**：五张单是一条定死的流程（判完第一版照判语改一版，收尾判的是改完的那一版）；"该发
+  哪一张"是读 store 算的，但流程本身还是事先设计好的那五张。
+* **只有 actor 的那条路**：`--actor-only` 跑得动，停在判语那张（没人接，账上是 `stuck`）——这是它该有的
+  样子，不假装跑完。

@@ -44,6 +44,14 @@ def scripted_actor():
     return actor_caps(write=lambda _prompt: CODE)
 
 
+def scripted_critic():
+    """critic 那一张能力表：真的那套（`judge` 加上规则要用的算子），规则也真跑。"""
+    from ordered_meeting.critic import critic_service
+    from ordered_meeting.plan import workflow_of
+
+    return critic_service(workflow_of(WORKFLOW))
+
+
 class OrderedMeetingTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -144,40 +152,61 @@ class OrderedMeetingTest(unittest.TestCase):
         self.session.publish()                       # 不给名字，发 store 说该发的那一张
         self.assertEqual(self.session.ticket_name, TICKET)
 
-    def test_after_the_actor_is_done_the_next_due_ticket_is_the_critic_s(self):
+    def test_only_the_actor_stops_at_the_ticket_that_needs_the_critic(self):
         self.session.state_the_task(WORDS)
         outcome = self.session.run([("the-actor", "actor", scripted_actor())])
-        self.assertEqual(outcome.outcome, OK)
-        # 这一版只有 actor 会接单：写完了就该轮到判语那一张，而它要的是 critic 的算子
-        self.assertEqual(self.session.due_ticket(), "judge_the_draft")
-        self.assertEqual(self.session.the_workflow.role_of_op("judge"), "critic")
-        self.assertEqual(self.session.due_why("judge_the_draft"), "要读的都在，自己还没做过")
+        # 写完了就该轮到判语那一张，而它要的是 critic 的算子：没人接，账上是 stuck
+        self.assertEqual(outcome.outcome, STUCK)
+        self.assertEqual(outcome.reports[-1].ticket, "judge_the_draft")
+        self.assertEqual([tuple(pair[:2]) for pair in outcome.work_orders][-1],
+                         (f"{CASE}/judged", "judge"))
+        # 那张单留在 store 里等会它的服务：判语还没人答
+        _value, answered = self.session.store.read(f"{CASE}/judged", "judge")
+        self.assertFalse(answered)
 
     def test_the_session_publishes_the_due_ticket_without_being_told_which(self):
         self.session.state_the_task(WORDS)
         outcome = self.session.run([("the-actor", "actor", scripted_actor())])
-        self.assertEqual(outcome.outcome, OK)
-        self.assertEqual(self.session.ticket_name, TICKET)
+        self.assertEqual(outcome.reports[0].ticket, TICKET)   # 头一张就是 store 说该发的那张
 
     # ------------------------------------------------------------------
     # 一轮一轮
     # ------------------------------------------------------------------
 
-    def test_the_session_runs_to_ok_with_only_the_actor_working(self):
+    def test_the_actor_writes_and_the_critic_judges_the_whole_meeting(self):
+        """五张单一路走下来：actor 写、critic 判、assistant 收尾，每张都由 assistant 读 store 发出去。"""
         self.session.state_the_task(WORDS)
-        self.session.publish()
-        outcome = self.session.run([("the-actor", "actor", scripted_actor())])
+        outcome = self.session.run([("the-actor", "actor", scripted_actor()),
+                                    ("the-critic", "critic", scripted_critic())])
         self.assertEqual(outcome.outcome, OK)
-        self.assertIsNotNone(outcome.value)             # 程序跑到了头，给出结果
         drafted, answered = self.session.store.read(f"{CASE}/drafted", "write_code")
         self.assertTrue(answered)
         self.assertEqual(drafted, CODE)
-        # 一轮一步：assistant 每轮把下一步的实参固定成一张工单，一共三张
-        self.assertEqual(outcome.rounds, 4)             # 三步 + 跑到底的那一轮
-        self.assertEqual([tuple(pair[:2]) for pair in outcome.work_orders],
+
+        # 一轮一步：写那一张的三步 + 判那一张的一步
+        self.assertEqual([tuple(pair[:2]) for pair in outcome.work_orders][:4],
                          [(f"{CASE}/greeted", "acknowledge"),
                           (f"{CASE}/drafted", "write_code"),
-                          (f"{CASE}/report_done", "report_done")])
+                          (f"{CASE}/report_done", "report_done"),
+                          (f"{CASE}/judged", "judge")])
+        # 五张单都发过：发哪一张、发了几张，看账上的 ticket 就够了
+        published = []
+        for report in outcome.reports:
+            if report.ticket not in published:
+                published.append(report.ticket)
+        self.assertEqual(published, ["write_a_draft", "judge_the_draft", "revise_the_draft",
+                                     "judge_the_revision", "close_the_meeting"])
+        # 判语是 critic 答的：第一版 5 个参数，规则的上限是 4，它说不合格，并说出那句话
+        judged, answered = self.session.store.read(f"{CASE}/judged", "judge")
+        self.assertTrue(answered)
+        self.assertFalse(judged)
+        objection, answered = self.session.store.read(f"{CASE}/judged", "objection")
+        self.assertTrue(answered)
+        self.assertIn("超过 4 个参数", str(objection))
+        # 收尾是 assistant 自己说的，读的是改完那一版的判语
+        closing, answered = self.session.store.read(f"{CASE}/closing", "closing_note")
+        self.assertTrue(answered)
+        self.assertIn("判语", str(closing))
 
     def test_the_call_is_fixed_before_the_actor_answers(self):
         self.session.state_the_task(WORDS)
@@ -270,6 +299,23 @@ class ActorServiceProcessTest(unittest.TestCase):
         return ("ordered_meeting.actor", "--store", str(self.store_root), "--case", CASE,
                 "--order", self.order, "--writer", "tests.scripted_actor:write", *extra)
 
+    def test_the_critic_answers_a_judge_work_order_in_its_own_process(self):
+        """写在另一个进程里发出来的单子上接着干：critic 也是一个服务进程。"""
+        session = Session(self.store_root, CASE, self.order, workflow=WORKFLOW)
+        session.state_the_task(WORDS)
+        outcome = session.run([("the-actor", "actor", scripted_actor())])
+        self.assertEqual(outcome.outcome, STUCK)          # 只有 actor 接单，停在判语那张
+        self.assertEqual([tuple(pair[:2]) for pair in outcome.work_orders][-1],
+                         (f"{CASE}/judged", "judge"))
+
+        finished = self.run_module("ordered_meeting.critic", "--store", str(self.store_root),
+                                   "--case", CASE, "--order", self.order,
+                                   "--workflow", str(WORKFLOW))
+        self.assertEqual(self.last_line(finished)["answered"], [[f"{CASE}/judged", "judge"]])
+        judged, answered = Store(self.store_root).read(f"{CASE}/judged", "judge")
+        self.assertTrue(answered)
+        self.assertFalse(judged)                          # 5 个参数，规则说不合格
+
     def test_a_second_actor_process_replays_instead_of_writing_again(self):
         self.run_module(*self.assistant_argv(words=True))
         argv = self.actor_argv("--phase", "run")     # 自己跑一遍整张单：一次答三步
@@ -283,25 +329,35 @@ class ActorServiceProcessTest(unittest.TestCase):
 class MessageDriverTest(unittest.TestCase):
     """一句话进来，剩下的是工单：`python -m ordered_meeting.run`。"""
 
-    def test_one_message_runs_the_whole_order(self):
+    def run_driver(self, store_root, *extra):
+        return subprocess.run(
+            [sys.executable, "-m", "ordered_meeting.run", "--store", str(store_root),
+             "--case", CASE, "--order", "draft-1", "--workflow", str(WORKFLOW),
+             "--words", WORDS, "--writer", "tests.scripted_actor:write", *extra],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)})
+
+    def test_one_message_runs_the_whole_meeting(self):
         with tempfile.TemporaryDirectory() as tmp:
             store_root = Path(tmp) / "store"
-            finished = subprocess.run(
-                [sys.executable, "-m", "ordered_meeting.run", "--store", str(store_root),
-                 "--case", CASE, "--order", "draft-1", "--workflow", str(WORKFLOW),
-                 "--words", WORDS, "--writer", "tests.scripted_actor:write"],
-                cwd=str(REPO_ROOT), capture_output=True, text=True,
-                env={**os.environ, "PYTHONPATH": str(REPO_ROOT)})
+            finished = self.run_driver(store_root)
             self.assertEqual(finished.returncode, 0, finished.stderr)
             lines = finished.stdout.strip().splitlines()
-            self.assertEqual(lines[-1], "结局：ok，4 轮")
-            self.assertEqual(sum(1 for line in lines if line.startswith("assistant")), 4)
-            self.assertEqual(sum(1 for line in lines if line.startswith("actor")), 3)
+            self.assertEqual(lines[-1], "结局：ok，12 轮")
+            self.assertTrue(any(line.startswith("critic") and "judge" in line for line in lines))
 
             store = Store(store_root)
             drafted, answered = store.read(f"{CASE}/drafted", "write_code")
             self.assertTrue(answered)
             self.assertEqual(drafted, CODE)
+            _judged, answered = store.read(f"{CASE}/judged", "judge")
+            self.assertTrue(answered)
+
+    def test_only_the_actor_stops_where_the_critic_is_needed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            finished = self.run_driver(Path(tmp) / "store", "--actor-only")
+            self.assertEqual(finished.returncode, 1)
+            self.assertEqual(finished.stdout.strip().splitlines()[-1], "结局：stuck，5 轮")
 
     def test_a_message_nobody_can_answer_leaves_the_work_order_and_stops(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -355,7 +411,8 @@ class LiveActorWiringTest(unittest.TestCase):
             session = Session(Path(tmp) / "store", CASE, "draft-1", workflow=WORKFLOW)
             session.state_the_task(WORDS)
 
-            outcome = session.run([("the-actor", "actor", live_service(channel, "quicksort.py"))])
+            outcome = session.run([("the-actor", "actor", live_service(channel, "quicksort.py")),
+                                   ("the-critic", "critic", scripted_critic())])
             self.assertEqual(outcome.outcome, OK)
 
             drafted, answered = session.store.read(f"{CASE}/drafted", "write_code")
@@ -365,7 +422,7 @@ class LiveActorWiringTest(unittest.TestCase):
             self.assertTrue(answered)
             self.assertEqual(said, "知道了")              # 回话读的是 agent 自己说的那句
 
-            told = channel.said[-1]
+            told = channel.said[0]                       # 头一句就是写那一版的题面
             self.assertIn("照这份题面写一版代码", told)
             self.assertIn("写一个快速排序", told)          # 题面来自工单里的 $task
             self.assertIn("quicksort.py", told)           # 交到哪个文件

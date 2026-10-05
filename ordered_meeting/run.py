@@ -10,8 +10,9 @@
         --meeting-id <会议号> --workspace <agent 干活的目录> --target quicksort.py
 
 消息**先到 assistant**：它把人类那句话放进 store，再读 store 决定发哪一张；接着一轮一步，它把下一步的
-`$call` 固定成一张工单，会接那个算子的服务照单算掉。谁都不会的那一步没人接，当轮就走不动了，账上是
-`stuck`——不假装跑完。
+`$call` 固定成一张工单，会接那个算子的服务照单算掉。一张单跑完了再读一遍 store，看下一张该发哪张，一直
+到没有该发的单为止。谁都不会的那一步没人接，当轮就走不动了，账上是 `stuck`——不假装跑完
+（`--actor-only` 就是这样：写完之后判语那张没人接）。
 
 结局只有 `ok` 退出码是 0。
 """
@@ -25,6 +26,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from ticket_centered import _viba  # noqa: F401
 
 from .actor import caps_for
+from .critic import critic_service
+from .plan import workflow_of
 from .session import OK, Session
 
 
@@ -47,6 +50,9 @@ def main(argv=None) -> int:
     parser.add_argument("--workflow", required=True, help="这份流程在哪")
     parser.add_argument("--words", default=None, help="人类刚说的话")
     parser.add_argument("--name", default="actor", help="这个 actor 服务叫什么")
+    parser.add_argument("--critic-name", default="critic", help="这个 critic 服务叫什么")
+    parser.add_argument("--actor-only", action="store_true",
+                        help="只有 actor 接单（判语那一张没人接，账上是 stuck）")
     parser.add_argument("--writer", default=None, help="写这一步从哪来：`模块:函数`")
     parser.add_argument("--meeting-url", default=None, help="真会议的服务地址")
     parser.add_argument("--meeting-id", default=None, help="真会议的会议号")
@@ -64,9 +70,12 @@ def main(argv=None) -> int:
         caps = caps_for(meeting_url=args.meeting_url, meeting_id=args.meeting_id,
                         workspace=args.workspace, target=args.target, name=args.name)
 
+    services = [(args.name, "actor", caps)]
+    if not args.actor_only:
+        services.append((args.critic_name, "critic", critic_service(workflow_of(args.workflow))))
+
     outcome = run_message(store_root=args.store, case=args.case, order=args.order,
-                          workflow=args.workflow, words=args.words,
-                          services=[(args.name, "actor", caps)],
+                          workflow=args.workflow, words=args.words, services=services,
                           max_rounds=args.rounds, out=print)
     return 0 if outcome.outcome == OK else 1
 

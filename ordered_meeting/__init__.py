@@ -8,8 +8,9 @@ assistant 手上：它把人类说的话放进 store，再发一张工单（一�
 一轮只往前走一步：工单里留得下的是已经算好的实参，所以下一步的工单要等上一步答完、assistant 再跑一遍
 才写得出来。每一份工单在发出时带着它的 `$call`，答完带着它的 `$measured`。
 
-这一版只有 actor 参与干活：`workflow/tickets/write_a_draft.viba` 那三步（回一句知道了、写一版、
-回一句做好了）全是 actor 的算子。
+actor 和 critic 都是这样的服务：`workflow/tickets/` 那五张单一路走下来——写一版（actor）、判一版
+（critic）、照判语改一版（actor）、判改完那版（critic）、收尾（assistant 自己说），每张单都是 assistant
+读 store 决定发的。
 
 模块：
 

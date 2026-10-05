@@ -132,7 +132,8 @@ class Session:
         """一轮一轮：assistant 跑一遍工单（把下一步的 `$call` 固定成一张工单），服务接单。
 
         一轮只往前走一步：工单里只留得下已经算好的实参，所以下一步的工单要等上一步答完、assistant
-        再跑一遍才写得出来。assistant 这一趟没有递延，就说明整张工单跑到了头。
+        再跑一遍才写得出来。一张单跑完了（assistant 这一趟没有递延），就再读一遍 store 看下一张该发
+        哪张：还有就接着发，没有了就是 `ok`——整场会跑完了。
 
         `out` 给一行一行看的人：每一趟的账（`Report.line`）和最后的结局各一行。
         """
@@ -141,7 +142,9 @@ class Session:
         reports: List[Report] = []
         work_orders: List[Tuple[str, str, Any]] = []
         outcome = Outcome(UNFINISHED, max_rounds, reports=reports, work_orders=work_orders)
-        for index in range(1, max_rounds + 1):
+        index = 0
+        while index < max_rounds:
+            index += 1
             issued, written = self.issue()
             reports.append(issued)
             work_orders.extend(written)
@@ -150,9 +153,13 @@ class Session:
                 outcome = Outcome(BROKEN, index, reports=reports, work_orders=work_orders)
                 break
             if issued.duty is None:
-                outcome = Outcome(OK, index, value=issued.value, reports=reports,
-                                  work_orders=work_orders)
-                break
+                following = self.due_ticket()
+                if following is None:
+                    outcome = Outcome(OK, index, value=issued.value, reports=reports,
+                                      work_orders=work_orders)
+                    break
+                self.publish(following)
+                continue
 
             progressed = False
             for name, role, caps in services:

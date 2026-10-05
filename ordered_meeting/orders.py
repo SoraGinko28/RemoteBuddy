@@ -26,7 +26,9 @@ from ticket_centered.store import Store
 ORDER_DIR = "orders"
 PROGRAM_DIR = "program"
 VIBA_SUFFIX = ".viba"
+TICKET_NAME_FILE = "ticket"
 API_FILES = ("actor_api.viba", "assistant_api.viba", "critic_api.viba")
+RULES_DIR = "rules"
 
 
 def absolute(case: str, module_path: str) -> str:
@@ -44,19 +46,33 @@ def program_dir(store_root, order: str) -> Path:
 
 
 def ticket_of(directory) -> str:
-    """程序目录里那张单子的名字（api 文件不算）。"""
-    for path in sorted(Path(directory).glob(f"*{VIBA_SUFFIX}")):
+    """程序目录里那张单子的名字。
+
+    一个程序目录里不止有那张单子：几个 api、规则那几份也在（规则要跟单子同目录，`is_compliant` 才
+    找得到）。所以发单的时候把单子的名字写进 `ticket` 那份小文件，这里照它读；没有那份文件的老目录
+    就退回"不是 api 的那个"。
+    """
+    directory = Path(directory)
+    marked = directory / TICKET_NAME_FILE
+    if marked.is_file():
+        return marked.read_text(encoding="utf-8").strip()
+    for path in sorted(directory.glob(f"*{VIBA_SUFFIX}")):
         if path.name not in API_FILES:
             return path.name[: -len(VIBA_SUFFIX)]
     raise FileNotFoundError(f"这里没有工单程序：{directory}")
 
 
 def publish(store_root, order: str, workflow, ticket: str) -> Path:
-    """发一张工单：把这份程序放进 store，谁都能照着它跑。"""
+    """发一张工单：把这份程序放进 store，谁都能照着它跑。
+
+    一个程序目录里放三样：这张单子、它要调的那几个 api、规则那几份（critic 跑规则时跟单子同一个
+    目录才找得到）。换一张发就把上一张和上一批规则清掉，一次只有一张单子的程序。
+    """
     files = sources_of(workflow)
+    if ticket not in files:
+        raise KeyError(f"这份流程里没有工单 {ticket!r}")
     target = program_dir(store_root, order)
     target.mkdir(parents=True, exist_ok=True)
-    # 一张工单的程序目录里只有一张单子：换一张发，先把上一张拿走，别留下两张
     for path in target.glob(f"*{VIBA_SUFFIX}"):
         if path.name not in API_FILES:
             path.unlink()
@@ -64,10 +80,19 @@ def publish(store_root, order: str, workflow, ticket: str) -> Path:
         short = name[: -len(VIBA_SUFFIX)]
         if short in files:
             (target / name).write_text(files[short], encoding="utf-8")
-    if ticket not in files:
-        raise KeyError(f"这份流程里没有工单 {ticket!r}")
+    for rule in rules_of(workflow):
+        (target / f"{rule}{VIBA_SUFFIX}").write_text(files[rule], encoding="utf-8")
     (target / f"{ticket}{VIBA_SUFFIX}").write_text(files[ticket], encoding="utf-8")
+    (target / TICKET_NAME_FILE).write_text(ticket, encoding="utf-8")
     return target
+
+
+def rules_of(workflow) -> Tuple[str, ...]:
+    """这份流程里的规则都叫什么（规则程序跟单子放同一个目录）。"""
+    if hasattr(workflow, "rule_names"):
+        return tuple(workflow.rule_names)
+    root = Path(workflow) / RULES_DIR
+    return tuple(sorted(path.name[: -len(VIBA_SUFFIX)] for path in root.glob(f"*{VIBA_SUFFIX}")))
 
 
 def sources_of(workflow) -> Dict[str, str]:
@@ -77,10 +102,10 @@ def sources_of(workflow) -> Dict[str, str]:
     root = Path(workflow)
     files = {path.name[: -len(VIBA_SUFFIX)]: path.read_text(encoding="utf-8")
              for path in root.glob(f"*{VIBA_SUFFIX}")}
-    tickets = root / "tickets"
-    if tickets.is_dir():
-        for path in tickets.glob(f"*{VIBA_SUFFIX}"):
-            files[path.name[: -len(VIBA_SUFFIX)]] = path.read_text(encoding="utf-8")
+    for directory in (root / "tickets", root / RULES_DIR):
+        if directory.is_dir():
+            for path in directory.glob(f"*{VIBA_SUFFIX}"):
+                files[path.name[: -len(VIBA_SUFFIX)]] = path.read_text(encoding="utf-8")
     return files
 
 
