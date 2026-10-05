@@ -80,7 +80,7 @@ import meeting_sdk_json
 import meeting_sdk_viba
 from viba.type import VibaProgramErr as _SdkErr
 from ticket_centered import Meeting, Member, Store as TicketStore, load_workflow, workflow_root
-from ordered_meeting.actor import live_service
+from ordered_meeting.actor import actor_service, live_service, writer_from
 from ordered_meeting.critic import critic_service
 from ordered_meeting.live import MeetingChannel
 from ordered_meeting.meeting import case_for, run_for_meeting, target_for
@@ -2282,9 +2282,17 @@ class MeetingWebService:
 
     def _orders_actor_caps(self, store: MeetingStore, meeting_id: str,
                            target: str) -> Dict[str, Callable]:
-        """actor 那张能力表：默认是会议里真那个 agent（`MeetingChannel`）。"""
+        """actor 那张能力表：默认是会议里真那个 agent（`MeetingChannel`）。
+
+        `REMOTEBUDDY_ORDERS_WRITER=模块:函数` 把"写"换成脚本化的那一份：这一侧不叫真 agent 也能跑
+        一整场（对着真 HTTP、真 journal、真工作区演练用）。
+        """
         if self.orders_caps_factory is not None:
             return self.orders_caps_factory(store, meeting_id, target)
+        scripted = os.environ.get("REMOTEBUDDY_ORDERS_WRITER")
+        if scripted:
+            return actor_service(writer_from(scripted),
+                                 store.meeting.actor_name() or "actor")
         channel = MeetingChannel(self.public_url, meeting_id, store.workspace_path,
                                  speaking=lambda: self.orders_speaking(meeting_id),
                                  agent_name=store.meeting.actor_name() or "actor")

@@ -278,6 +278,23 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(answered)
         self.assertIn("def quick_sort", written)
 
+    def test_the_scripted_writer_seam_runs_a_whole_meeting(self):
+        """`REMOTEBUDDY_ORDERS_WRITER` 把"写"换成脚本化的：这一侧不叫真 agent 也能跑一整场。"""
+        words = "写一个快速排序，放到 quicksort.py"
+        service = self.orders_service(None)
+        with mock.patch.dict(os.environ, {"REMOTEBUDDY_ORDERS_WRITER":
+                                          "tests.scripted_actor:write"}):
+            store = service.start({"message": words, "meeting_id": "orders-scripted"})
+            self.wait_for_orders(service, "orders-scripted")
+
+        written, answered = Store(Path(store.run_dir) / "ordered" / "store").read(
+            "case/quicksort/drafted", "write_code")
+        self.assertTrue(answered)
+        self.assertIn("def quick_sort", written)
+        finished = [one for one in service.events("orders-scripted", 0)["events"]
+                    if one.get("phase") == "orders_finished"]
+        self.assertEqual("ok", finished[-1]["data"]["outcome"])
+
     def wait_for_orders(self, service, meeting_id, timeout=20):
         """等这一场会那趟工单跑完。"""
         deadline = time.time() + timeout
