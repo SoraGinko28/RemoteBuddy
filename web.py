@@ -84,7 +84,7 @@ from ordered_meeting.actor import actor_service, live_service, writer_from
 from ordered_meeting.critic import critic_service
 from ordered_meeting.live import MeetingChannel
 from ordered_meeting.meeting import case_for, run_for_meeting, target_for
-from ordered_meeting.orders import absolute as absolute_path
+from ordered_meeting.orders import absolute as absolute_path, open_orders
 from ordered_meeting.plan import due as due_ticket
 
 
@@ -2368,7 +2368,8 @@ class MeetingWebService:
 
         return speaking()
 
-    def _start_orders(self, store: MeetingStore, meeting_id: str, message: str) -> MeetingStore:
+    def _start_orders(self, store: MeetingStore, meeting_id: str, message: str,
+                      case: Optional[str] = None) -> MeetingStore:
         """人类说了一句：起一趟工单（assistant 收下、发单，actor / critic 接单）。
 
         上一趟还在跑就把这一句排着（一场会只留一句待办的，和老那条路一样）：跑完那一趟接着跑它。
@@ -2378,7 +2379,7 @@ class MeetingWebService:
             if running is not None and running.is_alive():
                 self.orders_pending[meeting_id] = message
                 return store
-            thread = threading.Thread(target=self._run_orders, args=(meeting_id, message),
+            thread = threading.Thread(target=self._run_orders, args=(meeting_id, message, case),
                                       daemon=True)
             self.orders_jobs[meeting_id] = thread
         # 和那条老路一样：谁握着这一场会的租约，谁才动它。另一个服务驱动着的时候这里就拒了。
@@ -2405,15 +2406,16 @@ class MeetingWebService:
                                  agent_name=store.meeting.actor_name() or "actor")
         return live_service(channel, target)
 
-    def _run_orders(self, meeting_id: str, message: str) -> None:
+    def _run_orders(self, meeting_id: str, message: str, case: Optional[str] = None) -> None:
         """跑一趟：消息给 assistant，它读 store 发单，服务接单，跑到没有该发的单。"""
         try:
             store = self.load_store(meeting_id)
             target = target_for(message)
-            with self.lock:
-                runs = self.orders_runs.get(meeting_id, 0) + 1
-                self.orders_runs[meeting_id] = runs
-            case = case_for(message, fallback=meeting_id, tag=None if runs == 1 else runs)
+            if case is None:
+                with self.lock:
+                    runs = self.orders_runs.get(meeting_id, 0) + 1
+                    self.orders_runs[meeting_id] = runs
+                case = case_for(message, fallback=meeting_id, tag=None if runs == 1 else runs)
             workflow = load_workflow(project_root=self.project_root)
             services = [(store.meeting.actor_name() or "actor", "actor",
                          self._orders_actor_caps(store, meeting_id, target)),
@@ -2450,6 +2452,48 @@ class MeetingWebService:
             if pending:
                 # 跑这一趟的时候人又说了话：接着跑那一句
                 self._start_orders(self.load_store(meeting_id), meeting_id, pending)
+
+    def unfinished_orders(self, store: MeetingStore) -> Optional[Tuple[str, str]]:
+        """这一场有没有一趟工单没跑完：(案子, 人类那句话)，没有就是 None。
+
+        说得清"没跑完"的只有 store 自己：那底下还欠着工单（`$measured` 还是 nil），或者记录里起了头
+        没收尾。进程在不在、死在哪一步，都不必知道。
+        """
+        root = _orders_root(store)
+        if not (root / "store").is_dir():
+            return None
+        reading = TicketStore(root / "store", root / "meeting_record.md")
+        case = _orders_case(reading)
+        if not case:
+            return None
+        started = len([one for one in store.events() if one.get("phase") == "orders_started"])
+        closed = len([one for one in store.events()
+                      if one.get("phase") in ("orders_finished", "orders_failed")])
+        if not open_orders(reading) and started <= closed:
+            return None
+        words, answered = reading.read(case, "stated_task")
+        return case, str(words) if answered else ""
+
+    def resume_unfinished_orders(self) -> List[str]:
+        """服务刚起来：把没跑完的那几趟接着跑（一趟一个案子，从 store 里读到哪儿了）。"""
+        if not self.orders:
+            return []
+        resumed: List[str] = []
+        for meeting in self.list_meetings()["meetings"]:
+            meeting_id = str(meeting.get("meeting_id") or "")
+            if not meeting_id or meeting.get("status") in {"completed", "failed", "interrupted"}:
+                continue
+            try:
+                store = self.load_store(meeting_id)
+                unfinished = self.unfinished_orders(store)
+                if unfinished is None:
+                    continue
+                case, words = unfinished
+                self._start_orders(store, meeting_id, words, case=case)
+                resumed.append(meeting_id)
+            except Exception:                       # noqa: BLE001 - 起不来的那几场不挡别的
+                continue
+        return resumed
 
     def acquire(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -3609,6 +3653,9 @@ def build_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, service: Op
     server = RemoteBuddyHTTPServer((host, port), service or MeetingWebService())
     # The member processes talk to the meeting over this service's own HTTP face.
     server.service.public_url = f"http://{host}:{server.server_address[1]}"
+    if server.service.orders:
+        # 上次这一侧断在一趟工单中间：store 里还欠着，接着跑（进程死了不影响：活儿在盘上）
+        server.service.resume_unfinished_orders()
     return server
 
 

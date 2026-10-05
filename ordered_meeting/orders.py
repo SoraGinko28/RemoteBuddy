@@ -95,6 +95,15 @@ def rules_of(workflow) -> Tuple[str, ...]:
     return tuple(sorted(path.name[: -len(VIBA_SUFFIX)] for path in root.glob(f"*{VIBA_SUFFIX}")))
 
 
+def open_orders(store: Store) -> List[Tuple[str, str]]:
+    """还没有结果的工单：`$measured` 还是 nil 的那些（不管归谁接）。
+
+    这一份 store 自己就说得清"这一趟跑到哪儿了"：谁接单、谁算完，不看进程还在不在。
+    """
+    return [(module_path, name) for module_path, name in store.stored()
+            if not measured(store, module_path, name)[1]]
+
+
 def sources_of(workflow) -> Dict[str, str]:
     """这份流程的每一份文件（短名 → 内容）：给流程对象就用它的，给目录就读那儿。"""
     if hasattr(workflow, "sources"):

@@ -343,6 +343,35 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(2, len(started))
         self.assertEqual(2, len(finished))
 
+    def test_a_pass_that_died_is_taken_up_by_a_fresh_service(self):
+        """上一趟断在半路（谁也没接那一步）：换个服务实例起来，store 里欠着的那些接着跑完。"""
+        words = "写一个快速排序，放到 quicksort.py"
+        broken = self.orders_service(lambda _store, _meeting, _target: {})   # 谁也不会，一步就停
+        store = broken.start({"message": words, "meeting_id": "orders-resume"})
+        self.wait_for_orders(broken, "orders-resume")
+        self.assertFalse(Store(Path(store.run_dir) / "ordered" / "store").read(
+            "case/quicksort/greeted", "acknowledge")[1])          # 那一步还欠着
+
+        fresh = self.orders_service(lambda _store, _meeting, _target: actor_service(
+            lambda _prompt: DRAFT_ORDERS))
+        self.assertEqual(["orders-resume"], fresh.resume_unfinished_orders())
+        # 等到这一趟真收完尾：`orders_finished` 那行先落，阶段是紧跟着改的，别抢那几毫秒
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            done = [one for one in fresh.events("orders-resume", 0)["events"]
+                    if one.get("phase") == "orders_finished"
+                    and one["data"].get("outcome") == "ok"]
+            phase = MeetingStore.load_in_workspace(self.root, "orders-resume").meeting.phase
+            if done and phase == "completion_proposed":
+                break
+            time.sleep(0.02)
+        reading = Store(Path(store.run_dir) / "ordered" / "store")
+        written, answered = reading.read("case/quicksort/drafted", "write_code")
+        self.assertTrue(answered)                                 # 接着跑完了
+        self.assertIn("def quick_sort", written)
+        self.assertEqual("completion_proposed",
+                         MeetingStore.load_in_workspace(self.root, "orders-resume").meeting.phase)
+
     def test_the_manual_issue_button_has_no_place_in_orders_mode(self):
         """工单模式下发单的只有 assistant：手按那一下要当场说清楚，不去动老那一侧。"""
         service = self.orders_service(lambda _store, _meeting, _target: actor_service(
