@@ -15,9 +15,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from ticket_centered.store import Store
+from ticket_centered.workflow import Workflow
 
 from . import assistant as assistant_side
 from .orders import owed, program_dir, ticket_of
+from .plan import due, next_ticket, workflow_of
 from .service import Report, answer_service, run_service
 
 OK = "ok"
@@ -67,13 +69,32 @@ class Session:
         assistant_side.state_the_task(self.store_root, self.case, words,
                                       record_path=self.record_path)
 
+    @property
+    def the_workflow(self) -> Workflow:
+        """这一场读的那份流程：给目录就读那个目录，给的就是流程本身就用它。"""
+        if not isinstance(self.workflow, Workflow):
+            self.workflow = workflow_of(self.workflow)
+        return self.workflow
+
+    def due_ticket(self) -> Optional[str]:
+        """该发哪一张：读 store 算，不是写死的次序。"""
+        return next_ticket(self.the_workflow, self.store, self.case)
+
+    def due_why(self, ticket: str) -> str:
+        """为什么这一张该发（或不该发）：一句话，给人看。"""
+        return due(self.the_workflow, self.store, self.case, ticket)[1]
+
+    def published(self) -> bool:
+        """这张工单的程序发出去没有。"""
+        return assistant_side.published(self.store_root, self.order)
+
     def publish(self, ticket: Optional[str] = None) -> Any:
-        """assistant 发一张工单：把程序放进 store。"""
-        ticket = ticket or self.ticket
+        """assistant 发一张工单：把程序放进 store。不给就发 store 说该发的那一张。"""
+        ticket = ticket or self.ticket or self.due_ticket()
         if not ticket:
-            raise ValueError("发单要说清是哪一张（ticket）")
+            raise ValueError("没有该发的工单：它要读的那几步还没答完")
         self.ticket = ticket
-        return assistant_side.publish(self.store_root, self.order, self.workflow, ticket)
+        return assistant_side.publish(self.store_root, self.order, self.the_workflow, ticket)
 
     # ------------------------------------------------------------------
     # 一轮里的两件事
@@ -113,6 +134,8 @@ class Session:
         一轮只往前走一步：工单里只留得下已经算好的实参，所以下一步的工单要等上一步答完、assistant
         再跑一遍才写得出来。assistant 这一趟没有递延，就说明整张工单跑到了头。
         """
+        if not self.published():
+            self.publish()
         reports: List[Report] = []
         work_orders: List[Tuple[str, str, Any]] = []
         for index in range(1, max_rounds + 1):

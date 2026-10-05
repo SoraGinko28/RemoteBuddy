@@ -36,7 +36,7 @@ from ticket_centered import actor_caps
 
 session = Session(store, "case/quicksort", "draft-1", workflow="workflow", ticket="write_a_draft")
 session.state_the_task("写一个快速排序，放到 quicksort.py")   # 消息先到 assistant
-session.publish()                                            # 发单
+session.publish()                                            # 发 store 说该发的那一张
 outcome = session.run([("the-actor", "actor", actor_caps(write=my_writer))])
 ```
 
@@ -58,12 +58,12 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 | `orders.py` | 发单（把程序放进 `orders/`）、欠着的工单（`prepare/` 里 `$measured` 还是 nil 的那些） |
 | `service.py` | 一个服务的两件正事：接单（照工单的 `$call` 算，`answer_service`）、自己跑一遍整张单（自己算 / 回放 / 递延，`run_service`） |
 | `assistant.py` | 消息进 store、发单、把做不了的步骤写成工单 |
+| `plan.py` | 该发哪一张：读 store 算（要读的都在、自己还没做过），不是写死的次序 |
 | `actor.py` | actor 的服务进程：一张能力表，接单一趟 |
 | `session.py` | 一轮一轮：发单、服务接单、什么时候算完 |
 
 ## 还没做的
 
-* **assistant 还只发一张单**：`write_a_draft` 是发单那一侧点名的。设计里"该发哪一张"要由 assistant
-  读 store 算出来。
-* **critic 还没有**：critic 的算子（`judge`）接进来，就是同一套——它的能力表里有 `judge`，工单里写上
-  这一步，它就在自己的进程里接。
+* **critic 还没有**：写完之后 store 说该发的是 `judge_the_draft`，它的算子是 critic 的。critic 接进来
+  就是同一套——它的能力表里有 `judge`，那张单里写上这一步，它就在自己的进程里接；接不上时这一轮谁也
+  没答出东西，账上是 `stuck`，不会假装跑完。

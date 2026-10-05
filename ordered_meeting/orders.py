@@ -15,7 +15,6 @@ assistant 发单就是两件事：把程序放进 `orders/`，然后自己跑一
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -28,6 +27,15 @@ ORDER_DIR = "orders"
 PROGRAM_DIR = "program"
 VIBA_SUFFIX = ".viba"
 API_FILES = ("actor_api.viba", "assistant_api.viba", "critic_api.viba")
+
+
+def absolute(case: str, module_path: str) -> str:
+    """工单里那条相对案子写的数据路径，接上案子变成 store 里的那条路。"""
+    if not module_path:
+        return case
+    if module_path == case or (case and module_path.startswith(f"{case}/")):
+        return module_path
+    return f"{case}/{module_path}" if case else module_path
 
 
 def program_dir(store_root, order: str) -> Path:
@@ -45,15 +53,35 @@ def ticket_of(directory) -> str:
 
 def publish(store_root, order: str, workflow, ticket: str) -> Path:
     """发一张工单：把这份程序放进 store，谁都能照着它跑。"""
+    files = sources_of(workflow)
     target = program_dir(store_root, order)
     target.mkdir(parents=True, exist_ok=True)
+    # 一张工单的程序目录里只有一张单子：换一张发，先把上一张拿走，别留下两张
+    for path in target.glob(f"*{VIBA_SUFFIX}"):
+        if path.name not in API_FILES:
+            path.unlink()
     for name in API_FILES:
-        source = Path(workflow) / name
-        if source.is_file():
-            shutil.copy2(source, target / name)
-    shutil.copy2(Path(workflow) / "tickets" / f"{ticket}{VIBA_SUFFIX}",
-                 target / f"{ticket}{VIBA_SUFFIX}")
+        short = name[: -len(VIBA_SUFFIX)]
+        if short in files:
+            (target / name).write_text(files[short], encoding="utf-8")
+    if ticket not in files:
+        raise KeyError(f"这份流程里没有工单 {ticket!r}")
+    (target / f"{ticket}{VIBA_SUFFIX}").write_text(files[ticket], encoding="utf-8")
     return target
+
+
+def sources_of(workflow) -> Dict[str, str]:
+    """这份流程的每一份文件（短名 → 内容）：给流程对象就用它的，给目录就读那儿。"""
+    if hasattr(workflow, "sources"):
+        return dict(workflow.sources())
+    root = Path(workflow)
+    files = {path.name[: -len(VIBA_SUFFIX)]: path.read_text(encoding="utf-8")
+             for path in root.glob(f"*{VIBA_SUFFIX}")}
+    tickets = root / "tickets"
+    if tickets.is_dir():
+        for path in tickets.glob(f"*{VIBA_SUFFIX}"):
+            files[path.name[: -len(VIBA_SUFFIX)]] = path.read_text(encoding="utf-8")
+    return files
 
 
 def prepared(store: Store, module_path: str, name: str):

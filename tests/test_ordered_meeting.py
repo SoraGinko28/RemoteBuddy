@@ -130,6 +130,33 @@ class OrderedMeetingTest(unittest.TestCase):
         self.assertEqual(len(again.replayed), 3)
 
     # ------------------------------------------------------------------
+    # 该发哪一张：读 store 算
+    # ------------------------------------------------------------------
+
+    def test_the_assistant_publishes_the_ticket_the_store_says_is_due(self):
+        # 人类还没说话：`write_a_draft` 要读的那一步还没有，谁都不该发
+        self.assertIsNone(self.session.due_ticket())
+        self.session.state_the_task(WORDS)
+        self.assertEqual(self.session.due_ticket(), TICKET)
+        self.session.publish()                       # 不给名字，发 store 说该发的那一张
+        self.assertEqual(self.session.ticket_name, TICKET)
+
+    def test_after_the_actor_is_done_the_next_due_ticket_is_the_critic_s(self):
+        self.session.state_the_task(WORDS)
+        outcome = self.session.run([("the-actor", "actor", scripted_actor())])
+        self.assertEqual(outcome.outcome, OK)
+        # 这一版只有 actor 会接单：写完了就该轮到判语那一张，而它要的是 critic 的算子
+        self.assertEqual(self.session.due_ticket(), "judge_the_draft")
+        self.assertEqual(self.session.the_workflow.role_of_op("judge"), "critic")
+        self.assertEqual(self.session.due_why("judge_the_draft"), "要读的都在，自己还没做过")
+
+    def test_the_session_publishes_the_due_ticket_without_being_told_which(self):
+        self.session.state_the_task(WORDS)
+        outcome = self.session.run([("the-actor", "actor", scripted_actor())])
+        self.assertEqual(outcome.outcome, OK)
+        self.assertEqual(self.session.ticket_name, TICKET)
+
+    # ------------------------------------------------------------------
     # 一轮一轮
     # ------------------------------------------------------------------
 
@@ -205,8 +232,9 @@ class ActorServiceProcessTest(unittest.TestCase):
 
     def test_the_assistant_and_the_actor_are_two_processes_on_one_store(self):
         """一轮一步：assistant 发单、actor 接单，各是一个进程，一份 store。"""
-        issued = self.last_line(self.run_module(*self.assistant_argv()))
+        issued = self.last_line(self.run_module(*self.assistant_argv(words=True)))
         self.assertEqual(issued["wrote"], [[f"{CASE}/greeted", "acknowledge"]])
+        self.assertEqual(issued["ticket"], TICKET)       # 发哪一张是它读 store 算出来的
 
         rounds = []
         for _ in range(3):
@@ -229,17 +257,18 @@ class ActorServiceProcessTest(unittest.TestCase):
         self.assertIn("stated_task", text)
         self.assertNotIn("$measured nil", text)
 
-    def assistant_argv(self):
-        return ("ordered_meeting.assistant", "--store", str(self.store_root), "--case", CASE,
-                "--order", self.order, "--workflow", str(WORKFLOW), "--ticket", TICKET,
-                "--words", WORDS)
+    def assistant_argv(self, words: bool = False):
+        # 不给 --ticket：发哪一张由 assistant 读 store 算
+        argv = ("ordered_meeting.assistant", "--store", str(self.store_root), "--case", CASE,
+                "--order", self.order, "--workflow", str(WORKFLOW))
+        return argv + ("--words", WORDS) if words else argv
 
     def actor_argv(self, *extra):
         return ("ordered_meeting.actor", "--store", str(self.store_root), "--case", CASE,
                 "--order", self.order, "--writer", "tests.scripted_actor:write", *extra)
 
     def test_a_second_actor_process_replays_instead_of_writing_again(self):
-        self.run_module(*self.assistant_argv())
+        self.run_module(*self.assistant_argv(words=True))
         argv = self.actor_argv("--phase", "run")     # 自己跑一遍整张单：一次答三步
         first = self.last_line(self.run_module(*argv))
         self.assertEqual(len(first["answered"]), 3)
