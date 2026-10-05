@@ -354,6 +354,23 @@ class MessageDriverTest(unittest.TestCase):
             _judged, answered = store.read(f"{CASE}/judged", "judge")
             self.assertTrue(answered)
 
+    def test_the_driver_can_run_inside_a_meeting_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            meeting_dir = Path(tmp) / "runs" / "m-2"
+            finished = subprocess.run(
+                [sys.executable, "-m", "ordered_meeting.run", "--meeting", str(meeting_dir),
+                 "--order", "meeting", "--workflow", str(WORKFLOW), "--words", WORDS,
+                 "--writer", "tests.scripted_actor:write"],
+                cwd=str(REPO_ROOT), capture_output=True, text=True,
+                env={**os.environ, "PYTHONPATH": str(REPO_ROOT)})
+            self.assertEqual(finished.returncode, 0, finished.stderr)
+            self.assertEqual(finished.stdout.strip().splitlines()[-1], "结局：ok，12 轮")
+            self.assertTrue((meeting_dir / "ordered" / "meeting_record.md").is_file())
+            store = Store(meeting_dir / "ordered" / "store")
+            drafted, answered = store.read(f"{case_for(WORDS)}/drafted", "write_code")
+            self.assertTrue(answered)
+            self.assertEqual(drafted, CODE)
+
     def test_only_the_actor_stops_where_the_critic_is_needed(self):
         with tempfile.TemporaryDirectory() as tmp:
             finished = self.run_driver(Path(tmp) / "store", "--actor-only")

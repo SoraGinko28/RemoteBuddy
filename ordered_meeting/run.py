@@ -2,12 +2,14 @@
 
 这是会议那一侧要用的那个入口——一条消息进来，跑一趟，报结局：
 
-    python -m ordered_meeting.run --store <store> --case <案子> --order <工单> \\
-        --workflow workflow --words "写一个快速排序，放到 quicksort.py" \\
-        --writer 模块:函数
-    python -m ordered_meeting.run --store <store> --case <案子> --order <工单> \\
-        --workflow workflow --words "…" --meeting-url http://127.0.0.1:PORT \\
-        --meeting-id <会议号> --workspace <agent 干活的目录> --target quicksort.py
+    python -m ordered_meeting.run --store <store> --order <工单> \\
+        --workflow workflow --words "写一个快速排序，放到 quicksort.py" --writer 模块:函数
+    python -m ordered_meeting.run --meeting <会议目录> --order <工单> --workflow workflow \\
+        --words "…" --meeting-url http://127.0.0.1:PORT --meeting-id <会议号> \\
+        --workspace <agent 干活的目录>
+
+给了 `--meeting` 就用 `<会议目录>/ordered/` 那一份 store 和记录；案子名、agent 要交的文件名都从 `--words`
+里那个文件名来，不用另外给。
 
 消息**先到 assistant**：它把人类那句话放进 store，再读 store 决定发哪一张；接着一轮一步，它把下一步的
 `$call` 固定成一张工单，会接那个算子的服务照单算掉。一张单跑完了再读一遍 store，看下一张该发哪张，一直
@@ -27,7 +29,7 @@ from ticket_centered import _viba  # noqa: F401
 
 from .actor import caps_for
 from .critic import critic_service
-from .meeting import case_for, target_for
+from .meeting import case_for, record_path, store_root as meeting_store_root, target_for
 from .plan import workflow_of
 from .session import OK, Session
 
@@ -45,7 +47,10 @@ def run_message(*, store_root, case: str, order: str, workflow, words: Optional[
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="一句话进来：assistant 发单，actor 接单")
-    parser.add_argument("--store", required=True, help="共用的 store")
+    parser.add_argument("--store", default=None,
+                        help="共用的 store（给了 --meeting 就不用给这个）")
+    parser.add_argument("--meeting", default=None,
+                        help="会议目录：这一侧用 <会议目录>/ordered/ 那一份 store 和记录")
     parser.add_argument("--case", default=None,
                         help="这张工单跑在哪个案子下（不给就从 --words 里那个文件名来）")
     parser.add_argument("--order", required=True, help="哪张工单（`orders/<工单>/`）")
@@ -64,6 +69,10 @@ def main(argv=None) -> int:
     parser.add_argument("--rounds", type=int, default=1024, help="轮数上限")
     args = parser.parse_args(argv)
 
+    if not args.store and not args.meeting:
+        parser.error("要么给 --store，要么给 --meeting")
+    store = args.store or meeting_store_root(args.meeting)
+    record = record_path(args.meeting) if args.meeting else None
     case = args.case or case_for(args.words or "")
     target = args.target or target_for(args.words or "")
 
@@ -80,9 +89,9 @@ def main(argv=None) -> int:
     if not args.actor_only:
         services.append((args.critic_name, "critic", critic_service(workflow_of(args.workflow))))
 
-    outcome = run_message(store_root=args.store, case=case, order=args.order,
+    outcome = run_message(store_root=store, case=case, order=args.order,
                           workflow=args.workflow, words=args.words, services=services,
-                          max_rounds=args.rounds, out=print)
+                          max_rounds=args.rounds, out=print, record_path=record)
     return 0 if outcome.outcome == OK else 1
 
 

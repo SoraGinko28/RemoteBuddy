@@ -12,8 +12,13 @@ actor 和 critic 都是这样的服务：工单里写着哪一步、要哪个算
 <会议目录>/ordered/meeting_record.md      这场会的记录：谁说了什么、发了哪张单、谁答了哪一步
 ```
 
-一条消息进来就跑一趟（`ordered_meeting.meeting.run_for_meeting`）：案子名和 agent 要交的那个文件都从人类
-那句话里来（`case_for` / `target_for`），页面上不另设一遍。
+一条消息进来就跑一趟（`ordered_meeting.meeting.run_for_meeting`，命令行上是 `--meeting`）：案子名和
+agent 要交的那个文件都从人类那句话里来（`case_for` / `target_for`），页面上不另设一遍。
+
+```bash
+python -m ordered_meeting.run --meeting <会议目录> --order meeting --workflow workflow \
+    --words "写一个快速排序，放到 quicksort.py" --writer 模块:函数
+```
 
 ## store 里有什么
 
