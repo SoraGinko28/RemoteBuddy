@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 
 from meeting import MAX_ATTACHMENT_BYTES, MeetingStore
+from ordered_meeting.actor import actor_service, live_service
+from ticket_centered.store import Store
 from web import CSRF_HEADER, MeetingWebService, RemoteBuddyHTTPServer, WebError
 
 
@@ -135,6 +137,15 @@ class RecordingRunner:
         )
 
 
+DRAFT_ORDERS = """\
+def quick_sort(items, key=None, reverse=False, bounds=(0, None)):
+    lo, hi = bounds
+    if hi is None:
+        hi = len(items) - 1
+    return items
+"""
+
+
 def write_model_config(root):
     directory = root / "model_api"
     directory.mkdir()
@@ -183,6 +194,100 @@ class MeetingWebServiceTest(unittest.TestCase):
                 self.service.stop(meeting["meeting_id"])
         self.wait_for_workers()
         self.temporary.cleanup()
+
+    def orders_service(self, caps_factory):
+        """同一套测试用的会议服务，只是开着工单那一侧。"""
+        return MeetingWebService(
+            project_root=self.root,
+            model_api_path=self.model_api,
+            skill_path=self.skill,
+            runner_factory=RecordingRunner,
+            client_factory=lambda _config: FakeClient(),
+            transport_factory=lambda _binary: self.transport,
+            orders=True,
+            orders_caps_factory=caps_factory,
+        )
+
+    def test_a_message_runs_as_work_orders(self):
+        """工单那一侧：那句话先进 assistant，由它一张一张发单，actor / critic 接单。"""
+        words = "写一个快速排序，放到 quicksort.py"
+        service = self.orders_service(lambda _store, _meeting, _target: actor_service(
+            lambda _prompt: DRAFT_ORDERS))
+        store = service.start({"message": words, "meeting_id": "orders-demo"})
+        self.wait_for_orders(service, "orders-demo")
+
+        ordered = Path(store.run_dir) / "ordered" / "store"
+        written, answered = Store(ordered).read("case/quicksort/drafted", "write_code")
+        self.assertTrue(answered)
+        self.assertIn("def quick_sort", written)
+        _judged, answered = Store(ordered).read("case/quicksort/judged", "judge")
+        self.assertTrue(answered)
+        self.assertTrue((Path(store.run_dir) / "ordered" / "meeting_record.md").is_file())
+
+        events = service.events("orders-demo", 0)["events"]
+        started = [one for one in events if one.get("phase") == "orders_started"]
+        finished = [one for one in events if one.get("phase") == "orders_finished"]
+        self.assertEqual(1, len(started))
+        self.assertEqual("ok", finished[-1]["data"]["outcome"])
+        self.assertEqual("completion_proposed",
+                         MeetingStore.load_in_workspace(self.root, "orders-demo").meeting.phase)
+
+    def test_an_instruction_from_the_order_is_not_a_new_human_message(self):
+        """工单派活那句走的也是消息接口：会议得认得出它是工单说的，不再从头发一遍单。"""
+        words = "写一个快速排序，放到 quicksort.py"
+        seen = {}
+
+        class FakeChannel:
+            """真会议那条线的替身：`say` 真的走一遍消息接口。"""
+
+            def __init__(self, service, working):
+                self.service = service
+                self.working = working
+
+            def say(self, message):
+                with self.service.orders_speaking("orders-instruction"):
+                    self.service.message("orders-instruction", {"message": message})
+                seen.setdefault("instructions", []).append(message)
+
+            def wait_for_chat(self, _message_type, timeout=None):
+                return "知道了"
+
+            def ensure_work(self, instruction, target, **_kwargs):
+                self.say(instruction)
+                path = self.working / target
+                path.write_text(DRAFT_ORDERS, encoding="utf-8")
+                return DRAFT_ORDERS
+
+        working = self.root / "workspace"
+        working.mkdir(exist_ok=True)
+        service = self.orders_service(
+            lambda _store, _meeting, _target: actor_service(None) if False else None)
+        service.orders_caps_factory = lambda _store, meeting_id, _target: live_service(
+            FakeChannel(service, working), "quicksort.py")
+        store = service.start({"message": words, "meeting_id": "orders-instruction"})
+        self.wait_for_orders(service, "orders-instruction")
+
+        events = service.events("orders-instruction", 0)["events"]
+        started = [one for one in events if one.get("phase") == "orders_started"]
+        self.assertEqual(1, len(started))                       # 没有再起一趟
+        self.assertTrue(seen["instructions"])                   # 题面真发进会议了
+        chats = [one for one in events if one["kind"] == "chat"]
+        self.assertIn("照这份题面写一版代码", chats[-1]["content"])
+        written, answered = Store(Path(store.run_dir) / "ordered" / "store").read(
+            "case/quicksort/drafted", "write_code")
+        self.assertTrue(answered)
+        self.assertIn("def quick_sort", written)
+
+    def wait_for_orders(self, service, meeting_id, timeout=20):
+        """等这一场会那趟工单跑完。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with service.lock:
+                job = service.orders_jobs.get(meeting_id)
+            if job is None or not job.is_alive():
+                return
+            time.sleep(0.01)
+        self.fail("orders thread did not finish")
 
     def wait_for_workers(self):
         deadline = time.time() + 2

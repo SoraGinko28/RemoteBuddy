@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -79,6 +80,10 @@ import meeting_sdk_json
 import meeting_sdk_viba
 from viba.type import VibaProgramErr as _SdkErr
 from ticket_centered import Meeting, Member, Store as TicketStore, load_workflow, workflow_root
+from ordered_meeting.actor import live_service
+from ordered_meeting.critic import critic_service
+from ordered_meeting.live import MeetingChannel
+from ordered_meeting.meeting import case_for, run_for_meeting, target_for
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -416,6 +421,8 @@ class MeetingWebService:
         default_backend: Optional[str] = None,
         default_provider: Optional[str] = None,
         workspace: Optional[Path] = None,
+        orders: bool = False,
+        orders_caps_factory: Optional[Callable[..., Dict[str, Callable]]] = None,
     ) -> None:
         self.project_root = project_root.expanduser().resolve()
         # 这块程序只有**一个**工作区：一个目录。会议数据在 `<它>/.meeting/` 下，
@@ -440,6 +447,12 @@ class MeetingWebService:
         # (build_server fills in the real port).
         self.public_url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
         self.ticket_jobs: Dict[str, Dict[str, Any]] = {}
+        # 工单那一侧（ordered_meeting）：消息先进 assistant，再一张一张发单。
+        # 默认关着：这一侧还新，开着就是"这场会的活由工单驱动"。
+        self.orders = orders
+        self.orders_caps_factory = orders_caps_factory
+        self.orders_jobs: Dict[str, threading.Thread] = {}
+        self.orders_talking: Dict[str, int] = {}
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
         # (store, config, resume, fresh_conversation, terminal_only)
@@ -1773,6 +1786,10 @@ class MeetingWebService:
             )
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
+        if self.orders and message.strip():
+            # 工单那一侧：第一句话也先进 assistant，由它发单。
+            self._start_orders(store, meeting_id, message)
+            return store
         # Without a first message the agent has nothing to answer yet, but the
         # workspace itself is opened right away: its terminal is the thing the
         # human is looking at while they type the first line.
@@ -2164,6 +2181,10 @@ class MeetingWebService:
                     reference=references[0] if references else None,
                     attachments=attachments,
                 )
+            if self.orders and not self._orders_speaking(meeting_id):
+                # 工单那一侧：这句话是"人说的"，进 assistant，由它发单。
+                # 工单自己派活的那句（actor 把题面说进会议）不走这里 —— 它只叫醒 agent。
+                return self._start_orders(store, meeting_id, message), ""
             if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
                 # A chat while the human holds the terminal is an explicit
                 # instruction: hand control back AND resume the Agent with it.
@@ -2220,6 +2241,93 @@ class MeetingWebService:
                         recovery_required=True,
                     )
         return store, agent_error
+
+    # ------------------------------------------------------------------
+    # 工单那一侧：消息先进 assistant，再一张一张发单
+    # ------------------------------------------------------------------
+
+    def _orders_speaking(self, meeting_id: str) -> bool:
+        """这一句是不是正在跑的那趟工单说出去的（不是人说的）。"""
+        with self.lock:
+            return bool(self.orders_talking.get(meeting_id))
+
+    def orders_speaking(self, meeting_id: str):
+        """声明"接下来这一小段时间里发出去的话是工单派活"（`with` 用）。"""
+
+        @contextlib.contextmanager
+        def speaking():
+            with self.lock:
+                self.orders_talking[meeting_id] = self.orders_talking.get(meeting_id, 0) + 1
+            try:
+                yield
+            finally:
+                with self.lock:
+                    self.orders_talking[meeting_id] = max(
+                        0, self.orders_talking.get(meeting_id, 1) - 1)
+
+        return speaking()
+
+    def _start_orders(self, store: MeetingStore, meeting_id: str, message: str) -> MeetingStore:
+        """人类说了一句：起一趟工单（assistant 收下、发单，actor / critic 接单）。"""
+        with self.lock:
+            running = self.orders_jobs.get(meeting_id)
+            if running is not None and running.is_alive():
+                raise WebError(409, "这场会的工单还在跑，等它跑完")
+            thread = threading.Thread(target=self._run_orders, args=(meeting_id, message),
+                                      daemon=True)
+            self.orders_jobs[meeting_id] = thread
+        store.update(status="running", phase="agent_thinking", control_owner="none")
+        thread.start()
+        return store
+
+    def _orders_actor_caps(self, store: MeetingStore, meeting_id: str,
+                           target: str) -> Dict[str, Callable]:
+        """actor 那张能力表：默认是会议里真那个 agent（`MeetingChannel`）。"""
+        if self.orders_caps_factory is not None:
+            return self.orders_caps_factory(store, meeting_id, target)
+        channel = MeetingChannel(self.public_url, meeting_id, store.workspace_path,
+                                 speaking=lambda: self.orders_speaking(meeting_id),
+                                 agent_name=store.meeting.actor_name() or "actor")
+        return live_service(channel, target)
+
+    def _run_orders(self, meeting_id: str, message: str) -> None:
+        """跑一趟：消息给 assistant，它读 store 发单，服务接单，跑到没有该发的单。"""
+        try:
+            store = self.load_store(meeting_id)
+            target = target_for(message)
+            case = case_for(message, fallback=meeting_id)
+            workflow = load_workflow(project_root=self.project_root)
+            services = [(store.meeting.actor_name() or "actor", "actor",
+                         self._orders_actor_caps(store, meeting_id, target)),
+                        ("critic", "critic", critic_service(workflow))]
+            store.append_event("state", "assistant", "orders_started",
+                               data={"case": case, "target": target})
+            outcome = run_for_meeting(store.run_dir, case=case, words=message,
+                                      workflow=workflow, services=services,
+                                      out=lambda line: store.append_event(
+                                          "state", "orders", "round", data={"line": line}))
+            store.append_event("state", "assistant", "orders_finished",
+                               data={"outcome": outcome.outcome, "rounds": outcome.rounds})
+            if outcome.outcome == "ok":
+                store.update(status="running", phase="completion_proposed",
+                             control_owner="none", recovery_required=False)
+            else:
+                store.update(status="running", phase="api_error", control_owner="none",
+                             failure=f"工单没跑完：{outcome.outcome}", recovery_required=True)
+        except Exception as exc:                    # noqa: BLE001 - 后台线程：写进 journal 才算有人知道
+            try:
+                self.load_store(meeting_id).append_event(
+                    "state", "assistant", "orders_failed",
+                    data={"error": f"{type(exc).__name__}: {exc}"})
+                self.load_store(meeting_id).update(status="running", phase="api_error",
+                                                   control_owner="none",
+                                                   failure=f"{type(exc).__name__}: {exc}",
+                                                   recovery_required=True)
+            except Exception:                       # noqa: BLE001 - 连写都写不进去就只剩退出
+                pass
+        finally:
+            with self.lock:
+                self.orders_jobs.pop(meeting_id, None)
 
     def acquire(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
@@ -3396,6 +3504,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="Default harness for new sessions: claude, responses, or codex",
     )
+    parser.add_argument(
+        "--orders",
+        action="store_true",
+        help="工单那一侧：人类说的话先进 assistant，由它一张一张发单（actor / critic 是接单的服务）；"
+             "不给就是老的 agent 循环",
+    )
     args = parser.parse_args(argv)
 
     default_backend: Optional[str] = None
@@ -3423,6 +3537,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         workspace=Path(args.workspace) if args.workspace else None,
         default_backend=default_backend,
         default_provider=default_provider,
+        orders=args.orders,
     )
     server = build_server(args.host, args.port, service=service)
     print(f"RemoteBuddy workspace: http://{args.host}:{args.port}/", flush=True)
