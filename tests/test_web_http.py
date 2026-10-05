@@ -232,6 +232,22 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual("completion_proposed",
                          MeetingStore.load_in_workspace(self.root, "orders-demo").meeting.phase)
 
+        # 页面那块"工单"读的就是这一份：五张单、案子、谁答的、答了什么
+        board = service.tickets("orders-demo")["tickets"]
+        self.assertEqual(board["case"], "case/quicksort")
+        self.assertEqual(board["target"], "quicksort.py")
+        self.assertTrue(board["ran"])
+        self.assertEqual([one["ticket"] for one in board["tickets"]],
+                         ["write_a_draft", "judge_the_draft", "revise_the_draft",
+                          "judge_the_revision", "close_the_meeting"])
+        self.assertTrue(all(one["issued"] for one in board["tickets"]))
+        judged = next(one for one in board["tickets"] if one["ticket"] == "judge_the_draft")
+        answer = judged["answers"][0]
+        # 这一版是 4 个参数，规则的上限是 4：判语说合格（true）
+        self.assertEqual((answer["op"], answer["role"], answer["answered"], answer["value"]),
+                         ("judge", "critic", True, True))
+        self.assertTrue(any("- 人类说了一句" in line for line in board["record"]))
+
     def test_an_instruction_from_the_order_is_not_a_new_human_message(self):
         """工单派活那句走的也是消息接口：会议得认得出它是工单说的，不再从头发一遍单。"""
         words = "写一个快速排序，放到 quicksort.py"

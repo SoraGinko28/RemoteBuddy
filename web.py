@@ -84,6 +84,8 @@ from ordered_meeting.actor import actor_service, live_service, writer_from
 from ordered_meeting.critic import critic_service
 from ordered_meeting.live import MeetingChannel
 from ordered_meeting.meeting import case_for, run_for_meeting, target_for
+from ordered_meeting.orders import absolute as absolute_path
+from ordered_meeting.plan import due as due_ticket
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -368,7 +370,7 @@ def _ticket_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
         tickets.append({
             "ticket": ticket,
             "issued": bool(bundles),
-            "due": bool(due),
+            "due": bool(wanted),
             "why": why,
             "reads": [_ticket_step(meeting, case, path, op)
                       for path, op in workflow.addresses_in(ticket)],
@@ -387,6 +389,86 @@ def _ticket_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
         "tickets": tickets,
         "record": _ticket_record(root),
     }
+
+
+ORDERS_ROOT = "ordered"
+
+
+def _orders_root(store: MeetingStore) -> Path:
+    """这场会的工单那一侧（`ordered_meeting`）放在哪儿。"""
+    return Path(store.run_dir) / ORDERS_ROOT
+
+
+def _orders_case(reading) -> str:
+    """工单跑在哪个案子下：store 里第一条以 `case/` 开头的数据路径的头两段。"""
+    cases: List[str] = []
+    for data_path, _name in reading.stored():
+        parts = data_path.split("/")
+        if len(parts) >= 2 and parts[0] == "case":
+            case = "/".join(parts[:2])
+            if case not in cases:
+                cases.append(case)
+    return cases[0] if cases else ""
+
+
+def _orders_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
+    """工单那一侧的板子：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。
+
+    和 `_ticket_board` 是同一块页面用的东西（`GET /api/meetings/<id>/tickets`），只是这一版读的是
+    共用的那份 store——没有发给谁的包，所以没有 `bundles`。
+    """
+    root = _orders_root(store)
+    workflow = load_workflow(project_root=project_root)
+    reading = TicketStore(root / "store", root / "meeting_record.md")
+    case = _orders_case(reading)
+    record = _ticket_record(root)
+    issued: List[str] = []
+    for line in record:
+        match = re.match(r"- 工单 (\S+)（", line)
+        if match and match.group(1) not in issued:
+            issued.append(match.group(1))
+    order = issued + [name for name in workflow.tickets() if name not in issued]
+    tickets: List[Dict[str, Any]] = []
+    for ticket in order:
+        wanted, why = (due_ticket(workflow, reading, case, ticket) if case
+                       else (False, "还没有案子：人类得先说话"))
+        tickets.append({
+            "ticket": ticket,
+            "issued": ticket in issued,
+            "due": bool(wanted),
+            "why": why,
+            "reads": [_orders_step(reading, workflow, case, path, op)
+                      for path, op in workflow.addresses_in(ticket)],
+            "answers": [_orders_step(reading, workflow, case, path, op)
+                        for path, op in workflow.answers_of(ticket)],
+            "bundles": [],
+        })
+    return {
+        "root": f"runs/{store.meeting.meeting_id}/{ORDERS_ROOT}",
+        "ran": (root / "store").is_dir() or (root / "meeting_record.md").is_file(),
+        "workflow_dir": str(workflow_root(project_root=project_root)),
+        "digest": workflow.digest(),
+        "rules": sorted(workflow.rules()),
+        "case": case,
+        "target": _ticket_target(store),
+        "tickets": tickets,
+        "record": record,
+    }
+
+
+def _orders_step(reading, workflow, case: str, path: str, op: str) -> Dict[str, Any]:
+    """一步：哪条数据路径、哪个算子、答了没有、归哪个角色答、答的是什么（短的那种值）。"""
+    absolute = absolute_path(case, path)
+    value, answered = reading.read(absolute, op)
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        leaf = value
+    elif isinstance(value, str) and 0 < len(value) <= 200:
+        leaf = value
+    else:
+        leaf = None
+    return {"path": absolute, "op": op, "answered": answered,
+            "role": workflow.role_of_op(op),
+            "value": leaf}
 
 
 def _ticket_command(role: str, root: Path, case: str, bundle: Path, url: str, meeting_id: str,
@@ -1491,8 +1573,17 @@ class MeetingWebService:
     # ------------------------------------------------------------------
 
     def tickets(self, meeting_id: str) -> Dict[str, Any]:
-        """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。"""
+        """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、会议记录。
+
+        开着工单那一侧（`--orders`）时读的是这一侧那份共用的 store；否则还是老的那一套。
+        """
         store = self.load_store(meeting_id)
+        if self.orders:
+            board = _orders_board(store, self.project_root)
+            with self.lock:
+                job = self.orders_jobs.get(meeting_id)
+            board["running"] = "orders" if job is not None and job.is_alive() else None
+            return {"meeting": _public_manifest(store), "tickets": board}
         board = _ticket_board(store, self.project_root)
         with self.lock:
             job = self.ticket_jobs.get(meeting_id)
