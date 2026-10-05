@@ -81,9 +81,10 @@ import meeting_sdk_viba
 from viba.type import VibaProgramErr as _SdkErr
 from ticket_centered import Meeting, Member, Store as TicketStore, load_workflow, workflow_root
 from ordered_meeting.actor import actor_service, live_service, writer_from
-from ordered_meeting.critic import critic_service
 from ordered_meeting.live import MeetingChannel
-from ordered_meeting.meeting import case_for, run_for_meeting, target_for
+from ordered_meeting.meeting import case_for, run_for_meeting, store_root as ordered_store_root
+from ordered_meeting.meeting import target_for
+from ordered_meeting.members import due_rows, services_for
 from ordered_meeting.orders import absolute as absolute_path, open_orders
 from ordered_meeting.plan import due as due_ticket
 
@@ -2406,6 +2407,21 @@ class MeetingWebService:
                                  agent_name=store.meeting.actor_name() or "actor")
         return live_service(channel, target)
 
+    def _orders_services(self, store: MeetingStore, meeting_id: str, target: str,
+                         workflow, case: str) -> List[Any]:
+        """这一场有哪几个服务：读流程旁边那张表（`<流程>/services`，见 `ordered_meeting/members.py`）。
+
+        表里 `agent` 那一行用的就是会议里那个 agent：真会议是 `MeetingChannel`，
+        `REMOTEBUDDY_ORDERS_WRITER` 或者 `orders_caps_factory` 给的那份是脚本化的替身。表里还有
+        `process …` 那种成员的话，它就是一个外部进程——这一侧不必知道它会什么。
+        """
+        root = ordered_store_root(store.run_dir)
+        return services_for(due_rows(workflow), workflow=workflow, store_root=root, case=case,
+                            order="meeting",
+                            actor_caps=self._orders_actor_caps(store, meeting_id, target),
+                            actor_name=store.meeting.actor_name() or "actor",
+                            workspace=store.workspace_path)
+
     def _run_orders(self, meeting_id: str, message: str, case: Optional[str] = None) -> None:
         """跑一趟：消息给 assistant，它读 store 发单，服务接单，跑到没有该发的单。"""
         try:
@@ -2417,9 +2433,7 @@ class MeetingWebService:
                     self.orders_runs[meeting_id] = runs
                 case = case_for(message, fallback=meeting_id, tag=None if runs == 1 else runs)
             workflow = load_workflow(project_root=self.project_root)
-            services = [(store.meeting.actor_name() or "actor", "actor",
-                         self._orders_actor_caps(store, meeting_id, target)),
-                        ("critic", "critic", critic_service(workflow))]
+            services = self._orders_services(store, meeting_id, target, workflow, case)
             store.append_event("state", "assistant", "orders_started",
                                data={"case": case, "target": target})
             outcome = run_for_meeting(store.run_dir, case=case, words=message,

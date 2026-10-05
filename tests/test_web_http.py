@@ -15,8 +15,11 @@ from pathlib import Path
 
 from meeting import MAX_ATTACHMENT_BYTES, MeetingStore
 from ordered_meeting.actor import actor_service, live_service
+from ordered_meeting.members import write_table
 from ticket_centered.store import Store
 from web import CSRF_HEADER, MeetingWebService, RemoteBuddyHTTPServer, WebError
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class FakeClient:
@@ -247,6 +250,33 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual((answer["op"], answer["role"], answer["answered"], answer["value"]),
                          ("judge", "critic", True, True))
         self.assertTrue(any("- 人类说了一句" in line for line in board["record"]))
+
+    def test_the_service_table_says_who_serves_a_ticket(self):
+        """这场会有哪几个服务由流程旁边那张表说：把 critic 那一行换成另一个进程，照样跑到头。
+
+        这一场里没有第二个能答 `judge` 的东西：那张单要真是这个进程答的，整场才到得了 `ok`。
+        """
+        workflow = self.root / ".agents" / "workflow"
+        shutil.copytree(REPO_ROOT / "workflow", workflow)
+        write_table(workflow / "services", [
+            "actor actor_api agent",
+            f"critic critic_api process python -m ordered_meeting.critic --workflow {workflow}",
+        ])
+        words = "写一个快速排序，放到 quicksort.py"
+        service = self.orders_service(lambda _store, _meeting, _target: actor_service(
+            lambda _prompt: DRAFT_ORDERS))
+        store = service.start({"message": words, "meeting_id": "orders-table"})
+        self.wait_for_orders(service, "orders-table")
+
+        ordered = Path(store.run_dir) / "ordered" / "store"
+        judged, answered = Store(ordered).read("case/quicksort/judged", "judge")
+        self.assertTrue(answered)
+        self.assertTrue(judged)
+        finished = [one for one in service.events("orders-table", 0)["events"]
+                    if one.get("phase") == "orders_finished"]
+        self.assertEqual("ok", finished[-1]["data"]["outcome"])
+        record = (Path(store.run_dir) / "ordered" / "meeting_record.md").read_text(encoding="utf-8")
+        self.assertIn("- critic（critic）答了", record)
 
     def test_an_instruction_from_the_order_is_not_a_new_human_message(self):
         """工单派活那句走的也是消息接口：会议得认得出它是工单说的，不再从头发一遍单。"""

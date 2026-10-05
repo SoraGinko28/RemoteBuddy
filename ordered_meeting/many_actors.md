@@ -8,6 +8,10 @@
 
 - 工单里一步要的只是一个**算子名**（`write_code`），不看谁：谁的能力表里有这个名字，谁就能接
   （`service.answer_service` 只看 `caps`；`plan.due` 只看要读的答没答）。
+- 这场会有哪几个服务是**服务表**说了算的（`<流程>/services`，见 `ordered_meeting/members.py`）：同一个
+  角色写两行就是两个服务，两行都会去接同一步的那一份工单，谁先跑到谁算。
+- api 不再只有那三份：流程目录里任何一份 `<角色>_api.viba` 都算一个角色（`workflow.is_api_file`），
+  角色名照文件名字算，不用另立一张表。
 - 一个 actor 服务 = 一张能力表 + 会议里那个 agent（`live_service` + `MeetingChannel`）。一场会现在
   只有一个终端、一个 agent（`agent_ordinal=1`，`store.meeting.actor_name()`）。
 - 所以"多个 actor"今天跑不起来，不是代码挡着，是**会里只有一个 agent 在干活**，第二个人没有自己的
@@ -29,8 +33,9 @@
 每个成员一张自己的 api（`actor_a_api`、`actor_b_api`），工单里写 `actor_b.write_code` 就是要 B 做。
 一步归谁从**程序文本**就看得出，不用猜。
 
-要什么：`workflow/actor_api.viba` 拆成几份；工单按成员写；`ROLE_OF_API` 那张"哪个 api 归哪个角色"的表
-要改成"哪个 api 归哪个成员"（`ticket_centered/workflow.py:46`）。会议记录里"谁答的"也就自然分得开。
+要什么：`workflow/actor_api.viba` 拆成几份（`actor_a_api.viba`、`actor_b_api.viba`），工单按成员写，
+服务表里一人一行。角色名不用另立一张表——`role_of_api` 照文件名字算，`role_of_op` 照流程里现有的
+那几份 api 找。会议记录里"谁答的"也就自然分得开。
 
 适合：两个人的活本来就不一样（一个写第一版、一个改），或者流程要指定谁做。
 
@@ -53,3 +58,6 @@ api 还是一张，工单里多一个 `$who`（成员名）作为实参，谁的
 
 三种都要先解决同一件事：会里得能有第二个 agent（第二个工作区、第二个终端会话），现在一场会只有一个。
 这一步不做，三种说法都落不了地；这一步做了，说法一几乎不用改代码。
+
+服务表那一步已经做了（`ordered_meeting/members.py`）：一场会有哪几个服务从数据里读，加一个服务不用改
+Python。三种说法差的只剩"哪一行接哪一步"这件事归哪儿。

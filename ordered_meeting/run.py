@@ -28,8 +28,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from ticket_centered import _viba  # noqa: F401
 
 from .actor import caps_for
-from .critic import critic_service
 from .meeting import case_for, record_path, store_root as meeting_store_root, target_for
+from .members import due_rows, services_for
 from .plan import workflow_of
 from .session import OK, Session
 
@@ -56,10 +56,9 @@ def main(argv=None) -> int:
     parser.add_argument("--order", required=True, help="哪张工单（`orders/<工单>/`）")
     parser.add_argument("--workflow", required=True, help="这份流程在哪")
     parser.add_argument("--words", default=None, help="人类刚说的话")
-    parser.add_argument("--name", default="actor", help="这个 actor 服务叫什么")
-    parser.add_argument("--critic-name", default="critic", help="这个 critic 服务叫什么")
+    parser.add_argument("--name", default="actor", help="会议里那个 agent 叫什么")
     parser.add_argument("--actor-only", action="store_true",
-                        help="只有 actor 接单（判语那一张没人接，账上是 stuck）")
+                        help="只有会议里那个 agent 接单（判语那一张没人接，账上是 stuck）")
     parser.add_argument("--writer", default=None, help="写这一步从哪来：`模块:函数`")
     parser.add_argument("--meeting-url", default=None, help="真会议的服务地址")
     parser.add_argument("--meeting-id", default=None, help="真会议的会议号")
@@ -76,18 +75,25 @@ def main(argv=None) -> int:
     case = args.case or case_for(args.words or "")
     target = args.target or target_for(args.words or "")
 
+    workflow = workflow_of(args.workflow)
+    rows = due_rows(workflow)
+    if args.actor_only:
+        rows = [row for row in rows if row.kind == "agent"]
+
+    actor_caps = None
     if args.writer:
-        caps = caps_for(writer=args.writer, name=args.name)
-    else:
+        actor_caps = caps_for(writer=args.writer, name=args.name)
+    elif args.meeting_url or args.meeting_id or args.workspace:
         for needed in ("meeting_url", "meeting_id", "workspace"):
             if not getattr(args, needed):
-                parser.error(f"要么给 --writer，要么给真会议那几项（缺 --{needed.replace('_', '-')}）")
-        caps = caps_for(meeting_url=args.meeting_url, meeting_id=args.meeting_id,
-                        workspace=args.workspace, target=target, name=args.name)
+                parser.error(f"真会议那几项要一起给（缺 --{needed.replace('_', '-')}）")
+        actor_caps = caps_for(meeting_url=args.meeting_url, meeting_id=args.meeting_id,
+                              workspace=args.workspace, target=target, name=args.name)
+    if actor_caps is None and any(row.kind == "agent" for row in rows):
+        parser.error("要么给 --writer，要么给真会议那几项（表里 `agent` 那一行要会议里那个 agent）")
 
-    services = [(args.name, "actor", caps)]
-    if not args.actor_only:
-        services.append((args.critic_name, "critic", critic_service(workflow_of(args.workflow))))
+    services = services_for(rows, workflow=workflow, store_root=store, case=case, order=args.order,
+                            actor_caps=actor_caps, actor_name=args.name)
 
     outcome = run_message(store_root=store, case=case, order=args.order,
                           workflow=args.workflow, words=args.words, services=services,

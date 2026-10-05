@@ -20,7 +20,7 @@ from ticket_centered.workflow import Workflow
 from . import assistant as assistant_side
 from .orders import owed, program_dir, ticket_of
 from .plan import due, next_ticket, workflow_of
-from .service import Report, answer_service, run_service
+from .service import Report, Service, answer_service, run_command, run_service, service_of
 
 OK = "ok"
 STUCK = "stuck"
@@ -120,6 +120,18 @@ class Session:
             self.store.record(f"- {name}（{role}）答了 {module_path} + {func_name}")
         return report
 
+    def serve(self, service) -> Report:
+        """一个服务接单：自己算的走能力表，外部进程的交给它自己（它算完写回 store）。"""
+        service = service_of(service)
+        if service.command:
+            report = run_command(service, store_root=self.store_root, case=self.case,
+                                 order=self.order)
+            for module_path, func_name in report.answered:
+                self.store.record(
+                    f"- {service.name}（{service.role}）答了 {module_path} + {func_name}")
+            return report
+        return self.answer(service.name, service.role, service.caps or {})
+
     def owed(self, caps: Dict[str, Callable]) -> List[Tuple[str, str, Any]]:
         """欠着的工单：还没有结果、而这张能力表做得了的那些步骤。"""
         return owed(self.store, caps)
@@ -132,13 +144,16 @@ class Session:
     # 一轮一轮跑到头
     # ------------------------------------------------------------------
 
-    def run(self, services: Sequence[Tuple[str, str, Dict[str, Callable]]],
+    def run(self, services: Sequence[Any],
             max_rounds: int = 1024, out: Optional[Callable[[str], None]] = None) -> Outcome:
         """一轮一轮：assistant 跑一遍工单（把下一步的 `$call` 固定成一张工单），服务接单。
 
         一轮只往前走一步：工单里只留得下已经算好的实参，所以下一步的工单要等上一步答完、assistant
         再跑一遍才写得出来。一张单跑完了（assistant 这一趟没有递延），就再读一遍 store 看下一张该发
         哪张：还有就接着发，没有了就是 `ok`——整场会跑完了。
+
+        每个服务可以是 `Service`（自己算的，或者一个外部进程），也可以是老那种
+        `(名字, 角色, 能力表)`。
 
         `out` 给一行一行看的人：每一趟的账（`Report.line`）和最后的结局各一行。
         """
@@ -171,8 +186,8 @@ class Session:
                 continue
 
             progressed = False
-            for name, role, caps in services:
-                answered = self.answer(name, role, caps)
+            for one in services:
+                answered = self.serve(one)
                 reports.append(answered)
                 _say(out, answered)
                 progressed = progressed or bool(answered.answered)

@@ -24,8 +24,9 @@ from viba.compliance import record_prepare
 
 from ticket_centered.assistant import assistant_caps
 from ticket_centered.store import Store
+from ticket_centered.workflow import is_api_file
 
-from .orders import API_FILES, VIBA_SUFFIX, program_dir, publish as publish_program
+from .orders import VIBA_SUFFIX, program_dir, publish as publish_program
 from .plan import next_ticket, workflow_of
 from .service import Report, run_service
 
@@ -87,7 +88,7 @@ def published(store_root, order: str) -> bool:
     directory = program_dir(store_root, order)
     if not directory.is_dir():
         return False
-    return any(path.name not in API_FILES for path in directory.glob(f"*{VIBA_SUFFIX}"))
+    return any(not is_api_file(path.stem) for path in directory.glob(f"*{VIBA_SUFFIX}"))
 
 
 def main(argv=None) -> int:

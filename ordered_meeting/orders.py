@@ -22,12 +22,12 @@ from ticket_centered import _viba  # noqa: F401
 
 from viba.compliance import call_of, measured_of, read_prepare
 from ticket_centered.store import Store
+from ticket_centered.workflow import is_api_file
 
 ORDER_DIR = "orders"
 PROGRAM_DIR = "program"
 VIBA_SUFFIX = ".viba"
 TICKET_NAME_FILE = "ticket"
-API_FILES = ("actor_api.viba", "assistant_api.viba", "critic_api.viba")
 RULES_DIR = "rules"
 
 
@@ -57,8 +57,8 @@ def ticket_of(directory) -> str:
     if marked.is_file():
         return marked.read_text(encoding="utf-8").strip()
     for path in sorted(directory.glob(f"*{VIBA_SUFFIX}")):
-        if path.name not in API_FILES:
-            return path.name[: -len(VIBA_SUFFIX)]
+        if not is_api_file(path.stem):
+            return path.stem
     raise FileNotFoundError(f"这里没有工单程序：{directory}")
 
 
@@ -74,12 +74,10 @@ def publish(store_root, order: str, workflow, ticket: str) -> Path:
     target = program_dir(store_root, order)
     target.mkdir(parents=True, exist_ok=True)
     for path in target.glob(f"*{VIBA_SUFFIX}"):
-        if path.name not in API_FILES:
+        if not is_api_file(path.stem):
             path.unlink()
-    for name in API_FILES:
-        short = name[: -len(VIBA_SUFFIX)]
-        if short in files:
-            (target / name).write_text(files[short], encoding="utf-8")
+    for name in sorted(name for name in files if is_api_file(name)):
+        (target / f"{name}{VIBA_SUFFIX}").write_text(files[name], encoding="utf-8")
     for rule in rules_of(workflow):
         (target / f"{rule}{VIBA_SUFFIX}").write_text(files[rule], encoding="utf-8")
     (target / f"{ticket}{VIBA_SUFFIX}").write_text(files[ticket], encoding="utf-8")

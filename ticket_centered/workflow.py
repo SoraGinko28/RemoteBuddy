@@ -43,7 +43,26 @@ from . import _viba  # noqa: F401
 from viba import viba_ast
 
 ROLES = ("actor_api", "assistant_api", "critic_api")
-ROLE_OF_API = {"actor_api": "actor", "assistant_api": "assistant", "critic_api": "critic"}
+API_SUFFIX = "_api"
+
+
+def is_api_file(name: str) -> bool:
+    """这份文件是不是一个角色 api。
+
+    三个 api 是程序带的那一份流程里的三个角色，不是上限：谁给一份 `<角色>_api.viba`，谁就多一个角色，
+    别的部分一个字都不用改。名字后面没有 `_api` 的是工单（或者规则）。
+    """
+    return name.endswith(API_SUFFIX) and len(name) > len(API_SUFFIX)
+
+
+def role_of_api(api: str) -> str:
+    """这个 api 是哪个角色的（`actor_api` → `actor`）。"""
+    return api[: -len(API_SUFFIX)] if is_api_file(api) else api
+
+
+# 程序带的那份流程里的三个角色（不是上限：多一个 api 文件就多一个角色）
+ROLE_OF_API = {api: role_of_api(api) for api in ROLES}
+
 # 程序里带的那份默认（没有配置目录时用它），以及找流程的那几个地方
 SHIPPED_WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
 WORKFLOW_ENV = "REMOTEBUDDY_WORKFLOW"
@@ -67,11 +86,13 @@ class Step(NamedTuple):
 
 
 class Workflow:
-    """The five classes of viba files a meeting runs, read from one directory."""
+    """The classes of viba files a meeting runs, read from one directory."""
 
-    def __init__(self, files: Dict[str, str], rules: Iterable[str] = ()):
+    def __init__(self, files: Dict[str, str], rules: Iterable[str] = (), root=None):
         self.files = dict(files)
         self.rule_names = tuple(rules)
+        # 这一份流程是从哪个目录读出来的（服务表 `services` 就在它旁边）；不是从目录读的就没有
+        self.root = Path(root) if root is not None else None
 
     # ------------------------------------------------------------------
     # Reading the directory
@@ -81,23 +102,28 @@ class Workflow:
     def load(cls, root) -> "Workflow":
         root = Path(root)
         files: Dict[str, str] = {}
-        for role in ROLES:
-            path = root / f"{role}{VIBA_SUFFIX}"
-            if not path.is_file():
-                raise FileNotFoundError(f"少了 {path}")
-            files[role] = path.read_text(encoding="utf-8")
+        for path in sorted(root.glob(f"*{API_SUFFIX}{VIBA_SUFFIX}")):
+            files[path.stem] = path.read_text(encoding="utf-8")
+        if ROLES[0] not in files:
+            raise FileNotFoundError(f"少了 {root / f'{ROLES[0]}{VIBA_SUFFIX}'}")
         for folder in (TICKETS_DIR, RULES_DIR):
             directory = root / folder
             if not directory.is_dir():
                 raise FileNotFoundError(f"少了目录 {directory}")
             for path in sorted(directory.glob(f"*{VIBA_SUFFIX}")):
                 files[path.stem] = path.read_text(encoding="utf-8")
-        return cls(files, sorted(path.stem for path in (root / RULES_DIR).glob(f"*{VIBA_SUFFIX}")))
+        rules = sorted(path.stem for path in (root / RULES_DIR).glob(f"*{VIBA_SUFFIX}"))
+        return cls(files, rules, root=root)
+
+    def apis(self) -> List[str]:
+        """Every role api this workflow has, by short name (the shipped three, and any the
+        facility grew: a new `<role>_api.viba` next to them is a new role)."""
+        return sorted(name for name in self.files if is_api_file(name))
 
     def tickets(self) -> Dict[str, str]:
         """The ticket programs, by short name."""
         return {name: source for name, source in self.files.items()
-                if name not in ROLES and name not in self.rule_names}
+                if not is_api_file(name) and name not in self.rule_names}
 
     def rules(self) -> Dict[str, str]:
         """The rule programs, by short name."""
@@ -149,9 +175,9 @@ class Workflow:
         produced it: nobody else's table can do that step, so the name is where
         the responsibility is.
         """
-        for api, role in ROLE_OF_API.items():
-            if api in self.files and op in self.ops_of(api):
-                return role
+        for api in self.apis():
+            if op in self.ops_of(api):
+                return role_of_api(api)
         return None
 
 

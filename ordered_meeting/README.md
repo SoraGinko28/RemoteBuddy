@@ -84,7 +84,8 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 | 模块 | 是什么 |
 |---|---|
 | `orders.py` | 发单（把程序放进 `orders/`）、欠着的工单（`prepare/` 里 `$measured` 还是 nil 的那些） |
-| `service.py` | 一个服务的两件正事：接单（照工单的 `$call` 算，`answer_service`）、自己跑一遍整张单（自己算 / 回放 / 递延，`run_service`） |
+| `service.py` | 一个服务的两件正事：接单（照工单的 `$call` 算，`answer_service`）、自己跑一遍整张单（自己算 / 回放 / 递延，`run_service`）；还有第三条路：交给一个外部进程（`run_command`） |
+| `members.py` | 这场会有哪几个服务：读流程旁边那张表（`<流程>/services`），一行一个成员 |
 | `assistant.py` | 消息进 store、发单、把做不了的步骤写成工单 |
 | `plan.py` | 该发哪一张：读 store 算（要读的都在、自己还没做过），不是写死的次序 |
 | `actor.py` | actor 的服务进程：一张能力表，接单一趟（脚本化的 `--writer` 或真会议那只 agent） |
@@ -92,6 +93,50 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 | `session.py` | 一轮一轮：发单、服务接单、什么时候算完 |
 | `run.py` | 一句话进来跑到头（一条命令那个入口）：消息给 assistant、发单、服务接单、报结局 |
 | `meeting.py` | 会议目录那一侧：`<会议目录>/ordered/` 的 store 与记录、案子名和要交的文件名从人类那句话来 |
+
+## 这场会有哪几个服务：`<流程>/services`
+
+这场会有几个成员、各是谁，不是写在 Python 里的，而是流程旁边那张表里的一行行。程序带的那份流程
+（`workflow/services`）写的是两个：
+
+```
+actor actor_api agent
+critic critic_api critic
+```
+
+一行三样：**名字**、**它实现哪个 api**、**怎么找到它**。`怎么找到它` 有四种写法：
+
+| 写法 | 是什么 |
+|---|---|
+| `agent` | 会议里那个 agent（真会议是 `MeetingChannel`；`REMOTEBUDDY_ORDERS_WRITER` 给的是脚本化的替身） |
+| `critic` | 在本地跑规则的那张 critic 能力表 |
+| `scripted <模块>:<函数>` | 本进程里一张能力表，写这一步是 `write(prompt) -> code` |
+| `process <命令…>` | 另起一个进程；宿主把 `--store / --case / --order --phase answer` 接在后面，那个进程自己照 store 里的工单算，把自己答了哪几步印成一行 JSON 交回来 |
+
+**加一个服务不用改 Python**：写一份 `<角色>_api.viba` 放进流程目录（它声明这个角色会哪些算子），再往
+表里加一行。第三处都不用动——api 文件是照 `<角色>_api` 这个名字认的，不是照那三个名字；工单发出去时
+把它连同流程里所有的 api 一起放进 `orders/<工单>/program/`。
+
+例：给这场会加一个静态代码检查的服务。
+
+```
+# <流程>/static_code_analysis_api.viba   声明这个角色会 check_static 这个算子
+# <流程>/tickets/check_the_draft.viba    一张新单，调 check_static
+# <流程>/services                        加这一行：
+checker static_code_analysis_api process python -m static_check
+```
+
+那份 `static_check` 写在 agent 自己的工作区里就行：进程在 `workspace` 里跑，那个目录也在它的
+`PYTHONPATH` 上。它只认两条约定——命令后面接着那几项；算完了印一行 JSON（照
+`ordered_meeting.actor.report_line` 那个写法）。测试里这一条链是跑通的，见
+`tests/test_ordered_members.py` 和 `tests/process_checker.py`。
+
+看现在有哪几个成员、往表里加一行：
+
+```bash
+python -m ordered_meeting.members --workflow workflow
+python -m ordered_meeting.members --workflow workflow --add "checker static_code_analysis_api process python -m static_check"
+```
 
 ## 接到会议服务上（`web.py --orders`）
 
@@ -119,5 +164,5 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
   样子，不假装跑完。
 * **真 agent 那一趟还没跑过**：这一侧验的是真 HTTP + 脚本化的"写"；真 tmux + 真模型那一趟要另开一个
   工作区建新会。
-* **多个 actor**：现在一场会一个 actor 服务（critic 一个）。一个角色坐两个人时，工单里那一步归谁，
-  三种说法摆在哪、各自要什么，见 [`many_actors.md`](many_actors.md)。
+* **多个 actor**：现在一场会一个 actor 服务（critic 一个）。一个角色坐两个人时，工单里那一步归谁看的
+  是服务表——同一张能力表的两行都会去接同一步，谁先答上算谁的，见 [`many_actors.md`](many_actors.md)。
