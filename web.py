@@ -232,7 +232,7 @@ def _events_by_id(store: MeetingStore) -> Dict[str, Dict[str, Any]]:
 
 
 def _applescript_string(value: str) -> str:
-    """把一段文本变成 AppleScript 的字符串字面量。"""
+    """把一段文本变成 AppleScript 里能用的一个字符串。"""
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
@@ -321,9 +321,9 @@ def _ticket_issued(meeting: Meeting) -> List[str]:
 
 
 def _ticket_step(meeting: Meeting, case: str, path: str, op: str) -> Dict[str, Any]:
-    """一步：哪条数据路径、哪个算子、答了没有、归哪个角色答、答的是什么（叶子是标量时）。"""
+    """一步：哪条数据路径、哪个算子、答了没有、归哪个角色答、答的是什么（叶子是单个值时）。"""
     absolute = meeting.absolute(case, path)
-    # `read` 交回的就是存下来的那个值：叶子是标量。一版代码那种长值不往页面上搬，
+    # `read` 交回的就是存下来的那个值：叶子是单个值。一版代码那种长值不往页面上搬，
     # 只有判语、收尾这类短的话才带上——这一块是给页面看的。
     value, answered = meeting.store.read(absolute, op)
     if isinstance(value, bool) or isinstance(value, (int, float)):
@@ -1285,7 +1285,7 @@ class MeetingWebService:
         summaries: List[Dict[str, Any]] = []
         warnings: List[str] = []
         # 会议号是这层接口里唯一的名字（每条路由都只有 id），所以列表里一个号只能出现一次。
-        # 同一个号被拷到两个工作区时留真正属于那个目录的一份（判据见 _meeting_dir）。
+        # 同一个号被拷到两个工作区时留真正属于那个目录的一份（怎么认出来的见 _meeting_dir）。
         chosen: Dict[str, Tuple[Dict[str, Any], bool]] = {}
         for directory in self._meeting_dirs():
             if not MEETING_ID_RE.fullmatch(directory.name):
