@@ -503,7 +503,13 @@ class MeetingWebService:
         return self.transport_factory(shutil.which("tmux") or "tmux")
 
     def _orphaned_agent(self, store: MeetingStore, meeting_id: str) -> bool:
-        """An agent phase with no live worker thread behind it."""
+        """An agent phase with no worker and no live driver lease behind it."""
+        driver = self._driver_state(store)
+        if driver and self._driver_alive(driver):
+            # Another service may be driving this meeting.  Its worker is not
+            # visible in this process, but the live lease proves the Agent is
+            # not orphaned.
+            return False
         return (
             store.meeting.phase in {"agent_thinking", "agent_acting"}
             and not self._job_alive(meeting_id)
@@ -2218,6 +2224,7 @@ class MeetingWebService:
     def acquire(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
             store = self.load_store(meeting_id)
+            orphaned_agent = self._orphaned_agent(store, meeting_id)
             self._ensure_driver(store)
             if store.meeting.status in TERMINAL_STATUSES:
                 raise WebError(409, "meeting is already finished")
@@ -2226,7 +2233,6 @@ class MeetingWebService:
             self._ensure_terminal(store)
             if store.meeting.control_owner == "human":
                 return store
-            orphaned_agent = self._orphaned_agent(store, meeting_id)
             with self.lock:
                 self.human_resume[meeting_id] = (
                     store.meeting.phase in {"agent_thinking", "agent_acting"} or orphaned_agent
