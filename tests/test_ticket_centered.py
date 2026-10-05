@@ -92,10 +92,13 @@ def test_a_ticket_imports_the_apis_it_calls_and_only_writes_calls():
         imported = set(workflow.apis_used_in(name))
         assert called and called <= imported, f"{name} 调了没 import 的 api"
         for definition in reading.definitions_of(source):
+            if definition.name in {"__decl__", "args"}:     # 模块自己那两行：签名和收到的实参
+                continue
             assert definition.name == reading.RET or reading.is_a_call(definition.body), \
                 f"{name} 的 {definition.name} 不是一次调用"
         assert any(definition.name == reading.RET
-                   for definition in reading.definitions_of(source)), f"{name} 没有 __ret__"
+                   for definition in reading.definitions_of(source)), \
+            f"{name} 没有 {reading.RET}"
 
 
 def test_every_operator_a_ticket_calls_is_declared_by_a_role():

@@ -1,6 +1,12 @@
+__decl__ =
+    bool
+  <- $env Env
+
+args = __get_args__ << __decl__
+
 # 一条规则：一份代码里参数最多的那个函数，不超过 4 个参数。
 #
-# 规则是一个程序：environ 进、bool 出；它不认任何一场会、任何一版代码。判的是哪份代码，由放在
+# 规则是一个程序：环境进、bool 出；它不认任何一场会、任何一版代码。判的是哪份代码，由放在
 # 案子自己的数据路径下的那份快照决定——和仓库里那几条规则同一个写法。
 #
 # 这份文件里的三个算子（code_under_judgment / widest_parameters / within_limit）是 critic 的
@@ -8,29 +14,29 @@
 
 code_under_judgment =
     str
-  <- $env environ
+  <- $env Env
   <- { 判的这份代码：critic 把它放在案子自己的数据路径下 }
 
 widest_parameters =
     int
-  <- $env environ
+  <- $env Env
   <- $code str
   <- { 参数最多的那个函数有几个参数 }
 
 within_limit =
     bool
-  <- $env environ
+  <- $env Env
   <- $count int
   <- $limit int
   <- { 数出来的个数在不在上限内 }
 
-the_code = code_under_judgment << $env environ
+the_code = code_under_judgment << $env args.env
 
 the_count = widest_parameters
-  << $env environ
+  << $env args.env
   << $code the_code
 
-__ret__ = within_limit
-  << $env environ
+__impl__ = within_limit
+  << $env args.env
   << $count the_count
   << $limit 4

@@ -5,7 +5,7 @@
 
 judge =
     ($module_path str * $func_name str)
-  <- $env environ
+  <- $env Env
   <- $code ($module_path str * $func_name str)
   <- { 拿 $code 那份材料，自己找出可能违反的规则，逐条判：结论记在这条数据路径下的 judge，
        说不合格的那句话记在 objection }

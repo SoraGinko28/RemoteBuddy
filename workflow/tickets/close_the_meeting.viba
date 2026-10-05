@@ -1,3 +1,9 @@
+__decl__ =
+    ($module_path str * $func_name str)
+  <- $env Env
+
+args = __get_args__ << __decl__
+
 # design/tickets/close_the_meeting.viba
 #
 # assistant 看情况发起这一张——最后那版改完了、也判过了的时候。收尾读的是第二版的判语：
@@ -5,7 +11,7 @@
 
 import assistant_api as assistant
 
-__ret__ = assistant.closing_note
-  << $env ($sub_env << environ << "closing")
+__impl__ = assistant.closing_note
+  << $env ($sub_env << args.env << "closing")
   << $code ($module_path "revised" * $func_name "revise_code")
   << $verdict ($module_path "judged_revision" * $func_name "judge")

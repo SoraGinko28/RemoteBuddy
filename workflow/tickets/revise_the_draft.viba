@@ -1,3 +1,9 @@
+__decl__ =
+    ($module_path str * $func_name str)
+  <- $env Env
+
+args = __get_args__ << __decl__
+
 # design/tickets/revise_the_draft.viba
 #
 # assistant 看情况发起这一张——判过了、改的那一版还没交上来的时候。
@@ -5,11 +11,11 @@
 import actor_api as actor
 
 revised = actor.revise_code
-  << $env ($sub_env << environ << "revised")
+  << $env ($sub_env << args.env << "revised")
   << $code ($module_path "drafted" * $func_name "write_code")
   << $objection ($module_path "judged" * $func_name "objection")
 
-__ret__ = actor.report_done
-  << $env ($sub_env << environ << "revised_done")
+__impl__ = actor.report_done
+  << $env ($sub_env << args.env << "revised_done")
   << $code revised
   << $after revised

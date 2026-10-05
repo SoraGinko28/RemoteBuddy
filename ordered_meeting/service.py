@@ -23,7 +23,7 @@ from .orders import owed, program_dir, ticket_of
 
 from viba import viba_ast
 from viba.compliance import record_prepare
-from viba.interpret import interpret, material
+from viba.interpret import interpret, viba_data
 from viba.type import NotMyDutyException, Ok, UnderlyingVibaOpFailed, VibaProgramErr
 
 from ticket_centered.host import Member
@@ -154,7 +154,7 @@ def _the_pieces(prepared) -> list:
     chain = viba_ast.convert_to_chain_style(piece)
     if not isinstance(chain, viba_ast.ProductChain):
         return [prepared]
-    return [material(one.type if isinstance(one, viba_ast.Tagged) else one)
+    return [viba_data(one.type if isinstance(one, viba_ast.Tagged) else one)
             for one in chain.elements]
 
 

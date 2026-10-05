@@ -19,7 +19,7 @@ from . import _viba  # noqa: F401
 from viba import viba_ast
 from viba.compliance import (PreparedStorage, call_of, measured_of, read_prepare,
                              record_prepare)
-from viba.interpret import Environment, material
+from viba.interpret import Environment, viba_data
 from viba.type import NotMyDutyException
 
 from .store import Store
@@ -159,7 +159,7 @@ def read_stored(env, address) -> Any:
 
 def step_address(module_path: str, func_name: str):
     """A step written as an address: `($module_path "…" * $func_name "…")`."""
-    return material(viba_ast.ProductChain([
+    return viba_data(viba_ast.ProductChain([
         viba_ast.Tagged("$module_path", viba_ast.Constant(module_path)),
         viba_ast.Tagged("$func_name", viba_ast.Constant(func_name)),
     ]))

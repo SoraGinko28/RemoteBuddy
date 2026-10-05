@@ -1,17 +1,23 @@
+__decl__ =
+    ($module_path str * $func_name str)
+  <- $env Env
+
+args = __get_args__ << __decl__
+
 # design/tickets/write_a_draft.viba
 import actor_api as actor
 
 greeted = actor.acknowledge          # 回一句"知道了"
-  << $env ($sub_env << environ << "greeted")
+  << $env ($sub_env << args.env << "greeted")
   << $about ($module_path "" * $func_name "stated_task")
 
 drafted = actor.write_code           # 写一版
-  << $env ($sub_env << environ << "drafted")
+  << $env ($sub_env << args.env << "drafted")
   << $task ($module_path "" * $func_name "stated_task")
   << $after greeted
 
 
-__ret__ = actor.report_done          # 回一句"做好了"
-  << $env ($sub_env << environ << "report_done")
+__impl__ = actor.report_done          # 回一句"做好了"
+  << $env ($sub_env << args.env << "report_done")
   << $code drafted
   << $after drafted

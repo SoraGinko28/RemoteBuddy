@@ -53,14 +53,14 @@ DEFAULT_HOME_NAME = ".remotebuddy"
 TICKETS_DIR = "tickets"
 RULES_DIR = "rules"
 VIBA_SUFFIX = ".viba"
-RET = "__ret__"
+RET = "__impl__"
 SUB_ENVS = ("sub_env", "tmp_sub_env")
 
 
 class Step(NamedTuple):
     """One step of a ticket: the definition it is written as, and the call it makes."""
 
-    definition: str     # the ticket's own name for this step (`greeted`, `__ret__`, …)
+    definition: str     # the ticket's own name for this step (`greeted`, `__impl__`, …)
     env: str            # the data path it runs on, relative to the case ("" is the case)
     api: str            # the role api it calls (`actor_api`)
     op: str             # the operator it calls (`acknowledge`)

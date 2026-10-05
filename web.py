@@ -363,7 +363,7 @@ def _ticket_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
     order = issued + [name for name in sorted(workflow.tickets()) if name not in issued]
     tickets: List[Dict[str, Any]] = []
     for ticket in order:
-        due, why = meeting.due(ticket, case) if case else (False, "还没有案子：人类得先说话")
+        wanted, why = meeting.due(ticket, case) if case else (False, "还没有案子：人类得先说话")
         directory = root / "tickets" / ticket
         bundles = sorted(path.name for path in directory.iterdir() if path.is_dir()) \
             if directory.is_dir() else []

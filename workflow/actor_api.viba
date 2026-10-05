@@ -6,27 +6,27 @@
 
 acknowledge =
     ($module_path str * $func_name str)
-  <- $env environ
+  <- $env Env
   <- $about ($module_path str * $func_name str)
   <- { 在会议里回一句"知道了"：回的是 $about 那件事；话由说话的人自己说 }
 
 write_code =
     ($module_path str * $func_name str)
-  <- $env environ
+  <- $env Env
   <- $task ($module_path str * $func_name str)
   <- $after ($module_path str * $func_name str)
   <- { 接在 $after 那一步之后，照 $task 那份题面写一版代码，放在这条数据路径下 }
 
 report_done =
     ($module_path str * $func_name str)
-  <- $env environ
+  <- $env Env
   <- $code ($module_path str * $func_name str)
   <- $after ($module_path str * $func_name str)
   <- { 接在 $after 之后回一句"做好了"，成果在 $code；话由说话的人自己说 }
 
 revise_code =
     ($module_path str * $func_name str)
-  <- $env environ
+  <- $env Env
   <- $code ($module_path str * $func_name str)
   <- $objection ($module_path str * $func_name str)
   <- { 照判语改一版：$code 是上一版，$objection 说的是哪里不合格 }
