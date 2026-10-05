@@ -294,6 +294,45 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(answered)
         self.assertIn("def quick_sort", written)
 
+    def test_a_message_that_arrives_mid_run_is_queued(self):
+        """一趟还在跑，人又说了话：排着，跑完那一趟接着跑这一句（不是弹一个 409）。"""
+        import threading
+
+        gate = threading.Event()
+        written: list = []
+
+        def slow_write(prompt):
+            written.append(prompt)
+            gate.wait(5)
+            return DRAFT_ORDERS
+
+        service = self.orders_service(
+            lambda _store, _meeting, _target: actor_service(slow_write))
+        service.start({"message": "写一个快速排序，放到 quicksort.py",
+                       "meeting_id": "orders-queued"})
+        deadline = time.time() + 5
+        while time.time() < deadline and not written:
+            time.sleep(0.01)
+        self.assertTrue(written)                                  # 头一趟真跑起来了
+
+        service.message("orders-queued", {"message": "再写一版，放到 quicksort.py"})
+        self.assertIn("orders-queued", service.orders_pending)     # 排着，没弹错
+        gate.set()
+        # 等两趟都跑完：第二趟是在头一趟收尾那一小段里起的，等"没有活着的活"会早一步看到
+        reading = Store(Path(service.load_store("orders-queued").run_dir)
+                        / "ordered" / "store")
+        deadline = time.time() + 30
+        stored = ""
+        while time.time() < deadline:
+            stored, _answered = reading.read("case/quicksort", "stated_task")
+            if stored == "再写一版，放到 quicksort.py":
+                break
+            time.sleep(0.02)
+        self.assertEqual("再写一版，放到 quicksort.py", stored)     # 第二句真跑过了
+        started = [one for one in service.events("orders-queued", 0)["events"]
+                   if one.get("phase") == "orders_started"]
+        self.assertEqual(2, len(started))
+
     def test_the_scripted_writer_seam_runs_a_whole_meeting(self):
         """`REMOTEBUDDY_ORDERS_WRITER` 把"写"换成脚本化的：这一侧不叫真 agent 也能跑一整场。"""
         words = "写一个快速排序，放到 quicksort.py"

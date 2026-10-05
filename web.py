@@ -534,6 +534,8 @@ class MeetingWebService:
         self.orders = orders
         self.orders_caps_factory = orders_caps_factory
         self.orders_jobs: Dict[str, threading.Thread] = {}
+        # 一趟工单还在跑的时候人又说了话：排到下一趟（和老那条路一样：一场会只留一句待办的）
+        self.orders_pending: Dict[str, str] = {}
         self.orders_talking: Dict[str, int] = {}
         self.lock = threading.RLock()
         self.jobs: Dict[str, threading.Thread] = {}
@@ -2359,11 +2361,15 @@ class MeetingWebService:
         return speaking()
 
     def _start_orders(self, store: MeetingStore, meeting_id: str, message: str) -> MeetingStore:
-        """人类说了一句：起一趟工单（assistant 收下、发单，actor / critic 接单）。"""
+        """人类说了一句：起一趟工单（assistant 收下、发单，actor / critic 接单）。
+
+        上一趟还在跑就把这一句排着（一场会只留一句待办的，和老那条路一样）：跑完那一趟接着跑它。
+        """
         with self.lock:
             running = self.orders_jobs.get(meeting_id)
             if running is not None and running.is_alive():
-                raise WebError(409, "这场会的工单还在跑，等它跑完")
+                self.orders_pending[meeting_id] = message
+                return store
             thread = threading.Thread(target=self._run_orders, args=(meeting_id, message),
                                       daemon=True)
             self.orders_jobs[meeting_id] = thread
@@ -2427,6 +2433,10 @@ class MeetingWebService:
         finally:
             with self.lock:
                 self.orders_jobs.pop(meeting_id, None)
+                pending = self.orders_pending.pop(meeting_id, None)
+            if pending:
+                # 跑这一趟的时候人又说了话：接着跑那一句
+                self._start_orders(self.load_store(meeting_id), meeting_id, pending)
 
     def acquire(self, meeting_id: str) -> MeetingStore:
         with self._meeting_lock(meeting_id):
