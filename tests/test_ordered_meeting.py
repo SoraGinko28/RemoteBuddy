@@ -26,13 +26,14 @@ sys.path.insert(0, str(REPO_ROOT))
 from ordered_meeting.actor import live_service  # noqa: E402
 from ordered_meeting.meeting import case_for, record_path, run_for_meeting, store_root, target_for  # noqa: E402
 from ordered_meeting.run import run_message  # noqa: E402
-from ordered_meeting.orders import measured, owed, ticket_of  # noqa: E402
+from ordered_meeting.orders import measured, norm_of, order_dir, owed, ticket_of  # noqa: E402
 from ordered_meeting.session import OK, STUCK, Session  # noqa: E402
 from ticket_centered import actor_caps  # noqa: E402
 from ticket_centered.actor import AgentChannel  # noqa: E402
+from ticket_centered import load_workflow, norm_home  # noqa: E402
 from ticket_centered.store import Store  # noqa: E402
 
-WORKFLOW = REPO_ROOT / "workflow"
+WORKFLOW = norm_home()
 TICKET = "write_a_draft"
 CASE = "case/quicksort"
 WORDS = ("写一个快速排序，放到 quicksort.py。接口必须是 "
@@ -77,12 +78,16 @@ class OrderedMeetingTest(unittest.TestCase):
         self.assertTrue(answered)
         self.assertEqual(value, WORDS)
 
-    def test_the_order_program_lands_in_the_store_and_is_the_actor_s(self):
+    def test_what_the_assistant_publishes_is_a_note_in_the_store(self):
+        """发单是**数据**：store 里记下这一趟是哪张单、哪一版规范；程序在规范目录里，不发副本。"""
         self.issue_a_draft()
-        program = self.session.program
-        self.assertEqual(ticket_of(program), TICKET)
-        self.assertTrue((program / "actor_api.viba").is_file())
-        self.assertTrue((program / f"{TICKET}.viba").is_file())
+        self.assertEqual(ticket_of(self.store_root, "draft-1"), TICKET)
+        self.assertEqual(norm_of(self.store_root, "draft-1"), load_workflow(WORKFLOW).digest())
+        order = order_dir(self.store_root, "draft-1")
+        self.assertEqual(sorted(path.name for path in order.iterdir()), ["norm", "ticket"])
+        # 程序一行都不在 store 里，跑的是规范里那份
+        self.assertFalse(any(order.rglob("*.viba")))
+        self.assertTrue(WORKFLOW.joinpath("tickets", f"{TICKET}.viba").is_file())
 
     def test_the_assistant_alone_leaves_a_work_order_not_a_result(self):
         _report, work_orders = self.issue_a_draft()
@@ -298,7 +303,8 @@ class ActorServiceProcessTest(unittest.TestCase):
 
     def actor_argv(self, *extra):
         return ("ordered_meeting.actor", "--store", str(self.store_root), "--case", CASE,
-                "--order", self.order, "--writer", "tests.scripted_actor:write", *extra)
+                "--order", self.order, "--workflow", str(WORKFLOW),
+                "--writer", "tests.scripted_actor:write", *extra)
 
     def test_the_critic_answers_a_judge_work_order_in_its_own_process(self):
         """写在另一个进程里发出来的单子上接着干：critic 也是一个服务进程。"""
@@ -415,10 +421,10 @@ class MeetingDirectoryTest(unittest.TestCase):
             drafted, answered = store.read(f"{case}/drafted", "write_code")
             self.assertTrue(answered)
             self.assertEqual(drafted, CODE)
-            # 工单程序放在会议目录下面那份 store 里
-            program = Path(store_root(meeting_dir)) / "orders" / "meeting" / "program"
-            self.assertTrue((program / "ticket").is_file())
-            self.assertTrue((program / "actor_api.viba").is_file())
+            # 这一趟记在会议自己那份 store 里（收尾那张是最后发的）；程序在规范目录里
+            order = Path(store_root(meeting_dir)) / "orders" / "meeting"
+            self.assertEqual(ticket_of(store_root(meeting_dir), "meeting"), "close_the_meeting")
+            self.assertFalse(any(order.rglob("*.viba")))
 
     def test_the_record_says_who_spoke_and_who_answered_what(self):
         with tempfile.TemporaryDirectory() as tmp:

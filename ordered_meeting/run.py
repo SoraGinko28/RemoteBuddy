@@ -2,9 +2,9 @@
 
 这是会议那一侧要用的那个入口——一条消息进来，跑一趟，报结局：
 
-    python -m ordered_meeting.run --store <store> --order <工单> \\
-        --workflow workflow --words "写一个快速排序，放到 quicksort.py" --writer 模块:函数
-    python -m ordered_meeting.run --meeting <会议目录> --order <工单> --workflow workflow \\
+    python -m ordered_meeting.run --store <store> --order <这一趟> \\
+        --workflow <规范目录> --words "写一个快速排序，放到 quicksort.py" --writer 模块:函数
+    python -m ordered_meeting.run --meeting <会议目录> --order <这一趟> --workflow <规范目录> \\
         --words "…" --meeting-url http://127.0.0.1:PORT --meeting-id <会议号> \\
         --workspace <agent 干活的目录>
 
@@ -53,8 +53,8 @@ def main(argv=None) -> int:
                         help="会议目录：这一侧用 <会议目录>/ordered/ 那一份 store 和记录")
     parser.add_argument("--case", default=None,
                         help="这张工单跑在哪个案子下（不给就从 --words 里那个文件名来）")
-    parser.add_argument("--order", required=True, help="哪张工单（`orders/<工单>/`）")
-    parser.add_argument("--workflow", required=True, help="这份流程在哪")
+    parser.add_argument("--order", required=True, help="这一趟（`orders/<这一趟>/`）")
+    parser.add_argument("--workflow", default=None, help="规范在哪（不给就是规范目录）")
     parser.add_argument("--words", default=None, help="人类刚说的话")
     parser.add_argument("--name", default="actor", help="会议里那个 agent 叫什么")
     parser.add_argument("--actor-only", action="store_true",
@@ -96,7 +96,7 @@ def main(argv=None) -> int:
                             actor_caps=actor_caps, actor_name=args.name)
 
     outcome = run_message(store_root=store, case=case, order=args.order,
-                          workflow=args.workflow, words=args.words, services=services,
+                          workflow=workflow, words=args.words, services=services,
                           max_rounds=args.rounds, out=print, record_path=record)
     return 0 if outcome.outcome == OK else 1
 

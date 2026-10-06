@@ -26,10 +26,11 @@ from ordered_meeting.plan import workflow_of  # noqa: E402
 from ordered_meeting.service import run_command  # noqa: E402
 from ordered_meeting.session import OK, Session  # noqa: E402
 from ticket_centered import actor_caps  # noqa: E402
+from ticket_centered import norm_home  # noqa: E402
 from ticket_centered.store import Store  # noqa: E402
 from ticket_centered.workflow import load_workflow  # noqa: E402
 
-WORKFLOW = REPO_ROOT / "workflow"
+WORKFLOW = norm_home()
 CHECKER = REPO_ROOT / "tests" / "process_checker.py"
 CASE = "case/quicksort"
 WORDS = "写一个快速排序，放到 quicksort.py"
@@ -127,7 +128,8 @@ class ProcessMemberTest(unittest.TestCase):
         shutil.copytree(WORKFLOW, root)
         (root / "static_code_analysis_api.viba").write_text(STATIC_API, encoding="utf-8")
         (root / "tickets" / "check_the_draft.viba").write_text(CHECK_TICKET, encoding="utf-8")
-        row = extra_row or f"checker static_code_analysis_api process python {CHECKER}"
+        row = extra_row or (f"checker static_code_analysis_api process python {CHECKER} "
+                            f"--workflow {root}")
         add = read_table(root / "services") + [row_of(row)]
         write_table(root / "services", add)
         return root

@@ -1,7 +1,7 @@
 """一个成员作为一个服务：一张能力表，在共用的 store 上接单。
 
 一个服务只有三样：名字、角色、**能力表**（它会哪些算子）。它不像从前那样拿一份发给自己的包——
-程序在共用的 store 里（`orders/<工单>/program/`），值也在那儿（`<案子>/<数据路径>/prepare/`）。
+程序在规范里（现读），数据在共用的 store 里（`<案子>/<数据路径>/prepare/`）。
 它做两件事：
 
 * **接单**（`answer_service`）：store 里欠着的那些工单，能力表里有哪个算子就照它算哪个——实参从工单
@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ticket_centered import _viba  # noqa: F401
-from .orders import owed, program_dir, ticket_of
+from .orders import owed, ticket_of
 
 from viba import viba_ast
 from viba.compliance import record_prepare
@@ -33,7 +33,6 @@ from viba.type import NotMyDutyException, Ok, UnderlyingVibaOpFailed, VibaProgra
 from ticket_centered.host import Member
 from ticket_centered.store import Store
 
-VIBA_SUFFIX = ".viba"
 
 
 @dataclass
@@ -104,13 +103,16 @@ def service_of(one) -> Service:
 
 
 def run_service(name: str, role: str, caps: Dict[str, Callable], *, store_root, order: str,
-                case: str, program=None, record_path=None) -> Report:
-    """这个服务在共用的 store 上跑一遍这张工单。"""
-    directory = Path(program) if program is not None else program_dir(store_root, order)
-    ticket = ticket_of(directory)
+                case: str, workflow, record_path=None) -> Report:
+    """这个服务在共用的 store 上跑一遍这张工单。
+
+    跑的是**规范里**那张单子（`workflow.ticket_file`）：store 里只有"这一趟是哪张单"这条数据，程序
+    一行都不发副本。模块按 `workflow.search_path()` 找，所以单子 import 得到根上那几个 api。
+    """
+    ticket = ticket_of(store_root, order)
     store = Store(store_root, record_path)
-    runner = Member(name, role, caps).at(store, case, str(directory))
-    answer = interpret(str(directory / f"{ticket}{VIBA_SUFFIX}"), runner.env(""))
+    runner = Member(name, role, caps).at(store, case, workflow.search_path())
+    answer = interpret(str(workflow.ticket_file(ticket)), runner.env(""))
 
     answered = [(path, op) for path, op, value in runner.did if value != "replayed"]
     replayed = [(path, op) for path, op, value in runner.did if value == "replayed"]
@@ -193,15 +195,14 @@ def _the_pieces(prepared) -> list:
 
 
 def answer_service(name: str, role: str, caps: Dict[str, Callable], *, store_root, order: str,
-                   case: str, program=None, record_path=None) -> Report:
+                   case: str, workflow, record_path=None) -> Report:
     """这个服务接单：store 里欠着的、它会的那些算子，照 `$call` 算掉。"""
-    directory = Path(program) if program is not None else program_dir(store_root, order)
-    ticket = ticket_of(directory)
+    ticket = ticket_of(store_root, order)
     store = Store(store_root, record_path)
     answered: List[Tuple[str, str]] = []
     for module_path, func_name, call in owed(store, caps):
         implementation = caps[func_name]
-        env = store.env(module_path, str(directory), case=case)
+        env = store.env(module_path, workflow.search_path(), case=case)
         value = _computed(implementation, env, call, func_name)
         record_prepare(env, func_name, call, value)
         answered.append((module_path, func_name))
@@ -279,7 +280,7 @@ def _report_of(service: Service, order: str, output: str) -> Optional[Report]:
 def _child_env(cwd=None) -> Dict[str, str]:
     """那个进程的环境：照跑起来的这个解释器能 import 到的那几个目录，加上它自己的目录。
 
-    这样它才 import 得到流程里那些 api 用的东西，也 import 得到它自己被写在哪儿。
+    这样它才 import 得到规范里那些 api 用的东西，也 import 得到它自己被写在哪儿。
     """
     env = dict(os.environ)
     seen: List[str] = []

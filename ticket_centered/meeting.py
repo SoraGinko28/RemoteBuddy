@@ -7,7 +7,7 @@ harness 只有三件事，这里都摆着：
    都在了、它自己那几步还没答，就该发；
 3. **几张能力表**（每个 `Member` 一张）：谁会不会哪个算子——表在成员自己的进程里（`member.py`）。
 
-发一张工单（`Meeting.publish`）：把它做成一个包（`program/` 是程序，`store/` 是这一步要读的值），
+发一张工单（`Meeting.publish`）：把它做成一个包（`store/` 是这一步要读的值；**程序不发副本**，
 发给会上的**每个**成员，各人一份自己的副本。跑是成员那一侧的事：`--bundle` 指到哪一份，就是发给谁的。
 答下的值由成员抄回会议；每个成员包里那份副本留着：**对账靠它们**。
 """
@@ -30,9 +30,7 @@ from .workflow import Workflow, addresses_of_call
 
 CASE_PREFIX = "case"
 TEMPLATE = "_ticket"
-PROGRAM_DIR = "program"
 STORE_DIR = "store"
-VIBA_SUFFIX = ".viba"
 
 
 class Meeting:
@@ -122,17 +120,14 @@ class Meeting:
         return bundles
 
     # ------------------------------------------------------------------
-    # The package: a program plus the data it reads
+    # The package: the data this step reads (the program stays in the norm)
     # ------------------------------------------------------------------
 
     def _bundle(self, bundle: Path, ticket: str, case: str) -> None:
-        """`program/` is the program (apis, tickets, rules); `store/` is the data it reads."""
+        """`store/` is the data this step reads. The program is not copied: the norm has it."""
         if bundle.exists():
             shutil.rmtree(bundle)
-        (bundle / PROGRAM_DIR).mkdir(parents=True)
         (bundle / STORE_DIR).mkdir(parents=True, exist_ok=True)
-        for name, source in self.workflow.sources().items():
-            (bundle / PROGRAM_DIR / f"{name}{VIBA_SUFFIX}").write_text(source, encoding="utf-8")
         seen: set = set()
         self._slice(bundle / STORE_DIR, ticket, case, seen)
 

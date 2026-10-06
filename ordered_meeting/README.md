@@ -16,19 +16,23 @@ actor 和 critic 都是这样的服务：工单里写着哪一步、要哪个算
 agent 要交的那个文件都从人类那句话里来（`case_for` / `target_for`），页面上不另设一遍。
 
 ```bash
-python -m ordered_meeting.run --meeting <会议目录> --order meeting --workflow workflow \
+python -m ordered_meeting.run --meeting <会议目录> --order meeting \
     --words "写一个快速排序，放到 quicksort.py" --writer 模块:函数
 ```
 
 ## store 里有什么
 
 ```
-<store>/orders/<工单>/program/          这份工单的程序：它自己那张单子、几个 api、规则那几份，
-                                        还有一份 `ticket`（写着这一目录里是哪张单子）
+<store>/orders/<这一趟>/ticket          这一趟发的是哪张单（名字）
+<store>/orders/<这一趟>/norm            发的时候读的是哪一版规范（摘要）
 <store>/<案子>/prepare/stated_task.viba 人类刚说的那句话（assistant 放进去的）
 <store>/<案子>/<数据路径>/prepare/<算子>.viba   工单：$call 已固定，$measured 还是 nil
 <store>/<案子>/<数据路径>/value.viba    这一步的结果（replayed 读写的文件）
 ```
+
+**store 里只有数据**：工单和规则那几份**程序**一行都不在这儿，它们在规范（
+[`RbNorm`](https://github.com/lixinqi/RbNorm)）里，跑的时候现读（`Workflow.ticket_file` /
+`search_path`）。发单是在 store 里记一条数据：哪张单、哪一版规范。
 
 **工单就是那份 `prepare/<算子>.viba`**，两部分各管一半：数据路径说有哪一步、要哪个算子；`$call` 说这一步
 拿到了什么。它是自足的——谁的能力表里有那个算子，谁就能照它算完，把结果落到同一条数据路径下，并把同一
@@ -63,14 +67,14 @@ outcome = session.run([("the-actor", "actor", actor_caps(write=my_writer))])
 
 ```bash
 python -m ordered_meeting.run --store <store> --case case/quicksort --order draft-1 \
-    --workflow workflow --words "写一个快速排序，放到 quicksort.py" --writer 模块:函数
+    --workflow <规范目录> --words "写一个快速排序，放到 quicksort.py" --writer 模块:函数
 ```
 
 两个进程也是这两个入口——一条命令一个服务，共用的只有那份 store：
 
 ```bash
 python -m ordered_meeting.assistant --store <store> --case case/quicksort --order draft-1 \
-    --workflow workflow --ticket write_a_draft --words "写一个快速排序，放到 quicksort.py"
+    --workflow <规范目录> --ticket write_a_draft --words "写一个快速排序，放到 quicksort.py"
 python -m ordered_meeting.actor --store <store> --case case/quicksort --order draft-1 \
     --meeting-url http://127.0.0.1:8765 --meeting-id <会议号> --workspace <干活目录> --target quicksort.py
 ```
@@ -83,9 +87,9 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 
 | 模块 | 是什么 |
 |---|---|
-| `orders.py` | 发单（把程序放进 `orders/`）、欠着的工单（`prepare/` 里 `$measured` 还是 nil 的那些） |
+| `orders.py` | 工单和工单程序分别在哪儿：发单（在 `orders/` 里记下哪张单、哪版规范）、欠着的工单（`prepare/` 里 `$measured` 还是 nil 的那些） |
 | `service.py` | 一个服务的两件正事：接单（照工单的 `$call` 算，`answer_service`）、自己跑一遍整张单（自己算 / 回放 / 递延，`run_service`）；还有第三条路：交给一个外部进程（`run_command`） |
-| `members.py` | 这场会有哪几个服务：读流程旁边那张表（`<流程>/services`），一行一个成员 |
+| `members.py` | 这场会有哪几个服务：读规范旁边那张表（`<规范>/services`），一行一个成员 |
 | `assistant.py` | 消息进 store、发单、把做不了的步骤写成工单 |
 | `plan.py` | 该发哪一张：读 store 算（要读的都在、自己还没做过），不是写死的次序 |
 | `actor.py` | actor 的服务进程：一张能力表，接单一趟（脚本化的 `--writer` 或真会议那只 agent） |
@@ -94,10 +98,10 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 | `run.py` | 一句话进来跑到头（一条命令那个入口）：消息给 assistant、发单、服务接单、报结局 |
 | `meeting.py` | 会议目录那一侧：`<会议目录>/ordered/` 的 store 与记录、案子名和要交的文件名从人类那句话来 |
 
-## 这场会有哪几个服务：`<流程>/services`
+## 这场会有哪几个服务：`<规范>/services`
 
-这场会有几个成员、各是谁，不是写在 Python 里的，而是流程旁边那张表里的一行行。程序带的那份流程
-（`workflow/services`）写的是两个：
+这场会有几个成员、各是谁，不是写在 Python 里的，而是规范旁边那张表里的一行行。规范里那份
+（`RbNorm/services`）写的是两个：
 
 ```
 actor actor_api agent
@@ -113,29 +117,29 @@ critic critic_api critic
 | `scripted <模块>:<函数>` | 本进程里一张能力表，写这一步是 `write(prompt) -> code` |
 | `process <命令…>` | 另起一个进程；宿主把 `--store / --case / --order --phase answer` 接在后面，那个进程自己照 store 里的工单算，把自己答了哪几步印成一行 JSON 交回来 |
 
-**加一个服务不用改 Python**：写一份 `<角色>_api.viba` 放进流程目录（它声明这个角色会哪些算子），再往
-表里加一行。第三处都不用动——api 文件是照 `<角色>_api` 这个名字认的，不是照那三个名字；工单发出去时
-把它连同流程里所有的 api 一起放进 `orders/<工单>/program/`。
+**加一个服务不用改 Python**：写一份 `<角色>_api.viba` 放进规范目录（它声明这个角色会哪些算子），再往
+表里加一行。第三处都不用动——api 文件是照 `<角色>_api` 这个名字认的，不是照那三个名字；跑的时候
+和工单一起从规范目录现读，一份副本都不发。
 
 例：给这场会加一个静态代码检查的服务。
 
 ```
-# <流程>/static_code_analysis_api.viba   声明这个角色会 check_static 这个算子
-# <流程>/tickets/check_the_draft.viba    一张新单，调 check_static
-# <流程>/services                        加这一行：
-checker static_code_analysis_api process python -m static_check
+# <规范>/static_code_analysis_api.viba   声明这个角色会 check_static 这个算子
+# <规范>/tickets/check_the_draft.viba    一张新单，调 check_static
+# <规范>/services                        加这一行：
+checker static_code_analysis_api process python -m static_check --workflow <规范目录>
 ```
 
 那份 `static_check` 写在 agent 自己的工作区里就行：进程在 `workspace` 里跑，那个目录也在它的
-`PYTHONPATH` 上。它只认两条约定——命令后面接着那几项；算完了印一行 JSON（照
-`ordered_meeting.actor.report_line` 那个写法）。测试里这一条链是跑通的，见
-`tests/test_ordered_members.py` 和 `tests/process_checker.py`。
+`PYTHONPATH` 上。它只认两条约定——命令后面接着 `--store / --case / --order --phase answer` 那几项
+（规范目录它自己那一行写）；算完了印一行 JSON（照 `ordered_meeting.actor.report_line` 那个写法）。
+测试里这一条链是跑通的，见 `tests/test_ordered_members.py` 和 `tests/process_checker.py`。
 
 看现在有哪几个成员、往表里加一行：
 
 ```bash
-python -m ordered_meeting.members --workflow workflow
-python -m ordered_meeting.members --workflow workflow --add "checker static_code_analysis_api process python -m static_check"
+python -m ordered_meeting.members --workflow <规范目录>
+python -m ordered_meeting.members --workflow <规范目录> --add "checker static_code_analysis_api process python -m static_check"
 ```
 
 ## 接到会议服务上（`web.py --orders`）

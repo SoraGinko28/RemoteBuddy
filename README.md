@@ -155,9 +155,11 @@ Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CL
 
 ## Tickets
 
-A meeting may also run on tickets. The workflow itself is viba: `workflow/` holds the three role
-apis (actor / assistant / critic), the ticket programs designed before the meeting, and the rules
-the critic judges by. `ticket_centered/` is the harness around it — one shared store (answers at
+A meeting may also run on tickets. The norm itself is viba and lives in its own repository
+(`RbNorm`, next to this tree; `REMOTEBUDDY_NORM` points elsewhere): the three role apis
+(actor / assistant / critic), the ticket programs designed before the meeting, and the rules the
+critic judges by. The program carries none of it, and a meeting keeps only data -- which ticket,
+which norm revision -- in its own store. `ticket_centered/` is the harness around it — one shared store (answers at
 data paths), the capability table of each role, and one process per role, which takes the bundle
 handed to it and answers in its own copy.
 

@@ -1,7 +1,7 @@
 """这场会有哪几个服务：一份表，一行一个成员。
 
-一个成员是三样东西：**名字**、**它实现哪个 api**、**怎么找到它**。表就在流程目录旁边
-（`<流程>/services`），一行一个成员，`#` 开头的是说明：
+一个成员是三样东西：**名字**、**它实现哪个 api**、**怎么找到它**。表就在规范目录旁边
+（`<规范>/services`），一行一个成员，`#` 开头的是说明：
 
 ```
 # 名字      它实现哪个 api              怎么找到它
@@ -10,7 +10,7 @@ critic     critic_api                critic
 checker    static_code_analysis_api  process python -m static_check
 ```
 
-**加一个服务不用改 Python**：写一份 `<角色>_api.viba` 放进流程目录（它声明这个角色会哪些算子），
+**加一个服务不用改 Python**：写一份 `<角色>_api.viba` 放进规范目录（它声明这个角色会哪些算子），
 再往这张表里加一行。`怎么找到它` 有四种写法：
 
 * `agent` —— 会议里那个 agent（真会议是 `AgentChannel`，自己那一侧也可以塞一份脚本化的能力表）；
@@ -20,7 +20,7 @@ checker    static_code_analysis_api  process python -m static_check
   那个进程自己照 store 里的工单算，把自己答了哪几步印成一行 JSON 交回来（`ordered_meeting.actor`
   就是这个约定的一份实现）。`python` 这个词换成当前解释器。
 
-表里写着的 api 必须在流程里真的有一份；写错名字当场说清楚，不要留到跑的时候才发现没人接单。
+表里写着的 api 必须在规范里真的有一份；写错名字当场说清楚，不要留到跑的时候才发现没人接单。
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from .service import Service
 TABLE_NAME = "services"
 COMMENT = "#"
 KINDS = ("agent", "critic", "scripted", "process")
-# 表里没写、流程目录旁边也没有那份表时用的：程序带的那份流程就是这两个成员
+# 表里没写、规范目录旁边也没有那份表时用的：这份规范就是这两个成员
 FALLBACK_ROWS = ("actor actor_api agent", "critic critic_api critic")
 
 
@@ -65,7 +65,7 @@ class Row:
 
 
 def table_path(workflow) -> Optional[Path]:
-    """这份流程旁边那张表；流程不是从目录读出来的就没有表。"""
+    """这份规范旁边那张表；规范不是从目录读出来的就没有表。"""
     root = getattr(workflow, "root", None)
     if root is None:
         if isinstance(workflow, (str, Path)) and Path(workflow).is_dir():
@@ -92,7 +92,7 @@ def row_of(text: str) -> Row:
 
 
 def rows_of(source: Any = None) -> List[Row]:
-    """表里那几个成员。`source` 可以是那份表、一个流程，也可以是没给（那就是没有表）。
+    """表里那几个成员。`source` 可以是那份表、一个规范目录，也可以是没给（那就是没有表）。
 
     没有表、或者表里只有说明——都返回空，交给调用的人决定用什么默认值。
     """
@@ -120,7 +120,7 @@ def read_table(path) -> List[Row]:
 
 
 def due_rows(workflow) -> List[Row]:
-    """这一场有哪几个成员：读流程旁边那张表；没有那份表就用程序带的那两个。"""
+    """这一场有哪几个成员：读规范旁边那张表；没有那份表就用默认的那两个。"""
     return rows_of(table_path(workflow)) or [row_of(text) for text in FALLBACK_ROWS]
 
 
@@ -160,15 +160,14 @@ def services_for(rows: Sequence[Row], *, workflow, store_root, case: str, order:
     `actor_name` 是它在会议里的名字——表里写的是角色位，真名字以会议为准。`workspace` 是进程成员
     干活的目录（`process` 那一行起的进程在它里面跑，它自己写的那份服务就在那儿找得到）。
     """
-    if not hasattr(workflow, "apis"):
-        from .plan import workflow_of
+    from .plan import workflow_of
 
-        workflow = workflow_of(workflow)
+    workflow = workflow_of(workflow)
     apis = set(workflow.apis())
     services: List[Service] = []
     for row in rows:
         if apis and row.api not in apis:
-            raise ValueError(f"{row.name} 那一行实现 {row.api}，这份流程里没有这个 api")
+            raise ValueError(f"{row.name} 那一行实现 {row.api}，这份规范里没有这个 api")
         services.append(_service_of(row, workflow=workflow, store_root=store_root, case=case,
                                     order=order, actor_caps=actor_caps, actor_name=actor_name,
                                     workspace=workspace))
@@ -206,8 +205,8 @@ def command_for(row: Row, *, store_root, case: str, order: str,
 def main(argv=None) -> int:
     """`python -m ordered_meeting.members`：看这场会有哪几个服务，或者加一个。"""
     parser = argparse.ArgumentParser(description="服务表：一个成员一行")
-    parser.add_argument("--table", default=None, help="那份表（不给就是 <流程>/services）")
-    parser.add_argument("--workflow", default=None, help="流程目录：表就在它旁边")
+    parser.add_argument("--table", default=None, help="那份表（不给就是 <规范>/services）")
+    parser.add_argument("--workflow", default=None, help="规范目录：表就在它旁边")
     parser.add_argument("--add", default=None, metavar="一行",
                         help="加一个成员：「名字 api 怎么找到它」")
     args = parser.parse_args(argv)

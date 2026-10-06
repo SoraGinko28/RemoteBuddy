@@ -37,8 +37,14 @@ RULE_WORDINGS = {
 }
 
 
-def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR) -> Dict[str, Callable]:
-    """critic 的能力表：`judge`（拿那一份、自己找规则、逐条判）加上规则那几个算子。"""
+def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
+                rules_dir=None) -> Dict[str, Callable]:
+    """critic 的能力表：`judge`（拿那一份、自己找规则、逐条判）加上规则那几个算子。
+
+    `rules_dir` 是规则程序在哪儿；不给就看这份流程是从哪个目录读出来的（规范那一套：规则的代码在
+    `<规范>/rules/`，由 `Workflow.rule_file` 指）。两份都没有（流程是拿现成的源码拼的）才退回这次
+    运行的那个 `viba_path`。
+    """
 
     def judge(env, code):
         written = text_of(env, code)
@@ -49,7 +55,7 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR) -> Dict[str, C
         write_snapshot(case, written, CODE_UNDER_JUDGMENT)
         objections: List[str] = []
         for rule in workflow.rules():
-            answer = is_compliant(str(Path(env.viba_path) / f"{rule}.viba"), case)
+            answer = is_compliant(str(_rule_file(rule, workflow, env, rules_dir)), case)
             if not isinstance(answer, Ok):
                 raise RuntimeError(f"规则 {rule} 没跑完：{answer!r}")
             if not answer.ok_value:
@@ -60,6 +66,15 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR) -> Dict[str, C
     caps = {"judge": judge}
     caps.update(_rule_compute())
     return caps
+
+
+def _rule_file(rule: str, workflow, env, rules_dir):
+    """这条规则的程序在哪儿。"""
+    if rules_dir is not None:
+        return Path(rules_dir) / f"{rule}.viba"
+    if getattr(workflow, "root", None) is not None:
+        return workflow.rule_file(rule)
+    return Path(env.viba_path) / f"{rule}.viba"
 
 
 def _rule_compute() -> Dict[str, Callable]:

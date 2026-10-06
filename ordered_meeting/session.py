@@ -18,7 +18,7 @@ from ticket_centered.store import Store
 from ticket_centered.workflow import Workflow
 
 from . import assistant as assistant_side
-from .orders import owed, program_dir, ticket_of
+from .orders import owed, ticket_of
 from .plan import due, next_ticket, workflow_of
 from .service import Report, Service, answer_service, run_command, run_service, service_of
 
@@ -60,10 +60,6 @@ class Session:
     def store(self) -> Store:
         return Store(self.store_root, self.record_path)
 
-    @property
-    def program(self):
-        return program_dir(self.store_root, self.order)
-
     def state_the_task(self, words: str) -> None:
         """消息先到 assistant 手上：先把人类说的话放进 store。"""
         assistant_side.state_the_task(self.store_root, self.case, words,
@@ -72,8 +68,8 @@ class Session:
 
     @property
     def the_workflow(self) -> Workflow:
-        """这一场读的那份流程：给目录就读那个目录，给的就是流程本身就用它。"""
-        if not isinstance(self.workflow, Workflow):
+        """这一场读的那份规范：给目录就读那个目录，给的就是规范本身就用它。"""
+        if self.workflow is None or not isinstance(self.workflow, Workflow):
             self.workflow = workflow_of(self.workflow)
         return self.workflow
 
@@ -86,11 +82,11 @@ class Session:
         return due(self.the_workflow, self.store, self.case, ticket)[1]
 
     def published(self) -> bool:
-        """这张工单的程序发出去没有。"""
+        """这一趟发过单没有。"""
         return assistant_side.published(self.store_root, self.order)
 
     def publish(self, ticket: Optional[str] = None) -> Any:
-        """assistant 发一张工单：把程序放进 store。不给就发 store 说该发的那一张。"""
+        """assistant 发一张工单：在 store 里记下是哪张、哪一版规范。不给就发 store 说该发的那一张。"""
         ticket = ticket or self.ticket or self.due_ticket()
         if not ticket:
             raise ValueError("没有该发的工单：它要读的那几步还没答完")
@@ -105,17 +101,19 @@ class Session:
     def issue(self) -> Tuple[Report, List[Tuple[str, str, Any]]]:
         """assistant 跑一遍，把做不了的步骤写成工单。"""
         return assistant_side.issue(store_root=self.store_root, order=self.order, case=self.case,
-                                    record_path=self.record_path)
+                                    workflow=self.the_workflow, record_path=self.record_path)
 
     def work(self, name: str, role: str, caps: Dict[str, Callable]) -> Report:
         """一个服务自己跑一遍这张工单（它会的算子当场全答掉）。"""
         return run_service(name, role, caps, store_root=self.store_root, order=self.order,
-                           case=self.case, record_path=self.record_path)
+                           case=self.case, workflow=self.the_workflow,
+                           record_path=self.record_path)
 
     def answer(self, name: str, role: str, caps: Dict[str, Callable]) -> Report:
         """一个服务接单：store 里欠着的、它会的那些算子，照 `$call` 算掉。"""
         report = answer_service(name, role, caps, store_root=self.store_root, order=self.order,
-                                case=self.case, record_path=self.record_path)
+                                case=self.case, workflow=self.the_workflow,
+                                record_path=self.record_path)
         for module_path, func_name in report.answered:
             self.store.record(f"- {name}（{role}）答了 {module_path} + {func_name}")
         return report
@@ -138,7 +136,7 @@ class Session:
 
     @property
     def ticket_name(self) -> str:
-        return ticket_of(self.program)
+        return ticket_of(self.store_root, self.order)
 
     # ------------------------------------------------------------------
     # 一轮一轮跑到头

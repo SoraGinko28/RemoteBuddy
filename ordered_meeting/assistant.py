@@ -26,7 +26,7 @@ from ticket_centered.assistant import assistant_caps
 from ticket_centered.store import Store
 from ticket_centered.workflow import is_api_file
 
-from .orders import VIBA_SUFFIX, program_dir, publish as publish_program
+from .orders import published as order_published, publish as publish_program
 from .plan import next_ticket, workflow_of
 from .service import Report, run_service
 
@@ -39,36 +39,36 @@ def state_the_task(store_root, case: str, words: str, *, record_path=None) -> No
 
 
 def publish(store_root, order: str, workflow, ticket: str) -> Path:
-    """把这张工单的程序放进 store。"""
+    """发这张工单：在 store 里记下是哪张、哪一版规范（程序在规范目录里，不发副本）。"""
     return publish_program(store_root, order, workflow, ticket)
 
 
-def issue(*, store_root, order: str, case: str, caps: Optional[Dict[str, Callable]] = None,
-          record_path=None, program=None) -> Tuple[Report, List[Tuple[str, str, Any]]]:
+def issue(*, store_root, order: str, case: str, workflow,
+          caps: Optional[Dict[str, Callable]] = None,
+          record_path=None) -> Tuple[Report, List[Tuple[str, str, Any]]]:
     """发单：assistant 跑一遍这张工单，做不了的步骤写成工单留在 store 里。
 
     返回 (这一趟的账, 写下哪几张工单)。
     """
     report = run_service("assistant", "assistant", caps or assistant_caps(),
                          store_root=store_root, order=order, case=case,
-                         program=program, record_path=record_path)
+                         workflow=workflow, record_path=record_path)
     return report, write_work_orders(report, store_root=store_root, case=case,
-                                     record_path=record_path, program=program,
+                                     record_path=record_path, workflow=workflow,
                                      order=order)
 
 
 def write_work_orders(report: Report, *, store_root, case: str, record_path=None,
-                      program=None, order: str = "") -> List[Tuple[str, str, Any]]:
+                      workflow, order: str = "") -> List[Tuple[str, str, Any]]:
     """把这一趟做不了的那一步写成工单：`$call` 就是递延里那一份，`$measured` 留 nil。
 
-    一份工单要两部分，少一个都不成：**viba 代码**（`$call` 加还没填的 `$measured`）和**数据路径**
+    一份工单要两部分，少一个都不成：**viba 数据**（`$call` 加还没填的 `$measured`）和**数据路径**
     （`<数据路径>/prepare/<算子>.viba`）。
     """
     if report.duty is None:
         return []
     step = report.duty.step
-    directory = program if program is not None else program_dir(store_root, order)
-    env = Store(store_root, record_path).env(step.module_path, str(directory), case=case)
+    env = Store(store_root, record_path).env(step.module_path, workflow.search_path(), case=case)
     record_prepare(env, step.func_name, report.duty.call, None)
     return [(step.module_path, step.func_name, report.duty.call)]
 
@@ -84,18 +84,15 @@ def publish_due(store_root, order: str, workflow, case: str, record_path=None) -
 
 
 def published(store_root, order: str) -> bool:
-    """这张工单的程序发出去没有。"""
-    directory = program_dir(store_root, order)
-    if not directory.is_dir():
-        return False
-    return any(not is_api_file(path.stem) for path in directory.glob(f"*{VIBA_SUFFIX}"))
+    """这一趟发过单没有：store 里有没有那份记录。"""
+    return order_published(store_root, order)
 
 
 def main(argv=None) -> int:
     """assistant 的进程：收消息（`--words`）、发单、把做不了的写成工单。
 
         python -m ordered_meeting.assistant --store <store> --case <案子> --order <工单> \\
-            --workflow workflow --words "人类说的话"
+            --workflow <规范目录> --words "人类说的话"
 
     不给 `--ticket` 就发 store 说该发的那一张（`plan.next_ticket` 读出来的）。一行 JSON 报这一趟：
     发的是哪一张、写下了哪几张工单、递延在哪一步。
@@ -103,25 +100,23 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="assistant 的进程：收消息、发单")
     parser.add_argument("--store", required=True, help="共用的 store")
     parser.add_argument("--case", required=True, help="这张工单跑在哪个案子下")
-    parser.add_argument("--order", required=True, help="哪张工单（`orders/<工单>/`）")
-    parser.add_argument("--workflow", default=None, help="这份流程在哪（发单时把程序抄进 store）")
+    parser.add_argument("--order", required=True, help="这一趟（`orders/<这一趟>/`）")
+    parser.add_argument("--workflow", required=True, help="规范在哪（工单和 api 在那里面）")
     parser.add_argument("--ticket", default=None, help="发哪一张（不给就发 store 说该发的那一张）")
     parser.add_argument("--words", default=None, help="人类刚说的话")
     args = parser.parse_args(argv)
 
+    workflow = workflow_of(args.workflow)
     if args.words:
         state_the_task(args.store, args.case, args.words)
 
     if args.ticket:
-        if not args.workflow:
-            parser.error("发单要同时给 --workflow（程序从那儿抄）")
-        publish(args.store, args.order, args.workflow, args.ticket)
+        publish(args.store, args.order, workflow, args.ticket)
     elif not published(args.store, args.order):
-        if not args.workflow:
-            parser.error("还没发单，要给 --workflow 才知道发哪一张")
-        publish_due(args.store, args.order, args.workflow, args.case)
+        publish_due(args.store, args.order, workflow, args.case)
 
-    report, work_orders = issue(store_root=args.store, order=args.order, case=args.case)
+    report, work_orders = issue(store_root=args.store, order=args.order, case=args.case,
+                                workflow=workflow)
     print(json.dumps({
         "service": report.service,
         "order": report.order,

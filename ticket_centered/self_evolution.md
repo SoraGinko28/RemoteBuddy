@@ -1,17 +1,19 @@
 # 你来做自进化：先看这些
 
-你是这份流程的自进化负责人。**你手里是一个配置目录，不是一个代码仓库**——像 Claude Code 的 skills：
+你是这份规范的自进化负责人。**你手里是一个规范仓库（`RbNorm`），不是程序仓库**——像 Claude Code
+的 skills：
 
 ```
-~/.remotebuddy/workflow/            ← 你改的就是这儿（或者项目自己的 <项目>/.agents/workflow/）
+RbNorm/                            ← 你改的就是这儿
     actor_api.viba  assistant_api.viba  critic_api.viba
     tickets/*.viba
     rules/*.viba
+    services                       这会有哪几个服务（一行一个成员）
 ```
 
-RemoteBuddy 那份程序按 "`--workflow` → `$REMOTEBUDDY_WORKFLOW` → 项目自己的 → 你的配置目录 →
-程序里带的默认" 的次序找一份流程，找到谁用谁。**程序不给你**，你也不用碰它：那里面是能力面
-（"会做的事"），和 ADT 一样，是人签字的。
+RemoteBuddy 那份程序按 "`--workflow` → `$REMOTEBUDDY_WORKFLOW` → `$REMOTEBUDDY_NORM` → 默认那条
+路径（程序仓库旁边那一层）" 的次序找规范目录，找到谁读谁。**程序不给你**，你也不用碰它：那里面是
+能力面（"会做的事"），和 ADT 一样，是人签字的。
 
 判你的有四样：**结构、硬断言、账、人**。这份文件说的是它们长什么样、以及你会踩什么坑。
 
@@ -20,8 +22,8 @@ RemoteBuddy 那份程序按 "`--workflow` → `$REMOTEBUDDY_WORKFLOW` → 项目
 * **你要维护的就是这套系统本身**：你那份流程、会议记录、store、每个成员包里那份原件、journal。
 * **你的产出**是一份候选设计（一个目录）：三份 api + 工单 + 规则。它的名字是
   `Workflow.load(dir).digest()`。
-* **你不改正在跑的会**：一张工单发出去，包里带着 `program/`，就钉在发单那一刻的版本上。你改的是
-  "下一张发什么"——这正是"新版本够不到正在跑的会"这句话的实现方式。
+* **你不改正在跑的会**：工单和规则都是现读的，但 store 里记着发单那一刻的规范摘要
+  （`orders/<这一趟>/norm`）；你改的是"下一张发什么"。
 * 你不是自己判自己：判你的是第 2、3、4 节那四样。
 
 ## 2. 结构：你造不出新效果
@@ -130,7 +132,6 @@ GET /api/meetings/<会议号>/tickets               页面那块板子（该发�
 
 ## 10. 试一份候选
 
-* 你改的就是 `~/.remotebuddy/workflow/`（没有就 `python -m ticket_centered.workflow --init` 抄一份出来）；
-  想先放着不生效，就写到别的目录，用 `--workflow <dir>` 起成员进程试；
-* `python -m ticket_centered.workflow --where` 看这一趟读的是哪份、摘要是什么；
+* 你改的就是那个规范仓库；想先放着不生效，就拷一份到别的目录，用 `--workflow <dir>` 起成员进程试；
+* `python -m ticket_centered.workflow --where` 看这一趟读的是哪份规范、里面有什么、摘要是什么；
 * 候选的名字：`Workflow.load(dir).digest()`；先过第 6 节的 ①，再上真会。

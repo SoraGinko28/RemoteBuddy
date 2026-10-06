@@ -21,7 +21,9 @@ from ticket_centered.workflow import Workflow, load_workflow
 
 
 def workflow_of(root) -> Workflow:
-    """这份流程：给目录就读那个目录，不给就是默认那一份。"""
+    """这份规范：给目录就读那个目录，给的就是规范本身就用它，不给就是规范目录。"""
+    if hasattr(root, "tickets"):
+        return root
     return load_workflow(root)
 
 

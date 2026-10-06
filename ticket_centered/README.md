@@ -6,36 +6,36 @@
 2. 一个"该发哪一张"的判据（读 store 算，不是写死的顺序）；
 3. 几张能力表（每个成员一张：它会哪些算子）。
 
-顺序、回话、判什么、改什么、谁接在谁后面，全在流程里（`workflow/` 那五类 viba 文件）。设计见
+顺序、回话、判什么、改什么、谁接在谁后面，全在规范里（`RbNorm` 里那几类 viba 文件，程序一行
+都不带）。设计见
 `../ticket_centered_workflow/ticket_centered.md`。
 
 跑在一场**真实的会**上（真 agent、真 tmux、真 HTTP、真规则）：
 `.venv/bin/python e2e_ticket_meeting.py`（`--workspace DIR` 就把这场会开在那个工作区里：数据进
 `<DIR>/.meeting/<会议号>/`，agent 在 `<DIR>` 根下干活）
 
-自进化（改 `workflow/` 那一侧）：看 [`self_evolution.md`](self_evolution.md) —— 位置、怎么验、你会踩的坑。
+自进化（改规范那一侧）：看 [`self_evolution.md`](self_evolution.md) —— 位置、怎么验、你会踩的坑。
 
-## 流程在你的配置目录里（不是程序里）
+## 规范在它自己的仓库里（不是程序里）
 
-像 Claude Code 的 skills 之于它的二进制：这份程序只负责**按次序找一个目录**，找到谁读谁——
+像 Claude Code 的 skills 之于它的二进制：规范（工单、规则、三个角色的 api、服务表）在
+[`RbNorm`](https://github.com/lixinqi/RbNorm)，程序只负责**找到那个目录**，读它：
 
 ```
 1. --workflow <dir>（或调用时给的 root）
 2. $REMOTEBUDDY_WORKFLOW
-3. <项目>/.agents/workflow/          ← 这个项目自己的
-4. $REMOTEBUDDY_HOME/workflow/       ← 你的配置目录（默认 ~/.remotebuddy/workflow/）
-5. 程序里带的那份默认（仓库根上的 workflow/）
+3. $REMOTEBUDDY_NORM
+4. 默认：程序仓库旁边那一层的 RbNorm
 ```
 
 ```bash
-python -m ticket_centered.workflow --init     # 把默认那份抄到你的配置目录，从那儿改
-python -m ticket_centered.workflow --where    # 看这一趟读的是哪份、摘要是什么
+python -m ticket_centered.workflow --where    # 看这一趟读的是哪份规范、里面有什么、摘要是什么
 ```
 
-自进化改的是第 4（或第 3）个；**程序不用给他，也不用动**。工单板和会议记录里都写着这一场读的是
-哪份流程、摘要是什么。
+自进化改的就是那个仓库；**程序不用给他，也不用动**。工单板和会议记录里都写着这一场读的是哪份
+规范、摘要是什么。发单时那份摘要也写进 store（`orders/<这一趟>/norm`）——哪一版规范发的，事后查得到。
 
-## 五类文件（`workflow/`）
+## 五类文件（`RbNorm/`）
 
 | 文件 | 是什么 |
 |---|---|

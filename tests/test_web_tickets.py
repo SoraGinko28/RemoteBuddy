@@ -12,7 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from ticket_centered import Meeting, Member, SHIPPED_WORKFLOW, load_workflow  # noqa: E402
+from ticket_centered import Meeting, Member, load_workflow, norm_home  # noqa: E402
 import pytest  # noqa: E402
 
 import web  # noqa: E402
@@ -21,10 +21,10 @@ TASK = "写一个快速排序，放到 quicksort.py"
 
 
 @pytest.fixture(autouse=True)
-def _no_user_workflow(tmp_path, monkeypatch):
-    """找流程别落到开发机自己的 ~/.remotebuddy 上：指到一个空的配置目录。"""
+def _the_norm_is_the_one_in_the_tree(tmp_path, monkeypatch):
+    """这一趟读的规范就是 `rbNorm` 那一份（本机默认那条路径），不受环境影响。"""
     import ticket_centered.workflow as wf
-    monkeypatch.setenv(wf.HOME_ENV, str(tmp_path / "home"))
+    monkeypatch.delenv(wf.NORM_ENV, raising=False)
     monkeypatch.delenv(wf.WORKFLOW_ENV, raising=False)
 
 
@@ -43,7 +43,7 @@ class FakeStore:
 def test_the_board_says_what_is_due_and_who_answers_it(tmp_path):
     run_dir = tmp_path / "runs" / "ticket-test"
     root = run_dir / web.TICKET_ROOT
-    workflow = load_workflow(SHIPPED_WORKFLOW)
+    workflow = load_workflow(norm_home())
     meeting = Meeting(root, workflow)
     for name in web.TICKET_MEMBERS:
         meeting.join(Member(name, name, {}))

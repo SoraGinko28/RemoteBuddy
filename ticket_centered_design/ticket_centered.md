@@ -6,7 +6,7 @@
 值）。示例工单：
 
 ```viba
-# workflow/tickets/write_a_draft.viba
+# RbNorm/tickets/write_a_draft.viba
 __decl__ =
     ($module_path str * $func_name str)
   <- $env Env
@@ -55,17 +55,17 @@ __impl__ = actor.report_done         # 回一句"做好了"
 
 ## 本设计由这五类文件组成
 
-这五类放在**一份流程目录**里：程序按 `--workflow` → `$REMOTEBUDDY_WORKFLOW` → 项目自己的
-`.agents/workflow/` → 配置目录 `~/.remotebuddy/workflow/` → 程序里带的默认 的次序找一份，找到谁用谁。
-改流程的人只拿到那份目录（像 skills 之于 Claude Code），程序本身不给他。
+这些文件放在**一个规范目录**里（[`RbNorm`](https://github.com/lixinqi/RbNorm)）：程序按 `--workflow`
+→ `$REMOTEBUDDY_WORKFLOW` → `$REMOTEBUDDY_NORM` → 默认那条路径 的次序找一份，找到谁读谁。改规范的人
+只拿到那个目录（像 skills 之于 Claude Code），程序本身不给他，程序仓库里也一行这类代码都不带。
 
-1. `workflow/actor_api.viba` —— actor 会做的事
-2. `workflow/assistant_api.viba` —— assistant 会做的事
-3. `workflow/critic_api.viba` —— critic 会做的事
-4. `workflow/tickets/*.viba` —— 工单程序：一场会很多张（这一趟五张：`write_a_draft`、
+1. `actor_api.viba` —— actor 会做的事
+2. `assistant_api.viba` —— assistant 会做的事
+3. `critic_api.viba` —— critic 会做的事
+4. `tickets/*.viba` —— 工单程序：一场会很多张（这一趟五张：`write_a_draft`、
    `judge_the_draft`、`revise_the_draft`、`judge_the_revision`、`close_the_meeting`），都是开会前
    设计好的；assistant 看情况发起哪一张
-5. `workflow/rules/*.viba` —— 规则：critic 跑的程序
+5. `rules/*.viba` —— 规则：critic 跑的程序
 
 三个角色各自的事只在各自的 api 里定义一次；**一张工单至少 import 它要调的那些角色的 api**
 （`import actor_api as actor` 这样），每一步只写调用，一个问题都不重复定义。一张工单可以同时调几个

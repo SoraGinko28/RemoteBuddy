@@ -4,8 +4,8 @@
 工单这一侧在它下面另起一份：`<会议目录>/ordered/`：
 
 ```
-<会议目录>/ordered/store/                     共用的那一份 store（值、工单程序都在这儿）
-<会议目录>/ordered/store/orders/<工单>/program/
+<会议目录>/ordered/store/                     共用的那一份 store：**只有数据**（值、工单）
+<会议目录>/ordered/store/orders/<这一趟>/ticket   这一趟发的是哪张单（程序不发副本，在规范里）
 <会议目录>/ordered/store/<案子>/<数据路径>/prepare/<算子>.viba
 <会议目录>/ordered/meeting_record.md          这场会的记录：谁说了什么、发了哪张单、谁答了哪一步
 ```

@@ -1,8 +1,8 @@
 """ticket_centered —— 一场会跑在一叠事先设计好的工单上。
 
 一套只有三件事：一个 store（数据路径下面挂值）、一个"该发哪一张"的判据、几张能力表。顺序、
-回话、判什么、改什么，全在流程里（`workflow/` 那五类 viba 文件）；进程只做：自己会的算子算、
-store 里已有答案的回放、其余递延——那一步交给别人。
+回话、判什么、改什么，全在规范里（`RbNorm` 那几类 viba 文件，程序一行都不带）；进程只做：自己会的
+算子算、store 里已有答案的回放、其余递延——那一步交给别人。
 
 三个角色各有自己的文件和自己的进程（`--bundle` 指到发给它的那一份）：
 
@@ -30,11 +30,9 @@ _EXPORTS = {
     "Step": "workflow",
     "ROLES": "workflow",
     "ROLE_OF_API": "workflow",
-    "SHIPPED_WORKFLOW": "workflow",
+    "norm_home": "workflow",
     "load_workflow": "workflow",
     "workflow_root": "workflow",
-    "config_home": "workflow",
-    "install": "workflow",
     "actor_caps": "actor",
     "meeting_actor_caps": "actor",
     "assistant_caps": "assistant",

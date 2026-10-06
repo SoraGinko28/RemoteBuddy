@@ -1,10 +1,10 @@
 """actor 这一侧：一个服务进程，一张能力表，在共用的 store 上接单。
 
-    python -m ordered_meeting.actor --store <store> --case <案子> --order <工单> \\
-        --meeting-url http://127.0.0.1:PORT --meeting-id <会议号> \\
+    python -m ordered_meeting.actor --store <store> --case <案子> --order <这一趟> \\
+        --workflow <规范目录> --meeting-url http://127.0.0.1:PORT --meeting-id <会议号> \\
         --workspace <agent 干活的目录> --target quicksort.py
-    python -m ordered_meeting.actor --store <store> --case <案子> --order <工单> \\
-        --writer <模块>:<函数>
+    python -m ordered_meeting.actor --store <store> --case <案子> --order <这一趟> \\
+        --workflow <规范目录> --writer <模块>:<函数>
 
 第一种是真会议：写这一步交给一个会写代码的 agent（`AgentChannel` 说话进会议、等它干完、从它的工作区
 读回文件）。第二种是脚本化的：`--writer` 指一个 `write(prompt) -> code`，测试用它替代那个 agent。
@@ -23,6 +23,7 @@ from ticket_centered import _viba  # noqa: F401
 
 from ticket_centered.actor import actor_caps, meeting_actor_caps
 
+from .plan import workflow_of
 from .service import Report, answer_service, run_service
 
 
@@ -84,6 +85,7 @@ def main(argv=None) -> int:
     parser.add_argument("--name", default="actor", help="这个服务叫什么（账里用的名字）")
     parser.add_argument("--phase", choices=("answer", "run"), default="answer",
                         help="接单（answer，一轮补上欠着的那一步）还是自己跑一遍整张单（run）")
+    parser.add_argument("--workflow", required=True, help="规范在哪（工单和 api 在那里面）")
     parser.add_argument("--writer", default=None, help="写这一步从哪来：`模块:函数`")
     parser.add_argument("--meeting-url", default=None, help="真会议的服务地址")
     parser.add_argument("--meeting-id", default=None, help="真会议的会议号")
@@ -100,12 +102,13 @@ def main(argv=None) -> int:
         caps = caps_for(meeting_url=args.meeting_url, meeting_id=args.meeting_id,
                         workspace=args.workspace, target=args.target, name=args.name)
 
+    workflow = workflow_of(args.workflow)
     if args.phase == "answer":
         report = answer_service(args.name, "actor", caps, store_root=args.store,
-                                order=args.order, case=args.case)
+                                order=args.order, case=args.case, workflow=workflow)
     else:
         report = run_service(args.name, "actor", caps, store_root=args.store,
-                             order=args.order, case=args.case)
+                             order=args.order, case=args.case, workflow=workflow)
     print(report_line(report))
     return 1 if report.failure else 0
 

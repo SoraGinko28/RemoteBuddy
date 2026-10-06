@@ -7,7 +7,7 @@
 
 * `--meeting <会议目录>`：会议那一份共享的数据（`store/`、`meeting_record.md`）在这儿；
 * `--bundle <包>`：**发给我的那一份**。包在哪就说明发给谁、是哪张工单：`tickets/<工单>/<成员>/`；
-  `program/` 是程序（三个 api 的声明、几张工单、规则），`store/` 是这一步要读的数据；
+  `store/` 是这一步要读的数据（**程序不发副本**：工单和规则都在规范目录里，跑的时候现读）；
 * `--case <案子>`：这一包的数据路径跑在哪个案子下——**案子名由发出去的那一侧给**，工单里只有相对路径。
 
 然后：跑一遍、答下的值抄回会议、退出。工单名和成员名都在包的路径里，不用另外带一封信。
@@ -29,24 +29,24 @@ from .host import Member
 from .store import Store
 from .workflow import Workflow, load_workflow, workflow_root
 
-PROGRAM_DIR = "program"
 STORE_DIR = "store"
 RECORD_NAME = "meeting_record.md"
 VIBA_SUFFIX = ".viba"
 
 
-def run_bundle(bundle, *, meeting, case: str, caps: Dict[str, Callable],
+def run_bundle(bundle, *, meeting, case: str, caps: Dict[str, Callable], workflow: Workflow,
                out: Callable[[str], None] = print) -> List[Tuple[str, str]]:
-    """在"发给我的"那份副本里跑一遍工单程序，答下的值抄回会议。
+    """在"发给我的"那份副本里跑一遍工单，答下的值抄回会议。
 
-    返回这一次**真答了**哪几步：store 里已经有答案的是回放，不是这个成员干的活。
+    跑的是**规范里**那张单子（`workflow.ticket_file`）：包里只有这一步要读的数据，工单和规则那几份
+    程序一行都不发副本。返回这一次**真答了**哪几步：store 里已经有答案的是回放，不是这个成员干的活。
     """
     bundle = Path(bundle)
     ticket = bundle.parent.name
     name = bundle.name                                  # 发给谁：包的目录名
     store = Store(bundle / STORE_DIR, Path(meeting) / RECORD_NAME)
-    runner = Member(name, name, caps).at(store, case, str(bundle / PROGRAM_DIR))
-    answer = interpret(str(bundle / PROGRAM_DIR / f"{ticket}{VIBA_SUFFIX}"), runner.env(""))
+    runner = Member(name, name, caps).at(store, case, workflow.search_path())
+    answer = interpret(str(workflow.ticket_file(ticket)), runner.env(""))
     answered = [(path, op) for path, op, value in runner.did if value != "replayed"]
     role = runner.member.role
     _hand_back(bundle, Path(meeting) / STORE_DIR)
@@ -100,7 +100,7 @@ def bundle_main(role: str,
     parser.add_argument("--bundle", default=None, help="发给我的那一包（不给就是不走工单的那一步）")
     parser.add_argument("--case", required=True, help="这一包跑在哪个案子下")
     parser.add_argument("--workflow", default=None,
-                        help="这份流程在哪（不给就按 项目 → $REMOTEBUDDY_HOME/workflow → 程序默认 找）")
+                        help="规范在哪（不给就按 $REMOTEBUDDY_WORKFLOW → $REMOTEBUDDY_NORM → 默认那条路径 找）")
     if extra is not None:
         extra(parser)
     args = parser.parse_args(argv)
@@ -110,5 +110,5 @@ def bundle_main(role: str,
     if setup is not None:
         setup(args, workflow, caps)
     if args.bundle:
-        run_bundle(args.bundle, meeting=args.meeting, case=args.case, caps=caps)
+        run_bundle(args.bundle, meeting=args.meeting, case=args.case, caps=caps, workflow=workflow)
     return 0

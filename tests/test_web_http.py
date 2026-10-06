@@ -16,6 +16,7 @@ from pathlib import Path
 from meeting import MAX_ATTACHMENT_BYTES, MeetingStore
 from ordered_meeting.actor import actor_service, live_service
 from ordered_meeting.members import write_table
+from ticket_centered import norm_home
 from ticket_centered.store import Store
 from web import CSRF_HEADER, MeetingWebService, RemoteBuddyHTTPServer, WebError
 
@@ -252,21 +253,22 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(any("- 人类说了一句" in line for line in board["record"]))
 
     def test_the_service_table_says_who_serves_a_ticket(self):
-        """这场会有哪几个服务由流程旁边那张表说：把 critic 那一行换成另一个进程，照样跑到头。
+        """这场会有哪几个服务由规范旁边那张表说：把 critic 那一行换成另一个进程，照样跑到头。
 
         这一场里没有第二个能答 `judge` 的东西：那张单要真是这个进程答的，整场才到得了 `ok`。
         """
-        workflow = self.root / ".agents" / "workflow"
-        shutil.copytree(REPO_ROOT / "workflow", workflow)
-        write_table(workflow / "services", [
+        norm = self.root / "norm"
+        shutil.copytree(norm_home(), norm)
+        write_table(norm / "services", [
             "actor actor_api agent",
-            f"critic critic_api process python -m ordered_meeting.critic --workflow {workflow}",
+            f"critic critic_api process python -m ordered_meeting.critic --workflow {norm}",
         ])
         words = "写一个快速排序，放到 quicksort.py"
         service = self.orders_service(lambda _store, _meeting, _target: actor_service(
             lambda _prompt: DRAFT_ORDERS))
-        store = service.start({"message": words, "meeting_id": "orders-table"})
-        self.wait_for_orders(service, "orders-table")
+        with mock.patch.dict(os.environ, {"REMOTEBUDDY_NORM": str(norm)}):
+            store = service.start({"message": words, "meeting_id": "orders-table"})
+            self.wait_for_orders(service, "orders-table")
 
         ordered = Path(store.run_dir) / "ordered" / "store"
         judged, answered = Store(ordered).read("case/quicksort/judged", "judge")
