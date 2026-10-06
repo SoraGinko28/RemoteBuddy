@@ -6,7 +6,7 @@
 值）。示例工单：
 
 ```viba
-# RbNorm/tickets/write_a_draft.viba
+# RbNorm/rb_norm/tickets/write_a_draft.viba
 __decl__ =
     ($module_path str * $func_name str)
   <- $env Env
