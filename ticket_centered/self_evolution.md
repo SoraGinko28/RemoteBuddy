@@ -4,7 +4,7 @@
 的 skills：
 
 ```
-RbNorm/                            ← 你改的就是这儿
+RbNorm/rb_norm/                    ← 你改的就是这儿（仓库根底下这个包目录）
     actor_api.viba  assistant_api.viba  critic_api.viba
     tickets/*.viba
     rules/*.viba

@@ -25,7 +25,7 @@
 1. --workflow <dir>（或调用时给的 root）
 2. $REMOTEBUDDY_WORKFLOW
 3. $REMOTEBUDDY_NORM
-4. 默认：程序仓库旁边那一层的 RbNorm
+4. 默认：程序仓库旁边那一层的 `RbNorm/rb_norm/`
 ```
 
 ```bash
@@ -35,7 +35,7 @@ python -m ticket_centered.workflow --where    # 看这一趟读的是哪份规�
 自进化改的就是那个仓库；**程序不用给他，也不用动**。工单板和会议记录里都写着这一场读的是哪份
 规范、摘要是什么。发单时那份摘要也写进 store（`orders/<这一趟>/norm`）——哪一版规范发的，事后查得到。
 
-## 五类文件（`RbNorm/`）
+## 五类文件（`RbNorm/rb_norm/`）
 
 | 文件 | 是什么 |
 |---|---|

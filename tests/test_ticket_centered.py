@@ -311,6 +311,11 @@ def test_the_norm_is_one_place_and_can_be_pointed_elsewhere(tmp_path, monkeypatc
     monkeypatch.setenv(wf.NORM_ENV, str(mine))
     assert wf.workflow_root() == mine                                 # 规范目录指到哪儿就是哪儿
 
+    repo = tmp_path / "RbNorm"                                        # 指仓库根：自己找底下的 rb_norm/
+    shutil.copytree(wf.DEFAULT_NORM, repo / wf.NORM_PACKAGE)
+    monkeypatch.setenv(wf.NORM_ENV, str(repo))
+    assert wf.workflow_root() == repo / wf.NORM_PACKAGE
+
     monkeypatch.setenv(wf.WORKFLOW_ENV, str(wf.DEFAULT_NORM))
     assert wf.workflow_root() == wf.DEFAULT_NORM                      # 明说的优先于规范目录
 

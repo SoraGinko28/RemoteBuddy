@@ -156,7 +156,8 @@ Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CL
 ## Tickets
 
 A meeting may also run on tickets. The norm itself is viba and lives in its own repository
-(`RbNorm`, next to this tree; `REMOTEBUDDY_NORM` points elsewhere): the three role apis
+(`RbNorm`, next to this tree, the norm itself under its `rb_norm/` package; `REMOTEBUDDY_NORM`
+points elsewhere): the three role apis
 (actor / assistant / critic), the ticket programs designed before the meeting, and the rules the
 critic judges by. The program carries none of it, and a meeting keeps only data -- which ticket,
 which norm revision -- in its own store. `ticket_centered/` is the harness around it — one shared store (answers at

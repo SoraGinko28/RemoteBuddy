@@ -14,7 +14,7 @@
     1. 明说的 `--workflow <dir>`（或者调用时给的 root）
     2. 环境变量 `REMOTEBUDDY_WORKFLOW`
     3. 环境变量 `REMOTEBUDDY_NORM`
-    4. 默认那条路径：程序仓库旁边那一层的 `RbNorm`
+    4. 默认那条路径：程序仓库旁边那一层的 `RbNorm/rb_norm/`
 
 程序本身一行这类代码都不带。会里也一行都不放：工单和规则是**现读**的，store 里只记下这一趟是哪张
 单、哪一版规范（`orders/<这一趟>/norm`）。
@@ -59,10 +59,12 @@ def role_of_api(api: str) -> str:
 
 
 # 规范（这场会怎么开的那几份 viba 程序）不在程序里，在它自己的仓库里：
-# `RemoteBuddy-core` 旁边那一层的 `RbNorm`，用 `REMOTEBUDDY_NORM` 可以另指。
+# `RemoteBuddy-core` 旁边那一层的 `RbNorm/rb_norm/`，用 `REMOTEBUDDY_NORM` 可以另指。
 NORM_ENV = "REMOTEBUDDY_NORM"
 WORKFLOW_ENV = "REMOTEBUDDY_WORKFLOW"
-DEFAULT_NORM = Path(__file__).resolve().parent.parent.parent / "RbNorm"
+# 规范仓库里，规范本身放在这个包目录下（`RbNorm/rb_norm/`）——和别的仓库一样有个包目录
+NORM_PACKAGE = "rb_norm"
+DEFAULT_NORM = Path(__file__).resolve().parent.parent.parent / "RbNorm" / NORM_PACKAGE
 # 程序里那三个角色（不是上限：多一份 api 文件就多一个角色）
 ROLE_OF_API = {api: role_of_api(api) for api in ROLES}
 TICKETS_DIR = "tickets"
@@ -212,12 +214,22 @@ class Workflow:
 
 
 def norm_home() -> Path:
-    """规范在哪儿：`$REMOTEBUDDY_NORM`，没有就是程序仓库旁边那一层的 `RbNorm`。
+    """规范目录在哪儿（放着 api、工单、规则、服务表的那一层）。
 
-    程序一行这类代码都不带：工单、规则、角色 api、服务表，全在规范目录里，跑的时候现读。
+    `$REMOTEBUDDY_NORM` 指到哪儿就照哪儿——指规范仓库根也行，那就用它底下的 `rb_norm/`；没有这个
+    环境变量就是程序仓库旁边那一层的 `RbNorm/rb_norm/`。程序一行这类代码都不带：全在规范目录里，
+    跑的时候现读。
     """
     given = os.environ.get(NORM_ENV)
-    return Path(given).expanduser() if given else DEFAULT_NORM
+    return _the_norm_dir(Path(given).expanduser() if given else DEFAULT_NORM)
+
+
+def _the_norm_dir(root: Path) -> Path:
+    """规范目录：给的就是那一层就用它；给的是仓库根就用它底下的 `rb_norm/`。"""
+    if _looks_like_workflow(root):
+        return root
+    inside = root / NORM_PACKAGE
+    return inside if _looks_like_workflow(inside) else root
 
 
 def workflow_candidates(project_root=None) -> List[Path]:
@@ -229,7 +241,7 @@ def workflow_root(explicit=None, project_root=None) -> Path:
     """这一趟该读哪份规范。
 
     `explicit`（`--workflow` / `REMOTEBUDDY_WORKFLOW`）指到哪儿就是哪儿；没指就是规范目录
-    （`$REMOTEBUDDY_NORM`，默认 `RbNorm`）。指的那个地方不像一份规范就当场报出来。
+    （`$REMOTEBUDDY_NORM`，默认 `RbNorm/rb_norm/`）。指的那个地方不像一份规范就当场报出来。
     """
     asked = explicit or os.environ.get(WORKFLOW_ENV)
     if asked:

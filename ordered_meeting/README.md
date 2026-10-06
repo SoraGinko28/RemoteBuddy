@@ -101,7 +101,7 @@ assistant 那一行报它写下了哪几张工单；actor 那一行报它答了�
 ## 这场会有哪几个服务：`<规范>/services`
 
 这场会有几个成员、各是谁，不是写在 Python 里的，而是规范旁边那张表里的一行行。规范里那份
-（`RbNorm/services`）写的是两个：
+（`RbNorm/rb_norm/services`）写的是两个：
 
 ```
 actor actor_api agent
