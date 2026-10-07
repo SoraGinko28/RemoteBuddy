@@ -26,11 +26,11 @@ from ticket_centered import _viba  # noqa: F401
 from .orders import owed, ticket_of
 
 from viba import viba_ast
-from viba.compliance import record_prepare
 from viba.interpret import interpret, viba_data
-from viba.type import NotMyDutyException, Ok, UnderlyingVibaOpFailed, VibaProgramErr
 
+from ticket_centered.answer import Duty, duty_of, failure_of, value_of as answered_value
 from ticket_centered.host import Member
+from ticket_centered.prepare import call_arguments, record_prepare
 from ticket_centered.store import Store
 
 
@@ -48,7 +48,7 @@ class Report:
     deferred: List[Tuple[str, str]] = field(default_factory=list)
     failure: str = ""
     value: Any = None
-    duty: Optional[NotMyDutyException] = None
+    duty: Optional[Duty] = None
 
     @property
     def worked(self) -> bool:
@@ -124,18 +124,10 @@ def run_service(name: str, role: str, caps: Dict[str, Callable], *, store_root, 
         answered=answered,
         replayed=replayed,
         deferred=list(runner.deferred),
-        failure=_failure(answer),
-        value=answer.ok_value if isinstance(answer, Ok) else None,
-        duty=answer if isinstance(answer, NotMyDutyException) else None,
+        failure=failure_of(answer),
+        value=answered_value(answer),
+        duty=duty_of(answer),
     )
-
-
-def _failure(answer) -> str:
-    if isinstance(answer, VibaProgramErr):
-        return answer.err_msg
-    if isinstance(answer, UnderlyingVibaOpFailed):
-        return answer.msg
-    return ""
 
 
 # ----------------------------------------------------------------------
@@ -165,12 +157,10 @@ def arguments_taken(implementation) -> int:
 def the_arguments(prepared, count: int, func_name: str) -> tuple:
     """一份工单的 `$call` 里那几个实参，按写下来的次序。
 
-    几个实参的调用把它们写成一个带 tag 的积（`$task … * $after …`）；一个实参的调用留的就是那个实参
-    本身（它自己可能也是个带 tag 的积），所以整个交过去、不按大小拆；只有环境的调用留 `nil`，那是一个
-    实参都没有。实现要几个就交几个，交不出来当场说清楚：能随工单走的只有可序列化数据。
+    一次调用把它写成 `__dyn_call__ << "名字" << $task … << $after …`；名字不是实参，摊掉它剩下的就是
+    实参（一个实参的调用留的就是那个实参，tag 也照样进去）。实现要几个就交几个，交不出来当场说清楚：
+    能随工单走的只有可序列化数据。
     """
-    if count == 1:
-        return (prepared,)
     pieces = _the_pieces(prepared)
     if len(pieces) != count:
         raise ValueError(
@@ -180,18 +170,9 @@ def the_arguments(prepared, count: int, func_name: str) -> tuple:
 
 
 def _the_pieces(prepared) -> list:
-    """写下来的那个积，一层一层按书写次序摊开——一份实参是它自己，`nil` 是一个都没有。
-
-    摊开只摊最外面那层：某个实参自己是个积的，整块留着，不再往下拆。
-    """
-    piece = getattr(prepared, "data", None)
-    if piece is None or isinstance(piece, viba_ast.Nil):
-        return []
-    chain = viba_ast.convert_to_chain_style(piece)
-    if not isinstance(chain, viba_ast.ProductChain):
-        return [prepared]
+    """摊开成一份一份实参：每个按它写下来的样子包成 viba 数据（tag 是名字，不进去）。"""
     return [viba_data(one.type if isinstance(one, viba_ast.Tagged) else one)
-            for one in chain.elements]
+            for one in call_arguments(prepared)]
 
 
 def answer_service(name: str, role: str, caps: Dict[str, Callable], *, store_root, order: str,

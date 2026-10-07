@@ -4,8 +4,7 @@
         --bundle <发给我的那一包>
 
 能力表（`critic_caps`）就是 api 里那一件事 `judge`，加上跑规则要用的那几个算子。规则是 viba 程序
-（`rules/*.viba`），用仓库自己的 `viba.compliance.is_compliant` 跑——规则自己给门槛、自己答 bool，
-这里不替它判。
+（`rules/*.viba`），用 `interpret` 跑——规则自己给门槛、自己答 bool，这里不替它判。
 
 判的是哪一份，由工单给；critic 把那一份放在案子自己的数据路径下（这一步的 `<数据路径>/judgment`），
 规则从那儿读。结论落在这一步的数据路径下：`judge` 是那个 bool，`objection` 是说不合格的那句话。
@@ -19,12 +18,13 @@ from typing import Callable, Dict, List
 
 from . import _viba  # noqa: F401
 
-from viba.compliance import is_compliant, measured_of, read_prepare, record_prepare
-from viba.interpret import Environment, EnvironmentCompute, read_snapshot, write_snapshot
-from viba.type import Ok
+from viba.interpret import (Environment, EnvironmentCompute, interpret, read_snapshot,
+                            write_snapshot)
 
+from .answer import failure_of, is_ok, value_of as answered_value
 from .host import text_of, value_of
 from .member import bundle_main
+from .prepare import measured_of, read_prepare, record_prepare
 from .workflow import Workflow
 
 JUDGMENT_DIR = "judgment"
@@ -50,15 +50,15 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
         written = text_of(env, code)
         ops = _rule_compute()
         case = Environment(env.storage.sub(judgment),
-                           EnvironmentCompute(lambda module_path, func_name: ops.get(func_name)),
+                           EnvironmentCompute(lambda module, func_name: ops.get(func_name)),
                            env.viba_path)
         write_snapshot(case, written, CODE_UNDER_JUDGMENT)
         objections: List[str] = []
         for rule in workflow.rules():
-            answer = is_compliant(str(_rule_file(rule, workflow, env, rules_dir)), case)
-            if not isinstance(answer, Ok):
-                raise RuntimeError(f"规则 {rule} 没跑完：{answer!r}")
-            if not answer.ok_value:
+            answer = interpret(str(_rule_file(rule, workflow, env, rules_dir)), case)
+            if not is_ok(answer):
+                raise RuntimeError(f"规则 {rule} 没跑完：{failure_of(answer)}")
+            if not _verdict(answer, rule):
                 objections.append(_objection(case, rule))
         record_prepare(env, "objection", None, "；".join(objections))
         return not objections
@@ -66,6 +66,14 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
     caps = {"judge": judge}
     caps.update(_rule_compute())
     return caps
+
+
+def _verdict(answer, rule: str) -> bool:
+    """规则跑完答下的那个 bool；它不是 bool 就当场说清楚。"""
+    said = answered_value(answer).value
+    if not isinstance(said, bool):
+        raise RuntimeError(f"规则 {rule} 答的不是 bool：{said!r}")
+    return said
 
 
 def _rule_file(rule: str, workflow, env, rules_dir):

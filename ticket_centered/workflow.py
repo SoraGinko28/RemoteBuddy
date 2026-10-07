@@ -40,6 +40,8 @@ from . import _viba  # noqa: F401
 
 from viba import viba_ast
 
+from .prepare import call_arguments
+
 ROLES = ("actor_api", "assistant_api", "critic_api")
 API_SUFFIX = "_api"
 
@@ -337,20 +339,22 @@ def apis_used_in(source: str) -> List[str]:
 def addresses_of_call(call) -> List[Tuple[str, str]]:
     """The steps one Prepare's `$call` names: what that step itself read.
 
-    One address argument makes the `$call` the step itself (no tag to look
-    under); several are a product, each member carrying its own tag.
+    The call is written `__dyn_call__ << "name" << $task <an address> …`, and each argument may be
+    an address itself or a product carrying one.
     """
     if call is None:
         return []
-    piece = getattr(call, "data", call)
-    whole = _address(piece)
-    if whole is not None:
-        return [whole]
     out: List[Tuple[str, str]] = []
-    for element in _elements(piece):
-        inner = element.type if isinstance(element, viba_ast.Tagged) else element
+    for argument in call_arguments(call):
+        inner = argument.type if isinstance(argument, viba_ast.Tagged) else argument
         found = _address(inner)
-        if found is not None:
+        if found is None:
+            for element in _elements(inner):
+                inside = element.type if isinstance(element, viba_ast.Tagged) else element
+                nested = _address(inside)
+                if nested is not None:
+                    out.append(nested)
+        else:
             out.append(found)
     return out
 

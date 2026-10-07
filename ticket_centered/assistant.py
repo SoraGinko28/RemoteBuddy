@@ -20,10 +20,9 @@ from typing import Callable, Dict, Optional
 
 from . import _viba  # noqa: F401
 
-from viba.compliance import record_prepare
-
 from .host import read_stored, text_of, value_of
 from .member import bundle_main
+from .prepare import record_prepare
 from .store import Store
 
 RECORD_NAME = "meeting_record.md"

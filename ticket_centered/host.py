@@ -6,6 +6,9 @@
 一个成员在一份 store 上跑一段程序（`Runner`）：自己会的算子就按实现了算；store 里已经有答案的就
 **回放**（同一个副作用不做第二遍）；都不会就**递延**——那一步交给别人。每一步答完，交出去的是这条
 数据路径（`$module_path … * $func_name …`），值留在 store 里。
+
+解释器问的是**这一段是哪一步**（`get_func(module, name)`：算子在哪个模块里、叫什么），数据路径在
+环境上——实现拿到环境的时候才拿得到，所以回放、算、交出去这三件事都在那一次调用里定（`Runner._step`）。
 """
 
 from __future__ import annotations
@@ -17,11 +20,9 @@ from typing import Any, Callable, Dict, List, Tuple
 from . import _viba  # noqa: F401
 
 from viba import viba_ast
-from viba.compliance import (PreparedStorage, call_of, measured_of, read_prepare,
-                             record_prepare)
-from viba.interpret import Environment, viba_data
-from viba.type import NotMyDutyException
+from viba.interpret import Environment, EnvironmentStorage, not_implemented, viba_data
 
+from .prepare import call_of, measured_of, read_prepare, record_prepare
 from .store import Store
 
 
@@ -81,29 +82,36 @@ class Runner:
         """The environment of one data path of this run."""
         return self.store.env(self.absolute(module_path), self.viba_path, self.get_func, self.case)
 
-    def get_func(self, module_path: str, func_name: str):
-        """The interpreter asks: do you implement this step?"""
-        _value, answered = self.store.read(module_path, func_name)
-        if answered:
-            self.did.append((module_path, func_name, "replayed"))
-            return lambda *args: step_address(module_path, func_name)
-        impl = self.member.caps.get(func_name)
-        if impl is None:
-            self.deferred.append((module_path, func_name))
-            raise NotMyDutyException(reason=f"{self.member.name} 不会 {func_name}")
-        return self._computing(impl, func_name)
+    def get_func(self, module: str, func_name: str):
+        """The interpreter asks: is this step implemented here?
 
-    def _computing(self, impl, func_name):
-        """Run the implementation, then answer with this step's own data path."""
+        It hands the module the step is declared in and the step's name. The data path is not among
+        them: it is the environment's, and the implementation is given that environment when it is
+        called — so all three answers (replay, compute, hand it out) are decided there.
+        """
+        return self._step(func_name)
 
-        def leaf(env, *args):
-            value = impl(env, *args)
+    def _step(self, func_name: str):
+        """这一步在这里怎么答：store 里有答案就回放，能力表里有这个算子就算，都没有就交出去。"""
+
+        def step(env, *args):
             module_path = env.storage.cur_storage_path
+            _value, answered = self.store.read(module_path, func_name)
+            if answered:
+                self.did.append((module_path, func_name, "replayed"))
+                return step_address(module_path, func_name)
+            impl = self.member.caps.get(func_name)
+            if impl is None:
+                self.deferred.append((module_path, func_name))
+                return not_implemented(f"{self.member.name} 不会 {func_name}",
+                                       module_path=module_path,
+                                       full_qualified_func_name=func_name)
+            value = impl(env, *args)
             record_prepare(env, func_name, call_of(read_prepare(env, func_name)), value)
             self.did.append((module_path, func_name, value))
             return step_address(module_path, func_name)
 
-        return leaf
+        return step
 
 
 def absolute_of(env, module_path: str) -> str:
@@ -119,8 +127,7 @@ def environment_at(env, module_path: str) -> Environment:
     storage = env.storage
     if hasattr(storage, "at"):
         return Environment(storage.at(module_path), env.compute, env.viba_path)
-    return Environment(PreparedStorage(module_path, None, storage.store_root_dir,
-                                       getattr(storage, "prepare_root_dir", None)),
+    return Environment(EnvironmentStorage(module_path, None, storage.store_root_dir),
                        env.compute, env.viba_path)
 
 

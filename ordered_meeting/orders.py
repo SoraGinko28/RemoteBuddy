@@ -22,7 +22,7 @@ from typing import Any, List, Tuple
 
 from ticket_centered import _viba  # noqa: F401
 
-from viba.compliance import call_of, measured_of, read_prepare
+from ticket_centered.prepare import call_of, measured_of, read_prepare
 from ticket_centered.store import Store
 
 ORDER_DIR = "orders"

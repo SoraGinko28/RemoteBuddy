@@ -22,9 +22,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import _viba  # noqa: F401
 
 from viba import viba_ast
-from viba.compliance import call_of
 
 from .host import Member, capability_digest
+from .prepare import call_of
 from .store import Store
 from .workflow import Workflow, addresses_of_call
 

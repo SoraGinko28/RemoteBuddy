@@ -23,8 +23,8 @@ from typing import Callable, Dict, List, Tuple
 from . import _viba  # noqa: F401
 
 from viba.interpret import interpret
-from viba.type import UnderlyingVibaOpFailed, VibaProgramErr
 
+from .answer import failure_of
 from .host import Member
 from .store import Store
 from .workflow import Workflow, load_workflow, workflow_root
@@ -66,11 +66,7 @@ def _hand_back(bundle: Path, store_root: Path) -> None:
 
 
 def _failure(answer) -> str:
-    if isinstance(answer, VibaProgramErr):
-        return answer.err_msg
-    if isinstance(answer, UnderlyingVibaOpFailed):
-        return answer.msg
-    return ""
+    return failure_of(answer)
 
 
 def _line(name: str, ticket: str, answered, deferred, failure: str) -> str:

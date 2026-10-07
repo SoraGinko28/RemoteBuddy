@@ -3,8 +3,7 @@
     python -m ordered_meeting.critic --store <store> --case <案子> --order <这一趟> --workflow <规范目录>
 
 能力表（`critic_caps`）就是 api 里那一件事 `judge`，加上跑规则要用的那几个算子；规则是规范里
-`rules/*.viba` 那几份，用仓库自己的 `viba.compliance.is_compliant` 跑——规则自己给门槛、自己答 bool，
-这里不替它判。
+`rules/*.viba` 那几份，用 `interpret` 跑——规则自己给门槛、自己答 bool，这里不替它判。
 
 它和 actor 是同一套：工单里写着哪一步、要哪个算子、`$call` 是什么；它会的就照 `$call` 算，结论落在
 这一步自己的数据路径下（`judge` 是那个 bool，`objection` 是说不合格的那句话）。谁都不会的那一步没人接，

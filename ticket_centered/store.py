@@ -1,8 +1,8 @@
 """一场会的 store：数据路径下面挂值。
 
-一条**数据路径**就是 store 里的一条路（`case/quicksort/drafted`）。**值**就是那条路径下的那份
-Prepare：`$call` 是这一步读了什么，`$measured` 是它答了什么（没答是 `nil`）。它不随工单走——
-工单里只有数据路径，要用的人照路径来读。会议记录也在这份 store 旁边。
+一条**数据路径**就是 store 里的一条路（`case/quicksort/drafted`）。**值**就是那条路径下留下的那份
+（`prepare/<算子>.viba`，见 `prepare.py`）：`$call` 是这一步读了什么，`$measured` 是它答了什么
+（没答是 `nil`）。它不随工单走——工单里只有数据路径，要用的人照路径来读。会议记录也在这份 store 旁边。
 
 这个模块只管两件事：按数据路径读写值（含打包时抄一份），和记这场会的记录。
 """
@@ -15,16 +15,15 @@ from typing import Any, Iterable, List, Tuple
 
 from . import _viba  # noqa: F401
 
-from viba.compliance import (PreparedStorage, measured_of, prepare_path, read_prepare,
-                             record_prepare)
-from viba.interpret import Environment, EnvironmentCompute
+from viba.interpret import Environment, EnvironmentCompute, EnvironmentStorage
+
+from .prepare import (PREPARE_SEGMENT, VIBA_SUFFIX, measured_of, prepare_path,
+                      read_prepare, record_prepare)
 
 RECORD_HEADING = "# 这场会的记录"
-PREPARE_SEGMENT = "prepare"
-VIBA_SUFFIX = ".viba"
 
 
-class CaseStorage(PreparedStorage):
+class CaseStorage(EnvironmentStorage):
     """A store that remembers which case it is running at.
 
     A ticket names no case: every data path in it is relative to the case, and
@@ -36,15 +35,15 @@ class CaseStorage(PreparedStorage):
     __slots__ = ("case",)
 
     def __init__(self, cur_storage_path, sub_storage=None, store_root_dir=None,
-                 prepare_root_dir=None, case: str = ""):
-        super().__init__(cur_storage_path, sub_storage, store_root_dir, prepare_root_dir)
+                 case: str = ""):
+        super().__init__(cur_storage_path, sub_storage, store_root_dir)
         self.case = case
 
     def sub(self, name: str) -> "CaseStorage":
         if name not in self.sub_storage:
             path = f"{self.cur_storage_path}/{name}" if self.cur_storage_path else name
             self.sub_storage[name] = type(self)(path, None, self.store_root_dir,
-                                                self.prepare_root_dir, self.case)
+                                                self.case)
         return self.sub_storage[name]
 
     def absolute(self, module_path: str) -> str:
@@ -57,8 +56,7 @@ class CaseStorage(PreparedStorage):
 
     def at(self, module_path: str) -> "CaseStorage":
         """Another data path of the same store, with the same case."""
-        return type(self)(module_path, None, self.store_root_dir, self.prepare_root_dir,
-                          self.case)
+        return type(self)(module_path, None, self.store_root_dir, self.case)
 
 
 class Store:
@@ -71,26 +69,26 @@ class Store:
     def env(self, module_path: str, viba_path=None, get_func=None, case: str = "") -> Environment:
         """The environment of one data path: its storage is `<root>/<module_path>`.
 
-        `get_func(module_path, func_name)` is this run's compute side (see
+        `get_func(module, name)` is this run's compute side (see
         `host.Runner.get_func`); read-only callers leave it out.
         """
         return Environment(
-            CaseStorage(module_path, None, str(self.root), str(self.root), case),
+            CaseStorage(module_path, None, str(self.root), case),
             EnvironmentCompute(get_func), viba_path)
 
     def prepared(self, module_path: str, name: str):
-        """The Prepare at that data path, or None when there is none."""
+        """这条数据路径上留下的那份值，没有就是 None。"""
         return read_prepare(self.env(module_path), name)
 
     def read(self, module_path: str, name: str) -> Tuple[Any, bool]:
-        """(the stored value, answered)."""
+        """(留下的那个结果, 答了没有)。"""
         return measured_of(self.prepared(module_path, name))
 
     def answered(self, module_path: str, name: str) -> bool:
         return self.read(module_path, name)[1]
 
     def write(self, module_path: str, name: str, value, call=None) -> None:
-        """Answer one step: the value lands at that step's own data path."""
+        """答一步：结果落在这一步自己的数据路径下。"""
         record_prepare(self.env(module_path), name, call, value)
 
     # ------------------------------------------------------------------

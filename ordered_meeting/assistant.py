@@ -20,9 +20,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ticket_centered import _viba  # noqa: F401
 
-from viba.compliance import record_prepare
-
 from ticket_centered.assistant import assistant_caps
+from ticket_centered.prepare import record_prepare
 from ticket_centered.store import Store
 from ticket_centered.workflow import is_api_file
 
@@ -67,10 +66,11 @@ def write_work_orders(report: Report, *, store_root, case: str, record_path=None
     """
     if report.duty is None:
         return []
-    step = report.duty.step
-    env = Store(store_root, record_path).env(step.module_path, workflow.search_path(), case=case)
-    record_prepare(env, step.func_name, report.duty.call, None)
-    return [(step.module_path, step.func_name, report.duty.call)]
+    duty = report.duty
+    env = Store(store_root, record_path).env(duty.module_path, workflow.search_path(),
+                                             case=case)
+    record_prepare(env, duty.func_name, duty.call, None)
+    return [(duty.module_path, duty.func_name, duty.call)]
 
 
 def publish_due(store_root, order: str, workflow, case: str, record_path=None) -> str:

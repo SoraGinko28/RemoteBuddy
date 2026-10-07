@@ -85,7 +85,7 @@ def answer(api: str, *args):
     """Call one api over the wire; give back (the script, the entry's node)."""
     given = getattr(remote, api)(MEETING_ID, *args)
     if isinstance(given, VibaProgramErr):
-        raise SystemExit(f"{api}: {given.err_msg}")
+        raise SystemExit(f"{api}: {given.msg}")
     entry = viba_sdk.is_a_valid_answer(api, given.ok_value).ok_value
     _access, definition = viba_sdk.access_of(api).ok_value
     node = viba_access.root(definition, VibaData(entry)).ok_value
@@ -167,7 +167,7 @@ def run_checks(report: Report, capture_time: dt.datetime) -> None:
 
     given = remote.chat_messages(MEETING_ID, now - dt.timedelta(minutes=5),
                                  now + dt.timedelta(minutes=5))
-    report.note("chat_messages", given.err_msg if isinstance(given, VibaProgramErr) else "served")
+    report.note("chat_messages", given.msg if isinstance(given, VibaProgramErr) else "served")
     print()
     print("one answer, as the server sent it:")
     for line in script.rstrip("\n").splitlines():
