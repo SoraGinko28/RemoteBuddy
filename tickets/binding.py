@@ -25,6 +25,8 @@ from viba import viba_ast
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
                             not_implemented, read_snapshot, viba_data, write_snapshot)
 
+from .builtins import the_table as the_builtin_table
+
 class Forwarded:
     """一段程序转发出来的停下，包一下再交给接单那一层。
 
@@ -58,6 +60,8 @@ class Binding:
         # 那几个名字是"一整段程序"（单上那次调用），不是一个算子：它们不留值——程序自己每一步的值
         # 都落在各自的算子名下，程序的名字再记一份只会多出一份没用的东西。
         self.programs = set(programs)
+        # viba 带的那些算子（`builtin.viba`）：宿主答，也不留值——它们是算出来的，不是这一场的账。
+        self.builtins = the_builtin_table()
         # 这次跑真干过的事：回放和递延都不是它干的活。
         self.did: List[Tuple[str, str, Any]] = []
         self.deferred: List[Tuple[str, str]] = []
@@ -72,6 +76,10 @@ class Binding:
         impl = self.caps.get(func_name)
         if impl is None and module:
             impl = self.caps.get(f"{module}.{func_name}")
+        if impl is None:
+            impl = self.builtins.get(f"{module}.{func_name}" if module else func_name)
+        if impl is None and not module:
+            impl = self.builtins.get(func_name)
         if impl is None:
             return self._from_the_storage(func_name)
         return self._answer(func_name, impl)
@@ -95,7 +103,7 @@ class Binding:
                 # 一段程序在自己里面转发的停下：原样交回去，那是"哪一步不是它的事"，不是一个值。
                 self.deferred.append((module_path, func_name))
                 return value.node
-            if func_name not in self.programs:
+            if func_name not in self.programs and func_name not in self.builtins:
                 write_snapshot(env, value, func_name)
                 self.did.append((module_path, func_name, value))
             return step_address(module_path, func_name)

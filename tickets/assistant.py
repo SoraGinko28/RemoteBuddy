@@ -15,14 +15,18 @@
 
 from __future__ import annotations
 
+import tempfile
 from typing import Any, Callable, Dict, Optional
 
 from . import _viba  # noqa: F401
 
-from viba.interpret import write_snapshot
+from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                            interpret, write_snapshot)
 
-from .binding import read_stored, text_of, value_of
+from .binding import answer_of, failure_in, finished, read_stored, text_of, value_of
+from .builtins import the_table as the_builtin_table
 from .handler import Handler, program_caps
+from .meeting import a_file_in
 
 
 def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Callable]:
@@ -46,11 +50,75 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
     return {"stated_task": stated_task, "closing_note": closing_note}
 
 
+# ----------------------------------------------------------------------
+# 人说的那句算不算一份活：规范里 `requests/` 那几份程序说了算
+# ----------------------------------------------------------------------
+
+
+def decision_caps(words: str) -> Dict[str, Callable]:
+    """判断"这一句要不要它做活"时，规范那几份程序能问到的算子。
+
+    只有两样：人刚说的那句（`the_words`），和这句话里像文件名的那一个词（`a_file_in`）。哪一句算一份活
+    不在这里定——那是规范里那几份程序的事，这一处只把这两样交给它们。
+    """
+
+    def the_words(_env):
+        return words
+
+    def a_file_in_op(_env, text):
+        return a_file_in(str(value_of(text)))
+
+    def says(_env, text, word):
+        return str(value_of(word)) in str(value_of(text))
+
+    return {"the_words": the_words, "a_file_in": a_file_in_op, "says": says}
+
+
+def what_to_make(workflow, words: str) -> str:
+    """规范说这一句要它做的是什么：答出来的是**要交的那个名字**，答不出来就是没有活可派。
+
+    每一份都得答出一个名字来（有一份答不出来，这一句就还没说清要交什么）；用头一份答的那个名字。
+    那几份程序跑在一处临时目录上，不留东西——它们是算出来的，不是这一场会的记录。
+    """
+    names = workflow.requests()
+    if not names:
+        raise RuntimeError(f"这份规范里没有 requests/：人说的哪句话算一份活，得由规范说")
+    caps = decision_caps(words)
+    chosen = ""
+    with tempfile.TemporaryDirectory() as where:
+        builtins = the_builtin_table()
+        environ = Environment(
+            EnvironmentStorage("", None, where),
+            EnvironmentCompute(lambda module, name: caps.get(name) or builtins.get(name)
+                               or builtins.get(f"{module}.{name}" if module else name)),
+            workflow.search_path())
+        for name in names:
+            answer = interpret(str(workflow.request_file(name)), environ)
+            if not finished(answer):
+                raise RuntimeError(f"requests/{name} 没跑完：{failure_in(answer)}")
+            said = _said_text(answer_of(answer))
+            if not said:
+                return ""
+            chosen = chosen or said
+    return chosen
+
+
+def _said_text(node) -> str:
+    """那几份程序答下的那个名字；答下的不是一个字符串就说清楚。"""
+    if node is None:
+        return ""
+    given = value_of(node)
+    if not isinstance(given, str):
+        raise RuntimeError(f"requests/ 那几份程序答的是一个要交的名字（一段字），收到的是 {given!r}")
+    return given.strip()
+
+
 def assistant_handler(meeting_dir, workflow, *, name: str = "assistant",
                       say: Optional[Callable[[str], None]] = None) -> Handler:
     """一个 assistant 处理者：它那两件事，加上规范里那几张单的程序。
 
     发单的人和接单的人是同一个角色，所以它自己也接单——收尾那张单里只有它的步骤。
+    人说的那句话算不算一份活由 `what_to_make` 问规范，不在这一处。
     """
     return Handler(name, "assistant",
                    {**program_caps(workflow), **assistant_caps(say)}, meeting_dir,

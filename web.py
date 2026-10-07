@@ -83,7 +83,8 @@ from tickets import load_workflow
 from tickets.actor import actor_caps, writer_from
 from tickets.channel import LoopbackChannel
 from tickets.layout import case_root, record_path as ticket_record_path
-from tickets.meeting import case_for, cases_of, run_for_meeting, target_for
+from tickets.assistant import what_to_make as what_to_make_of_norm
+from tickets.meeting import case_for, cases_of, run_for_meeting
 from tickets.plan import due as due_ticket, ticket_named
 from tickets.progress import the_state
 from tickets.session import OK, open_work
@@ -1729,9 +1730,12 @@ class MeetingWebService:
         except (MeetingError, OSError) as exc:
             raise WebError(400, str(exc)) from exc
         if message.strip():
-            # 第一句话也先进 assistant，由它发单。
-            self._start_tickets(store, meeting_id, message)
-            return store
+            # 第一句话也先进 assistant：先问规范这一句要不要它做活。
+            target = self._what_to_make(store, message)
+            if target:
+                self._start_tickets(store, meeting_id, message, target)
+                return store
+            # 不是要活的：照旧把这句话交给 agent（终端开出来，它接着答）
         # Without a first message the agent has nothing to answer yet, but the
         # workspace itself is opened right away: its terminal is the thing the
         # human is looking at while they type the first line.
@@ -2115,20 +2119,27 @@ class MeetingWebService:
                 or store.meeting.recovery_required
                 or orphaned_agent
             )
-            if "references" in payload or isinstance(payload.get("reference"), list):
-                store.append_chat(speaker, message, "request", references=references,
-                                  attachments=attachments)
+            if speaker == "human":
+                if "references" in payload or isinstance(payload.get("reference"), list):
+                    store.append_chat(speaker, message, "request", references=references,
+                                      attachments=attachments)
+                else:
+                    # Preserve the legacy singular journal field when an older
+                    # client sends ``reference``; V6 callers use ``references``.
+                    store.append_chat(
+                        speaker,
+                        message,
+                        "request",
+                        reference=references[0] if references else None,
+                        attachments=attachments,
+                    )
             else:
-                # Preserve the legacy singular journal field when an older
-                # client sends ``reference``; V6 callers use ``references``.
-                store.append_chat(
-                    speaker,
-                    message,
-                    "request",
-                    reference=references[0] if references else None,
-                    attachments=attachments,
-                )
-            if store.meeting.control_owner == "human" and store.meeting.phase == "human_control":
+                # 会里成员说的那句（工单派活）不是对话：对话是人跟 agent 的。它照旧叫醒 agent，
+                # 记在 journal 里的是"谁在派活"，页面的对话里不出现。
+                store.append_event("state", speaker, "work_order",
+                                   data={"content": message})
+            if (speaker == "human" and store.meeting.control_owner == "human"
+                    and store.meeting.phase == "human_control"):
                 # A chat while the human holds the terminal is an explicit
                 # instruction: hand control back AND resume the Agent with it.
                 # 这一句是人在接管里说的，直接交给 agent；发单那一趟不插这一手。
@@ -2136,9 +2147,11 @@ class MeetingWebService:
                 self._sync_human_pipe(store)
                 return self._resume_agent_from_human(meeting_id), ""
             if speaker == "human" and not self._tickets_speaking(meeting_id):
-                # 人说的那句：进 assistant，由它发单。
-                # 会里别的成员说的（工单派活的那句题面就是 actor 说的）不走这里 —— 它只叫醒 agent。
-                return self._start_tickets(store, meeting_id, message), ""
+                # 人说的那句：先问规范这一句要不要它做活。要，才是 assistant 发单那一趟；
+                # 不要（比如一句闲聊），就照旧只是跟 agent 说话 —— 走下面那条路。
+                target = self._what_to_make(store, message)
+                if target:
+                    return self._start_tickets(store, meeting_id, message, target), ""
             # 2b routing: @mention summons the named non-actor member;
             # the actor is NOT woken for that message (single-writer rule).
             # If the actor is mid-turn, interrupt it and summon the
@@ -2216,19 +2229,33 @@ class MeetingWebService:
 
         return speaking()
 
+    def _what_to_make(self, store: MeetingStore, message: str) -> str:
+        """规范说这一句要它做的是什么：答出来的是要交的那个名字，答不出来就没有活可派。
+
+        哪一句算一份活不是这一处定的（`<规范>/requests/` 里那几份程序定的）；这一处只把它问出来，
+        再照着起一趟。问不出来（规范那边坏了）就照实记在 journal 里，这一句当闲聊。
+        """
+        try:
+            workflow = load_workflow(project_root=self.project_root)
+            return what_to_make_of_norm(workflow, message)
+        except Exception as exc:                    # noqa: BLE001 - 规范那边坏了不能吞掉
+            store.append_event("state", "assistant", "request_failed",
+                               data={"error": f"{type(exc).__name__}: {exc}"})
+            return ""
+
     def _start_tickets(self, store: MeetingStore, meeting_id: str, message: str,
-                       case: Optional[str] = None) -> MeetingStore:
-        """人类说了一句：起一趟（assistant 收下、发单，成员接单）。
+                       target: str, case: Optional[str] = None) -> MeetingStore:
+        """人类说了一句要活的话：起一趟（assistant 收下、发单，成员接单）。
 
         上一趟还在跑就把这一句排着（一场会只留一句待办的）：跑完那一趟接着跑它。
         """
         with self.lock:
             running = self.ticket_jobs.get(meeting_id)
             if running is not None and running.is_alive():
-                self.ticket_pending[meeting_id] = message
+                self.ticket_pending[meeting_id] = (message, target)
                 return store
-            thread = threading.Thread(target=self._run_tickets, args=(meeting_id, message, case),
-                                      daemon=True)
+            thread = threading.Thread(target=self._run_tickets,
+                                      args=(meeting_id, message, target, case), daemon=True)
             self.ticket_jobs[meeting_id] = thread
         # 谁握着这一场会的租约，谁才动它。另一个服务驱动着的时候这里就拒了。
         self._ensure_driver(store)
@@ -2270,26 +2297,24 @@ class MeetingWebService:
                            meeting_dir=_tickets_home(store), case=case,
                            agent_caps=self._the_agent_caps(store, meeting_id, target),
                            agent_name=store.meeting.actor_name() or "actor",
-                           assistant_say=lambda line: store.append_chat(
-                               "assistant", line, "final"),
                            cwd=store.workspace_path)
 
-    def _run_tickets(self, meeting_id: str, message: str, case: Optional[str] = None) -> None:
+    def _run_tickets(self, meeting_id: str, message: str, target: str,
+                     case: Optional[str] = None) -> None:
         """跑一趟：消息给 assistant，它读值发单，成员接单，跑到每一张单都做完。"""
         try:
             store = self.load_store(meeting_id)
-            target = target_for(message)
             if case is None:
                 with self.lock:
                     runs = self.ticket_runs.get(meeting_id, 0) + 1
                     self.ticket_runs[meeting_id] = runs
-                case = case_for(message, fallback=meeting_id, tag=None if runs == 1 else runs)
+                case = case_for(target, fallback=meeting_id, tag=None if runs == 1 else runs)
             workflow = load_workflow(project_root=self.project_root)
             handlers = self._ticket_handlers(store, meeting_id, target, workflow, case)
             store.append_event("state", "assistant", "tickets_started",
                                data={"case": case, "target": target})
             outcome = run_for_meeting(_tickets_home(store), case=case, words=message,
-                                      workflow=workflow, handlers=handlers,
+                                      workflow=workflow, handlers=handlers, target=target,
                                       out=lambda line: store.append_event(
                                           "state", "tickets", "round", data={"line": line}))
             store.append_event("state", "assistant", "tickets_finished",
@@ -2318,10 +2343,10 @@ class MeetingWebService:
                 pending = self.ticket_pending.pop(meeting_id, None)
             if pending:
                 # 跑这一趟的时候人又说了话：接着跑那一句
-                self._start_tickets(self.load_store(meeting_id), meeting_id, pending)
+                self._start_tickets(self.load_store(meeting_id), meeting_id, *pending)
 
-    def unfinished_tickets(self, store: MeetingStore) -> Optional[Tuple[str, str]]:
-        """这一场有没有没跑完的一趟：(案子, 人类那句话)，没有就是 None。
+    def unfinished_tickets(self, store: MeetingStore) -> Optional[Tuple[str, str, str]]:
+        """这一场有没有没跑完的一趟：(案子, 人类那句话, 要交的那个名字)，没有就是 None。
 
         说得清"没跑完"的只有那些单自己：还欠着哪一张，是读它的进度得到的——进程在不在、死在哪一步，
         都不必知道。
@@ -2340,8 +2365,8 @@ class MeetingWebService:
                 unfinished = self.unfinished_tickets(store)
                 if unfinished is None:
                     continue
-                case, words = unfinished
-                self._start_tickets(store, meeting_id, words, case=case)
+                case, words, target = unfinished
+                self._start_tickets(store, meeting_id, words, target, case=case)
                 resumed.append(meeting_id)
             except Exception:                       # noqa: BLE001 - 起不来的那几场不挡别的
                 continue

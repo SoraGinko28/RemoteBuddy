@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from tickets import _viba  # noqa: E402,F401
 from tickets.actor import actor_caps  # noqa: E402
-from tickets.assistant import assistant_handler  # noqa: E402
+from tickets.assistant import assistant_handler, what_to_make  # noqa: E402
 from tickets.binding import finished, unimplemented_step  # noqa: E402
 from tickets.critic import critic_handler  # noqa: E402
 from tickets.handler import Handler, program_caps  # noqa: E402
@@ -295,9 +295,44 @@ class AWholeMeetingTest(unittest.TestCase):
         """没跑完的一趟说得清：哪个案子、人说的哪句话（进程死没死都不必知道）。"""
         session = a_session(self.meeting)
         assistant = assistant_handler(self.meeting, self.workflow)
-        session.stated_task(WORDS, assistant)
+        session.stated_task(WORDS, assistant, "quicksort.py")
         session.run([assistant], out=lambda _line: None)
-        self.assertEqual((CASE, WORDS), open_work(self.meeting))
+        self.assertEqual((CASE, WORDS, "quicksort.py"), open_work(self.meeting))
+
+
+class WhatCountsAsWorkTest(unittest.TestCase):
+    """人说的哪句话算一份活：规范里 `requests/` 那几份程序说了算。"""
+
+    def setUp(self):
+        self.workflow = a_workflow()
+
+    def test_a_line_that_names_nothing_to_deliver_is_no_work(self):
+        """一句闲聊不点要交什么：没有活可派（不开案子、不发单）。"""
+        self.assertEqual("", what_to_make(self.workflow, "你还在吗？"))
+        self.assertEqual("", what_to_make(self.workflow, "今天天气不错"))
+
+    def test_a_line_that_names_what_to_deliver_is_work(self):
+        """点了要交的那个文件名：这一句就是要它做活，答出来的就是那个名字。"""
+        self.assertEqual("quicksort.py",
+                         what_to_make(self.workflow, "写一个快速排序，放到 quicksort.py"))
+        self.assertEqual("report.md", what_to_make(self.workflow, "report.md 改一下"))
+
+    def test_the_norm_owns_the_rule(self):
+        """这一条是规范里那几份程序定的：换一份 requests/，认的就变了。"""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        norm = Path(temporary.name) / "norm"
+        shutil.copytree(norm_home(), norm)
+        (norm / "requests" / "what_to_make.viba").unlink()
+        (norm / "requests" / "only_readme.viba").write_text(
+            "__decl__ =\n    str\n  <- $env Env\n\n"
+            "args = __get_args__ << __decl__\n\n"
+            "the_words =\n    str\n  <- $env Env\n  <- { 人刚说的那句 }\n\n"
+            "__impl__ = the_words << $env args.env\n", encoding="utf-8")
+        own = load_workflow(norm)
+        self.assertEqual(["only_readme"], own.requests())
+        # 这一份答的是人刚说的那句（`the_words` 那一步的值）：不说"要交什么"就不算活
+        self.assertEqual("你还在吗？", what_to_make(own, "你还在吗？"))
 
 
 class TheMembersTest(unittest.TestCase):

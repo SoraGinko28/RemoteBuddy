@@ -250,6 +250,21 @@ class MeetingWebServiceTest(unittest.TestCase):
             tickets_caps_factory=caps_factory,
         )
 
+    def test_a_line_that_asks_nothing_opens_no_case(self):
+        """一句不问要交什么的闲聊：不开案子、不发单 —— 那句话照旧只是跟 agent 说话。"""
+        service = self.tickets_service(lambda _store, meeting_id, _target: scripted_actor(
+            service, meeting_id))
+        store = service.start({"message": "你还在吗？", "meeting_id": "chat-only"})
+        self.wait_for_workers()
+        run_dir = Path(store.run_dir)
+        self.assertFalse((run_dir / "tickets").exists())
+        self.assertFalse((run_dir / "ticket_progress").exists())
+        self.assertEqual([], [one for one in service.events("chat-only", 0)["events"]
+                              if one.get("phase") == "work_order"])
+        chats = MeetingStore.load_in_workspace(self.root, "chat-only").chat_messages()
+        self.assertEqual("你还在吗？", chats[-1]["content"])
+        self.assertTrue(RecordingRunner.instances)          # agent 照旧被叫醒
+
     def test_a_message_runs_as_work_orders(self):
         """工单那一侧：那句话先进 assistant，由它一张一张发单，actor / critic 接单。"""
         words = "写一个快速排序，放到 quicksort.py"
@@ -361,10 +376,12 @@ class MeetingWebServiceTest(unittest.TestCase):
         started = [one for one in events if one.get("phase") == "tickets_started"]
         self.assertEqual(1, len(started))                       # 没有再起一趟
         self.assertTrue(seen["instructions"])                   # 题面真发进会议了
+        # 工单派活那句不是对话：它是 journal 里的一处 state（谁在派活），页面的对话里不出现
         chats = [one for one in events if one["kind"] == "chat"]
-        self.assertTrue(any("照这份题面写一版代码" in one["content"] for one in chats))
-        self.assertTrue(all(one["actor"] != "human" or "照这份题面" not in one["content"]
-                            for one in chats))
+        self.assertFalse(any("照这份题面写一版代码" in one["content"] for one in chats))
+        work_orders = [one for one in events if one.get("phase") == "work_order"]
+        self.assertTrue(work_orders)
+        self.assertIn("照这份题面写一版代码", work_orders[-1]["data"]["content"])
         written, answered = Store(Path(store.run_dir) / "store").read(
             "case/quicksort/drafted", "write_code")
         self.assertTrue(answered)
@@ -913,8 +930,12 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual("api_error", store.meeting.phase)
         self.assertTrue(store.meeting.recovery_required)
         self.assertIn("request_timeout_seconds", store.meeting.failure or "")
+        events = MeetingStore.load_in_workspace(self.root, "bad-config").events()
+        work_orders = [one for one in events if one.get("phase") == "work_order"]
+        self.assertEqual("继续", work_orders[-1]["data"]["content"])
+        # 会里成员说的那句不进对话：对话里还是人说的那句
         chats = MeetingStore.load_in_workspace(self.root, "bad-config").chat_messages()
-        self.assertEqual("继续", chats[-1]["content"])
+        self.assertEqual("Please create a note.", chats[-1]["content"])
         self.wait_for_workers()
 
     def test_a_meeting_can_be_deleted_while_another_service_drives_it(self):
@@ -989,9 +1010,10 @@ class MeetingWebServiceTest(unittest.TestCase):
             self.assertEqual(before + 1, len(RecordingRunner.instances))
         reloaded = MeetingStore.load_in_workspace(self.root, "immediate-message")
         self.assertEqual("waiting_for_user", reloaded.meeting.phase)
-        # 会里成员说的那句记在它自己名下：人说的话和会里派活说的话不再混在一起。
-        said = [e for e in reloaded.chat_messages() if e["actor"] == "actor"]
-        self.assertEqual("no really, look now", said[-1]["content"])
+        # 会里成员说的那句不进对话（它是派活）：记在 journal 的一处 state 里。
+        work_orders = [e for e in reloaded.events() if e.get("phase") == "work_order"]
+        self.assertEqual("no really, look now", work_orders[-1]["data"]["content"])
+        self.assertFalse(any(e["actor"] == "actor" for e in reloaded.chat_messages()))
 
     def test_message_reference_is_derived_from_source_event(self):
         self.start_meeting("reference-demo")

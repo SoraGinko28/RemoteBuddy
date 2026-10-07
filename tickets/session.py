@@ -77,15 +77,19 @@ class Session:
         """这个案子的值。"""
         return Store(self.root, self.record_path)
 
-    def stated_task(self, words: str, issuer: Handler) -> None:
+    def stated_task(self, words: str, issuer: Handler, target: str = "") -> None:
         """消息先到 assistant 手上：人类说的那句话落在案子自己的数据路径下。
 
         这一步不在任何单里，单只读它的结果——发单这件事本身也不在单里（它是派单的那一方）。
+        `target` 是这一趟要交的那个名字（规范里 `requests/` 那几份程序说的），一起记在案子里：
+        半路断了要接着跑的那一趟，读得到它才说得清 actor 该交什么。
         """
         make = issuer.caps.get("stated_task")
         if make is None:
             raise RuntimeError(f"{issuer.name} 的能力表里没有 stated_task")
         make(Binding(issuer.name, issuer.caps, self.root, self.viba_path).env(""), words)
+        if target:
+            self.values.write("", "target", target)
         self.values.record(f"- 人类说了一句：{words}")
 
     # ------------------------------------------------------------------
@@ -164,8 +168,8 @@ def _stop_kind(stage: Stage) -> str:
     return stop_kind(stage.result)
 
 
-def open_work(meeting_dir) -> Optional[Tuple[str, str]]:
-    """这场会有没有没跑完的一趟：`(案子, 人类那句话)`，没有就是 None。
+def open_work(meeting_dir) -> Optional[Tuple[str, str, str]]:
+    """这场会有没有没跑完的一趟：`(案子, 人类那句话, 要交的那个名字)`，没有就是 None。
 
     说得清"没跑完"的只有这些单自己：还欠着哪一张，是读它的进度得到的——进程在不在、死在哪一步，
     都不必知道。
@@ -183,7 +187,9 @@ def open_work(meeting_dir) -> Optional[Tuple[str, str]]:
         return None
     values = Store(case_root(meeting_dir, case), record_path(meeting_dir))
     words = values.value("", "stated_task")
-    return case, str(words) if words is not None else ""
+    target = values.value("", "target")
+    return (case, str(words) if words is not None else "",
+            str(target) if target is not None else "")
 
 
 def _say(out: Optional[Callable[[str], None]], line: str) -> None:
