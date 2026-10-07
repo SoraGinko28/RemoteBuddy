@@ -32,8 +32,9 @@ const el = Object.fromEntries([
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "skill-cell", "reload-skill-button", "restart-agent-button",
   "event-dialog", "event-title", "event-content", "close-event", "toast", "welcome-toast",
-  "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
+  "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-hint",
   "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
+  "ticket-progress", "ticket-progress-shell",
   "rename-dialog", "rename-form", "rename-input", "rename-error", "rename-close", "rename-cancel", "rename-submit",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
@@ -2294,11 +2295,6 @@ function renderTickets() {
     running ? "跑着" : due ? "该发" : "",
   ].filter(Boolean).join(" · ");
   el.ticket_digest.textContent = String(board.digest || "").slice(0, 8);
-  el.ticket_issue_button.hidden = !due || Boolean(running);
-  if (due) {
-    el.ticket_issue_button.textContent = `发 ${due.ticket}`;
-    el.ticket_issue_button.dataset.ticket = due.ticket;
-  }
   const done = tickets.filter((one) => one.issued).length;
   el.ticket_hint.textContent = [
     `${done}/${tickets.length} 张发过了`,
@@ -2308,6 +2304,7 @@ function renderTickets() {
   ].filter(Boolean).join("｜");
   el.ticket_outcome.textContent = outcomeText(tickets);
   el.ticket_list.replaceChildren(...tickets.map(ticketRow));
+  el.ticket_progress.replaceChildren(...(board.progress || []).flatMap(progressRows));
   el.ticket_record.textContent = (board.record || []).join("\n");
 }
 
@@ -2325,16 +2322,41 @@ function outcomeText(tickets) {
   return parts.join("｜");
 }
 
+function progressRows(one) {
+  // 一张单的进度：它被处理过的每一次，一次一行（谁试的、做完了没有、什么时候）。
+  const who = one.who || [];
+  const rows = who.map((name, index) => {
+    const last = index === who.length - 1;
+    const row = node("div", "ticket-progress-row");
+    row.append(node("span", "ticket-progress-name", name));
+    row.append(node("span", "ticket-progress-ticket", one.ticket));
+    if (last) {
+      row.append(node("span", `ticket-chip ${one.answered ? "state-issued" : "state-bad"}`,
+        one.last_answered ? "做完了" : "停在这儿"));
+      if (!one.last_answered && one.last_stop) {
+        row.append(node("span", "ticket-meta", one.last_stop));
+      }
+    }
+    return row;
+  });
+  return rows.length ? rows : [node("div", "ticket-progress-row", "还没有人试过")];
+}
+
 function ticketRow(one) {
   const row = node("div", `ticket-row${one.due ? " due" : ""}`);
   row.append(node("span", "ticket-name", one.ticket));
   row.append(node("span", `ticket-chip ${one.due ? "state-due" : one.issued ? "state-issued" : ""}`,
     one.due ? "该发" : one.issued ? "发过了" : "还没轮到"));
+  if (one.tries) {
+    row.append(node("span", "ticket-meta",
+      `${one.answered ? "做完了" : "没做完"}｜试过 ${one.tries} 次${one.who?.length ? "：" + one.who.join("→") : ""}`));
+  }
   const answers = one.answers || [];
   const answered = answers.filter((step) => step.answered);
   const roles = [...new Set(answered.map((step) => step.role).filter(Boolean))];
   row.append(node("span", "ticket-meta",
     `${roles.join("、") || "—"} 答了 ${answered.length}/${answers.length} 步`));
+  row.dataset.uid = one.uid || "";
   const verdict = answers.find((step) => step.op === "judge" && typeof step.value === "boolean");
   const note = answers.find((step) => step.op === "closing_note" && step.value);
   if (verdict) row.append(node("span", `ticket-chip ${verdict.value ? "state-issued" : "state-bad"}`,
@@ -2357,17 +2379,6 @@ function lastSegment(path) {
 function lastSegments(path, count) {
   const parts = String(path || "").split("/").filter(Boolean);
   return parts.slice(-count).join("/") || String(path || "");
-}
-
-async function postTicket(ticket) {
-  if (!state.selectedId || !ticket) return;
-  try {
-    await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/tickets/${encodeURIComponent(ticket)}`,
-      { method: "POST", body: JSON.stringify({}) });
-    await refreshSelected();
-  } catch (error) {
-    toast(error.message);
-  }
 }
 
 function referenceKey(reference) {
@@ -3885,7 +3896,6 @@ function bind() {
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
   el.cleanup_button.addEventListener("click", () => postMeetingAction("cleanup").catch((error) => toast(error.message)));
-  el.ticket_issue_button.addEventListener("click", () => postTicket(el.ticket_issue_button.dataset.ticket));
   el.ticket_toggle.addEventListener("click", () => {
     el.session_view.classList.toggle("tickets-open");
   });

@@ -169,11 +169,14 @@
             <p class="pane-kicker">工单</p>
             <h2 id="ticket-title">这场会怎么转</h2>
             <span id="ticket-digest" class="ticket-chip" title="这份流程的内容摘要"></span>
-            <button id="ticket-issue-button" class="command-button compact" type="button" hidden>发这一张</button>
           </header>
           <p id="ticket-hint" class="ticket-line"></p>
           <p id="ticket-outcome" class="ticket-outcome"></p>
           <div id="ticket-list" class="ticket-list"></div>
+          <details id="ticket-progress-shell" class="ticket-record-shell">
+            <summary>谁试过哪一张（ticket_progress）</summary>
+            <div id="ticket-progress" class="ticket-progress"></div>
+          </details>
           <details id="ticket-details" class="ticket-record-shell">
             <summary>会议记录</summary>
             <pre id="ticket-record" class="ticket-record"></pre>

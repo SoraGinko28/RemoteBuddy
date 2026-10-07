@@ -477,3 +477,7 @@ dialog::backdrop { background: rgb(0 0 0 / .6); }
 .ticket-steps { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font: 10px/1.5 ui-monospace, monospace; }
 .ticket-step.answered { color: var(--green); }
 .ticket-record { max-height: 150px; overflow: auto; margin: 6px 0 0; color: var(--muted); white-space: pre-wrap; font: 10px/1.5 ui-monospace, monospace; }
+.ticket-progress { max-height: 190px; overflow: auto; display: flex; flex-direction: column; gap: 3px; margin: 6px 0 0; }
+.ticket-progress-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }
+.ticket-progress-name { color: var(--ink); font-size: 11px; font-weight: 700; }
+.ticket-progress-ticket { color: var(--muted); font: 10px/1.4 ui-monospace, monospace; }
