@@ -155,24 +155,27 @@ Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CL
 
 ## Tickets
 
-A meeting may also run on tickets. The workflow itself is viba: `workflow/` holds the three role
-apis (actor / assistant / critic), the ticket programs designed before the meeting, and the rules
-the critic judges by. `ticket_centered/` is the harness around it — one shared store (answers at
-data paths), the capability table of each role, and one process per role, which takes the bundle
-handed to it and answers in its own copy.
+A meeting runs on tickets. The norm itself is viba and lives in its own repository (`RbNorm`, next
+to this tree, the norm under its `rb_norm/` package; `REMOTEBUDDY_NORM` points elsewhere): the role
+apis (actor / assistant / critic), the ticket programs, and the rules the critic judges by. The
+program carries none of it.
 
-The page shows and drives it for a meeting that has a ticket side:
+`tickets/` is the harness: a ticket is one call written on the file system
+(`<meeting>/tickets/<uid>/ticket.viba`), its progress is one file per attempt
+(`<meeting>/ticket_progress/<uid>/<time>-<handler>.viba`), and the answers land in the case under
+`<meeting>/store/<case>/`. The assistant receives the human message, works out which ticket is due
+from the values in the case, and writes it; every member of the table (`<norm>/services`) takes the
+tickets whose newest attempt is not its own, runs them with its own capability table, and appends
+one attempt. A ticket is done when one of its attempts answered `$ok`.
+
+The page shows and drives it:
 
 ```text
 GET  /api/meetings/<meeting-id>/tickets           the board: which ticket is due, what each one
-                                                  reads, who answered, the verdicts, the record
-POST /api/meetings/<meeting-id>/tickets/<ticket>  issue that ticket: publish it to every member,
-                                                  one process each
+                                                  reads, who answered, every attempt, the record
 ```
 
-`e2e_ticket_meeting.py` runs a real meeting (real agent, tmux, HTTP) through exactly those routes.
-`ticket_centered/README.md` maps every part, and `ticket_centered_design/ticket_centered.md` is the
-design.
+`tickets/README.md` maps every part.
 
 ## Test
 

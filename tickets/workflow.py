@@ -1,31 +1,32 @@
-"""一份流程：开会前定好的那五类 viba 文件，和"读它们"这件事。
+"""一份规范：开会前定好的那几类 viba 文件，和"读它们"这件事。
 
     1. `actor_api.viba`        actor 会做的事
     2. `assistant_api.viba`    assistant 会做的事
     3. `critic_api.viba`       critic 会做的事
     4. `tickets/*.viba`        工单程序：一场会很多张，都是开会前写好的
-    5. `rules/*.viba`          规则：critic 跑的程序
+    5. `requests/*.viba`       人说的哪句话算一份活：答出要交的那个名字，答不出来就不开案子
+    6. `rules/*.viba`          规则：critic 判案时跑的程序
 
-五类合起来就是这场会的流程：工单是它的步骤，规则是它的判据，三个 api 的声明是每一步能调到的算子。
+它们合起来就是这场会的规范：工单是一张单要跑的那段程序，请求那几份说的是人说的哪句话算一份要交的活，
+规则是 critic 判案时跑的程序，几个 api 的声明是每一步能调到的算子。
 
-**流程不在程序里，在你自己的配置目录里**（就像 Claude Code 的 skills 之于它的二进制）：这份程序
-只负责按下面的次序找一个目录，找到谁就用谁——
+**规范不在程序里，在它自己的仓库里**（就像 Claude Code 的 skills 之于它的二进制）：这份程序只负责
+找一个目录，找到谁读谁——
 
     1. 明说的 `--workflow <dir>`（或者调用时给的 root）
     2. 环境变量 `REMOTEBUDDY_WORKFLOW`
-    3. 这个项目自己的 `<project_root>/.agents/workflow/`
-    4. 你的配置目录 `$REMOTEBUDDY_HOME/workflow/`（默认 `~/.remotebuddy/workflow/`）
-    5. 程序里带的那份默认（`ticket_centered/../workflow/`），没有别的就用它
+    3. 环境变量 `REMOTEBUDDY_NORM`
+    4. 默认那条路径：程序仓库旁边那一层的 `RbNorm/rb_norm/`
 
-自进化的人改的是第 4（或第 3）个，用的只有那个目录：`python -m ticket_centered.workflow --init` 会把
-第 5 份抄一份到你的配置目录，从那儿开始改；程序本身不用给他，也不用动。
+程序本身一行这类代码都不带，会里也一行都不发副本：工单和规则是**现读**的，处理的人每次轮询都照这份
+读一遍；一张单上只记着它发的是哪一段程序（`$ticket_name`）。
 
 **工单就是 viba 代码**，没有另一种东西叫"工单"：这里读一份文件读出来的，就是它写了哪几步（调哪个
 角色的哪个算子、在哪条数据路径上）、要读哪几条数据路径、答哪几步、import 了哪些 api；读一份角色 api
-读出来的是它会哪些算子。读法只有这一份，五类文件都用它。
+读出来的是它会哪些算子。读法只有这一份，几类文件都用它。
 
-它答的：这场会有哪几张工单、哪几条规则（按类分好）、一份一份文件的全套（打包用）、它叫什么名字
-（**内容摘要**：摘要一样，就是同一份流程）。
+它答的：这场会有哪几张工单、哪几条规则（按类分好）、一份一份文件的全套、它叫什么名字
+（**内容摘要**：摘要一样，就是同一份规范）。
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, NamedTuple, Optional, Tuple
@@ -43,35 +43,61 @@ from . import _viba  # noqa: F401
 from viba import viba_ast
 
 ROLES = ("actor_api", "assistant_api", "critic_api")
-ROLE_OF_API = {"actor_api": "actor", "assistant_api": "assistant", "critic_api": "critic"}
-# 程序里带的那份默认（没有配置目录时用它），以及找流程的那几个地方
-SHIPPED_WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
+API_SUFFIX = "_api"
+
+
+def is_api_file(name: str) -> bool:
+    """这份文件是不是一个角色 api。
+
+    三个 api 是程序带的那一份流程里的三个角色，不是上限：谁给一份 `<角色>_api.viba`，谁就多一个角色，
+    别的部分一个字都不用改。名字后面没有 `_api` 的是工单（或者规则）。
+    """
+    return name.endswith(API_SUFFIX) and len(name) > len(API_SUFFIX)
+
+
+def role_of_api(api: str) -> str:
+    """这个 api 是哪个角色的（`actor_api` → `actor`）。"""
+    return api[: -len(API_SUFFIX)] if is_api_file(api) else api
+
+
+# 规范（这场会怎么开的那几份 viba 程序）不在程序里，在它自己的仓库里：
+# `RemoteBuddy-core` 旁边那一层的 `RbNorm/rb_norm/`，用 `REMOTEBUDDY_NORM` 可以另指。
+NORM_ENV = "REMOTEBUDDY_NORM"
 WORKFLOW_ENV = "REMOTEBUDDY_WORKFLOW"
-HOME_ENV = "REMOTEBUDDY_HOME"
-PROJECT_WORKFLOW = Path(".agents") / "workflow"
-DEFAULT_HOME_NAME = ".remotebuddy"
+# 规范仓库里，规范本身放在这个包目录下（`RbNorm/rb_norm/`）——和别的仓库一样有个包目录
+NORM_PACKAGE = "rb_norm"
+DEFAULT_NORM = Path(__file__).resolve().parent.parent.parent / "RbNorm" / NORM_PACKAGE
+# 程序里那三个角色（不是上限：多一份 api 文件就多一个角色）
+ROLE_OF_API = {api: role_of_api(api) for api in ROLES}
 TICKETS_DIR = "tickets"
+REQUESTS_DIR = "requests"
 RULES_DIR = "rules"
+# 模块按哪儿找（冒号分开的几个目录，次序就是这个）：单子自己的目录先被找，然后这几个
+SEARCH_DIRS = (TICKETS_DIR, "", RULES_DIR)
 VIBA_SUFFIX = ".viba"
-RET = "__ret__"
+RET = "__impl__"
 SUB_ENVS = ("sub_env", "tmp_sub_env")
 
 
 class Step(NamedTuple):
     """One step of a ticket: the definition it is written as, and the call it makes."""
 
-    definition: str     # the ticket's own name for this step (`greeted`, `__ret__`, …)
+    definition: str     # the ticket's own name for this step (`greeted`, `__impl__`, …)
     env: str            # the data path it runs on, relative to the case ("" is the case)
     api: str            # the role api it calls (`actor_api`)
     op: str             # the operator it calls (`acknowledge`)
 
 
 class Workflow:
-    """The five classes of viba files a meeting runs, read from one directory."""
+    """The classes of viba files a meeting runs, read from one directory."""
 
-    def __init__(self, files: Dict[str, str], rules: Iterable[str] = ()):
+    def __init__(self, files: Dict[str, str], rules: Iterable[str] = (),
+                 requests: Iterable[str] = (), root=None):
         self.files = dict(files)
         self.rule_names = tuple(rules)
+        self.request_names = tuple(requests)
+        # 这一份流程是从哪个目录读出来的（服务表 `services` 就在它旁边）；不是从目录读的就没有
+        self.root = Path(root) if root is not None else None
 
     # ------------------------------------------------------------------
     # Reading the directory
@@ -81,31 +107,77 @@ class Workflow:
     def load(cls, root) -> "Workflow":
         root = Path(root)
         files: Dict[str, str] = {}
-        for role in ROLES:
-            path = root / f"{role}{VIBA_SUFFIX}"
-            if not path.is_file():
-                raise FileNotFoundError(f"少了 {path}")
-            files[role] = path.read_text(encoding="utf-8")
-        for folder in (TICKETS_DIR, RULES_DIR):
+        for path in sorted(root.glob(f"*{API_SUFFIX}{VIBA_SUFFIX}")):
+            files[path.stem] = path.read_text(encoding="utf-8")
+        if ROLES[0] not in files:
+            raise FileNotFoundError(f"少了 {root / f'{ROLES[0]}{VIBA_SUFFIX}'}")
+        for folder in (TICKETS_DIR, REQUESTS_DIR, RULES_DIR):
             directory = root / folder
             if not directory.is_dir():
                 raise FileNotFoundError(f"少了目录 {directory}")
             for path in sorted(directory.glob(f"*{VIBA_SUFFIX}")):
                 files[path.stem] = path.read_text(encoding="utf-8")
-        return cls(files, sorted(path.stem for path in (root / RULES_DIR).glob(f"*{VIBA_SUFFIX}")))
+        rules = sorted(path.stem for path in (root / RULES_DIR).glob(f"*{VIBA_SUFFIX}"))
+        requests = sorted(path.stem for path in (root / REQUESTS_DIR).glob(f"*{VIBA_SUFFIX}"))
+        return cls(files, rules, requests, root=root)
+
+    def apis(self) -> List[str]:
+        """Every role api this workflow has, by short name (the shipped three, and any the
+        facility grew: a new `<role>_api.viba` next to them is a new role)."""
+        return sorted(name for name in self.files if is_api_file(name))
 
     def tickets(self) -> Dict[str, str]:
         """The ticket programs, by short name."""
         return {name: source for name, source in self.files.items()
-                if name not in ROLES and name not in self.rule_names}
+                if not is_api_file(name) and name not in self.rule_names
+                and name not in self.request_names}
+
+    def requests(self) -> List[str]:
+        """人说的哪句话算一份活：这个目录里那几份程序的名字，按名字排。"""
+        return list(self.request_names)
 
     def rules(self) -> Dict[str, str]:
         """The rule programs, by short name."""
         return {name: self.files[name] for name in self.rule_names}
 
     def sources(self) -> Dict[str, str]:
-        """Every file by name: what goes into a bundle's `program/`."""
+        """Every file by name: the norm's own source, read but never copied anywhere."""
         return dict(self.files)
+
+    # ------------------------------------------------------------------
+    # 那几份程序在规范目录下的哪儿
+    # ------------------------------------------------------------------
+
+    def ticket_file(self, ticket: str) -> Path:
+        """这张工单的程序在哪：`<规范>/tickets/<工单>.viba`。"""
+        return self._under(TICKETS_DIR, f"{ticket}{VIBA_SUFFIX}")
+
+    def rule_file(self, rule: str) -> Path:
+        """这条规则的程序在哪：`<规范>/rules/<规则>.viba`。"""
+        return self._under(RULES_DIR, f"{rule}{VIBA_SUFFIX}")
+
+    def request_file(self, name: str) -> Path:
+        """这一份请求程序在哪：`<规范>/requests/<名字>.viba`。"""
+        return self._under(REQUESTS_DIR, f"{name}{VIBA_SUFFIX}")
+
+    def search_dirs(self) -> List[str]:
+        """跑这个规范里的程序时，模块按哪儿找，一个目录一项。
+
+        写 import 的那个文件自己的目录先被找，所以单子放在 `tickets/` 里也 import 得到根上那几个 api；
+        规则在 `rules/` 里，也找得到根上那几个 api。
+        """
+        if self.root is None:
+            raise ValueError("这份流程不是从目录读出来的，没有规范目录可以找程序")
+        return [str(self.root / one) if one else str(self.root) for one in SEARCH_DIRS]
+
+    def search_path(self) -> str:
+        """同上，写成一串（`Environment.viba_path` 要的那种写法）。"""
+        return ":".join(self.search_dirs())
+
+    def _under(self, folder: str, name: str) -> Path:
+        if self.root is None:
+            raise ValueError("这份流程不是从目录读出来的，没有规范目录可以找程序")
+        return self.root / folder / name
 
     def digest(self) -> str:
         """What to call this workflow: a hash of every file, name and content alike."""
@@ -149,9 +221,9 @@ class Workflow:
         produced it: nobody else's table can do that step, so the name is where
         the responsibility is.
         """
-        for api, role in ROLE_OF_API.items():
-            if api in self.files and op in self.ops_of(api):
-                return role
+        for api in self.apis():
+            if op in self.ops_of(api):
+                return role_of_api(api)
         return None
 
 
@@ -160,80 +232,73 @@ class Workflow:
 # ----------------------------------------------------------------------
 
 
-def config_home() -> Path:
-    """你的配置目录：`$REMOTEBUDDY_HOME`，没有就是 `~/.remotebuddy`。"""
-    given = os.environ.get(HOME_ENV)
-    return Path(given).expanduser() if given else Path.home() / DEFAULT_HOME_NAME
+def norm_home() -> Path:
+    """规范目录在哪儿（放着 api、工单、规则、服务表的那一层）。
+
+    `$REMOTEBUDDY_NORM` 指到哪儿就照哪儿——指规范仓库根也行，那就用它底下的 `rb_norm/`；没有这个
+    环境变量就是程序仓库旁边那一层的 `RbNorm/rb_norm/`。程序一行这类代码都不带：全在规范目录里，
+    跑的时候现读。
+    """
+    given = os.environ.get(NORM_ENV)
+    return _the_norm_dir(Path(given).expanduser() if given else DEFAULT_NORM)
+
+
+def _the_norm_dir(root: Path) -> Path:
+    """规范目录：给的就是那一层就用它；给的是仓库根就用它底下的 `rb_norm/`。"""
+    if _looks_like_workflow(root):
+        return root
+    inside = root / NORM_PACKAGE
+    return inside if _looks_like_workflow(inside) else root
 
 
 def workflow_candidates(project_root=None) -> List[Path]:
-    """按次序找一遍：项目自己的、配置目录里的、程序带的默认。"""
-    candidates: List[Path] = []
-    if project_root is not None:
-        candidates.append(Path(project_root) / PROJECT_WORKFLOW)
-    candidates.append(config_home() / "workflow")
-    candidates.append(SHIPPED_WORKFLOW)
-    return candidates
+    """按次序找一遍。只有规范那一个地方——工单和规则不属于某一个项目或某一场会。"""
+    return [norm_home()]
 
 
 def workflow_root(explicit=None, project_root=None) -> Path:
-    """这一趟该读哪份流程。
+    """这一趟该读哪份规范。
 
-    `explicit`（`--workflow` / `REMOTEBUDDY_WORKFLOW`）指到哪儿就是哪儿；没指就按
-    项目 → 配置目录 → 程序默认 的次序，取第一个像一份流程的目录；一个都没有就报出来。
+    `explicit`（`--workflow` / `REMOTEBUDDY_WORKFLOW`）指到哪儿就是哪儿；没指就是规范目录
+    （`$REMOTEBUDDY_NORM`，默认 `RbNorm/rb_norm/`）。指的那个地方不像一份规范就当场报出来。
     """
     asked = explicit or os.environ.get(WORKFLOW_ENV)
     if asked:
         root = Path(asked).expanduser()
         if not _looks_like_workflow(root):
-            raise FileNotFoundError(f"{asked} 不是一份流程（缺 actor_api.viba 或 tickets/）")
+            raise FileNotFoundError(f"{asked} 不是一份规范（缺 actor_api.viba、tickets/ 或 requests/）")
         return root
-    for root in workflow_candidates(project_root):
-        if _looks_like_workflow(root):
-            return root
-    raise FileNotFoundError("找不到流程：给 --workflow，或者 python -m ticket_centered.workflow --init "
-                            f"在 {config_home() / 'workflow'} 放一份")
+    root = norm_home()
+    if not _looks_like_workflow(root):
+        raise FileNotFoundError(
+            f"找不到规范：{root} 里没有 actor_api.viba、tickets/ 或 requests/（用 {NORM_ENV} 另指一个目录）")
+    return root
 
 
 def _looks_like_workflow(root) -> bool:
     root = Path(root)
-    return (root / f"{ROLES[0]}{VIBA_SUFFIX}").is_file() and (root / TICKETS_DIR).is_dir()
+    return ((root / f"{ROLES[0]}{VIBA_SUFFIX}").is_file() and (root / TICKETS_DIR).is_dir()
+            and (root / REQUESTS_DIR).is_dir())
 
 
 def load_workflow(root=None, project_root=None) -> Workflow:
-    """Read this run's workflow: `root` when given, otherwise the first one found."""
+    """Read this run's workflow: `root` when given, otherwise the one norm."""
     return Workflow.load(root if root is not None else workflow_root(project_root=project_root))
 
 
-def install(destination=None) -> Path:
-    """把程序里带的那份默认抄到你的配置目录，从那儿开始改；已经有了就不动它。"""
-    target = Path(destination).expanduser() if destination else config_home() / "workflow"
-    if _looks_like_workflow(target):
-        return target
-    if target.exists() and any(target.iterdir()):
-        raise FileExistsError(f"{target} 里有别的东西，不覆盖")
-    shutil.copytree(SHIPPED_WORKFLOW, target, dirs_exist_ok=True)
-    return target
-
-
 def main(argv=None) -> int:
-    """`python -m ticket_centered.workflow`：看现在读的是哪份，或者抄一份出来改。"""
-    parser = argparse.ArgumentParser(description="流程：找、看、抄一份出来改")
-    parser.add_argument("--init", action="store_true", help="把默认那份抄到配置目录")
+    """`python -m tickets.workflow`：看现在读的是哪份规范，里面有什么。"""
+    parser = argparse.ArgumentParser(description="规范：看这一趟读的是哪一份")
     parser.add_argument("--where", default=None, metavar="DIR",
-                        help="指到哪个目录（抄到这儿 / 看这个）；不给就看现在读的是哪份")
-    parser.add_argument("--project", default=None, help="按这个项目根找（含 .agents/workflow）")
+                        help="指到哪个目录；不给就看现在读的是哪份")
     args = parser.parse_args(argv)
 
-    if args.init:
-        target = install(args.where)
-        print(f"这份流程在：{target}")
-        print(f"改它就行：三份 api、{TICKETS_DIR}/、{RULES_DIR}/")
-        return 0
-    root = workflow_root(explicit=args.where, project_root=args.project)
+    root = workflow_root(explicit=args.where)
     workflow = Workflow.load(root)
-    print(f"这一趟读的流程：{root}")
+    print(f"这一趟读的规范：{root}")
+    print(f"  角色：{'、'.join(workflow.apis())}")
     print(f"  工单：{'、'.join(sorted(workflow.tickets()))}")
+    print(f"  请求：{'、'.join(workflow.requests())}")
     print(f"  规则：{'、'.join(sorted(workflow.rules()))}")
     print(f"  摘要：{workflow.digest()}")
     return 0
@@ -291,24 +356,51 @@ def apis_used_in(source: str) -> List[str]:
 
 
 def addresses_of_call(call) -> List[Tuple[str, str]]:
-    """The steps one Prepare's `$call` names: what that step itself read.
+    """The steps one work order's `$call` names: what that step itself read.
 
-    One address argument makes the `$call` the step itself (no tag to look
-    under); several are a product, each member carrying its own tag.
+    The call is written `__dyn_call__ << "name" << $task <an address> …`, and each argument
+    may be an address itself or a product carrying one.
     """
     if call is None:
         return []
-    piece = getattr(call, "data", call)
-    whole = _address(piece)
-    if whole is not None:
-        return [whole]
     out: List[Tuple[str, str]] = []
-    for element in _elements(piece):
-        inner = element.type if isinstance(element, viba_ast.Tagged) else element
+    for argument in call_arguments(call):
+        inner = argument.type if isinstance(argument, viba_ast.Tagged) else argument
         found = _address(inner)
-        if found is not None:
+        if found is None:
+            for element in _elements(inner):
+                inside = element.type if isinstance(element, viba_ast.Tagged) else element
+                nested = _address(inside)
+                if nested is not None:
+                    out.append(nested)
+        else:
             out.append(found)
     return out
+
+
+def call_arguments(call) -> List[viba_ast.AST]:
+    """一次调用里那几个实参，按写下来的次序。
+
+    调用写成 `__dyn_call__ << "名字" << 实参…`，名字不是实参，这里摊掉它；成员调用
+    （`__dyn_method__`）还多一个「从哪个值上取的」，那个也不算。不是这种写法的，整份就是它自己。
+    """
+    piece = getattr(call, "data", call)
+    if piece is None:
+        return []
+    if not isinstance(piece, viba_ast.Partial):
+        return [piece]
+    peeled = []
+    while isinstance(piece, viba_ast.Partial):
+        if piece.argument is not None:
+            peeled.append(piece.argument)
+        piece = piece.function
+    peeled.reverse()
+    if isinstance(piece, viba_ast.TypeRef):
+        if piece.name == "__dyn_method__":
+            return peeled[2:]
+        if piece.name == "__dyn_call__":
+            return peeled[1:]
+    return peeled
 
 
 def definitions_of(source: str) -> List[viba_ast.TypeDefinition]:

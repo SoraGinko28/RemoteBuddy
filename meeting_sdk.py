@@ -134,7 +134,7 @@ class Client:
             return _Err("the meeting server did not answer with a viba script")
         checked = meeting_sdk_viba.is_a_valid_answer(api, script)
         if isinstance(checked, _Err):
-            return _Err(checked.err_msg)
+            return _Err(checked.msg)
         return _Ok(script)
 
     # ------------------------------------------------------------------

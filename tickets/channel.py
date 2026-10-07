@@ -1,33 +1,19 @@
-"""actor 的进程：写代码这件事交给一个会写代码的 agent。
+"""真会议里 actor 那条线：把话发进会议、等那个 agent 干完、从它的工作区把文件读回来。
 
-能力表（`actor_caps`）就是 api 里那四件事：回一句"知道了"、写一版代码、回一句"做好了"、照判语改一版。
-"写"落在谁身上由调用者给：`actor_caps(write)` 里是 `write(prompt) -> code`；真会议里用
-`meeting_actor_caps(channel)`，`AgentChannel` 把话发进真会议（服务的 HTTP 面）、等那个 agent 干完、
-从它的工作区把文件读回来。
+走的是会议服务的 HTTP 面：`say` 说一句、`snapshot` / `events` 看它干到哪儿、等它这一轮停下、把它写的
+文件读回来。**建会、把人类的话发进去不在这儿**——那是会议那一侧的事。
 
-进程入口：
-
-    python -m ticket_centered.actor --meeting <会议目录> --case case/quicksort \\
-        --bundle <发给我的那一包> --meeting-url http://127.0.0.1:PORT --meeting-id <会议号> \\
-        --workspace <agent 干活的目录> --target quicksort.py
-
-那两句回话（"知道了"/"做好了"）在真会议那个用法里是从**会议记录里读它自己说的那句**，不是这里编的：
-话由说话的人自己说。
+这一层只说"这一句是工单在派活"：`MeetingChannel`（`web.py` 那一侧）在把话发出去的那一小段时间里声明
+这件事，会议收到这句就照旧叫醒 agent、不再从头跑一遍工单（否则自己套自己）。
 """
 
 from __future__ import annotations
 
 import http.client
 import json
-import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
-
-from . import _viba  # noqa: F401
-
-from .host import read_stored, text_of
-from .member import bundle_main
+from typing import List, Optional
 
 WORKING_PHASES = ("agent_thinking", "agent_acting")
 DONE_PHASES = ("waiting_for_user", "completion_proposed")
@@ -35,36 +21,6 @@ DONE_PHASES = ("waiting_for_user", "completion_proposed")
 # 所以 wait_for_turn 不再往下等，交给上面重说一遍题面。
 FAILED_PHASES = ("api_error", "cycle_timeout")
 TERMINAL_STATUSES = ("completed", "failed", "interrupted")
-
-
-# ----------------------------------------------------------------------
-# 能力表：write(prompt) -> code
-# ----------------------------------------------------------------------
-
-
-def actor_caps(write: Callable[[str], str],
-               say: Optional[Callable[[str, Any], None]] = None) -> Dict[str, Callable]:
-    """actor 的四个算子。`write(prompt) -> code` 就是那个会写代码的 agent。"""
-
-    def acknowledge(env, about):
-        return _said(say, "知道了，这就照题目写一版", _read_or(env, about))
-
-    def write_code(env, task, after):
-        return write(_first_prompt(text_of(env, task)))
-
-    def report_done(env, code, after):
-        return _said(say, "做好了", _read_or(env, code))
-
-    def revise_code(env, code, objection):
-        return write(_revision_prompt(text_of(env, code), text_of(env, objection)))
-
-    return {"acknowledge": acknowledge, "write_code": write_code,
-            "report_done": report_done, "revise_code": revise_code}
-
-
-# ----------------------------------------------------------------------
-# 真会议里的 actor：AgentChannel + meeting_actor_caps
-# ----------------------------------------------------------------------
 
 
 class AgentChannel:
@@ -77,7 +33,7 @@ class AgentChannel:
     def __init__(self, url: str, meeting_id: str, workspace, agent_name: str = "actor", *,
                  poll: float = 1.0, turn_timeout: float = 420.0, file_timeout: float = 90.0,
                  chat_timeout: float = 120.0):
-        self.host, self.port = _host_port(url)
+        self.host, self.port = _host_port(url) if url else (None, None)
         self.meeting_id = meeting_id
         self.workspace = Path(workspace)
         self.agent_name = agent_name
@@ -114,9 +70,9 @@ class AgentChannel:
         return self.csrf
 
     def say(self, message: str) -> dict:
-        """人的一句话：真发进会议里，agent 会接着干。"""
+        """一句话发进会议：说的人是这个 agent（不是人）——journal 里记的就是它。"""
         return self._request("POST", f"/api/meetings/{self.meeting_id}/messages",
-                             {"message": message})
+                             {"message": message, "actor": self.agent_name})
 
     def snapshot(self) -> dict:
         return self._request("GET", f"/api/meetings/{self.meeting_id}/snapshot").get("meeting", {})
@@ -185,14 +141,18 @@ class AgentChannel:
         return self.workspace / name
 
     def ensure_work(self, instruction: str, target: str, *, force: bool = False,
-                    changed: bool = False, timeout: Optional[float] = None) -> str:
+                    changed: bool = False, since=None,
+                    timeout: Optional[float] = None) -> str:
         """让真 agent 交出 target，然后把那个文件读回来。
 
         `force` 是"再来一轮"（改版）：就算文件在，也要把这句话说给它。
         `changed` 是"这一轮得真把它改了"：它跟会议里别的角色你来我往说了几句，不算改完了。
+        `since` 是"照这个时刻比"：文件在那一趟开工之前就在了的话，那一趟得真把它改了才算交出来
+        （上一次留下的那一版不算这一趟的活）。
         """
         path = self.file(target)
-        before = path.stat().st_mtime_ns if path.is_file() else None
+        before = since if since is not None else (
+            path.stat().st_mtime_ns if path.is_file() else None)
         if force or before is None:
             chats = len(self.chats())
             if force or not self.turn_in_flight():
@@ -217,66 +177,6 @@ class AgentChannel:
         raise TimeoutError(f"agent 没改 {path.name}（还是原来那份）")
 
 
-def meeting_actor_caps(channel: AgentChannel, target: str = "quicksort.py") -> Dict[str, Callable]:
-    """真会议里 actor 的能力表：写交给那个 agent；它说的那两句从会议记录里读。"""
-
-    def acknowledge(env, about):
-        return channel.wait_for_chat("ack") or "知道了"
-
-    def write_code(env, task, after):
-        return channel.ensure_work(_writing_prompt(text_of(env, task), target), target)
-
-    def report_done(env, code, after):
-        return channel.wait_for_chat("final") or "做好了"
-
-    def revise_code(env, code, objection):
-        previous = text_of(env, code)
-        what = text_of(env, objection)
-        if not what:
-            return previous                      # 判语没说不合格：照原样，不必再叫一次 agent
-        return channel.ensure_work(_revising_prompt(previous, what, target), target,
-                                   force=True, changed=True)
-
-    return {"acknowledge": acknowledge, "write_code": write_code,
-            "report_done": report_done, "revise_code": revise_code}
-
-
-# ----------------------------------------------------------------------
-# Wording, and small helpers
-# ----------------------------------------------------------------------
-
-
-def _first_prompt(task: str) -> str:
-    return f"照这份题面写一版代码：\n{task}"
-
-
-def _revision_prompt(previous: str, objection: str) -> str:
-    if objection:
-        return f"判语说这一版不合格：{objection}\n照判语改一版：\n{previous}"
-    return f"判语没说不合格（照原样再交一版）：\n{previous}"
-
-
-def _writing_prompt(task: str, target: str) -> str:
-    return f"{_first_prompt(task)}\n结果写进 {target}（就地写文件），写完回复 DONE，不要问我问题。"
-
-
-def _revising_prompt(previous: str, objection: str, target: str) -> str:
-    return f"{_revision_prompt(previous, objection)}\n（结果仍然写进 {target}，写完回复 DONE。）"
-
-
-def _said(say, words: str, about) -> str:
-    if say is not None:
-        say(words, about)
-    return words
-
-
-def _read_or(env, address):
-    try:
-        return read_stored(env, address)
-    except RuntimeError:
-        return address
-
-
 def _host_port(url: str):
     """`http://127.0.0.1:8123` 或 `127.0.0.1:8123` → (host, port)。"""
     text = url.split("://", 1)[-1].rstrip("/")
@@ -284,20 +184,51 @@ def _host_port(url: str):
     return host, int(port)
 
 
-def main(argv=None) -> int:
-    def extra(parser):
-        parser.add_argument("--meeting-url", required=True, help="真会议的服务地址")
-        parser.add_argument("--meeting-id", required=True, help="真会议的会议号")
-        parser.add_argument("--workspace", required=True, help="agent 干活的目录")
-        parser.add_argument("--target", default="quicksort.py", help="agent 要交的文件")
+class MeetingChannel(AgentChannel):
+    """真会议里 actor 那条线：`say` 之前先声明"这一句是工单派活"。
 
-    def caps_for(args, _workflow):
-        channel = AgentChannel(args.meeting_url, args.meeting_id, args.workspace)
-        return meeting_actor_caps(channel, args.target)
+    会议那一侧因此认得出哪一句是工单派活：它只该把 agent 叫起来干活，不该再从头跑一趟工单。
+    除此之外它和 `AgentChannel` 一模一样：等 agent 干完、从它的工作区把文件读回来。
+    """
 
-    return bundle_main("actor", caps_for, argv, extra=extra,
-                       description="actor 的进程：写代码交给一个会写代码的 agent")
+    def __init__(self, url: str, meeting_id: str, workspace, *,
+                 speaking=None, agent_name: str = "actor", **kwargs) -> None:
+        super().__init__(url, meeting_id, workspace, agent_name=agent_name, **kwargs)
+        self._speaking = speaking
+
+    def say(self, message: str) -> dict:
+        if self._speaking is None:
+            return super().say(message)
+        with self._speaking():
+            return super().say(message)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+class LoopbackChannel(AgentChannel):
+    """会议服务自己进程里那条线：`say` / `snapshot` / `events` 直接问这个服务。
+
+    服务本来就在这个进程里，这一趟又是它自己接的单：把话发进会议不必出门再绕一圈 HTTP。
+    别的一样——等 agent 干完、从它的工作区把文件读回来。
+
+    `speaking` 是"这一句是工单派活"那一下（`web.py` 那一侧用它把这句话和"人说的"分开）。
+    """
+
+    def __init__(self, service, meeting_id: str, workspace, *, speaking=None,
+                 agent_name: str = "actor", **kwargs) -> None:
+        super().__init__("", meeting_id, workspace, agent_name=agent_name, **kwargs)
+        self.service = service
+        self._speaking = speaking
+
+    def say(self, message: str) -> dict:
+        payload = {"message": message, "actor": self.agent_name}
+        if self._speaking is None:
+            self.service.message(self.meeting_id, payload)
+        else:
+            with self._speaking():
+                self.service.message(self.meeting_id, payload)
+        return {}
+
+    def snapshot(self) -> dict:
+        return self.service.snapshot(self.meeting_id).get("meeting", {})
+
+    def events(self) -> List[dict]:
+        return self.service.events(self.meeting_id, 0).get("events", [])
