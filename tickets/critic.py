@@ -22,7 +22,8 @@ from viba import viba_ast
 from viba.interpret import (Environment, EnvironmentCompute, interpret, read_snapshot,
                             write_snapshot)
 
-from .binding import answer_of, failure_in, finished, text_of, value_of
+from .binding import answer_of, failure_in, finished, text_of
+from .builtins import the_table as the_builtin_table
 from .handler import Handler, program_caps
 from .workflow import Workflow
 
@@ -83,7 +84,11 @@ def _rule_file(rule: str, workflow, env, rules_dir):
 
 
 def _rule_compute() -> Dict[str, Callable]:
-    """规则能调到的算子。它们交回的是**值**（不是地址）：规则程序把它们当值接着用。"""
+    """规则能调到的算子：viba 带的那些，加上这一处自己给的两个。
+
+    一个规则能调到什么，跑不出跑它的那个宿主给的表（`viba/builtin.viba` 那些算术、比较、字符串也在
+    里面——viba 自己不带库）。它们交回的是**值**（不是地址）：规则程序把它们当值接着用。
+    """
 
     def code_under_judgment(env):
         return read_snapshot(env, CODE_UNDER_JUDGMENT)
@@ -97,12 +102,10 @@ def _rule_compute() -> Dict[str, Callable]:
                 widest = max(widest, _count_parameters(_inside_parentheses(stripped)))
         return widest
 
-    def within_limit(env, count, limit):
-        return value_of(count) <= value_of(limit)
-
-    return {"code_under_judgment": code_under_judgment,
-            "widest_parameters": widest_parameters,
-            "within_limit": within_limit}
+    table = dict(the_builtin_table())
+    table["code_under_judgment"] = code_under_judgment
+    table["widest_parameters"] = widest_parameters
+    return table
 
 
 def _objection(rule: str) -> str:
