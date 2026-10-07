@@ -1,7 +1,7 @@
 """assistant 发一张单：把这个案子和一段程序写成一张单，落在会议目录下面。
 
 发单就是写文件：`<会议目录>/tickets/<工单号>/ticket.viba`。单上那几样（`ticket.Ticket`）都由这一处
-定：**号**从案子的名字来（`write_a_draft-quicksort`，看出是哪张单、哪个案子），**名字**是规范里要跑的
+定：**号**从案子的名字来（`<程序的名字>-<案子>`，一眼看出是哪张单、哪个案子），**名字**是规范里要跑的
 那一段程序，**调用**是 `__dyn_call__ << "<名字>"`，**存储根**是这个案子的值那一层，**找模块的路**是
 这一份规范给的，**时刻**是写下它的那一刻。
 
@@ -22,7 +22,7 @@ def ticket_uid(name: str, values_root) -> str:
     """这张单的号：`<程序的名字>-<案子>`。
 
     号就是它在 `tickets/` 和 `ticket_progress/` 两个目录下的目录名，所以要一眼看得出是哪张单、哪个
-    案子。案子名取最里面那一段（`case/quicksort-2` → `quicksort-2`）。
+    案子。案子名取最里面那一段（`case/<名字>-2` → `<名字>-2`）。
     """
     parts = [part for part in str(values_root).replace("\\", "/").rstrip("/").split("/") if part]
     case = ""
