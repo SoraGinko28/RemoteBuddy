@@ -304,7 +304,7 @@ def _record_lines(meeting_dir) -> List[str]:
 
 
 def _the_case(meeting_dir) -> str:
-    """板子上要看哪个案子：这场会里最后开的那一个（说过几句话就有几个案子）。"""
+    """页面上工单那一栏要看哪个案子：这场会里最后开的那一个（说过几句话就有几个案子）。"""
     cases = cases_of(meeting_dir)
     return cases[-1] if cases else ""
 
@@ -327,7 +327,7 @@ def _ticket_step(values, workflow, module_path: str, op: str) -> Dict[str, Any]:
 
 
 def _ticket_target(store: MeetingStore) -> str:
-    """板子上那个"要交的文件"：案子那份值里记着的，没有就看人第一句话里点到的文件名。"""
+    """页面上那个"要交的文件"：案子那份值里记着的，没有就看人第一句话里点到的文件名。"""
     case = _the_case(_tickets_home(store))
     if case:
         recorded = ValueStore(case_root(_tickets_home(store), case),
@@ -351,7 +351,7 @@ def _uid_of(meeting_dir, name: str, case: str) -> str:
 
 
 def _ticket_row(meeting_dir, workflow, case: str, name: str, values, state) -> Dict[str, Any]:
-    """板子上的一行：这张单发过没有、现在该不该发、要读什么、答了没有、谁试过几次。"""
+    """工单那一栏的一行：这张单发过没有、现在该不该发、要读什么、答了没有、谁试过几次。"""
     uid = _uid_of(meeting_dir, name, case)
     seen = state.get(uid, {})
     if values is None:
@@ -375,7 +375,7 @@ def _ticket_row(meeting_dir, workflow, case: str, name: str, values, state) -> D
 
 
 def _ticket_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
-    """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、谁试过，外加这场会的记录。
+    """这场会工单那一栏的内容：该发哪一张、每张要读什么/答了没有、发过哪几张、谁试过，外加这场会的记录。
 
     页面那一块"工单"就是它：`GET /api/meetings/<id>/tickets`。
     """
@@ -1495,7 +1495,7 @@ class MeetingWebService:
     # ------------------------------------------------------------------
 
     def tickets(self, meeting_id: str) -> Dict[str, Any]:
-        """这场会的工单板：该发哪一张、每张要读什么/答了没有、发过哪几张、谁试过、这场会的记录。"""
+        """这场会工单那一栏的内容：该发哪一张、每张要读什么/答了没有、发过哪几张、谁试过、这场会的记录。"""
         store = self.load_store(meeting_id)
         board = _ticket_board(store, self.project_root)
         with self.lock:
