@@ -57,14 +57,21 @@ def meeting_actor_caps(channel: AgentChannel, target: str = "quicksort.py") -> D
     agent 因此开始干活——工单驱动的会议里没有别人负责叫醒它。`write_code` 接着等它把文件交出来。
     """
 
+    # 这一趟开工的时候那个文件是什么时候的：上一次留下的那一版不算这一趟的活。
+    opened: Dict[str, Optional[int]] = {}
+
     def acknowledge(env, about):
         # 题面说进会议就是叫醒 agent 的那一下：说完就回，不等它回话（它接着就去写了，
         # 下一步 `write_code` 会等它把文件交出来）。
+        path = channel.file(target)
+        opened["before"] = path.stat().st_mtime_ns if path.is_file() else None
         channel.say(_writing_prompt(text_of(env, about), target))
         return "知道了，这就照题目写一版"
 
     def write_code(env, task, after):
-        return channel.ensure_work(_writing_prompt(text_of(env, task), target), target)
+        before = opened.pop("before", None)
+        return channel.ensure_work(_writing_prompt(text_of(env, task), target), target,
+                                   since=before, changed=before is not None)
 
     def report_done(env, code, after):
         # 它这一轮说过的那句收尾话；没说过就用这一句（别在这儿空等）。

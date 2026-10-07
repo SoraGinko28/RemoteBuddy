@@ -141,14 +141,18 @@ class AgentChannel:
         return self.workspace / name
 
     def ensure_work(self, instruction: str, target: str, *, force: bool = False,
-                    changed: bool = False, timeout: Optional[float] = None) -> str:
+                    changed: bool = False, since=None,
+                    timeout: Optional[float] = None) -> str:
         """让真 agent 交出 target，然后把那个文件读回来。
 
         `force` 是"再来一轮"（改版）：就算文件在，也要把这句话说给它。
         `changed` 是"这一轮得真把它改了"：它跟会议里别的角色你来我往说了几句，不算改完了。
+        `since` 是"照这个时刻比"：文件在那一趟开工之前就在了的话，那一趟得真把它改了才算交出来
+        （上一次留下的那一版不算这一趟的活）。
         """
         path = self.file(target)
-        before = path.stat().st_mtime_ns if path.is_file() else None
+        before = since if since is not None else (
+            path.stat().st_mtime_ns if path.is_file() else None)
         if force or before is None:
             chats = len(self.chats())
             if force or not self.turn_in_flight():

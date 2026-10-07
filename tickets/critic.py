@@ -30,7 +30,7 @@ from .workflow import Workflow
 JUDGMENT_DIR = "judgment"
 CODE_UNDER_JUDGMENT = "code_under_judgment"
 
-# 判语怎么说：规则名 ->（它量出来的那个数在哪个算子下，那句话）。规则自己给门槛，话由 critic 说。
+# 判语怎么说：规则名 ->（它自己算出来的那个数在哪个算子下，那句话）。门槛由规则自己给，话由 critic 说。
 RULE_WORDINGS = {
     "parameter_count_le_4": ("widest_parameters",
                              "参数最多的那个函数有 {count} 个参数，超过 4 个参数的上限"),
@@ -122,7 +122,7 @@ def _recorded(name: str, impl: Callable) -> Callable:
 
 
 def _objection(case: Environment, rule: str) -> str:
-    """规则说"不合格"时 critic 说的那句话：用它自己量出来的数。"""
+    """规则说"不合格"时 critic 说的那句话：用它自己算出来的那个数。"""
     written = RULE_WORDINGS.get(rule)
     if written is None:
         return f"{rule} 说不合格"

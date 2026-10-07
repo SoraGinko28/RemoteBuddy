@@ -336,6 +336,9 @@ class MeetingWebServiceTest(unittest.TestCase):
                                          {"message": message, "actor": "actor"})
                 seen.setdefault("instructions", []).append(message)
 
+            def file(self, name):
+                return self.working / name
+
             def wait_for_chat(self, _message_type, timeout=None):
                 return "知道了"
 
@@ -625,7 +628,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.wait_for_workers()
         self.assertEqual("medium", captured[-1].reasoning_effort)
 
-        # null resets to the config.toml default ("low" in this fixture).
+        # null resets to the config.toml default ("low" in this use case).
         self.service.set_reasoning_effort("effort-demo", {"reasoning_effort": None})
         self.service.message("effort-demo", {"message": "One more."})
         self.wait_for_workers()
