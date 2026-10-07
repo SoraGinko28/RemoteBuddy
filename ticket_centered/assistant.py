@@ -20,9 +20,10 @@ from typing import Callable, Dict, Optional
 
 from . import _viba  # noqa: F401
 
+from viba.interpret import write_snapshot
+
 from .host import read_stored, text_of, value_of
 from .member import bundle_main
-from .prepare import record_prepare
 from .store import Store
 
 RECORD_NAME = "meeting_record.md"
@@ -33,7 +34,7 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
 
     def stated_task(env, words: str = ""):
         """人类说了什么：落在案子自己的数据路径下。"""
-        record_prepare(env, "stated_task", None, words)
+        write_snapshot(env, words, "stated_task")
         return words
 
     def closing_note(env, code, verdict):

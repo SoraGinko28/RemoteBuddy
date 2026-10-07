@@ -40,8 +40,6 @@ from . import _viba  # noqa: F401
 
 from viba import viba_ast
 
-from .prepare import call_arguments
-
 ROLES = ("actor_api", "assistant_api", "critic_api")
 API_SUFFIX = "_api"
 
@@ -337,10 +335,10 @@ def apis_used_in(source: str) -> List[str]:
 
 
 def addresses_of_call(call) -> List[Tuple[str, str]]:
-    """The steps one Prepare's `$call` names: what that step itself read.
+    """The steps one work order's `$call` names: what that step itself read.
 
-    The call is written `__dyn_call__ << "name" << $task <an address> …`, and each argument may be
-    an address itself or a product carrying one.
+    The call is written `__dyn_call__ << "name" << $task <an address> …`, and each argument
+    may be an address itself or a product carrying one.
     """
     if call is None:
         return []
@@ -357,6 +355,31 @@ def addresses_of_call(call) -> List[Tuple[str, str]]:
         else:
             out.append(found)
     return out
+
+
+def call_arguments(call) -> List[viba_ast.AST]:
+    """一次调用里那几个实参，按写下来的次序。
+
+    调用写成 `__dyn_call__ << "名字" << 实参…`，名字不是实参，这里摊掉它；成员调用
+    （`__dyn_method__`）还多一个「从哪个值上取的」，那个也不算。不是这种写法的，整份就是它自己。
+    """
+    piece = getattr(call, "data", call)
+    if piece is None:
+        return []
+    if not isinstance(piece, viba_ast.Partial):
+        return [piece]
+    peeled = []
+    while isinstance(piece, viba_ast.Partial):
+        if piece.argument is not None:
+            peeled.append(piece.argument)
+        piece = piece.function
+    peeled.reverse()
+    if isinstance(piece, viba_ast.TypeRef):
+        if piece.name == "__dyn_method__":
+            return peeled[2:]
+        if piece.name == "__dyn_call__":
+            return peeled[1:]
+    return peeled
 
 
 def definitions_of(source: str) -> List[viba_ast.TypeDefinition]:

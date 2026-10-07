@@ -18,13 +18,13 @@ from typing import Callable, Dict, List
 
 from . import _viba  # noqa: F401
 
+from viba import viba_ast
 from viba.interpret import (Environment, EnvironmentCompute, interpret, read_snapshot,
                             write_snapshot)
 
-from .answer import failure_of, is_ok, value_of as answered_value
-from .host import text_of, value_of
+from .host import answer_of, failure_in, finished, text_of, value_of
 from .member import bundle_main
-from .prepare import measured_of, read_prepare, record_prepare
+from .store import leaf_value
 from .workflow import Workflow
 
 JUDGMENT_DIR = "judgment"
@@ -56,11 +56,11 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
         objections: List[str] = []
         for rule in workflow.rules():
             answer = interpret(str(_rule_file(rule, workflow, env, rules_dir)), case)
-            if not is_ok(answer):
-                raise RuntimeError(f"规则 {rule} 没跑完：{failure_of(answer)}")
+            if not finished(answer):
+                raise RuntimeError(f"规则 {rule} 没跑完：{failure_in(answer)}")
             if not _verdict(answer, rule):
                 objections.append(_objection(case, rule))
-        record_prepare(env, "objection", None, "；".join(objections))
+        write_snapshot(env, "；".join(objections), "objection")
         return not objections
 
     caps = {"judge": judge}
@@ -70,10 +70,11 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
 
 def _verdict(answer, rule: str) -> bool:
     """规则跑完答下的那个 bool；它不是 bool 就当场说清楚。"""
-    said = answered_value(answer).value
-    if not isinstance(said, bool):
-        raise RuntimeError(f"规则 {rule} 答的不是 bool：{said!r}")
-    return said
+    said = answer_of(answer)
+    piece = None if said is None else getattr(said, "data", None)
+    if not (isinstance(piece, viba_ast.Constant) and isinstance(piece.value, bool)):
+        raise RuntimeError(f"规则 {rule} 答的不是 bool：{piece!r}")
+    return piece.value
 
 
 def _rule_file(rule: str, workflow, env, rules_dir):
@@ -114,7 +115,7 @@ def _recorded(name: str, impl: Callable) -> Callable:
 
     def op(env, *args):
         value = impl(env, *args)
-        record_prepare(env, name, None, value)
+        write_snapshot(env, value, name)
         return value
 
     return op
@@ -126,8 +127,8 @@ def _objection(case: Environment, rule: str) -> str:
     if written is None:
         return f"{rule} 说不合格"
     measured_name, wording = written
-    measured, answered = measured_of(read_prepare(case, measured_name))
-    if not answered:
+    measured = leaf_value(read_snapshot(case, measured_name))
+    if measured is None:
         return f"{rule} 说不合格"
     return wording.format(count=value_of(measured))
 

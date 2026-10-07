@@ -24,8 +24,8 @@ from . import _viba  # noqa: F401
 from viba import viba_ast
 
 from .host import Member, capability_digest
-from .prepare import call_of
 from .store import Store
+from .tickets import read_ticket
 from .workflow import Workflow, addresses_of_call
 
 CASE_PREFIX = "case"
@@ -139,11 +139,11 @@ class Meeting:
             if (absolute, name) in seen:
                 continue
             seen.add((absolute, name))
-            prepared = self.store.prepared(absolute, name)
-            if prepared is None:
+            if not self.store.answered(absolute, name):
                 continue
             self.store.copy_stored(store_root, [(absolute, name)])
-            self._slice_calls(store_root, call_of(prepared), case, seen)
+            self._slice_calls(store_root, read_ticket(self.store.root, absolute, name),
+                              case, seen)
 
     def _slice_calls(self, store_root: Path, call, case: str, seen: set) -> None:
         for module_path, name in addresses_of_call(call):
@@ -151,11 +151,11 @@ class Meeting:
             if (absolute, name) in seen:
                 continue
             seen.add((absolute, name))
-            prepared = self.store.prepared(absolute, name)
-            if prepared is None:
+            if not self.store.answered(absolute, name):
                 continue
             self.store.copy_stored(store_root, [(absolute, name)])
-            self._slice_calls(store_root, call_of(prepared), case, seen)
+            self._slice_calls(store_root, read_ticket(self.store.root, absolute, name),
+                              case, seen)
 
     # ------------------------------------------------------------------
     # Reconciliation: every member kept a copy

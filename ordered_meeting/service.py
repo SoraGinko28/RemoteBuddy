@@ -1,19 +1,18 @@
 """一个成员作为一个服务：一张能力表，在共用的 store 上接单。
 
 一个服务只有三样：名字、角色、**能力表**（它会哪些算子）。它不像从前那样拿一份发给自己的包——
-程序在规范里（现读），数据在共用的 store 里（`<案子>/<数据路径>/prepare/`）。
+程序在规范里（现读），数据在共用的 store 里（`<案子>/<数据路径>/`）。
 它做两件事：
 
-* **接单**（`answer_service`）：store 里欠着的那些工单，能力表里有哪个算子就照它算哪个——实参从工单
-  的 `$call` 来，结果落到同一条数据路径下，并填回 `$measured`。这是"谁是服务"的正脸：一张能力表，
-  外加一摞别人写好的工单。
-* **跑一遍程序**（`run_service`）：自己会的算子算、store 里已有结果的回放、其余递延。发单那一侧
+* **接单**（`answer_service`）：store 里欠着的那些工单，能力表里有哪个算子就照它算哪个——跑的就是工单
+  上那一次调用（`$call`），值落在同一条数据路径下，这一次尝试写进这张单的进度。这是"谁是服务"的正脸：
+  一张能力表，外加一摞别人写好的工单。
+* **跑一遍程序**（`run_service`）：自己会的算子算、store 里已有值的回放、其余递延。发单那一侧
   （assistant）走的也是这条路，它做不了的那一步就是一张新工单。
 """
 
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import subprocess
@@ -25,13 +24,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from ticket_centered import _viba  # noqa: F401
 from .orders import owed, ticket_of
 
-from viba import viba_ast
-from viba.interpret import interpret, viba_data
+from viba.interpret import exec, interpret
 
-from ticket_centered.answer import Duty, duty_of, failure_of, value_of as answered_value
-from ticket_centered.host import Member
-from ticket_centered.prepare import call_arguments, record_prepare
+from ticket_centered.host import (Member, answer_of, failure_in, finished,
+                                  unimplemented_step)
 from ticket_centered.store import Store
+from ticket_centered.tickets import write_stage
 
 
 
@@ -48,7 +46,7 @@ class Report:
     deferred: List[Tuple[str, str]] = field(default_factory=list)
     failure: str = ""
     value: Any = None
-    duty: Optional[Duty] = None
+    owed: Optional[Tuple[str, str, Any]] = None
 
     @property
     def worked(self) -> bool:
@@ -124,80 +122,43 @@ def run_service(name: str, role: str, caps: Dict[str, Callable], *, store_root, 
         answered=answered,
         replayed=replayed,
         deferred=list(runner.deferred),
-        failure=failure_of(answer),
-        value=answered_value(answer),
-        duty=duty_of(answer),
+        failure=failure_in(answer),
+        value=answer_of(answer),
+        owed=unimplemented_step(answer),
     )
 
 
 # ----------------------------------------------------------------------
-# 接单：照工单里的 `$call` 算，结果填回 `$measured`
+# 接单：照工单上那次调用跑一遍
 # ----------------------------------------------------------------------
-
-
-def arguments_taken(implementation) -> int:
-    """这个实现要几个实参（环境不算）。
-
-    一次调用把实参交给实现，一份工单把那些实参留成一份可序列化数据，所以这个数说的就是怎么再交一遍：
-    环境单独一个参数是 0；`$call` 本身就是一个实参是 1；要拆开是 2 以上；签名看不出来（`*args`、
-    或者根本读不出来）是 -1，那时整份 `$call` 交过去。
-    """
-    try:
-        parameters = list(inspect.signature(implementation).parameters.values())
-    except (TypeError, ValueError):
-        return -1
-    if any(one.kind is inspect.Parameter.VAR_POSITIONAL for one in parameters):
-        return -1
-    counted = [one for one in parameters
-               if one.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                               inspect.Parameter.POSITIONAL_OR_KEYWORD)]
-    return len(counted) - 1
-
-
-def the_arguments(prepared, count: int, func_name: str) -> tuple:
-    """一份工单的 `$call` 里那几个实参，按写下来的次序。
-
-    一次调用把它写成 `__dyn_call__ << "名字" << $task … << $after …`；名字不是实参，摊掉它剩下的就是
-    实参（一个实参的调用留的就是那个实参，tag 也照样进去）。实现要几个就交几个，交不出来当场说清楚：
-    能随工单走的只有可序列化数据。
-    """
-    pieces = _the_pieces(prepared)
-    if len(pieces) != count:
-        raise ValueError(
-            f"{func_name!r} 的实现要 {count} 个实参，这份工单里留了 {len(pieces)} 个："
-            f"能随工单走的只有可序列化数据")
-    return tuple(pieces)
-
-
-def _the_pieces(prepared) -> list:
-    """摊开成一份一份实参：每个按它写下来的样子包成 viba 数据（tag 是名字，不进去）。"""
-    return [viba_data(one.type if isinstance(one, viba_ast.Tagged) else one)
-            for one in call_arguments(prepared)]
 
 
 def answer_service(name: str, role: str, caps: Dict[str, Callable], *, store_root, order: str,
                    case: str, workflow, record_path=None) -> Report:
-    """这个服务接单：store 里欠着的、它会的那些算子，照 `$call` 算掉。"""
+    """这个服务接单：store 里欠着的、它会的那些算子，照工单上那次调用跑一遍。
+
+    跑的就是工单上那一次调用（`$call`），环境是这条数据路径的，实现是它自己这张能力表——和它跑一整张
+    工单时走的是同一条路（`Runner._step`）。答下的值落在数据路径下，这一次尝试写进这张单的进度。
+    """
     ticket = ticket_of(store_root, order)
     store = Store(store_root, record_path)
-    answered: List[Tuple[str, str]] = []
+    runner = Member(name, role, caps).at(store, case, workflow.search_path())
+    failure = ""
     for module_path, func_name, call in owed(store, caps):
-        implementation = caps[func_name]
-        env = store.env(module_path, workflow.search_path(), case=case)
-        value = _computed(implementation, env, call, func_name)
-        record_prepare(env, func_name, call, value)
-        answered.append((module_path, func_name))
-    return Report(service=name, role=role, order=order, ticket=ticket, answered=answered)
-
-
-def _computed(implementation, env, call, func_name: str):
-    """照实现自己的参数个数，把工单里的 `$call` 交回给它。"""
-    count = arguments_taken(implementation)
-    if count == 0:
-        return implementation(env)
-    if count < 0:
-        return implementation(env, call)
-    return implementation(env, *the_arguments(call, count, func_name))
+        result = exec(call, runner.env(module_path))
+        write_stage(store_root, module_path, func_name, name, result)
+        if not finished(result):
+            failure = failure or failure_in(result)
+    return Report(
+        service=name,
+        role=role,
+        order=order,
+        ticket=ticket,
+        answered=[(path, op) for path, op, value in runner.did if value != "replayed"],
+        replayed=[(path, op) for path, op, value in runner.did if value == "replayed"],
+        deferred=list(runner.deferred),
+        failure=failure,
+    )
 
 
 # ----------------------------------------------------------------------

@@ -132,10 +132,10 @@ def test_a_bundle_is_the_data_the_ticket_reads_and_the_program_stays_in_the_norm
     bundles = meeting.publish("write_a_draft", case)
     assert set(bundles) == set(meeting.members)          # 发给会上的每个成员
     bundle = bundles["actor"]
-    assert (bundle / "store" / case / "prepare" / "stated_task.viba").is_file()
-    # 程序不发副本：包里一行 viba 程序都没有，它在规范目录里
-    assert not list(bundle.rglob("*.viba")) or all(
-        "prepare" in path.parts or path.name == "value.viba" for path in bundle.rglob("*.viba"))
+    assert (bundle / "store" / case / "stated_task.viba").is_file()
+    # 程序不发副本：包里只有值，工单和规范都不发
+    assert not list(bundle.rglob("tickets"))
+    assert all(path.name != "ticket.viba" for path in bundle.rglob("*.viba"))
     norm = norm_home()
     assert {"actor_api.viba", "critic_api.viba", "write_a_draft.viba"} <= {
         path.name for path in norm.rglob("*.viba")}

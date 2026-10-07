@@ -6,7 +6,8 @@
 ```
 <会议目录>/ordered/store/                     共用的那一份 store：**只有数据**（值、工单）
 <会议目录>/ordered/store/orders/<这一趟>/ticket   这一趟发的是哪张单（程序不发副本，在规范里）
-<会议目录>/ordered/store/<案子>/<数据路径>/prepare/<算子>.viba
+<会议目录>/ordered/store/<案子>/<数据路径>/<算子>.viba       这一步答下的值
+<会议目录>/ordered/store/<案子>/<数据路径>/tickets/<算子>/    这一步那张工单，和它被处理的每一次
 <会议目录>/ordered/meeting_record.md          这场会的记录：谁说了什么、发了哪张单、谁答了哪一步
 ```
 

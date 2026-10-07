@@ -2,7 +2,7 @@
 
 一轮做两件事，顺序不能反：
 
-1. **assistant 发单**：跑一遍工单程序，它做不了的那一步写成工单（`prepare/<算子>.viba`）；
+1. **assistant 发单**：跑一遍工单程序，它做不了的那一步写成工单（`tickets/<算子>/ticket.viba`）；
 2. **每个服务跑一遍**：自己会的算子算、store 里有结果的回放、其余递延。
 
 服务答下的值落在 store 里，下一轮的 assistant 跑到那里就直接回放，接着往前走。跑到哪一步都没有欠账、
@@ -174,7 +174,7 @@ class Session:
             if issued.failure:
                 outcome = Outcome(BROKEN, index, reports=reports, work_orders=work_orders)
                 break
-            if issued.duty is None:
+            if issued.owed is None:
                 following = self.due_ticket()
                 if following is None:
                     outcome = Outcome(OK, index, value=issued.value, reports=reports,

@@ -1,10 +1,11 @@
 """一场会的 store：数据路径下面挂值。
 
-一条**数据路径**就是 store 里的一条路（`case/quicksort/drafted`）。**值**就是那条路径下留下的那份
-（`prepare/<算子>.viba`，见 `prepare.py`）：`$call` 是这一步读了什么，`$measured` 是它答了什么
-（没答是 `nil`）。它不随工单走——工单里只有数据路径，要用的人照路径来读。会议记录也在这份 store 旁边。
+一条**数据路径**就是 store 里的一条路（`case/quicksort/drafted`）。**值**就是那条路径下的那份文件
+（`<算子>.viba`）：一次跑答下的东西，写成 viba 自己的快照——所以同一个调用再跑一遍读的就是这个值
+（`replay` 这件事在 viba 那一层，`read_snapshot` / `write_snapshot`）。它不随工单走：工单里只有数据
+路径和那次调用，要用的人照路径来读（见 `tickets.py`）。会议记录也在这份 store 旁边。
 
-这个模块只管两件事：按数据路径读写值（含打包时抄一份），和记这场会的记录。
+这个模块只管三件事：按数据路径读写值（含打包时抄一份）、记这场会的记录，外加"这条路径下有哪些值"。
 """
 
 from __future__ import annotations
@@ -15,12 +16,25 @@ from typing import Any, Iterable, List, Tuple
 
 from . import _viba  # noqa: F401
 
-from viba.interpret import Environment, EnvironmentCompute, EnvironmentStorage
+from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                            read_snapshot, write_snapshot)
+from viba.reflect import access as reflect_access
+from viba.type import VibaProgramErr
 
-from .prepare import (PREPARE_SEGMENT, VIBA_SUFFIX, measured_of, prepare_path,
-                      read_prepare, record_prepare)
+from .tickets import TICKETS_DIR
 
 RECORD_HEADING = "# 这场会的记录"
+VIBA_SUFFIX = ".viba"
+
+
+def leaf_value(node) -> Any:
+    """一个节点上那个值（一个叶子）；不是叶子、或者它写着 nil，就是 None。"""
+    if node is None:
+        return None
+    given = reflect_access.leaf(node)
+    if isinstance(given, VibaProgramErr) or given.ok_value is None:
+        return None
+    return given.ok_value
 
 
 class CaseStorage(EnvironmentStorage):
@@ -76,36 +90,41 @@ class Store:
             CaseStorage(module_path, None, str(self.root), case),
             EnvironmentCompute(get_func), viba_path)
 
-    def prepared(self, module_path: str, name: str):
-        """这条数据路径上留下的那份值，没有就是 None。"""
-        return read_prepare(self.env(module_path), name)
-
     def read(self, module_path: str, name: str) -> Tuple[Any, bool]:
-        """(留下的那个结果, 答了没有)。"""
-        return measured_of(self.prepared(module_path, name))
+        """(留下的那个值, 答了没有)。值就是那条数据路径下 `<算子>.viba` 里那份。
+
+        "答了没有"看的是那份值在不在——答下的东西不是一个叶子（一列、一份积）也算答了，只是这里给不出
+        一个裸值来。
+        """
+        stored = read_snapshot(self.env(module_path), name)
+        return leaf_value(stored), stored is not None
 
     def answered(self, module_path: str, name: str) -> bool:
-        return self.read(module_path, name)[1]
+        """这条数据路径下的这一步答了没有：那份值在不在。"""
+        return read_snapshot(self.env(module_path), name) is not None
 
-    def write(self, module_path: str, name: str, value, call=None) -> None:
-        """答一步：结果落在这一步自己的数据路径下。"""
-        record_prepare(self.env(module_path), name, call, value)
+    def value(self, module_path: str, name: str) -> Any:
+        """答下的那个值（一个叶子）；没答过、或者答下的不是叶子，就是 None。"""
+        return leaf_value(read_snapshot(self.env(module_path), name))
+
+    def write(self, module_path: str, name: str, value) -> None:
+        """答一步：值落在这条数据路径下，写成 `<算子>.viba`（同一个调用再跑就是回放它）。"""
+        write_snapshot(self.env(module_path), value, name)
 
     # ------------------------------------------------------------------
     # Which data paths carry something
     # ------------------------------------------------------------------
 
     def stored(self) -> List[Tuple[str, str]]:
-        """Every (data path, definition) this store carries, in path order."""
+        """这份 store 里留下的值：`(数据路径, 算子)`，按路径排（工单那几份不算）。"""
         found: List[Tuple[str, str]] = []
         if not self.root.is_dir():
             return found
         for file in sorted(self.root.rglob(f"*{VIBA_SUFFIX}")):
             parts = file.relative_to(self.root).parts
-            if PREPARE_SEGMENT not in parts:
+            if TICKETS_DIR in parts:
                 continue
-            index = parts.index(PREPARE_SEGMENT)
-            found.append(("/".join(parts[:index]), parts[-1][: -len(VIBA_SUFFIX)]))
+            found.append(("/".join(parts[:-1]), file.name[: -len(VIBA_SUFFIX)]))
         return found
 
     def copy_stored(self, into, wanted: Iterable[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -134,7 +153,7 @@ class Store:
     @staticmethod
     def _relative(module_path: str, name: str) -> Path:
         parts = [part for part in str(module_path).split("/") if part]
-        return Path(*parts) / prepare_path(f"{name}{VIBA_SUFFIX}")
+        return Path(*parts) / f"{name}{VIBA_SUFFIX}"
 
     # ------------------------------------------------------------------
     # The meeting record

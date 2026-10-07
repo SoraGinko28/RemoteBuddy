@@ -95,14 +95,16 @@ class OrderedMeetingTest(unittest.TestCase):
                          [(f"{CASE}/greeted", "acknowledge")])
         store = self.session.store
         value, answered = measured(store, f"{CASE}/greeted", "acknowledge")
-        self.assertFalse(answered)          # `$measured` 还是 nil：欠着的才是工单
+        self.assertFalse(answered)          # 还没有值：欠着的才是工单
         self.assertIsNone(value)
-        # 工单就是 store 里那份文件：`$call` 已经固定（它拿到了那件事的地址），`$measured` 还是 nil
-        work_order = self.store_root / CASE / "greeted" / "prepare" / "acknowledge.viba"
+        # 工单就是 store 里那份文件：里面直接就是那次调用，实参已经固定
+        work_order = (self.store_root / CASE / "greeted" / "tickets" / "acknowledge"
+                      / "ticket.viba")
         text = work_order.read_text(encoding="utf-8")
-        self.assertIn("$call", text)
-        self.assertIn("stated_task", text)
-        self.assertIn("$measured nil", text)
+        self.assertIn("__dyn_call__", text)
+        self.assertIn("actor_api.acknowledge", text)
+        self.assertIn("stated_task", text)          # 它拿到的那个实参
+        self.assertFalse((work_order.parent / "progress").exists())   # 还没人试过
 
     def test_what_is_owed_is_what_the_capability_table_can_do(self):
         self.issue_a_draft()
@@ -223,9 +225,12 @@ class OrderedMeetingTest(unittest.TestCase):
             _report, written = self.session.issue()
             self.assertEqual(len(written), 1)           # 一轮只往前走一步
             path, name, _call = written[0]
-            text = (self.store_root / path / "prepare" / f"{name}.viba").read_text(encoding="utf-8")
-            self.assertIn("$call", text)                # 实参已经固定
-            self.assertIn("$measured nil", text)        # 结果还没人算
+            text = (self.store_root / path / "tickets" / name / "ticket.viba").read_text(
+                encoding="utf-8")
+            self.assertIn("__dyn_call__", text)         # 文件里就是那次调用
+            self.assertIn(f"actor_api.{name}", text)    # 要哪个算子
+            # 实参已经固定，值还没有
+            self.assertFalse((self.store_root / path / f"{name}.viba").exists())
             owed_steps.append((path, name))
             self.assertEqual(self.session.answer("the-actor", "actor", caps).answered,
                              [(path, name)])
@@ -233,13 +238,13 @@ class OrderedMeetingTest(unittest.TestCase):
         self.assertEqual(owed_steps, [(f"{CASE}/greeted", "acknowledge"),
                                       (f"{CASE}/drafted", "write_code"),
                                       (f"{CASE}/report_done", "report_done")])
-        # 两步实参的调用：工单里按写下来的名字各留一份，填完还是两份都在
-        text = (self.store_root / CASE / "drafted" / "prepare" / "write_code.viba").read_text(
-            encoding="utf-8")
+        # 两步实参的调用：工单里按写下来的名字各留一份，答完了那份单还在
+        text = (self.store_root / CASE / "drafted" / "tickets" / "write_code"
+                / "ticket.viba").read_text(encoding="utf-8")
         self.assertIn("$task", text)
         self.assertIn("$after", text)
         self.assertIn("stated_task", text)
-        self.assertNotIn("$measured nil", text)
+        self.assertIn("__dyn_call__", text)
 
     def test_a_service_that_cannot_do_the_work_leaves_the_order_stuck(self):
         self.session.state_the_task(WORDS)
@@ -287,13 +292,12 @@ class ActorServiceProcessTest(unittest.TestCase):
         drafted, ok = store.read(f"{CASE}/drafted", "write_code")
         self.assertTrue(ok)
         self.assertEqual(drafted, CODE)
-        # 每一步的工单里都留着它拿到的实参，答完也还在
-        text = (self.store_root / CASE / "drafted" / "prepare" / "write_code.viba").read_text(
-            encoding="utf-8")
-        self.assertIn("$call", text)
+        # 每一步的工单里都留着它拿到的实参，答完也还在；这一次尝试记在同一张单的进度里
+        ticket_dir = self.store_root / CASE / "drafted" / "tickets" / "write_code"
+        text = (ticket_dir / "ticket.viba").read_text(encoding="utf-8")
         self.assertIn("$task", text)
         self.assertIn("stated_task", text)
-        self.assertNotIn("$measured nil", text)
+        self.assertEqual(len(list((ticket_dir / "progress").glob("*.viba"))), 1)
 
     def assistant_argv(self, words: bool = False):
         # 不给 --ticket：发哪一张由 assistant 读 store 算

@@ -24,8 +24,7 @@ from . import _viba  # noqa: F401
 
 from viba.interpret import interpret
 
-from .answer import failure_of
-from .host import Member
+from .host import Member, failure_in
 from .store import Store
 from .workflow import Workflow, load_workflow, workflow_root
 
@@ -66,7 +65,7 @@ def _hand_back(bundle: Path, store_root: Path) -> None:
 
 
 def _failure(answer) -> str:
-    return failure_of(answer)
+    return failure_in(answer)
 
 
 def _line(name: str, ticket: str, answered, deferred, failure: str) -> str:

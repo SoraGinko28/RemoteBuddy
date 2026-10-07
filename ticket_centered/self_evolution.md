@@ -124,7 +124,8 @@ Claude Code"的意思：**能改的是配置，改不了的是能力**。
 
 ```
 <会议目录>/ticket_centered/meeting_record.md     流程摘要 + 能力面摘要、每张工单、每个人自己的账
-<会议目录>/ticket_centered/store/                值：每条数据路径下一条 Prepare（$call / $measured）
+<会议目录>/ticket_centered/store/                值：每条数据路径下 `<算子>.viba`（那次跑答下的东西）
+<会议目录>/ticket_centered/store/<案子>/<路径>/tickets/<算子>/  那一步的工单（里面就是那次调用）+ progress/（每一次尝试）
 <会议目录>/ticket_centered/tickets/<工单>/<成员>/ 每个成员那份原件（program/ + store/）——对账靠它们
 <会议目录>/streams/events.jsonl                  journal：state/ticket_issued、state/ticket_ran
 GET /api/meetings/<会议号>/tickets               页面那块板子（该发哪一张、谁答的、判语、记录）
