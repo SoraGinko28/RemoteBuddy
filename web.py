@@ -312,7 +312,7 @@ def _the_case(meeting_dir) -> str:
 def _ticket_step(values, workflow, module_path: str, op: str) -> Dict[str, Any]:
     """一步：哪条数据路径、哪个算子、答了没有、归哪个角色答、答的是什么（短的那种值）。
 
-    `read` 交回的就是存下来的那个值：叶子是单个值。一版代码那种长值不往页面上搬，只有判语、收尾
+    `read` 交回的就是存下来的那个值：叶子是单个值。一版代码那种长值不往页面上搬，只有合格不合格、收尾
     这类短的话才带上——这一块是给页面看的。
     """
     value, answered = values.read(module_path, op) if values is not None else (None, False)

@@ -1,6 +1,6 @@
 """actor 这一侧：写代码这件事交给一个会写代码的 agent。
 
-能力表（`actor_caps`）就是 api 里那四件事：回一句"知道了"、写一版代码、回一句"做好了"、照判语改一版。
+能力表（`actor_caps`）就是 api 里那四件事：回一句"知道了"、写一版代码、回一句"做好了"、照它说过的地方改一版。
 "写"落在谁身上由调用者给：`actor_caps(write)` 里是 `write(prompt) -> code`；真会议里用
 `meeting_actor_caps(channel, target)`，`channel.AgentChannel` 把话发进真会议（会议服务的 HTTP 面）、
 等那个 agent 干完、从它的工作区把文件读回来。
@@ -43,7 +43,7 @@ def actor_caps(write: Callable[[str], str],
         previous = text_of(env, code)
         what = text_of(env, objection)
         if not what:
-            return previous                      # 判语没说不合格：照原样，不必再写一版
+            return previous                      # 它没说不合格：照原样，不必再写一版
         return write(_revision_prompt(previous, what))
 
     return {"acknowledge": acknowledge, "write_code": write_code,
@@ -83,7 +83,7 @@ def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable
         previous = text_of(env, code)
         what = text_of(env, objection)
         if not what:
-            return previous                      # 判语没说不合格：照原样，不必再叫一次 agent
+            return previous                      # 它没说不合格：照原样，不必再叫一次 agent
         return channel.ensure_work(_revising_prompt(previous, what, target), target,
                                    force=True, changed=True)
 
@@ -109,8 +109,8 @@ def _first_prompt(task: str) -> str:
 
 def _revision_prompt(previous: str, objection: str) -> str:
     if objection:
-        return f"判语说这一版不合格：{objection}\n照判语改一版：\n{previous}"
-    return f"判语没说不合格（照原样再交一版）：\n{previous}"
+        return f"上一版被指出不合格：{objection}\n照它说的地方改一版：\n{previous}"
+    return f"没人说不合格（照原样再交一版）：\n{previous}"
 
 
 def _writing_prompt(task: str, target: str) -> str:

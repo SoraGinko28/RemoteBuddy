@@ -170,7 +170,7 @@ def scripted_actor(service, meeting_id, write=None):
     """测试里表里 `agent` 那一行用的那张能力表。
 
     "写"是脚本化的；题面照真那一侧的做法在 `acknowledge` 那一步说进会议——那一下就是叫醒 agent，
-    所以页面那一侧（终端、拿手、消息）走的是同一条路。判语没说不合格时不叫 agent（真那一侧也是）。
+    所以页面那一侧（终端、拿手、消息）走的是同一条路。它没说不合格时不叫 agent（真那一侧也是）。
     """
     from tickets.binding import text_of
 
@@ -195,8 +195,8 @@ def scripted_actor(service, meeting_id, write=None):
         previous = text_of(env, code)
         what = text_of(env, objection)
         if not what:
-            return previous                      # 判语没说不合格：照原样，不必再叫一次 agent
-        writing(f"判语说这一版不合格：{what}\n照判语改一版：\n{previous}")
+            return previous                      # 它没说不合格：照原样，不必再叫一次 agent
+        writing(f"上一版被指出不合格：{what}\n照它说的地方改一版：\n{previous}")
         return author(previous)
 
     return {"acknowledge": acknowledge, "write_code": write_code,
@@ -300,7 +300,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(all(one["issued"] for one in board["tickets"]))
         judged = next(one for one in board["tickets"] if one["ticket"] == "judge_the_draft")
         answer = judged["answers"][0]
-        # 这一版是 4 个参数，规则的上限是 4：判语说合格（true）
+        # 这一版是 4 个参数，规则的上限是 4：它说合格（true）
         self.assertEqual((answer["op"], answer["role"], answer["answered"], answer["value"]),
                          ("judge", "critic", True, True))
         self.assertTrue(any("- 人类说了一句" in line for line in board["record"]))

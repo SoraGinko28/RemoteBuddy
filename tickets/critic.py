@@ -30,7 +30,7 @@ from .workflow import Workflow
 JUDGMENT_DIR = "judgment"
 CODE_UNDER_JUDGMENT = "code_under_judgment"
 
-# 判语上这一处只说"是哪条规则说不合格"：规则叫什么、要说什么话，都是规范的事，这一处不认识它们。
+# 这一处只说"是哪条规则说不合格"：规则叫什么、要说什么话，都是规范的事，这一处不认识它们。
 # （要规则自己说那句话，就得有一处 api 让它把话交出来，那是另一样东西。）
 
 

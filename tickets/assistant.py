@@ -38,11 +38,11 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
         return words
 
     def closing_note(env, code, verdict):
-        """这场会的结果：最后那版有多少行，判语是什么。"""
+        """这场会的结果：最后那版有多少行，它判下来合格没有。"""
         written = text_of(env, code)
         judged = value_of(read_stored(env, verdict))
         note = (f"这一版 {len(written.splitlines())} 行；"
-                f"判语：{'合格' if judged else '不合格'}")
+                f"判下来：{'合格' if judged else '不合格'}")
         if say is not None:
             say(note)
         return note

@@ -275,7 +275,7 @@ class AWholeMeetingTest(unittest.TestCase):
         handlers[2].caps.update(actor_caps(counting))
         session.stated_task(WORDS, handlers[0])
         session.run(handlers, out=lambda _line: None)
-        self.assertEqual(1, len(writes))              # 判语说合格，没有第二版要改
+        self.assertEqual(1, len(writes))              # 它说合格，没有第二版要改
         # 同一张单再跑一遍：案子里已有值的那几步回放，写那一步不再做
         again = handlers[2].attempt(read_ticket(self.meeting, "write_a_draft-quicksort"))
         self.assertTrue(again.answered())
