@@ -24,17 +24,13 @@ from viba.interpret import (Environment, EnvironmentCompute, interpret, read_sna
 
 from .binding import answer_of, failure_in, finished, text_of, value_of
 from .handler import Handler, program_caps
-from .values import leaf_value
 from .workflow import Workflow
 
 JUDGMENT_DIR = "judgment"
 CODE_UNDER_JUDGMENT = "code_under_judgment"
 
-# 判语怎么说：规则名 ->（它自己算出来的那个数在哪个算子下，那句话）。门槛由规则自己给，话由 critic 说。
-RULE_WORDINGS = {
-    "parameter_count_le_4": ("widest_parameters",
-                             "参数最多的那个函数有 {count} 个参数，超过 4 个参数的上限"),
-}
+# 判语上这一处只说"是哪条规则说不合格"：规则叫什么、要说什么话，都是规范的事，这一处不认识它们。
+# （要规则自己说那句话，就得有一处 api 让它把话交出来，那是另一样东西。）
 
 
 def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
@@ -59,7 +55,7 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
             if not finished(answer):
                 raise RuntimeError(f"规则 {rule} 没跑完：{failure_in(answer)}")
             if not _verdict(answer, rule):
-                objections.append(_objection(case, rule))
+                objections.append(_objection(rule))
         write_snapshot(env, "；".join(objections), "objection")
         return not objections
 
@@ -104,33 +100,14 @@ def _rule_compute() -> Dict[str, Callable]:
     def within_limit(env, count, limit):
         return value_of(count) <= value_of(limit)
 
-    return {name: _recorded(name, impl) for name, impl in (
-        ("code_under_judgment", code_under_judgment),
-        ("widest_parameters", widest_parameters),
-        ("within_limit", within_limit))}
+    return {"code_under_judgment": code_under_judgment,
+            "widest_parameters": widest_parameters,
+            "within_limit": within_limit}
 
 
-def _recorded(name: str, impl: Callable) -> Callable:
-    """跑完把这个数留在这条数据路径下：判语要用它说话。"""
-
-    def op(env, *args):
-        value = impl(env, *args)
-        write_snapshot(env, value, name)
-        return value
-
-    return op
-
-
-def _objection(case: Environment, rule: str) -> str:
-    """规则说"不合格"时 critic 说的那句话：用它自己算出来的那个数。"""
-    written = RULE_WORDINGS.get(rule)
-    if written is None:
-        return f"{rule} 说不合格"
-    measured_name, wording = written
-    measured = leaf_value(read_snapshot(case, measured_name))
-    if measured is None:
-        return f"{rule} 说不合格"
-    return wording.format(count=value_of(measured))
+def _objection(rule: str) -> str:
+    """规则说"不合格"时 critic 说的那句话：是哪条规则说的。"""
+    return f"{rule} 说不合格"
 
 
 def _inside_parentheses(text: str) -> str:
