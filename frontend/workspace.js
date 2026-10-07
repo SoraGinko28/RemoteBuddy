@@ -2317,7 +2317,7 @@ function outcomeText(tickets) {
   if (verdicts.length) {
     parts.push(verdicts.map((step, index) => `第 ${index + 1} 判 ${step.value ? "合格" : "不合格"}`).join("、"));
   }
-  if (objection) parts.push(`判语：${objection.value}`);
+  if (objection) parts.push(`不合格：${objection.value}`);
   if (closing) parts.push(`收尾：${closing.value}`);
   return parts.join("｜");
 }
