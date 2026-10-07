@@ -21,7 +21,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from meeting import MeetingStore  # noqa: E402
 from web import WORKSPACE_INDEX, MeetingWebService, WebError, _as_workspace  # noqa: E402
 
-from tests.test_web_http import FakeClient, FakeTransport, RecordingRunner, write_model_config  # noqa: E402
+from tests.test_web_http import (FakeClient, FakeTransport, RecordingRunner,  # noqa: E402
+                                 scripted_actor, write_model_config)
 
 
 class AsWorkspaceTest(unittest.TestCase):
@@ -68,6 +69,8 @@ class WorkspaceWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
+            tickets_caps_factory=lambda _store, meeting_id, _target: scripted_actor(
+                self.service, meeting_id),
         )
 
     def tearDown(self):
@@ -75,11 +78,14 @@ class WorkspaceWebServiceTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def wait_for_workers(self):
-        deadline = time.time() + 2
+        deadline = time.time() + 20
         while time.time() < deadline:
             with self.service.lock:
                 active = any(worker.is_alive() for worker in self.service.jobs.values())
-            if not active:
+                # 接单那一趟也在后台跑：它写这场会的数据，清理之前得等它。
+                taking = any(worker.is_alive()
+                             for worker in self.service.ticket_jobs.values())
+            if not active and not taking:
                 return
             time.sleep(0.01)
         self.fail("background worker did not finish")
@@ -118,6 +124,8 @@ class WorkspaceWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
+            tickets_caps_factory=lambda _store, meeting_id, _target: scripted_actor(
+                self.service, meeting_id),
         )
         listing = restarted.list_meetings()
         self.assertEqual([], listing["warnings"])
@@ -173,6 +181,8 @@ class WorkspaceWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
+            tickets_caps_factory=lambda _store, meeting_id, _target: scripted_actor(
+                self.service, meeting_id),
         )
         self.assertIn(str(self.other.resolve()), restarted.list_meetings()["workspaces"])
 

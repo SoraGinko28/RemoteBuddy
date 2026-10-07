@@ -773,56 +773,160 @@ class TerminalTakeoverTest(_PageTestCase):
         )
         self._assert_long_line(body)
 
-        # Resize 对准属于观看态；先结束 takeover，避免流式终端与观看态对准互相抢尺寸。
+    def test_takeover_reopens_stream_after_server_disconnect(self):
+        store = self._store()
+        store.update(phase="agent_thinking")
+        pane_id = self.service._transport().create_workspace_session(
+            store.meeting.session_name, store.workspace_path
+        )
+        store.set_session(pane_id)
+        self.service.acquire(self.meeting_id)
+
+        self.service.terminal_input(
+            self.meeting_id,
+            {"bytes": b"echo HI-9f3c\r".hex()},
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('HI-9f3c')",
+            20,
+            what="断流前页面看得到命令输出",
+        )
+        self.service.close_human_pipe(self.meeting_id)
+        self.service.terminal_input(
+            self.meeting_id,
+            {"bytes": b"echo TWO-9f3c\r".hex()},
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('TWO-9f3c')",
+            10,
+            what="断流后重开流并显示新命令输出",
+        )
         self.page.js("stopTerminalTakeover(false); 'released'")
         self.page.wait_for("window.__takeoverReady === false", 10, what="退出 takeover 回到观看态")
+
+    def test_takeover_stops_when_server_takes_control(self):
+        store = self._store()
+        store.update(phase="agent_thinking")
+        pane_id = self.service._transport().create_workspace_session(
+            store.meeting.session_name, store.workspace_path
+        )
+        store.set_session(pane_id)
+        self.service.acquire(self.meeting_id)
+
+        self.service.terminal_input(
+            self.meeting_id,
+            {"bytes": b"echo HI-9f3c\r".hex()},
+        )
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('HI-9f3c')",
+            20,
+            what="收权前页面看得到命令输出",
+        )
+        acquired_before = sum(
+            event["kind"] == "control" and event["actor"] == "human"
+            and event["data"].get("status") == "acquired"
+            for event in store.events()
+        )
+        store.update(phase="agent_thinking", control_owner="actor")
+        time.sleep(1.5)
+        self.service.close_human_pipe(self.meeting_id)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            self.assertFalse(self.page.js("window.__takeoverReady === true"))
+        acquired_after = sum(
+            event["kind"] == "control" and event["actor"] == "human"
+            and event["data"].get("status") == "acquired"
+            for event in store.events()
+        )
+        self.assertEqual(acquired_after, acquired_before)
+
+    def test_cursor_and_last_row_stay_inside_the_panel_while_lines_pile_up(self):
+        """光标跟着回车往下走时不许走出面板：以前格子比面板多三行，光标正好在被裁掉的那几行里。"""
+        store = self._store()
+        store.update(phase="agent_thinking")
+        pane_id = self.service._transport().create_workspace_session(
+            store.meeting.session_name, store.workspace_path
+        )
+        store.set_session(pane_id)
+        self.service.acquire(self.meeting_id)
         self.page.call(
             "Emulation.setDeviceMetricsOverride",
-            width=420,
-            height=900,
+            width=1152,
+            height=722,
             deviceScaleFactor=1,
             mobile=False,
         )
         self.page.wait_for(
-            """(() => {
-                const viewport = document.querySelector('#terminal-screen');
-                const terminal = viewport?.querySelector('.xterm');
-                if (!viewport || !terminal) return false;
-                const rows = viewport.querySelector('.xterm-rows');
-                return rows && terminal.scrollWidth <= terminal.clientWidth + 1;
-            })()""",
+            "document.querySelector('#terminal-screen .xterm') && window.__takeoverReady === true",
             20,
-            what="resize 应答后立即按 pane 尺寸重画",
+            what="页面接上真 tmux takeover",
         )
-        immediate = self.page.js(
+        self.service.terminal_input(self.meeting_id, {"bytes": b"echo CURSOR-9f3c\r".hex()})
+        self.page.wait_for(
+            "document.querySelector('#terminal-screen').innerText.includes('CURSOR-9f3c')",
+            20,
+            what="接管流里有输出",
+        )
+        self.page.wait_for(
+            "document.querySelectorAll('#terminal-screen [class*=xterm-cursor]').length > 0",
+            10,
+            what="终端把光标画出来",
+        )
+
+        # 一直敲回车，让行数超过屏幕高度：真终端这时会把内容顶上去，光标留在最后一行。
+        for _ in range(4):
+            self.service.terminal_input(self.meeting_id, {"bytes": (b"\r" * 10).hex()})
+            time.sleep(0.5)
+
+        captured_tail = [
+            line.rstrip()
+            for line in self.service._transport().capture(pane_id).splitlines()[-8:]
+        ]
+        rendered_tail = self.page.js(
+            """(() => [...document.querySelectorAll('#terminal-screen .xterm-rows > div')]
+                .slice(-8).map((row) => row.innerText.trimEnd()))()"""
+        )
+        self.assertEqual(
+            rendered_tail,
+            captured_tail,
+            "接管态页面底部文字必须逐字等于 tmux capture-pane 的底部几行",
+        )
+
+        geometry = self.page.js(
             """(() => {
-                const viewport = document.querySelector('#terminal-screen');
-                const terminal = viewport.querySelector('.xterm');
-                const rows = viewport.querySelector('.xterm-rows');
+                const panel = document.querySelector('#terminal-screen');
+                const screen = panel.querySelector('.xterm-screen');
+                const rows = [...panel.querySelectorAll('.xterm-rows > div')];
+                const cursor = panel.querySelector('.xterm-rows [class*=xterm-cursor]');
+                const box = (node) => {
+                    const rect = node.getBoundingClientRect();
+                    return {top: rect.top, bottom: rect.bottom, height: rect.height};
+                };
                 return {
-                    paneWidth: terminal?.clientWidth || 0,
-                    renderedWidth: rows?.getBoundingClientRect().width || 0,
-                    scrollWidth: terminal?.scrollWidth || 0,
-                    clientWidth: terminal?.clientWidth || 0,
+                    panel: box(panel),
+                    screen: box(screen),
+                    rowCount: rows.length,
+                    rowHeight: rows.length ? box(rows[0]).height : 0,
+                    cursor: cursor ? box(cursor) : null,
                 };
             })()"""
         )
-        self.assertLessEqual(immediate["scrollWidth"], immediate["clientWidth"] + 1, immediate)
-        self.page.js("document.querySelector('.agent-state')?.click(); 'opened'")
-        self.page.js("document.querySelector('#member-panel-close')?.click(); 'closed'")
-        self.page.call(
-            "Emulation.setDeviceMetricsOverride",
-            width=1280,
-            height=900,
-            deviceScaleFactor=1,
-            mobile=False,
+        self.assertIsNotNone(geometry["cursor"], geometry)
+        self.assertLessEqual(
+            geometry["screen"]["bottom"], geometry["panel"]["bottom"] + 1, geometry
         )
-        self.page.wait_for(
-            "document.querySelector('#terminal-screen').innerText.includes('TAIL-9f3c')",
-            20,
-            what="resize 和成员面板开合后尾巴仍在",
+        self.assertLessEqual(
+            geometry["rowHeight"] * geometry["rowCount"],
+            geometry["panel"]["height"] + 1,
+            geometry,
         )
-        self._assert_long_line(body)
+        self.assertLessEqual(
+            geometry["cursor"]["bottom"], geometry["panel"]["bottom"] + 1, geometry
+        )
+        self.assertLessEqual(
+            geometry["cursor"]["top"], geometry["panel"]["bottom"], geometry
+        )
 
     def _assert_long_line(self, body: str) -> None:
         result = self.page.js(

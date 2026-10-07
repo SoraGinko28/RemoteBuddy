@@ -186,7 +186,7 @@ def test_the_chat_apis_hit_the_known_binding_gap(api, wired) -> None:
                  moment, "bob", remote.make_text_region(0, 2)))}
     given = getattr(remote, api)(data.meeting_uid, *calls[api][1:])
     assert isinstance(given, VibaProgramErr)
-    assert "no branch of this sum carries a value" in given.err_msg
+    assert "no branch of this sum carries a value" in given.msg
 
 
 def test_a_failed_api_answers_its_err_branch(wired) -> None:
@@ -209,14 +209,14 @@ def test_a_missing_path_is_an_err_inside_the_script(wired) -> None:
 def test_an_unknown_api_is_a_404(wired) -> None:
     given = remote.client().call("no_such_api", wired.meeting_uid)
     assert isinstance(given, VibaProgramErr)
-    assert "404" in given.err_msg
+    assert "404" in given.msg
 
 
 def test_a_value_builder_is_not_served_over_the_wire(wired) -> None:
     """make_* builds a value; asking the server for one is a 400."""
     given = remote.client().call("make_text_region", wired.meeting_uid, start=0, end=2)
     assert isinstance(given, VibaProgramErr)
-    assert "builds a value" in given.err_msg
+    assert "builds a value" in given.msg
 
 
 def test_now_comes_from_the_server(wired) -> None:

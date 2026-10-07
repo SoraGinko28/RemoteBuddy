@@ -139,14 +139,14 @@ class TestSevenCells:
                                              reflect._Record(_versioned_file())))
         chain = node.get_file_content()
         assert accessor.length(chain).ok_value == 1
-        assert accessor.keys(chain).err_msg.startswith("this piece is not a dict")
-        assert accessor.length(node).err_msg.startswith("this piece is not a container")
+        assert accessor.keys(chain).msg.startswith("this piece is not a dict")
+        assert accessor.length(node).msg.startswith("this piece is not a container")
 
     def test_leaf_on_a_record_is_an_error(self) -> None:
         accessor = reflect.access
         node = accessor._unwrap(accessor.root(_definition("VersionedFile"),
                                              reflect._Record(_versioned_file())))
-        assert "not a leaf" in accessor.leaf(node).err_msg
+        assert "not a leaf" in accessor.leaf(node).msg
 
 
 # =====================================================================
@@ -243,7 +243,7 @@ class TestPythonLanding:
         node = _open(_versioned_file(), "VersionedFile")
         assert node.get_file_name().at_index(0).get_data().value == "a.py"
         assert node.has_file_name() is True
-        assert node.try_get_nope().err_msg.startswith("the design has no such address")
+        assert node.try_get_nope().msg.startswith("the design has no such address")
         assert "file_name" in node
         assert "nope" not in node
 
@@ -289,16 +289,16 @@ class TestConvenience:
         assert node.try_get_file_meta().ok_value is None        # a single step: Ok(nil)
         given = reflect.access.resolve(node, [reflect.by_tag("file_meta"),
                                             reflect.at_index(0)])
-        assert isinstance(given, VibaProgramErr) and given.err_msg == "this step has no value"
+        assert isinstance(given, VibaProgramErr) and given.msg == "this step has no value"
 
     def test_read_reports_a_missing_step(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
-        assert reflect.access.get_by_path(node, [reflect.by_tag("data")]).err_msg == "this step has no value"
+        assert reflect.access.get_by_path(node, [reflect.by_tag("data")]).msg == "this step has no value"
 
     def test_resolve_reports_an_unknown_step(self) -> None:
         node = _open(_file_id(), "FileId")
         given = reflect.access.resolve(node, [reflect.by_tag("nope")])
-        assert "no such address" in given.err_msg
+        assert "no such address" in given.msg
 
     def test_list_fields_keeps_what_is_there(self) -> None:
         node = _open(_file_id(), "FileId")

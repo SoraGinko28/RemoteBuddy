@@ -161,10 +161,10 @@ def _design_pool() -> VibaPool:
     pool = empty_pool()
     parsed = parse_viba_file(pool, _design_source(), DESIGN_FILE_NAME, DESIGN_MODULE_NAME)
     if isinstance(parsed, VibaProgramErr):
-        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not compile: {parsed.err_msg}")
+        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not compile: {parsed.msg}")
     added = pool_add_file(pool, parsed.ok_value)
     if isinstance(added, VibaProgramErr):
-        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not go into the pool: {added.err_msg}")
+        raise VibaReflectError(f"the {DESIGN_CHAPTER} chapter does not go into the pool: {added.msg}")
     return added.ok_value
 
 
@@ -175,7 +175,7 @@ def _definition(name: str) -> VibaDefinitionDescriptor:
     full_name = name if "." in name else f"{DESIGN_MODULE_NAME}.{name}"
     found = pool_find_definition(_design_pool(), full_name)
     if isinstance(found, VibaProgramErr):
-        raise VibaReflectError(found.err_msg)
+        raise VibaReflectError(found.msg)
     return found.ok_value
 
 
@@ -192,7 +192,7 @@ def _expression_definition(type_expression: str):
     pool = empty_pool()
     parsed = parse_viba_file(pool, source, "sdk_entry.viba", DESIGN_MODULE_NAME)
     if isinstance(parsed, VibaProgramErr):
-        return VibaProgramErr(f"cannot compile the return type {type_expression!r}: {parsed.err_msg}")
+        return VibaProgramErr(f"cannot compile the return type {type_expression!r}: {parsed.msg}")
     added = pool_add_file(pool, parsed.ok_value)
     if isinstance(added, VibaProgramErr):
         return added
@@ -581,7 +581,7 @@ class VibaAccess:
 
     def _unwrap(self, given: Result):
         if isinstance(given, VibaProgramErr):
-            raise VibaReflectError(given.err_msg)
+            raise VibaReflectError(given.msg)
         if given.ok_value is None:
             raise VibaReflectError("this piece has no value")
         return given.ok_value
@@ -1096,10 +1096,14 @@ def _payload_of(data):
 
     When ``$ok T`` matches ``Ok`` (a single ``value`` slot), what is taken is
     the payload itself, so ``result.get_ok().value`` reads the value; an enum
-    is left alone (it is itself that branch's value).
+    is left alone (it is itself that branch's value). A ``VibaProgramErr`` is
+    the ``$err str`` branch, so the sentence it carries — ``msg`` — is what that
+    branch holds; the call chain the error also keeps is no part of the design.
     """
     if isinstance(data, Enum):
         return data
+    if isinstance(data, VibaProgramErr):
+        return data.msg
     slots = getattr(type(data), "__slots__", None)
     if isinstance(slots, str):
         slots = (slots,)

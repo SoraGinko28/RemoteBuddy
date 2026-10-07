@@ -179,7 +179,7 @@ def test_a_chat_part_that_does_not_bind_is_refused() -> None:
     given = _source("ChatMessage", adt.ChatMessage(
         user_name="alice", time=_moment(), message=[adt.RawMessage("hi")]))
     assert isinstance(given, VibaProgramErr)
-    assert "no branch" in given.err_msg
+    assert "no branch" in given.msg
 
 
 def test_serialize_refuses_a_missing_step() -> None:

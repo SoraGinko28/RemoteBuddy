@@ -32,8 +32,9 @@ const el = Object.fromEntries([
   "api-key-input", "base-url-input", "api-key-hint", "api-key-name",
   "skill-cell", "reload-skill-button", "restart-agent-button",
   "event-dialog", "event-title", "event-content", "close-event", "toast", "welcome-toast",
-  "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-issue-button", "ticket-hint",
+  "ticket-toggle", "ticket-panel", "ticket-title", "ticket-digest", "ticket-hint",
   "ticket-outcome", "ticket-details", "ticket-list", "ticket-record",
+  "ticket-progress", "ticket-progress-shell",
   "rename-dialog", "rename-form", "rename-input", "rename-error", "rename-close", "rename-cancel", "rename-submit",
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
@@ -1378,6 +1379,14 @@ const takeoverStream = {
   source: null,
   inputHex: "",
   flushTimer: null,
+  reconnectTimer: null,
+  watchdogTimer: null,
+  // Meeting whose terminal the server took back from us (the agent resumed).
+  // Until the human asks for it again, the page must not re-acquire: every
+  // acquire interrupts the agent's turn, so trading it back and forth leaves
+  // the agent permanently interrupted.
+  yieldedFor: null,
+  lastEventAt: 0,
   flushing: false,
   lastFlushErrorAt: 0,
   keyHandler: null,
@@ -1460,19 +1469,30 @@ function renderedTerminalCellWidth(engine) {
   }
 }
 
+// The `.xterm` box carries `margin: 0 4px 4px` (workspace.css). The grid and
+// the fitted line height both have to fit inside that margin: rows laid out
+// past the panel edge are clipped, and the row that gets lost is the one the
+// cursor sits on.
+function terminalPanelBox() {
+  return {
+    width: Math.max(0, (el.terminal_screen.clientWidth || 0) - 2 * TERMINAL_SIDE_MARGIN_PX),
+    height: Math.max(0, (el.terminal_screen.clientHeight || 0) - TERMINAL_BOTTOM_MARGIN_PX),
+  };
+}
+
 function takeoverGrid(engine) {
-  const terminalInner = el.terminal_screen.querySelector(".xterm") || el.terminal_screen;
-  const panelWidth = Math.max(0, (el.terminal_screen.clientWidth || 0) - 8);
-  const panelHeight = el.terminal_screen.clientHeight || 0;
+  const panel = terminalPanelBox();
+  const panelWidth = panel.width;
+  const panelHeight = panel.height;
   const charWidth = renderedTerminalCellWidth(engine);
   const cellHeight = terminalCellHeight(engine);
   let cols = 80;
   if (panelWidth > 0 && charWidth > 0) {
-    cols = Math.max(40, Math.min(300, Math.floor(panelWidth / charWidth)));
+    cols = Math.max(40, Math.min(300, Math.floor((panelWidth - charWidth) / charWidth)));
   }
   let rows = 24;
-  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor(panelHeight / TERMINAL_ROW_PX);
-  rows = Math.max(12, Math.min(120, rows));
+  if (panelHeight > 0 && cellHeight > 0) rows = Math.floor(panelHeight / cellHeight);
+  rows = Math.max(1, Math.min(120, rows));
   return { cols, rows };
 }
 
@@ -1554,7 +1574,9 @@ function bindTakeoverInput(engine) {
   ]) {
     document.addEventListener(type, handler, true);
   }
-  try { engine.focus(); } catch (_error) { /* no-op */ }
+  // Focus is raised once the panel is actually visible (see the seed
+  // handler): focusing a `visibility: hidden` textarea leaves Chrome to move
+  // focus later without firing the focus event xterm's cursor needs.
 }
 
 function unbindTakeoverInput() {
@@ -1573,14 +1595,16 @@ function unbindTakeoverInput() {
 
 function startTerminalTakeover() {
   if (takeoverStream.active) return;
-  // Measure the viewport grid on the CURRENT engine (its cell metrics are
-  // already real from frame painting), then hand the stream a brand-new
-  // Terminal so no painted cells survive into the byte-stream mode.
-  const previous = ensureTerminalEngine();
-  const grid = previous ? takeoverGrid(previous) : { cols: 80, rows: 24 };
+  // Hand the stream a brand-new Terminal so no painted cells survive into the
+  // byte-stream mode, then measure the viewport grid on THAT engine: the
+  // previous one may be running a stretched line height fitted to a watched
+  // frame, and its cell box is not the box takeover draws with.
+  ensureTerminalEngine();
   const engine = rebuildTerminalEngine();
   if (!engine) return;
+  const grid = takeoverGrid(engine);
   takeoverStream.active = true;
+  takeoverStream.lastEventAt = Date.now();
   globalThis.__takeoverReady = true;
   takeoverRepaintPending = false;
   takeoverRepaintForceReset = false;
@@ -1605,12 +1629,16 @@ function startTerminalTakeover() {
   termRowsState = null;
   engine.reset();
   bindTakeoverInput(engine);
+  // Keys never reach xterm's own handler here (disableStdin), so takeover has
+  // to raise the focus event that makes xterm draw its cursor.
+  initializeTerminalCursor(engine, true);
 
   const streamUrl = `/api/meetings/${encodeURIComponent(state.selectedId)}/terminal/stream?cols=${grid.cols}&rows=${grid.rows}`;
   const source = new EventSource(streamUrl);
   takeoverStream.source = source;
   source.addEventListener("size", (event) => {
     if (!takeoverStream.active) return;
+    takeoverStream.lastEventAt = Date.now();
     const match = /^(\d+)x(\d+)$/.exec(event.data || "");
     if (!match) return;
     const paneWidth = Number(match[1]);
@@ -1623,6 +1651,7 @@ function startTerminalTakeover() {
   });
   source.addEventListener("seed", (event) => {
     if (!takeoverStream.active) return;
+    takeoverStream.lastEventAt = Date.now();
     engine.reset();
     engine.write(new Uint8Array(decodeBase64(event.data)));
     engine.scrollToBottom();
@@ -1630,28 +1659,76 @@ function startTerminalTakeover() {
       requestAnimationFrame(() => {
         if (takeoverStream.active && takeoverStream.source === source) {
           el.terminal_screen.dataset.geometryReady = "true";
+          // Only now is the panel visible, so focusing the terminal raises the
+          // focus event xterm draws its cursor from (the takeover keyboard
+          // path is the app's own, so nothing else ever raises one).
+          setTimeout(() => {
+            if (takeoverStream.active && takeoverStream.source === source) {
+              initializeTerminalCursor(engine, true);
+            }
+          }, 0);
         }
       });
     });
   });
   source.addEventListener("data", (event) => {
     if (!takeoverStream.active) return;
+    takeoverStream.lastEventAt = Date.now();
     engine.write(new Uint8Array(decodeBase64(event.data)));
     engine.scrollToBottom();
   });
   source.addEventListener("control", (event) => {
     if (!takeoverStream.active) return;
+    takeoverStream.lastEventAt = Date.now();
     if (event.data === "reset") engine.reset();
-    if (event.data === "released") stopTerminalTakeover(false);
-  });
-  source.onerror = () => {
-    // The server closes the stream with a 4xx when takeover ended; do not
-    // let EventSource reconnect forever once control is no longer human.
-    const meeting = state.snapshot?.meeting;
-    if (!meeting || meeting.control_owner !== "human" || meeting.phase !== "human_control") {
+    if (event.data === "released") {
+      takeoverStream.yieldedFor = state.selectedId || null;
       stopTerminalTakeover(false);
     }
+  });
+  source.onerror = async () => {
+    // The server closes the stream with a 4xx when takeover ended; do not
+    // let EventSource reconnect forever once control is no longer human.
+    try {
+      await refreshSelected();
+    } catch (_error) {
+      // The existing snapshot is still sufficient for the reconnect decision.
+    }
+    if (!takeoverStream.active || takeoverStream.source !== source) return;
+    const meeting = state.snapshot?.meeting;
+    if (!meeting || meeting.control_owner !== "human" || meeting.phase !== "human_control") {
+      takeoverStream.yieldedFor = state.selectedId || null;
+      stopTerminalTakeover(false);
+      return;
+    }
+    if (takeoverStream.reconnectTimer !== null) return;
+    stopTerminalTakeover(false);
+    takeoverStream.reconnectTimer = setTimeout(() => {
+      takeoverStream.reconnectTimer = null;
+      const current = state.snapshot?.meeting;
+      if (current?.control_owner === "human" && current.phase === "human_control") {
+        startTerminalTakeover();
+      }
+    }, 500);
   };
+  takeoverStream.watchdogTimer = setInterval(() => {
+    if (!takeoverStream.active || Date.now() - takeoverStream.lastEventAt < 20000) return;
+    const current = state.snapshot?.meeting;
+    if (current?.control_owner !== "human" || current.phase !== "human_control") {
+      takeoverStream.yieldedFor = state.selectedId || null;
+      stopTerminalTakeover(false);
+      return;
+    }
+    if (takeoverStream.reconnectTimer !== null) return;
+    stopTerminalTakeover(false);
+    takeoverStream.reconnectTimer = setTimeout(() => {
+      takeoverStream.reconnectTimer = null;
+      const latest = state.snapshot?.meeting;
+      if (latest?.control_owner === "human" && latest.phase === "human_control") {
+        startTerminalTakeover();
+      }
+    }, 500);
+  }, 5000);
   // Bring focus in so typing starts working immediately after 接管.
   setTimeout(() => {
     if (takeoverStream.active) {
@@ -1663,6 +1740,10 @@ function startTerminalTakeover() {
 function stopTerminalTakeover(flushPending) {
   if (!takeoverStream.active) return;
   takeoverStream.active = false;
+  if (takeoverStream.watchdogTimer !== null) {
+    clearInterval(takeoverStream.watchdogTimer);
+    takeoverStream.watchdogTimer = null;
+  }
   globalThis.__takeoverReady = false;
   if (takeoverStream.flushTimer !== null) {
     clearTimeout(takeoverStream.flushTimer);
@@ -1705,7 +1786,7 @@ function stopTerminalTakeover(flushPending) {
 }
 
 function syncTerminalTakeover(live) {
-  if (live && !takeoverStream.active) {
+  if (live && !takeoverStream.active && takeoverStream.yieldedFor !== state.selectedId) {
     startTerminalTakeover();
   } else if (!live && takeoverStream.active) {
     stopTerminalTakeover(true);
@@ -1721,6 +1802,9 @@ let takeoverRepaintForceReset = false;
 const TERMINAL_FONT_SIZE = 12;
 const TERMINAL_LINE_HEIGHT = 1.42;
 const TERMINAL_ROW_PX = TERMINAL_FONT_SIZE * TERMINAL_LINE_HEIGHT;
+// `.terminal-screen.xterm-host .xterm { margin: 0 4px 4px }` in workspace.css.
+const TERMINAL_SIDE_MARGIN_PX = 4;
+const TERMINAL_BOTTOM_MARGIN_PX = 4;
 let termRowsState = null; // { width, height, plain: string[] } of last painted frame
 
 const TERMINAL_STYLE_CODES = { bold: "1", dim: "2", italic: "3", underline: "4", blink: "5", reverse: "7" };
@@ -1812,10 +1896,29 @@ function paintTerminalFrame(term, rows, width, height, hasWaiting) {
   termRowsState = { width, height, plain: rows.map((row) => row.plain) };
 }
 
+// How tall a row really is by the time it is on screen: `.xterm-rows` lays its
+// rows out at the drawn cell height, which with `lineHeight` set comes out a
+// little taller than xterm's own cell metric.
+function drawnRowHeight(term) {
+  try {
+    const rows = term?.element?.querySelector(".xterm-rows");
+    const count = rows?.children?.length || 0;
+    if (count > 0) {
+      const drawn = rows.getBoundingClientRect().height / count;
+      if (Number.isFinite(drawn) && drawn > 0) return drawn;
+    }
+  } catch (_error) {
+    // not drawn yet
+  }
+  return NaN;
+}
+
 // Real xterm cell height depends on the installed font and the display, so it
-// is measured at runtime (cache per engine) instead of hard-coded; static
-// guesses clip the bottom row on some machines/screens.
+// is measured at runtime instead of hard-coded; static guesses clip the bottom
+// row on some machines/screens.
 function terminalCellHeight(term) {
+  const drawn = drawnRowHeight(term);
+  if (Number.isFinite(drawn)) return drawn;
   if (term && term._cellHeight) return term._cellHeight;
   const fromDims = (() => {
     try {
@@ -1853,15 +1956,37 @@ function terminalCellHeight(term) {
 // invisible forever. Borrow focus once per engine and hand it straight back:
 // the focus handler initializes the cursor, and the previous element (e.g. the
 // chat composer) keeps the keyboard.
-function initializeTerminalCursor(term) {
-  if (terminalEngine?.cursorInitDone) return;
-  if (terminalEngine) terminalEngine.cursorInitDone = true;
+// xterm draws its cursor only after its textarea has seen a focus event
+// (`_showCursor`). Watching mode paints captured frames and takeover sends
+// keys through the app's own handler, so nothing else raises that event, and
+// a terminal rebuilt while its panel is still `visibility: hidden` gets the
+// browser's focus without the event. Raise it here.
+//
+// `takeFocus` is for takeover, where the human is typing into the terminal and
+// it should keep the keyboard. Without it the call only starts xterm's cursor
+// and hands the focus back, so watching never steals the composer's focus.
+function initializeTerminalCursor(term, takeFocus = false) {
+  const textarea = term?.textarea || null;
+  const root = term?.element || null;
+  if (!textarea || !root || root.classList.contains("focus")) return;
+  const previous = document.activeElement;
+  if (!terminalEngine?.cursorInitDone) {
+    if (terminalEngine) terminalEngine.cursorInitDone = true;
+  } else if (!takeFocus && previous !== textarea) {
+    return;
+  }
   try {
-    const previous = document.activeElement;
-    term.focus();
-    if (previous && previous !== document.activeElement && typeof previous.focus === "function") {
+    textarea.focus();
+    if (!root.classList.contains("focus")) {
+      // The browser moved the focus without raising the event xterm waits for
+      // (focus fixup after the panel turns visible); hand it over directly.
+      textarea.dispatchEvent(new FocusEvent("focus"));
+    }
+    if (!takeFocus && previous && previous !== textarea && previous !== document.activeElement) {
       setTimeout(() => {
-        if (document.activeElement === term.textarea) previous.focus();
+        if (document.activeElement === textarea && typeof previous.focus === "function") {
+          previous.focus();
+        }
       }, 0);
     }
   } catch (_error) {
@@ -1937,11 +2062,11 @@ function renderTerminal() {
     // Fixed font size: when the panel is shorter than the captured frame,
     // show the bottom window of the frame (like a terminal scrolled to the
     // bottom) instead of shrinking the font. The cursor line stays visible.
-    const panelHeight = el.terminal_screen.clientHeight || 0;
-    const cellHeight = TERMINAL_ROW_PX;
+    const panelHeight = terminalPanelBox().height;
     let fittingRows = fullRows;
     if (panelHeight > 0) {
-      fittingRows = Math.floor(panelHeight / cellHeight);
+      const drawnCell = terminalCellHeight(engine);
+      if (drawnCell > 0) fittingRows = Math.floor(panelHeight / drawnCell);
       fittingRows = Math.max(4, Math.min(fullRows, fittingRows));
     }
     const viewRows = Math.min(fullRows, fittingRows);
@@ -1954,13 +2079,9 @@ function renderTerminal() {
         ? { event_id: source.event_id || "", content: source.content }
         : null;
       if (geometryChanged) engine.resize(width, viewRows);
-      if (panelHeight > 0 && viewRows > 0) {
-        const fittedLineHeight = TERMINAL_LINE_HEIGHT * panelHeight / (viewRows * TERMINAL_ROW_PX);
-        if (Number.isFinite(fittedLineHeight) && fittedLineHeight >= 1) {
-          engine.options.lineHeight = fittedLineHeight;
-          engine.resize(width, viewRows);
-        }
-      }
+      // The line height stays fixed: stretching it to fill the panel made the
+      // drawn cell depend on the previous frame, and the grid taken from that
+      // cell then shrank the pane a little more on every round.
       const ansi = typeof terminal.ansi === "string" ? terminal.ansi : "";
       const waiting = !ansi && !hasScreenContent;
       const cursorX = Number(terminal.cursor_x);
@@ -2174,11 +2295,6 @@ function renderTickets() {
     running ? "跑着" : due ? "该发" : "",
   ].filter(Boolean).join(" · ");
   el.ticket_digest.textContent = String(board.digest || "").slice(0, 8);
-  el.ticket_issue_button.hidden = !due || Boolean(running);
-  if (due) {
-    el.ticket_issue_button.textContent = `发 ${due.ticket}`;
-    el.ticket_issue_button.dataset.ticket = due.ticket;
-  }
   const done = tickets.filter((one) => one.issued).length;
   el.ticket_hint.textContent = [
     `${done}/${tickets.length} 张发过了`,
@@ -2188,6 +2304,7 @@ function renderTickets() {
   ].filter(Boolean).join("｜");
   el.ticket_outcome.textContent = outcomeText(tickets);
   el.ticket_list.replaceChildren(...tickets.map(ticketRow));
+  el.ticket_progress.replaceChildren(...(board.progress || []).flatMap(progressRows));
   el.ticket_record.textContent = (board.record || []).join("\n");
 }
 
@@ -2205,16 +2322,41 @@ function outcomeText(tickets) {
   return parts.join("｜");
 }
 
+function progressRows(one) {
+  // 一张单的进度：它被处理过的每一次，一次一行（谁试的、做完了没有、什么时候）。
+  const who = one.who || [];
+  const rows = who.map((name, index) => {
+    const last = index === who.length - 1;
+    const row = node("div", "ticket-progress-row");
+    row.append(node("span", "ticket-progress-name", name));
+    row.append(node("span", "ticket-progress-ticket", one.ticket));
+    if (last) {
+      row.append(node("span", `ticket-chip ${one.answered ? "state-issued" : "state-bad"}`,
+        one.last_answered ? "做完了" : "停在这儿"));
+      if (!one.last_answered && one.last_stop) {
+        row.append(node("span", "ticket-meta", one.last_stop));
+      }
+    }
+    return row;
+  });
+  return rows.length ? rows : [node("div", "ticket-progress-row", "还没有人试过")];
+}
+
 function ticketRow(one) {
   const row = node("div", `ticket-row${one.due ? " due" : ""}`);
   row.append(node("span", "ticket-name", one.ticket));
   row.append(node("span", `ticket-chip ${one.due ? "state-due" : one.issued ? "state-issued" : ""}`,
     one.due ? "该发" : one.issued ? "发过了" : "还没轮到"));
+  if (one.tries) {
+    row.append(node("span", "ticket-meta",
+      `${one.answered ? "做完了" : "没做完"}｜试过 ${one.tries} 次${one.who?.length ? "：" + one.who.join("→") : ""}`));
+  }
   const answers = one.answers || [];
   const answered = answers.filter((step) => step.answered);
   const roles = [...new Set(answered.map((step) => step.role).filter(Boolean))];
   row.append(node("span", "ticket-meta",
     `${roles.join("、") || "—"} 答了 ${answered.length}/${answers.length} 步`));
+  row.dataset.uid = one.uid || "";
   const verdict = answers.find((step) => step.op === "judge" && typeof step.value === "boolean");
   const note = answers.find((step) => step.op === "closing_note" && step.value);
   if (verdict) row.append(node("span", `ticket-chip ${verdict.value ? "state-issued" : "state-bad"}`,
@@ -2237,17 +2379,6 @@ function lastSegment(path) {
 function lastSegments(path, count) {
   const parts = String(path || "").split("/").filter(Boolean);
   return parts.slice(-count).join("/") || String(path || "");
-}
-
-async function postTicket(ticket) {
-  if (!state.selectedId || !ticket) return;
-  try {
-    await api(`/api/meetings/${encodeURIComponent(state.selectedId)}/tickets/${encodeURIComponent(ticket)}`,
-      { method: "POST", body: JSON.stringify({}) });
-    await refreshSelected();
-  } catch (error) {
-    toast(error.message);
-  }
 }
 
 function referenceKey(reference) {
@@ -2884,6 +3015,11 @@ async function refreshSelected() {
   if (!snapshotResult.notModified) {
     state.snapshot = snapshotResult.payload;
     state.snapshotEtag = snapshotResult.etag;
+    const meeting = state.snapshot.meeting;
+    if (takeoverStream.active && (meeting.control_owner !== "human" || meeting.phase !== "human_control")) {
+      takeoverStream.yieldedFor = state.selectedId || null;
+      stopTerminalTakeover(false);
+    }
     changed = true;
   }
   if (ticketsResult && !ticketsResult.notModified) {
@@ -2925,7 +3061,7 @@ function schedulePoll() {
   clearTimeout(state.pollTimer);
   if (!state.selectedId) return;
   const active = state.snapshot && !["completed", "failed", "interrupted"].includes(state.snapshot.meeting.status)
-    && !["api_error", "cycle_timeout", "waiting_for_user", "completion_proposed", "human_control"].includes(state.snapshot.meeting.phase);
+    && !["api_error", "cycle_timeout", "waiting_for_user", "completion_proposed"].includes(state.snapshot.meeting.phase);
   state.pollTimer = setTimeout(async () => {
     try {
       await refreshSelected();
@@ -3741,7 +3877,10 @@ function bind() {
     } catch (error) { toast(error.message); }
     finally { el.restart_agent_button.disabled = false; }
   });
-  el.acquire_button.addEventListener("click", () => postMeetingAction("control/acquire").catch((error) => toast(error.message)));
+  el.acquire_button.addEventListener("click", () => {
+    takeoverStream.yieldedFor = null;
+    postMeetingAction("control/acquire").catch((error) => toast(error.message));
+  });
   el.release_button.addEventListener("click", () => postMeetingAction("control/release").catch((error) => toast(error.message)));
   el.terminal_copy_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalPlainText));
   el.terminal_copy_ansi_button?.addEventListener("click", () => copyTextToClipboard(lastTerminalAnsiText || lastTerminalPlainText));
@@ -3757,7 +3896,6 @@ function bind() {
   el.complete_button.addEventListener("click", () => { if (confirm("结束会话并保留 tmux 工作区？")) postMeetingAction("complete").catch((error) => toast(error.message)); });
   el.stop_button.addEventListener("click", () => { if (confirm("中止会话并清理 tmux 工作区？")) postMeetingAction("stop").catch((error) => toast(error.message)); });
   el.cleanup_button.addEventListener("click", () => postMeetingAction("cleanup").catch((error) => toast(error.message)));
-  el.ticket_issue_button.addEventListener("click", () => postTicket(el.ticket_issue_button.dataset.ticket));
   el.ticket_toggle.addEventListener("click", () => {
     el.session_view.classList.toggle("tickets-open");
   });
