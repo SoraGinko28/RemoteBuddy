@@ -14,10 +14,10 @@ import urllib.request
 from pathlib import Path
 
 from meeting import MAX_ATTACHMENT_BYTES, MeetingStore
-from ordered_meeting.actor import actor_service, live_service
-from ordered_meeting.members import write_table
-from ticket_centered import norm_home
-from ticket_centered.store import Store
+from tickets.actor import actor_caps, meeting_actor_caps
+from tickets.table import write_table
+from tickets.workflow import norm_home
+from tickets.values import Store
 from web import CSRF_HEADER, MeetingWebService, RemoteBuddyHTTPServer, WebError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -166,6 +166,43 @@ def write_model_config(root):
     return directory
 
 
+def scripted_actor(service, meeting_id, write=None):
+    """测试里表里 `agent` 那一行用的那张能力表。
+
+    "写"是脚本化的；题面照真那一侧的做法在 `acknowledge` 那一步说进会议——那一下就是叫醒 agent，
+    所以页面那一侧（终端、拿手、消息）走的是同一条路。判语没说不合格时不叫 agent（真那一侧也是）。
+    """
+    from tickets.binding import text_of
+
+    author = write or (lambda _prompt: DRAFT_ORDERS)
+
+    def writing(instruction):
+        with service.tickets_speaking(meeting_id):
+            service.message(meeting_id, {"message": instruction, "actor": "actor"})
+
+    def acknowledge(env, about):
+        writing(f"照这份题面写一版代码：\n{text_of(env, about)}\n"
+                "结果写进 quicksort.py（就地写文件），写完回复 DONE，不要问我问题。")
+        return "知道了，这就照题目写一版"
+
+    def write_code(env, task, after):
+        return author(text_of(env, task))
+
+    def report_done(env, code, after):
+        return "做好了"
+
+    def revise_code(env, code, objection):
+        previous = text_of(env, code)
+        what = text_of(env, objection)
+        if not what:
+            return previous                      # 判语没说不合格：照原样，不必再叫一次 agent
+        writing(f"判语说这一版不合格：{what}\n照判语改一版：\n{previous}")
+        return author(previous)
+
+    return {"acknowledge": acknowledge, "write_code": write_code,
+            "report_done": report_done, "revise_code": revise_code}
+
+
 class MeetingWebServiceTest(unittest.TestCase):
     def setUp(self):
         RecordingRunner.instances.clear()
@@ -190,6 +227,8 @@ class MeetingWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
+            tickets_caps_factory=lambda _store, meeting_id, _target: scripted_actor(
+                self.service, meeting_id),
         )
 
     def tearDown(self):
@@ -199,8 +238,8 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.wait_for_workers()
         self.temporary.cleanup()
 
-    def orders_service(self, caps_factory):
-        """同一套测试用的会议服务，只是开着工单那一侧。"""
+    def tickets_service(self, caps_factory):
+        """同一套测试用的会议服务：表里 `agent` 那一行用给定的那张能力表。"""
         return MeetingWebService(
             project_root=self.root,
             model_api_path=self.model_api,
@@ -208,29 +247,28 @@ class MeetingWebServiceTest(unittest.TestCase):
             runner_factory=RecordingRunner,
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
-            orders=True,
-            orders_caps_factory=caps_factory,
+            tickets_caps_factory=caps_factory,
         )
 
     def test_a_message_runs_as_work_orders(self):
         """工单那一侧：那句话先进 assistant，由它一张一张发单，actor / critic 接单。"""
         words = "写一个快速排序，放到 quicksort.py"
-        service = self.orders_service(lambda _store, _meeting, _target: actor_service(
+        service = self.tickets_service(lambda _store, _meeting, _target: actor_caps(
             lambda _prompt: DRAFT_ORDERS))
         store = service.start({"message": words, "meeting_id": "orders-demo"})
-        self.wait_for_orders(service, "orders-demo")
+        self.wait_for_tickets(service, "orders-demo")
 
-        ordered = Path(store.run_dir) / "ordered" / "store"
+        ordered = Path(store.run_dir) / "store"
         written, answered = Store(ordered).read("case/quicksort/drafted", "write_code")
         self.assertTrue(answered)
         self.assertIn("def quick_sort", written)
         _judged, answered = Store(ordered).read("case/quicksort/judged", "judge")
         self.assertTrue(answered)
-        self.assertTrue((Path(store.run_dir) / "ordered" / "meeting_record.md").is_file())
+        self.assertTrue((Path(store.run_dir) / "meeting_record.md").is_file())
 
         events = service.events("orders-demo", 0)["events"]
-        started = [one for one in events if one.get("phase") == "orders_started"]
-        finished = [one for one in events if one.get("phase") == "orders_finished"]
+        started = [one for one in events if one.get("phase") == "tickets_started"]
+        finished = [one for one in events if one.get("phase") == "tickets_finished"]
         self.assertEqual(1, len(started))
         self.assertEqual("ok", finished[-1]["data"]["outcome"])
         self.assertEqual("completion_proposed",
@@ -261,23 +299,23 @@ class MeetingWebServiceTest(unittest.TestCase):
         shutil.copytree(norm_home(), norm)
         write_table(norm / "services", [
             "actor actor_api agent",
-            f"critic critic_api process python -m ordered_meeting.critic --workflow {norm}",
+            f"critic critic_api process python -m tickets.critic --workflow {norm}",
         ])
         words = "写一个快速排序，放到 quicksort.py"
-        service = self.orders_service(lambda _store, _meeting, _target: actor_service(
+        service = self.tickets_service(lambda _store, _meeting, _target: actor_caps(
             lambda _prompt: DRAFT_ORDERS))
         with mock.patch.dict(os.environ, {"REMOTEBUDDY_NORM": str(norm)}):
             store = service.start({"message": words, "meeting_id": "orders-table"})
-            self.wait_for_orders(service, "orders-table")
+            self.wait_for_tickets(service, "orders-table")
 
-        ordered = Path(store.run_dir) / "ordered" / "store"
+        ordered = Path(store.run_dir) / "store"
         judged, answered = Store(ordered).read("case/quicksort/judged", "judge")
         self.assertTrue(answered)
         self.assertTrue(judged)
         finished = [one for one in service.events("orders-table", 0)["events"]
-                    if one.get("phase") == "orders_finished"]
+                    if one.get("phase") == "tickets_finished"]
         self.assertEqual("ok", finished[-1]["data"]["outcome"])
-        record = (Path(store.run_dir) / "ordered" / "meeting_record.md").read_text(encoding="utf-8")
+        record = (Path(store.run_dir) / "meeting_record.md").read_text(encoding="utf-8")
         self.assertIn("- critic（critic）答了", record)
 
     def test_an_instruction_from_the_order_is_not_a_new_human_message(self):
@@ -293,8 +331,9 @@ class MeetingWebServiceTest(unittest.TestCase):
                 self.working = working
 
             def say(self, message):
-                with self.service.orders_speaking("orders-instruction"):
-                    self.service.message("orders-instruction", {"message": message})
+                with self.service.tickets_speaking("orders-instruction"):
+                    self.service.message("orders-instruction",
+                                         {"message": message, "actor": "actor"})
                 seen.setdefault("instructions", []).append(message)
 
             def wait_for_chat(self, _message_type, timeout=None):
@@ -308,20 +347,22 @@ class MeetingWebServiceTest(unittest.TestCase):
 
         working = self.root / "workspace"
         working.mkdir(exist_ok=True)
-        service = self.orders_service(
-            lambda _store, _meeting, _target: actor_service(None) if False else None)
-        service.orders_caps_factory = lambda _store, meeting_id, _target: live_service(
+        service = self.tickets_service(
+            lambda _store, _meeting, _target: actor_caps(None) if False else None)
+        service.tickets_caps_factory = lambda _store, meeting_id, _target: meeting_actor_caps(
             FakeChannel(service, working), "quicksort.py")
         store = service.start({"message": words, "meeting_id": "orders-instruction"})
-        self.wait_for_orders(service, "orders-instruction")
+        self.wait_for_tickets(service, "orders-instruction")
 
         events = service.events("orders-instruction", 0)["events"]
-        started = [one for one in events if one.get("phase") == "orders_started"]
+        started = [one for one in events if one.get("phase") == "tickets_started"]
         self.assertEqual(1, len(started))                       # 没有再起一趟
         self.assertTrue(seen["instructions"])                   # 题面真发进会议了
         chats = [one for one in events if one["kind"] == "chat"]
-        self.assertIn("照这份题面写一版代码", chats[-1]["content"])
-        written, answered = Store(Path(store.run_dir) / "ordered" / "store").read(
+        self.assertTrue(any("照这份题面写一版代码" in one["content"] for one in chats))
+        self.assertTrue(all(one["actor"] != "human" or "照这份题面" not in one["content"]
+                            for one in chats))
+        written, answered = Store(Path(store.run_dir) / "store").read(
             "case/quicksort/drafted", "write_code")
         self.assertTrue(answered)
         self.assertIn("def quick_sort", written)
@@ -338,8 +379,8 @@ class MeetingWebServiceTest(unittest.TestCase):
             gate.wait(5)
             return DRAFT_ORDERS
 
-        service = self.orders_service(
-            lambda _store, _meeting, _target: actor_service(slow_write))
+        service = self.tickets_service(
+            lambda _store, _meeting, _target: actor_caps(slow_write))
         service.start({"message": "写一个快速排序，放到 quicksort.py",
                        "meeting_id": "orders-queued"})
         deadline = time.time() + 5
@@ -348,11 +389,11 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(written)                                  # 头一趟真跑起来了
 
         service.message("orders-queued", {"message": "再写一版，放到 quicksort.py"})
-        self.assertIn("orders-queued", service.orders_pending)     # 排着，没弹错
+        self.assertIn("orders-queued", service.ticket_pending)     # 排着，没弹错
         gate.set()
         # 等两趟都跑完：第二趟是在头一趟收尾那一小段里起的，等"没有活着的活"会早一步看到
         reading = Store(Path(service.load_store("orders-queued").run_dir)
-                        / "ordered" / "store")
+                        / "store")
         deadline = time.time() + 30
         stored = ""
         while time.time() < deadline:
@@ -366,38 +407,38 @@ class MeetingWebServiceTest(unittest.TestCase):
         deadline = time.time() + 30
         while time.time() < deadline:
             finished = [one for one in service.events("orders-queued", 0)["events"]
-                        if one.get("phase") == "orders_finished"]
+                        if one.get("phase") == "tickets_finished"]
             if len(finished) == 2:
                 break
             time.sleep(0.02)
         started = [one for one in service.events("orders-queued", 0)["events"]
-                   if one.get("phase") == "orders_started"]
+                   if one.get("phase") == "tickets_started"]
         self.assertEqual(2, len(started))
         self.assertEqual(2, len(finished))
 
     def test_a_pass_that_died_is_taken_up_by_a_fresh_service(self):
         """上一趟断在半路（谁也没接那一步）：换个服务实例起来，store 里欠着的那些接着跑完。"""
         words = "写一个快速排序，放到 quicksort.py"
-        broken = self.orders_service(lambda _store, _meeting, _target: {})   # 谁也不会，一步就停
+        broken = self.tickets_service(lambda _store, _meeting, _target: {})   # 谁也不会，一步就停
         store = broken.start({"message": words, "meeting_id": "orders-resume"})
-        self.wait_for_orders(broken, "orders-resume")
-        self.assertFalse(Store(Path(store.run_dir) / "ordered" / "store").read(
+        self.wait_for_tickets(broken, "orders-resume")
+        self.assertFalse(Store(Path(store.run_dir) / "store").read(
             "case/quicksort/greeted", "acknowledge")[1])          # 那一步还欠着
 
-        fresh = self.orders_service(lambda _store, _meeting, _target: actor_service(
+        fresh = self.tickets_service(lambda _store, _meeting, _target: actor_caps(
             lambda _prompt: DRAFT_ORDERS))
-        self.assertEqual(["orders-resume"], fresh.resume_unfinished_orders())
-        # 等到这一趟真收完尾：`orders_finished` 那行先落，阶段是紧跟着改的，别抢那几毫秒
+        self.assertEqual(["orders-resume"], fresh.resume_unfinished_tickets())
+        # 等到这一趟真收完尾：`tickets_finished` 那行先落，阶段是紧跟着改的，别抢那几毫秒
         deadline = time.time() + 30
         while time.time() < deadline:
             done = [one for one in fresh.events("orders-resume", 0)["events"]
-                    if one.get("phase") == "orders_finished"
+                    if one.get("phase") == "tickets_finished"
                     and one["data"].get("outcome") == "ok"]
             phase = MeetingStore.load_in_workspace(self.root, "orders-resume").meeting.phase
             if done and phase == "completion_proposed":
                 break
             time.sleep(0.02)
-        reading = Store(Path(store.run_dir) / "ordered" / "store")
+        reading = Store(Path(store.run_dir) / "store")
         written, answered = reading.read("case/quicksort/drafted", "write_code")
         self.assertTrue(answered)                                 # 接着跑完了
         self.assertIn("def quick_sort", written)
@@ -406,39 +447,40 @@ class MeetingWebServiceTest(unittest.TestCase):
 
     def test_the_manual_issue_button_has_no_place_in_orders_mode(self):
         """工单模式下发单的只有 assistant：手按那一下要当场说清楚，不去动老那一侧。"""
-        service = self.orders_service(lambda _store, _meeting, _target: actor_service(
+        service = self.tickets_service(lambda _store, _meeting, _target: actor_caps(
             lambda _prompt: DRAFT_ORDERS))
         service.start({"message": "写一个快速排序，放到 quicksort.py",
                        "meeting_id": "orders-button"})
-        self.wait_for_orders(service, "orders-button")
+        self.wait_for_tickets(service, "orders-button")
         with self.assertRaises(WebError) as caught:
             service.issue_ticket("orders-button", "write_a_draft")
         self.assertEqual(409, caught.exception.status)
         self.assertIn("assistant 发单", caught.exception.message)
-        # 老那一侧一点没动：没有包，也没有它的 store
-        self.assertFalse((Path(service.load_store("orders-button").run_dir)
-                          / "ticket_centered" / "store").exists())
+        # 发单只走 assistant 那一条路：这场会的工单和进度真的落在了会议目录下
+        run_dir = Path(service.load_store("orders-button").run_dir)
+        self.assertTrue(any((run_dir / "tickets").glob("*/ticket.viba")))
+        self.assertTrue(any((run_dir / "ticket_progress").glob("*/*.viba")))
 
     def test_a_second_message_runs_its_own_pass(self):
         """同一场会里再说一句：再来一趟，有自己的案子。"""
         words = "写一个快速排序，放到 quicksort.py"
-        service = self.orders_service(lambda _store, _meeting, _target: actor_service(
+        service = self.tickets_service(lambda _store, _meeting, _target: actor_caps(
             lambda _prompt: DRAFT_ORDERS))
         store = service.start({"message": words, "meeting_id": "orders-twice"})
-        self.wait_for_orders(service, "orders-twice")
+        self.wait_for_tickets(service, "orders-twice")
         service.message("orders-twice", {"message": "再写一版，放到 quicksort.py"})
         deadline = time.time() + 30
         finished: list = []
         while time.time() < deadline:
             finished = [one for one in service.events("orders-twice", 0)["events"]
-                        if one.get("phase") == "orders_finished"]
+                        if one.get("phase") == "tickets_finished"]
             if len(finished) == 2:
                 break
             time.sleep(0.02)
         self.assertEqual(2, len(finished))
         self.assertEqual(["ok", "ok"], [one["data"]["outcome"] for one in finished])
 
-        reading = Store(Path(store.run_dir) / "ordered" / "store")
+        reading = Store(Path(store.run_dir) / "store")
         first, answered = reading.read("case/quicksort/drafted", "write_code")
         self.assertTrue(answered)
         second, answered = reading.read("case/quicksort-2/drafted", "write_code")
@@ -446,35 +488,35 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertIn("def quick_sort", second)
 
     def test_the_scripted_writer_seam_runs_a_whole_meeting(self):
-        """`REMOTEBUDDY_ORDERS_WRITER` 把"写"换成脚本化的：这一侧不叫真 agent 也能跑一整场。"""
+        """`REMOTEBUDDY_TICKETS_WRITER` 把"写"换成脚本化的：这一侧不叫真 agent 也能跑一整场。"""
         words = "写一个快速排序，放到 quicksort.py"
-        service = self.orders_service(None)
-        with mock.patch.dict(os.environ, {"REMOTEBUDDY_ORDERS_WRITER":
+        service = self.tickets_service(None)
+        with mock.patch.dict(os.environ, {"REMOTEBUDDY_TICKETS_WRITER":
                                           "tests.scripted_actor:write"}):
             store = service.start({"message": words, "meeting_id": "orders-scripted"})
-            self.wait_for_orders(service, "orders-scripted")
+            self.wait_for_tickets(service, "orders-scripted")
 
-        written, answered = Store(Path(store.run_dir) / "ordered" / "store").read(
+        written, answered = Store(Path(store.run_dir) / "store").read(
             "case/quicksort/drafted", "write_code")
         self.assertTrue(answered)
         self.assertIn("def quick_sort", written)
         finished = [one for one in service.events("orders-scripted", 0)["events"]
-                    if one.get("phase") == "orders_finished"]
+                    if one.get("phase") == "tickets_finished"]
         self.assertEqual("ok", finished[-1]["data"]["outcome"])
 
-    def wait_for_orders(self, service, meeting_id, timeout=20):
+    def wait_for_tickets(self, service, meeting_id, timeout=20):
         """等这一场会那趟工单跑完。"""
         deadline = time.time() + timeout
         while time.time() < deadline:
             with service.lock:
-                job = service.orders_jobs.get(meeting_id)
+                job = service.ticket_jobs.get(meeting_id)
             if job is None or not job.is_alive():
                 return
             time.sleep(0.01)
         self.fail("orders thread did not finish")
 
     def wait_for_workers(self):
-        deadline = time.time() + 2
+        deadline = time.time() + 20
         while time.time() < deadline:
             with self.service.lock:
                 active = any(worker.is_alive() for worker in self.service.jobs.values())
@@ -482,7 +524,10 @@ class MeetingWebServiceTest(unittest.TestCase):
                 capturing = any(
                     worker.is_alive() for worker in self.service.capture_jobs.values()
                 )
-            if not active and not queued and not capturing:
+                # 接单那一趟也在后台跑：它还在写这场会的数据，清理之前得等它。
+                taking = any(worker.is_alive()
+                             for worker in self.service.ticket_jobs.values())
+            if not active and not queued and not capturing and not taking:
                 return
             time.sleep(0.01)
         self.fail("background worker did not finish")
@@ -497,7 +542,9 @@ class MeetingWebServiceTest(unittest.TestCase):
     def test_start_list_snapshot_and_incremental_events(self):
         store = self.start_meeting()
         self.assertEqual(2, store.meeting.schema_version)
-        self.assertEqual("waiting_for_user", store.meeting.phase)
+        # 这一句话交给 assistant 那一趟：它跑完（这里的两三毫秒）就把这一场报到"可以收尾"，
+        # 还没跑完就停在"等下一句"。两种都是活着的会，页面读得到。
+        self.assertIn(store.meeting.phase, {"waiting_for_user", "completion_proposed"})
         self.assertEqual(1, len(RecordingRunner.instances))
 
         # 1 版的清单直接跳过，2 版但读不出来的记一条警告；两个都在工作区的 .meeting/ 下。
@@ -843,7 +890,8 @@ class MeetingWebServiceTest(unittest.TestCase):
 
         回错误的话前端会把刚发出去的话塞回输入框，人以为没发出去，再发一遍 —— 真会里就
         这么重复发出去了三条。这里要的是：消息留在对话里，会议进 api_error 并写着原因，
-        响应里带着 agent_error。
+        响应里带着 agent_error。人那句话现在先进 assistant，所以叫醒 agent 的是会里成员说的那句
+        （工单派活那条路），这里就照那个身份发。
         """
         self.start_meeting("bad-config")
         # 会开起来之后才把配置弄坏：请求预算超出允许范围。
@@ -854,7 +902,10 @@ class MeetingWebServiceTest(unittest.TestCase):
             'reasoning_effort="low"\n',
             encoding="utf-8",
         )
-        store, agent_error = self.service.message("bad-config", {"message": "继续"})
+        # 人的那句话走 assistant（那条路上 agent 还没被叫）；叫醒 agent 的是工单派活那句，
+        # 这里就照会里成员的身份发一句，试的是"起不来时不回错误"。
+        store, agent_error = self.service.message("bad-config",
+                                                  {"message": "继续", "actor": "actor"})
         self.assertIn("request_timeout_seconds", agent_error)
         self.assertEqual("api_error", store.meeting.phase)
         self.assertTrue(store.meeting.recovery_required)
@@ -915,7 +966,8 @@ class MeetingWebServiceTest(unittest.TestCase):
             before = len(RecordingRunner.instances)
             self.service.message(
                 "immediate-message",
-                {"message": "stop and look at this", "delivery": "next_action"},
+                {"message": "stop and look at this", "delivery": "next_action",
+                 "actor": "actor"},
             )
             self.wait_for_workers()
             self.assertEqual(before, len(RecordingRunner.instances))
@@ -927,14 +979,16 @@ class MeetingWebServiceTest(unittest.TestCase):
             store.update(status="running", phase="agent_thinking", control_owner="actor")
             self.service.message(
                 "immediate-message",
-                {"message": "no really, look now", "delivery": "interrupt"},
+                {"message": "no really, look now", "delivery": "interrupt",
+                 "actor": "actor"},
             )
             self.wait_for_workers()
             self.assertEqual(before + 1, len(RecordingRunner.instances))
         reloaded = MeetingStore.load_in_workspace(self.root, "immediate-message")
         self.assertEqual("waiting_for_user", reloaded.meeting.phase)
-        human = [e for e in reloaded.chat_messages() if e["actor"] == "human"]
-        self.assertEqual("no really, look now", human[-1]["content"])
+        # 会里成员说的那句记在它自己名下：人说的话和会里派活说的话不再混在一起。
+        said = [e for e in reloaded.chat_messages() if e["actor"] == "actor"]
+        self.assertEqual("no really, look now", said[-1]["content"])
 
     def test_message_reference_is_derived_from_source_event(self):
         self.start_meeting("reference-demo")

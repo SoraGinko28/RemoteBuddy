@@ -1,8 +1,8 @@
-"""测试用的写手：这一版里 actor 的"写"是脚本化的。
+"""""测试用的写手：这一版里 actor 的"写"是脚本化的。""
 
-真会议里 `--writer` 不指这里，`ordered_meeting.actor` 走 `AgentChannel`（说话进会议、等那个 agent
-干完、从它的工作区读回文件）。测试要的是不依赖 agent 也能把工单这条链跑通：`write(prompt) -> code`
-原样交一版，别的都是真的（真解释器、真 store、真服务进程）。
+真会议里 `--writer` 不指这里，`tickets.actor` 走会议那条线（说话进会议、等那个 agent 干完、从它的
+工作区读回文件）。测试要的是不依赖 agent 也能把工单这条链跑通：`write(prompt) -> code` 原样交一版，
+别的都是真的（真解释器、真案子、真进程）。
 """
 
 from __future__ import annotations
