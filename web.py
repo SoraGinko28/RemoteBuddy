@@ -84,6 +84,7 @@ from tickets.actor import actor_caps, writer_from
 from tickets.channel import LoopbackChannel
 from tickets.layout import case_root, record_path as ticket_record_path
 from tickets.assistant import what_to_make as what_to_make_of_norm
+from tickets.meeting import a_file_in
 from tickets.meeting import case_for, cases_of, run_for_meeting
 from tickets.plan import due as due_ticket, ticket_named
 from tickets.progress import the_state
@@ -311,7 +312,7 @@ def _the_case(meeting_dir) -> str:
 def _ticket_step(values, workflow, module_path: str, op: str) -> Dict[str, Any]:
     """一步：哪条数据路径、哪个算子、答了没有、归哪个角色答、答的是什么（短的那种值）。
 
-    `read` 交回的就是存下来的那个值：叶子是单个值。一版代码那种长值不往页面上搬，只有判语、收尾
+    `read` 交回的就是存下来的那个值：叶子是单个值。一版代码那种长值不往页面上搬，只有合格不合格、收尾
     这类短的话才带上——这一块是给页面看的。
     """
     value, answered = values.read(module_path, op) if values is not None else (None, False)
@@ -326,13 +327,16 @@ def _ticket_step(values, workflow, module_path: str, op: str) -> Dict[str, Any]:
 
 
 def _ticket_target(store: MeetingStore) -> str:
-    """agent 要交的那个文件：人类第一句话里点名的文件名（页面上没有别的来源）。"""
+    """板子上那个"要交的文件"：案子那份值里记着的，没有就看人第一句话里点到的文件名。"""
+    case = _the_case(_tickets_home(store))
+    if case:
+        recorded = ValueStore(case_root(_tickets_home(store), case),
+                              ticket_record_path(_tickets_home(store))).value("", "target")
+        if recorded:
+            return str(recorded)
     for event in store.events():
         if event.get("kind") == "chat" and event.get("actor") == "human":
-            for token in re.findall(r"[\w./-]+\.[A-Za-z0-9]+", str(event.get("content", ""))):
-                if not token.startswith("http"):
-                    return token
-            break
+            return a_file_in(str(event.get("content", "")))
     return ""
 
 

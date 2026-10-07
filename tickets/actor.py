@@ -1,6 +1,6 @@
 """actor 这一侧：写代码这件事交给一个会写代码的 agent。
 
-能力表（`actor_caps`）就是 api 里那四件事：回一句"知道了"、写一版代码、回一句"做好了"、照判语改一版。
+能力表（`actor_caps`）就是 api 里那四件事：回一句"知道了"、写一版代码、回一句"做好了"、照它说过的地方改一版。
 "写"落在谁身上由调用者给：`actor_caps(write)` 里是 `write(prompt) -> code`；真会议里用
 `meeting_actor_caps(channel, target)`，`channel.AgentChannel` 把话发进真会议（会议服务的 HTTP 面）、
 等那个 agent 干完、从它的工作区把文件读回来。
@@ -43,15 +43,17 @@ def actor_caps(write: Callable[[str], str],
         previous = text_of(env, code)
         what = text_of(env, objection)
         if not what:
-            return previous                      # 判语没说不合格：照原样，不必再写一版
+            return previous                      # 它没说不合格：照原样，不必再写一版
         return write(_revision_prompt(previous, what))
 
     return {"acknowledge": acknowledge, "write_code": write_code,
             "report_done": report_done, "revise_code": revise_code}
 
 
-def meeting_actor_caps(channel: AgentChannel, target: str = "quicksort.py") -> Dict[str, Callable]:
-    """真会议里 actor 的能力表：写交给那个 agent；它说的那两句从会议记录里读。
+def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable]:
+    """真会议里 actor 的能力表：写交给那个 agent；`target` 是要交的那个文件（规范说的）。
+
+    这一处一个文件名都不带：交什么由规范定，谁跑这一趟谁把它交进来。
 
     `acknowledge` 是**叫醒 agent 的那一下**：题面由它说进会议（它拿得到 `$about` 指的那份题面），
     agent 因此开始干活——工单驱动的会议里没有别人负责叫醒它。`write_code` 接着等它把文件交出来。
@@ -81,7 +83,7 @@ def meeting_actor_caps(channel: AgentChannel, target: str = "quicksort.py") -> D
         previous = text_of(env, code)
         what = text_of(env, objection)
         if not what:
-            return previous                      # 判语没说不合格：照原样，不必再叫一次 agent
+            return previous                      # 它没说不合格：照原样，不必再叫一次 agent
         return channel.ensure_work(_revising_prompt(previous, what, target), target,
                                    force=True, changed=True)
 
@@ -107,8 +109,8 @@ def _first_prompt(task: str) -> str:
 
 def _revision_prompt(previous: str, objection: str) -> str:
     if objection:
-        return f"判语说这一版不合格：{objection}\n照判语改一版：\n{previous}"
-    return f"判语没说不合格（照原样再交一版）：\n{previous}"
+        return f"上一版被指出不合格：{objection}\n照它说的地方改一版：\n{previous}"
+    return f"没人说不合格（照原样再交一版）：\n{previous}"
 
 
 def _writing_prompt(task: str, target: str) -> str:
@@ -164,7 +166,7 @@ def main(argv=None) -> int:
         parser.add_argument("--meeting-url", default=None, help="真会议的服务地址")
         parser.add_argument("--meeting-id", default=None, help="真会议的会议号")
         parser.add_argument("--workspace", default=None, help="agent 干活的目录")
-        parser.add_argument("--target", default="quicksort.py", help="agent 要交的文件")
+        parser.add_argument("--target", default="", help="agent 要交的那个文件（规范说的）")
 
     def caps_for(args, workflow):
         if args.writer:
