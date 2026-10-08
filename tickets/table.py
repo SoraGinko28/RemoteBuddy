@@ -12,17 +12,19 @@ checker     static_code_api       process python -m static_check
 ```
 
 **加一个成员不用改 Python**：写一份 `<角色>_api.viba` 放进规范目录（它声明这个角色会哪些算子），再往
-这张表里加一行。`怎么找到它` 有五种写法：
+这张表里加一行。基础那三个角色（actor、critic、assistant）的声明不在这儿，在 `RbApiDeclare` 那个仓库
+里，程序和规范两边都读它（见 `declare.py`）；规范里另写一份同名的是不行的。`怎么找到它` 有五种写法：
 
 * `agent` —— 会议里那个 agent（真会议是 `channel.AgentChannel`，演练和测试里塞一份脚本化的能力表）；
 * `critic` —— 在本地跑规则的那张 critic 能力表；
 * `assistant` —— 收消息、发单的那张 assistant 能力表；
-* `scripted <模块>:<函数>` —— 本进程里一张能力表，写这一步是 `write(prompt) -> code`；
+* `scripted <模块>:<函数>` —— 本进程里一张能力表，做那一步是 `do(prompt) -> 成果`；
 * `process <命令…>` —— 另起一个进程。宿主每一次把它跑一遍，接上 `--meeting / --case / --name`；那个
   进程自己照单算、自己写进度（`tickets.actor` 就是这个约定的一份实现）。`python` 这个词换成当前
   解释器。
 
-表里写着的 api 必须在规范里真的有一份；写错名字当场说清楚，不要留到跑的时候才发现没人接单。
+表里写着的 api 必须真的有一份（规范自己带的，或者 `RbApiDeclare` 里那三个基础角色）；写错名字当场
+说清楚，不要留到跑的时候才发现没人接单。
 """
 
 from __future__ import annotations

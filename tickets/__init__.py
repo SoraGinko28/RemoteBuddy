@@ -55,6 +55,8 @@ _EXPORTS = {
     "load_workflow": "workflow",
     "workflow_root": "workflow",
     "norm_home": "workflow",
+    "declare_home": "declare",
+    "declared_apis": "declare",
     "members_for": "table",
     "members_of": "table",
     "actor_caps": "actor",

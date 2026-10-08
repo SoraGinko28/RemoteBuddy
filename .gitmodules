@@ -1,3 +1,6 @@
 [submodule "viba"]
 	path = viba
 	url = https://github.com/lixinqi/viba
+[submodule "RbApiDeclare"]
+	path = RbApiDeclare
+	url = https://github.com/lixinqi/RbApiDeclare.git
