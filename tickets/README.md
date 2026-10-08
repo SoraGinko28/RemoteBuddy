@@ -22,7 +22,7 @@
 | `channel.py` | actor 那一条线：把题面发进会议、等 agent 干完、从它的工作区读回文件 |
 | `member.py` | 一个成员进程的入口（`python -m tickets.actor …`） |
 | `workflow.py` | 规范：读 `<规范>` 那一层（工单程序、请求、规则、成员表、自己带的角色） |
-| `declare.py` | 接口那几份声明在另一个仓库里（`RbApiDeclare`）：按哪一版读、读的时候核什么 |
+| `declare.py` | 接口那几份声明在另一个仓库里（`RbApiDeclare`）：按哪一版读、读的时候核什么，以及那张单、那次尝试、那份进度写成什么 |
 
 ## 盘上那几处
 
@@ -37,8 +37,13 @@
 （`$storage_path`）、按哪几个目录找模块（`$VIBA_PATH`，接口那个仓库的目录也在里面）、按哪一版接口写的
 （`$handler_name2api_declare_repo_commit_id`）、写下的时刻。程序在规范里，单上不发副本。
 
-actor、critic、assistant 会哪些算子不在这两个仓库的任何一处代码里，在 `RbApiDeclare/rb_api/` 里：
-程序和规范两边都读它，规范里 `api_declare` 那一行说自己按它的哪一版写（一个 commit id），跑的时候
+**那几份数据写成什么，也不是这一处写的**：一张单（`Ticket`）、一次尝试（`TicketStage`）、一张单的全部
+进度（`TicketProgress = AppendOnlyList[TicketStage]`）三份定义都在 `RbApiDeclare/rb_api/ticket.viba`
+里（`declare.py` 那份 `Definition` 就是读它）。程序照它拼、照它读；多一个成员、少一个成员、类型不对，
+写的时候当场报出来。盘上一个文件就是那一列里的一项，按文件名的次序（名字以写入时刻开头）。
+
+actor、critic、assistant 会哪些算子也不在这两个仓库的任何一处代码里，在同一个 `RbApiDeclare/rb_api/`
+里：程序和规范两边都读它，规范里 `api_declare` 那一行说自己按它的哪一版写（一个 commit id），跑的时候
 核一下那个仓库就在那一版上。
 
 **进度只增不删**：一次尝试写一个文件，名字带写它的时刻和是谁写的，所以两个人同时写也是两个文件，

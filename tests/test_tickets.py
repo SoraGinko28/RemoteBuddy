@@ -24,13 +24,14 @@ from tickets.actor import actor_caps  # noqa: E402
 from tickets.assistant import assistant_handler, what_to_make  # noqa: E402
 from tickets.binding import finished, unimplemented_step  # noqa: E402
 from tickets.critic import critic_handler  # noqa: E402
-from tickets.declare import DECLARE_ENV, declare_home  # noqa: E402
+from tickets.declare import (DECLARE_ENV, declare_home, progress_definition,  # noqa: E402
+                             stage_definition, ticket_definition)
 from tickets.handler import Handler, program_caps  # noqa: E402
 from tickets.issue import ticket_uid  # noqa: E402
 from tickets.layout import case_root, progress_root, tickets_root  # noqa: E402
 from tickets.plan import due, next_ticket  # noqa: E402
-from tickets.progress import (a_stage, answered, read_stages, the_state, unfinished,  # noqa: E402
-                             write_stage)
+from tickets.progress import (a_stage, answered, progress_node, read_stages,  # noqa: E402
+                             the_state, unfinished, write_stage)
 from tickets.session import OK, STUCK, Session, open_work  # noqa: E402
 from tickets.table import (Process, Row, members_for, members_of, read_table, row_of,  # noqa: E402
                            write_table)
@@ -126,9 +127,9 @@ def git(where, *arguments: str) -> str:
 
 
 def an_interface_repo(where: Path) -> str:
-    """造一个接口仓库（把现行的三份声明抄进去提交一次），答它的 commit id。"""
+    """造一个接口仓库（把现行的声明抄进去提交一次），答它的 commit id。"""
     where.mkdir(parents=True, exist_ok=True)
-    for path in sorted(declare_home().glob("*_api.viba")):
+    for path in sorted(declare_home().glob("*.viba")):
         shutil.copy2(path, where / path.name)
     git(where, "init")
     git(where, "add", ".")
@@ -143,6 +144,25 @@ def a_norm_against(where: Path, commit: str) -> Path:
     return where
 
 
+def point_the_at(case: unittest.TestCase, where: Path) -> None:
+    """把这一趟读的接口指到别处（这一条用完就把环境变量还回去）。"""
+    before = os.environ.get(DECLARE_ENV)
+    os.environ[DECLARE_ENV] = str(where)
+    case.addCleanup(lambda: os.environ.__setitem__(DECLARE_ENV, before)
+                    if before is not None else os.environ.pop(DECLARE_ENV, None))
+
+
+def the_written_ticket(meeting, uid: str):
+    """盘上那张单读回来的那段 viba 数据（不是 `Ticket`，是它本来那一段）。
+
+    走的是设施自己那条读法（`EnvironmentStorage` + `read_snapshot`），所以核的是盘上那份原文。
+    """
+    from viba.interpret import Environment, EnvironmentStorage, read_snapshot
+
+    return read_snapshot(
+        Environment(EnvironmentStorage(uid, None, str(tickets_root(meeting))), None), "ticket")
+
+
 class TheApiDeclareTest(unittest.TestCase):
     """接口那几份声明在另一个仓库里：单上记着按哪一版，找模块的路里也有那个目录。"""
 
@@ -154,11 +174,8 @@ class TheApiDeclareTest(unittest.TestCase):
         self.workflow = a_workflow()
 
     def point_the_interface_at(self, where: Path) -> None:
-        """把这一趟读的接口指到别处（这一条用完就把环境变量还回去）。"""
-        before = os.environ.get(DECLARE_ENV)
-        os.environ[DECLARE_ENV] = str(where)
-        self.addCleanup(lambda: os.environ.__setitem__(DECLARE_ENV, before)
-                        if before is not None else os.environ.pop(DECLARE_ENV, None))
+        """把这一趟读的接口指到别处。"""
+        point_the_at(self, where)
 
     def test_the_ticket_says_which_version_of_the_interface_it_reads(self):
         """单上按处理者记着接口那一版：actor、critic、assistant 各自一条，就是规范说的那一版。"""
@@ -241,6 +258,68 @@ class TheApiDeclareTest(unittest.TestCase):
         git(repo, "commit", "-m", "three")
         (norm / "api_declare").write_text(f"{git(repo, 'rev-parse', 'HEAD')}\n", encoding="utf-8")
         self.assertEqual(git(repo, "rev-parse", "HEAD"), load_workflow(norm).declare_commit)
+
+
+class WhatIsWrittenTest(unittest.TestCase):
+    """写下来的那几份数据写成什么：接口仓库那份 `ticket.viba` 说了算，程序这边照它填、照它核。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.meeting = self.root / "meeting"
+        self.addCleanup(self.temporary.cleanup)
+        self.workflow = a_workflow()
+
+    def test_the_members_are_that_file_s_and_not_a_list_in_python(self):
+        """一张单、一次尝试上那几个成员，都是那份定义说的（程序这边没有另一张名单）。"""
+        self.assertEqual(("$ticket_uid", "$ticket_name", "$call", "$storage_path", "$VIBA_PATH",
+                          "$handler_name2api_declare_repo_commit_id", "$time"),
+                         ticket_definition().tags)
+        self.assertEqual(("$ticket_uid", "$handler_name", "$interpret_result", "$time"),
+                         stage_definition().tags)
+        self.assertEqual("TicketProgress", progress_definition().name)
+        self.assertTrue(ticket_definition().path.is_file())
+
+    def test_a_written_ticket_is_what_that_definition_says(self):
+        """盘上那张单照 `Ticket` 核一遍：成员一个不少、类型一个不错。"""
+        ticket = a_session(self.meeting).issue("write_a_draft")
+        ticket_definition().check(the_written_ticket(self.meeting, ticket.uid))
+
+    def test_a_written_stage_and_the_whole_progress_fit_their_definitions(self):
+        """一次尝试是 `TicketStage` 那种；那一列文件读成一份数据就是 `TicketProgress` 那种。"""
+        session = a_session(self.meeting)
+        session.issue("write_a_draft")
+        session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
+        stage = the_handlers(self.meeting, self.workflow)[0].tick()[0]
+        stage_definition().check(stage.as_node())
+        progress_definition().check(progress_node(self.meeting, stage.uid))
+        self.assertEqual(1, len(read_stages(self.meeting, stage.uid)))
+
+    def test_a_program_that_disagrees_with_the_definition_is_refused(self):
+        """接口里那份定义多一个成员（程序这边填不出来）：写单当场说清楚，不留到跑的时候。"""
+        repo = self.root / "RbApiDeclare"
+        an_interface_repo(repo)
+        (repo / "ticket.viba").write_text(
+            (repo / "ticket.viba").read_text(encoding="utf-8").replace(
+                "  * $time datetime", "  * $time datetime\n  * $nobody str"),
+            encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "a member the program does not fill")
+        norm = a_norm_against(self.root / "norm", git(repo, "rev-parse", "HEAD"))
+        point_the_at(self, repo)
+        workflow = load_workflow(norm)
+        with self.assertRaises(ValueError) as refused:
+            Session(self.meeting, CASE, workflow=workflow).issue("write_a_draft")
+        self.assertIn("$nobody", str(refused.exception))
+
+    def test_a_definition_that_is_not_there_is_refused(self):
+        """接口里连这份定义都没有：读的时候就说清楚，不是跑到一半才发现。"""
+        repo = self.root / "RbApiDeclare"
+        an_interface_repo(repo)
+        (repo / "ticket.viba").unlink()
+        point_the_at(self, repo)
+        with self.assertRaises(FileNotFoundError):
+            ticket_definition()
 
 
 class TheProgressTest(unittest.TestCase):

@@ -4,7 +4,12 @@
 
     <会议目录>/tickets/<工单号>/ticket.viba
 
-一个定义 `value` 装着这张单的全部：
+**一张单上有什么，不是这一处写的**：成员的名字、次序、类型都在接口仓库那份 `ticket.viba` 里
+（`RbApiDeclare/rb_api/ticket.viba`，见 `declare.py`）。这一处只做两件事：把值按那份定义排好、写成
+一份快照；照那份定义一个一个读回来。写的时候照它判一遍（`declare.Definition.check`），多一个成员、少
+一个成员当场说清楚。
+
+所以这张单上那几个成员是（照那份定义）：
 
 * `$ticket_uid` —— 这张单的号，也是它那份进度和那个案子的名字来源；
 * `$ticket_name` —— 发的是规范里哪一张（`write_a_draft` 这种）。程序在规范里，单上不发副本；
@@ -36,11 +41,9 @@ from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
 from viba.reflect import access as reflect_access
 from viba.type import VibaProgramErr
 
+from .declare import ticket_definition
 from .layout import TICKETS_DIR, TICKET_NAME, VIBA_SUFFIX
 
-# 这张单上那几个成员，按写下来的次序。
-TICKET_TAGS = ("$ticket_uid", "$ticket_name", "$call", "$storage_path",
-               "$VIBA_PATH", "$handler_name2api_declare_repo_commit_id", "$time")
 # `$call` 写成什么：这个名字是 viba 里"把名字当数据"的那种调用（`viba-interpreter.md`）。
 DYNAMIC_CALL = "__dyn_call__"
 
@@ -75,21 +78,29 @@ class Ticket:
     handler_name2api_declare_repo_commit_id: Dict[str, str]
     time: str
 
+    def the_values(self) -> Dict[str, Any]:
+        """这张单那几个成员的值，按名字给（次序由那份定义说）。"""
+        return {"$ticket_uid": self.uid,
+                "$ticket_name": self.name,
+                "$call": self.call,
+                "$storage_path": self.storage_path,
+                "$VIBA_PATH": list(self.viba_path),
+                "$handler_name2api_declare_repo_commit_id":
+                    dict(self.handler_name2api_declare_repo_commit_id),
+                "$time": self.time}
+
     def as_fields(self):
-        """这几个成员，按 `TICKET_TAGS` 的次序。"""
-        return (("$ticket_uid", self.uid),
-                ("$ticket_name", self.name),
-                ("$call", self.call),
-                ("$storage_path", self.storage_path),
-                ("$VIBA_PATH", list(self.viba_path)),
-                ("$handler_name2api_declare_repo_commit_id",
-                 dict(self.handler_name2api_declare_repo_commit_id)),
-                ("$time", self.time))
+        """这几个成员，按接口仓库那份 `ticket.viba` 说的次序。"""
+        return ticket_definition().the_fields(self.the_values())
 
     def as_node(self):
-        """这张单写成的那一段 viba 数据。"""
-        return viba_ast.ProductChain([
-            viba_ast.Tagged(tag, _piece(value)) for tag, value in self.as_fields()])
+        """这张单写成的那一段 viba 数据：写完照那份定义核一遍。"""
+        definition = ticket_definition()
+        node = viba_ast.ProductChain([
+            viba_ast.Tagged(tag, _piece(value))
+            for tag, value in definition.the_fields(self.the_values())])
+        definition.check(node)
+        return node
 
     def environ(self, get_func=None, viba_path=None) -> Environment:
         """跑这张单用的那个环境：存储根是 `$storage_path`，模块按 `$VIBA_PATH` 找。
@@ -145,9 +156,9 @@ def read_ticket(meeting_dir, uid: str) -> Optional["Ticket"]:
 
 
 def ticket_of_node(node) -> "Ticket":
-    """这一段 viba 数据当成一张单来读。"""
+    """这一段 viba 数据当成一张单来读：成员照接口仓库那份 `Ticket` 一个一个取。"""
     fields = {}
-    for tag in TICKET_TAGS:
+    for tag in ticket_definition().tags:
         if tag == "$handler_name2api_declare_repo_commit_id":
             # 早先发的单上没有这个成员：那时候接口还在规范里，没有哪一版可记
             fields[tag[1:]] = a_dict(node.by_tag(tag)) if tag in node else {}

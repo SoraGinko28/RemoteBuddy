@@ -167,6 +167,12 @@ commit it is written against; the facility checks the repository is on that comm
 directory on every ticket's `$VIBA_PATH`, and records the version per handler in the ticket's
 `$handler_name2api_declare_repo_commit_id`.
 
+What the facility writes into a meeting directory is declared there too (`rb_api/ticket.viba`): a
+ticket (`Ticket`), one attempt at it (`TicketStage`), and a ticket's whole progress
+(`TicketProgress = AppendOnlyList[TicketStage]`). The program fills those in and reads them back by
+that declaration, and refuses on the spot when the two disagree — no member list is written in
+Python.
+
 `tickets/` is the harness: a ticket is one call written on the file system
 (`<meeting>/tickets/<uid>/ticket.viba`), its progress is one file per attempt
 (`<meeting>/ticket_progress/<uid>/<time>-<handler>.viba`), and the answers land in the case under
