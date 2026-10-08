@@ -3,7 +3,8 @@
 发单就是写文件：`<会议目录>/tickets/<工单号>/ticket.viba`。单上那几样（`ticket.Ticket`）都由这一处
 定：**号**从案子的名字来（`<程序的名字>-<案子>`，一眼看出是哪张单、哪个案子），**名字**是规范里要跑的
 那一段程序，**调用**是 `__dyn_call__ << "<名字>"`，**存储根**是这个案子的值那一层，**找模块的路**是
-这一份规范给的，**时刻**是写下它的那一刻。
+这一份规范给的（接口那个仓库的目录也在里面），**接口按哪一版**是这一份规范说的（
+`$handler_name2api_declare_repo_commit_id`），**时刻**是写下它的那一刻。
 
 发出去的单谁接、谁答，这一处一句话都不说——那是读进度的人的事。
 """
@@ -36,9 +37,12 @@ def issue(meeting_dir, name: str, *, values_root, workflow,
     """发出这一张单，答它落在哪儿。
 
     单上那次调用不带环境：给它一个环境就是跑它。跑它的是规范里 `tickets/<名字>.viba` 那一段程序。
+    找模块的路是这一份规范给的（接口那个仓库的目录也在里面），接口按的是哪一版记在单上
+    （`$handler_name2api_declare_repo_commit_id`）——接口不在规范里，事后要说得清读的是哪一版。
     """
     ticket = Ticket(uid=ticket_uid(name, values_root), name=name, call=the_call(name),
                     storage_path=str(values_root), viba_path=workflow.search_dirs(),
+                    handler_name2api_declare_repo_commit_id=workflow.declares(),
                     time=a_time(when))
     write_ticket(meeting_dir, ticket)
     return ticket

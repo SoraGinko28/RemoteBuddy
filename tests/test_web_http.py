@@ -185,22 +185,22 @@ def scripted_actor(service, meeting_id, write=None):
                 "结果写进 quicksort.py（就地写文件），写完回复 DONE，不要问我问题。")
         return "知道了，这就照题目写一版"
 
-    def write_code(env, task, after):
+    def do_step(env, task, after):
         return author(text_of(env, task))
 
-    def report_done(env, code, after):
+    def report_done(env, result, after):
         return "做好了"
 
-    def revise_code(env, code, objection):
-        previous = text_of(env, code)
+    def redo_step(env, result, objection):
+        previous = text_of(env, result)
         what = text_of(env, objection)
         if not what:
             return previous                      # 它没说不合格：照原样，不必再叫一次 agent
-        writing(f"上一版被指出不合格：{what}\n照它说的地方改一版：\n{previous}")
+        writing(f"上一版被指出不合格：{what}\n照它说的地方再做一版：\n{previous}")
         return author(previous)
 
-    return {"acknowledge": acknowledge, "write_code": write_code,
-            "report_done": report_done, "revise_code": revise_code}
+    return {"acknowledge": acknowledge, "do_step": do_step,
+            "report_done": report_done, "redo_step": redo_step}
 
 
 class MeetingWebServiceTest(unittest.TestCase):
@@ -274,7 +274,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.wait_for_tickets(service, "orders-demo")
 
         ordered = Path(store.run_dir) / "store"
-        written, answered = Store(ordered).read("case/quicksort/drafted", "write_code")
+        written, answered = Store(ordered).read("case/quicksort/drafted", "do_step")
         self.assertTrue(answered)
         self.assertIn("def quick_sort", written)
         _judged, answered = Store(ordered).read("case/quicksort/judged", "judge")
@@ -378,12 +378,12 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertTrue(seen["instructions"])                   # 题面真发进会议了
         # 工单派活那句不是对话：它是 journal 里的一处 state（谁在派活），页面的对话里不出现
         chats = [one for one in events if one["kind"] == "chat"]
-        self.assertFalse(any("照这份题面写一版代码" in one["content"] for one in chats))
+        self.assertFalse(any("照这份题面做一版" in one["content"] for one in chats))
         work_orders = [one for one in events if one.get("phase") == "work_order"]
         self.assertTrue(work_orders)
-        self.assertIn("照这份题面写一版代码", work_orders[-1]["data"]["content"])
+        self.assertIn("照这份题面做一版", work_orders[-1]["data"]["content"])
         written, answered = Store(Path(store.run_dir) / "store").read(
-            "case/quicksort/drafted", "write_code")
+            "case/quicksort/drafted", "do_step")
         self.assertTrue(answered)
         self.assertIn("def quick_sort", written)
 
@@ -459,7 +459,7 @@ class MeetingWebServiceTest(unittest.TestCase):
                 break
             time.sleep(0.02)
         reading = Store(Path(store.run_dir) / "store")
-        written, answered = reading.read("case/quicksort/drafted", "write_code")
+        written, answered = reading.read("case/quicksort/drafted", "do_step")
         self.assertTrue(answered)                                 # 接着跑完了
         self.assertIn("def quick_sort", written)
         self.assertEqual("completion_proposed",
@@ -501,9 +501,9 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(["ok", "ok"], [one["data"]["outcome"] for one in finished])
 
         reading = Store(Path(store.run_dir) / "store")
-        first, answered = reading.read("case/quicksort/drafted", "write_code")
+        first, answered = reading.read("case/quicksort/drafted", "do_step")
         self.assertTrue(answered)
-        second, answered = reading.read("case/quicksort-2/drafted", "write_code")
+        second, answered = reading.read("case/quicksort-2/drafted", "do_step")
         self.assertTrue(answered)                        # 第二趟有自己的那几条路
         self.assertIn("def quick_sort", second)
 
@@ -517,7 +517,7 @@ class MeetingWebServiceTest(unittest.TestCase):
             self.wait_for_tickets(service, "orders-scripted")
 
         written, answered = Store(Path(store.run_dir) / "store").read(
-            "case/quicksort/drafted", "write_code")
+            "case/quicksort/drafted", "do_step")
         self.assertTrue(answered)
         self.assertIn("def quick_sort", written)
         finished = [one for one in service.events("orders-scripted", 0)["events"]

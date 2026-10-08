@@ -156,9 +156,22 @@ Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CL
 ## Tickets
 
 A meeting runs on tickets. The norm itself is viba and lives in its own repository (`RbNorm`, next
-to this tree, the norm under its `rb_norm/` package; `REMOTEBUDDY_NORM` points elsewhere): the role
-apis (actor / assistant / critic), the ticket programs, and the rules the critic judges by. The
-program carries none of it.
+to this tree, the norm under its `rb_norm/` package; `REMOTEBUDDY_NORM` points elsewhere): the
+ticket programs, the requests that decide which human lines are work, and the rules the critic
+judges by. The program carries none of it.
+
+The interfaces between the two (which operators actor, assistant and critic have) live in a third
+repository, `RbApiDeclare`, and **both repositories depend on it as a git submodule**
+(`RemoteBuddy-core/RbApiDeclare/`, `RbNorm/RbApiDeclare/`) at the same commit. The facility reads its
+own copy, checks the norm's copy is on that commit, puts the directory on every ticket's
+`$VIBA_PATH`, and records the version per handler in the ticket's
+`$handler_name2api_declare_repo_commit_id`.
+
+What the facility writes into a meeting directory is declared in this repository
+(`tickets/ticket.viba`): a ticket (`Ticket`), one attempt at it (`TicketStage`), and a ticket's whole
+progress (`TicketProgress = AppendOnlyList[TicketStage]`). The program fills those in and reads them
+back by that declaration, and refuses on the spot when the two disagree — no member list is written
+in Python.
 
 `tickets/` is the harness: a ticket is one call written on the file system
 (`<meeting>/tickets/<uid>/ticket.viba`), its progress is one file per attempt

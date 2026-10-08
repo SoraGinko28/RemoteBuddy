@@ -23,7 +23,7 @@ from . import _viba  # noqa: F401
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
                             interpret, write_snapshot)
 
-from .binding import answer_of, failure_in, finished, read_stored, text_of, value_of
+from .binding import answer_of, failure_in, finished, read_stored, value_of
 from .builtins import the_table as the_builtin_table
 from .handler import Handler, program_caps
 from .meeting import a_file_in
@@ -37,12 +37,11 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
         write_snapshot(env, words, "stated_task")
         return words
 
-    def closing_note(env, code, verdict):
-        """这场会的结果：最后那版有多少行，它判下来合格没有。"""
-        written = text_of(env, code)
+    def closing_note(env, result, verdict):
+        """这场会的结果：它判下来合格没有。成果是什么由规范给的那一步定，这一处不假定。"""
+        del result                                # 成果长什么样是规范的事，这一处不读它
         judged = value_of(read_stored(env, verdict))
-        note = (f"这一版 {len(written.splitlines())} 行；"
-                f"判下来：{'合格' if judged else '不合格'}")
+        note = f"这场会做完了；判下来：{'合格' if judged else '不合格'}"
         if say is not None:
             say(note)
         return note

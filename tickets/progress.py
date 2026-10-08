@@ -4,12 +4,10 @@
 <会议目录>/ticket_progress/<工单号>/<写入时刻>-<谁>.viba
 ```
 
-一个定义 `value` 装着那一次尝试：
-
-* `$ticket_uid` —— 是哪一张单；
-* `$handler_name` —— 谁试的（一个角色在会议里的名字，或者一个进程的名字）；
-* `$interpret_result` —— 那次跑交回的答复（`InterpretResult`：`$ok <值>` 或者 `$err <为什么停>`）；
-* `$time` —— 写下它的时刻。
+一篇进度写成什么，不是这一处写的：成员的名字、次序、类型都在接口仓库那份 `ticket.viba` 里
+（`TicketStage`，见 `declare.py`），整份进度是它的那一列（`TicketProgress = AppendOnlyList[TicketStage]`）。
+这一处只做三件事：把值按 `TicketStage` 排好、写成一份快照；照它一个一个读回来；要整份的时候，把那些
+文件读成那一列（`progress_node`）。
 
 文件名带写入时刻和是谁写的，所以两个人同时写也是两个文件，**只增不删不需要锁**。一张单做完了没有，
 读的是它这一整份进度里**有没有**一条 `$ok`（`answered`）：这是那个只从"没有"变成"有"的答案，
@@ -31,11 +29,9 @@ from viba.interpret import (Environment, EnvironmentStorage, read_snapshot,
 from viba.reflect import access as reflect_access
 from viba.type import VibaProgramErr
 
+from .declare import progress_definition, stage_definition
 from .layout import PROGRESS_DIR, VIBA_SUFFIX
 from .ticket import a_time, ticket_uids
-
-# 一篇进度上那几个成员，按写下来的次序。
-STAGE_TAGS = ("$ticket_uid", "$handler_name", "$interpret_result", "$time")
 
 
 def stage_name(who: str, when: Optional[datetime] = None) -> str:
@@ -76,14 +72,21 @@ class Stage:
             return f"不是它的事：{step[1] or step[0]}"
         return failure_in(self.result)
 
+    def the_values(self) -> dict:
+        """这一次尝试那几个成员的值，按名字给（次序由那份定义说）。"""
+        return {"$ticket_uid": self.uid,
+                "$handler_name": self.who,
+                "$interpret_result": self.result,
+                "$time": self.time}
+
     def as_node(self):
-        """这一篇写成的那一段 viba 数据。"""
-        return viba_ast.ProductChain([
-            viba_ast.Tagged("$ticket_uid", viba_ast.Constant(self.uid)),
-            viba_ast.Tagged("$handler_name", viba_ast.Constant(self.who)),
-            viba_ast.Tagged("$interpret_result", _piece(self.result)),
-            viba_ast.Tagged("$time", viba_ast.Constant(self.time)),
-        ])
+        """这一篇写成的那一段 viba 数据：写完照 `TicketStage` 核一遍。"""
+        definition = stage_definition()
+        node = viba_ast.ProductChain([
+            viba_ast.Tagged(tag, _piece(value))
+            for tag, value in definition.the_fields(self.the_values())])
+        definition.check(node)
+        return node
 
 
 # ----------------------------------------------------------------------
@@ -131,9 +134,9 @@ def read_stages(meeting_dir, uid: str) -> List["Stage"]:
 
 
 def stage_of_node(node) -> "Stage":
-    """这一段 viba 数据当成一篇进度来读。"""
+    """这一段 viba 数据当成一篇进度来读：成员照那份 `TicketStage` 一个一个取。"""
     fields = {}
-    for tag in STAGE_TAGS:
+    for tag in stage_definition().tags:
         got = node.by_tag(tag)
         if tag == "$interpret_result":
             fields["result"] = got
@@ -146,6 +149,18 @@ def stage_of_node(node) -> "Stage":
 def a_stage(uid: str, who: str, result, when: Optional[datetime] = None) -> "Stage":
     """一篇写好、等着落盘的进度。"""
     return Stage(uid=uid, who=who, result=result, time=a_time(when))
+
+
+def progress_node(meeting_dir, uid: str):
+    """这张单的全部进度当成**一份** viba 数据：那一列 `TicketProgress`。
+
+    盘上是一行一项（一个文件），这里读成它本来那样：一列，按写的次序。读不出来的那一篇不在列里
+    （`read_stages` 同上）。列本身照 `TicketProgress` 核一遍——它是那份定义说的那种才交出去。
+    """
+    definition = progress_definition()
+    node = viba_ast.TypeApp("ListLiteral", [stage.as_node() for stage in read_stages(meeting_dir, uid)])
+    definition.check(node)
+    return node
 
 
 # ----------------------------------------------------------------------
