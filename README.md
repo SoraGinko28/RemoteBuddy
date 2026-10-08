@@ -156,9 +156,16 @@ Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CL
 ## Tickets
 
 A meeting runs on tickets. The norm itself is viba and lives in its own repository (`RbNorm`, next
-to this tree, the norm under its `rb_norm/` package; `REMOTEBUDDY_NORM` points elsewhere): the role
-apis (actor / assistant / critic), the ticket programs, and the rules the critic judges by. The
-program carries none of it.
+to this tree, the norm under its `rb_norm/` package; `REMOTEBUDDY_NORM` points elsewhere): the
+ticket programs, the requests that decide which human lines are work, and the rules the critic
+judges by. The program carries none of it.
+
+The interfaces between the two (which operators actor, assistant and critic have) live in a third
+repository, `RbApiDeclare` (`RbApiDeclare/rb_api/`; `REMOTEBUDDY_API_DECLARE` points elsewhere),
+because both sides depend on them and neither owns them. The norm's `api_declare` file names the
+commit it is written against; the facility checks the repository is on that commit, puts its
+directory on every ticket's `$VIBA_PATH`, and records the version per handler in the ticket's
+`$handler_name2api_declare_repo_commit_id`.
 
 `tickets/` is the harness: a ticket is one call written on the file system
 (`<meeting>/tickets/<uid>/ticket.viba`), its progress is one file per attempt

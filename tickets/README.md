@@ -21,7 +21,8 @@
 | `actor.py` / `critic.py` / `assistant.py` | 三个角色的能力表（RB 这一侧实现的那几件事） |
 | `channel.py` | actor 那一条线：把题面发进会议、等 agent 干完、从它的工作区读回文件 |
 | `member.py` | 一个成员进程的入口（`python -m tickets.actor …`） |
-| `workflow.py` | 规范：读 `<规范>` 那一层（api、工单程序、规则、成员表） |
+| `workflow.py` | 规范：读 `<规范>` 那一层（工单程序、请求、规则、成员表、自己带的角色） |
+| `declare.py` | 接口那几份声明在另一个仓库里（`RbApiDeclare`）：按哪一版读、读的时候核什么 |
 
 ## 盘上那几处
 
@@ -33,7 +34,12 @@
 ```
 
 一张单上只有：它的号、它跑的是哪一段程序（`$ticket_name`）、那次调用（`$call`）、它跑在哪个案子上
-（`$storage_path`）、按哪几个目录找模块（`$VIBA_PATH`）、写下的时刻。程序在规范里，单上不发副本。
+（`$storage_path`）、按哪几个目录找模块（`$VIBA_PATH`，接口那个仓库的目录也在里面）、按哪一版接口写的
+（`$handler_name2api_declare_repo_commit_id`）、写下的时刻。程序在规范里，单上不发副本。
+
+actor、critic、assistant 会哪些算子不在这两个仓库的任何一处代码里，在 `RbApiDeclare/rb_api/` 里：
+程序和规范两边都读它，规范里 `api_declare` 那一行说自己按它的哪一版写（一个 commit id），跑的时候
+核一下那个仓库就在那一版上。
 
 **进度只增不删**：一次尝试写一个文件，名字带写它的时刻和是谁写的，所以两个人同时写也是两个文件，
 不需要锁。一张单做完了没有，读的是它这一整份进度里**有没有**一条 `$ok`——这条只从"没有"变成"有"，

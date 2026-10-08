@@ -1,14 +1,17 @@
 """一份规范：开会前定好的那几类 viba 文件，和"读它们"这件事。
 
-    1. `actor_api.viba`        actor 会做的事
-    2. `assistant_api.viba`    assistant 会做的事
-    3. `critic_api.viba`       critic 会做的事
-    4. `tickets/*.viba`        工单程序：一场会很多张，都是开会前写好的
-    5. `requests/*.viba`       人说的哪句话算一份活：答出要交的那个名字，答不出来就不开案子
-    6. `rules/*.viba`          规则：critic 判案时跑的程序
+    1. `tickets/*.viba`        工单程序：一场会很多张，都是开会前写好的
+    2. `requests/*.viba`       人说的哪句话算一份活：答出要交的那个名字，答不出来就不开案子
+    3. `rules/*.viba`          规则：critic 判案时跑的程序
+    4. `api_declare`           按哪一版接口写的（那一版在另一个仓库里，见 `declare.py`）
+    5. `<角色>_api.viba`       规范自己带的角色（基础那三个不在这儿）
 
 它们合起来就是这场会的规范：工单是一张单要跑的那段程序，请求那几份说的是人说的哪句话算一份要交的活，
-规则是 critic 判案时跑的程序，几个 api 的声明是每一步能调到的算子。
+规则是 critic 判案时跑的程序，api 的声明是每一步能调到的算子。
+
+actor、critic、assistant 那三份声明**不在规范目录里**：它们在 `RbApiDeclare` 那个仓库里，程序和规范
+两边都依赖它（`api_declare` 那一行说按它的哪一版写）。这一处读的时候把那个目录也读进来，跑的时候按
+`$VIBA_PATH` 一起找；单上记着的是哪一版，核法在 `declare.py` 里。
 
 **规范不在程序里，在它自己的仓库里**（就像 Claude Code 的 skills 之于它的二进制）：这份程序只负责
 找一个目录，找到谁读谁——
@@ -41,6 +44,8 @@ from typing import Dict, Iterable, List, NamedTuple, Optional, Tuple
 from . import _viba  # noqa: F401
 
 from viba import viba_ast
+
+from .declare import DECLARE_FILE, declared_apis
 
 ROLES = ("actor_api", "assistant_api", "critic_api")
 API_SUFFIX = "_api"
@@ -92,12 +97,17 @@ class Workflow:
     """The classes of viba files a meeting runs, read from one directory."""
 
     def __init__(self, files: Dict[str, str], rules: Iterable[str] = (),
-                 requests: Iterable[str] = (), root=None):
+                 requests: Iterable[str] = (), root=None, declared: Iterable[str] = (),
+                 declare_dir=None, declare_commit: str = ""):
         self.files = dict(files)
         self.rule_names = tuple(rules)
         self.request_names = tuple(requests)
         # 这一份流程是从哪个目录读出来的（服务表 `services` 就在它旁边）；不是从目录读的就没有
         self.root = Path(root) if root is not None else None
+        # 哪几份 api 是从接口那个仓库读来的，按的是哪一版、那个目录在哪儿（规范自己带的那几份不在里面）
+        self.declared = frozenset(declared)
+        self.declare_dir = Path(declare_dir) if declare_dir is not None else None
+        self.declare_commit = declare_commit
 
     # ------------------------------------------------------------------
     # Reading the directory
@@ -106,11 +116,19 @@ class Workflow:
     @classmethod
     def load(cls, root) -> "Workflow":
         root = Path(root)
-        files: Dict[str, str] = {}
+        declared, commit, declare_dir = declared_apis(root)
+        files: Dict[str, str] = dict(declared)
         for path in sorted(root.glob(f"*{API_SUFFIX}{VIBA_SUFFIX}")):
+            if path.stem in declared:
+                raise ValueError(
+                    f"{path} 和接口仓库里那份同名：基础角色属于 {declare_dir}，"
+                    f"规范里另写一份就等于把接口抄成两份")
             files[path.stem] = path.read_text(encoding="utf-8")
         if ROLES[0] not in files:
-            raise FileNotFoundError(f"少了 {root / f'{ROLES[0]}{VIBA_SUFFIX}'}")
+            where = f"{root / f'{ROLES[0]}{VIBA_SUFFIX}'}"
+            if commit:
+                where += f"，也不在 {declare_dir} 里"
+            raise FileNotFoundError(f"少了 {where}")
         for folder in (TICKETS_DIR, REQUESTS_DIR, RULES_DIR):
             directory = root / folder
             if not directory.is_dir():
@@ -119,12 +137,21 @@ class Workflow:
                 files[path.stem] = path.read_text(encoding="utf-8")
         rules = sorted(path.stem for path in (root / RULES_DIR).glob(f"*{VIBA_SUFFIX}"))
         requests = sorted(path.stem for path in (root / REQUESTS_DIR).glob(f"*{VIBA_SUFFIX}"))
-        return cls(files, rules, requests, root=root)
+        return cls(files, rules, requests, root=root, declared=declared,
+                   declare_dir=declare_dir, declare_commit=commit)
 
     def apis(self) -> List[str]:
-        """Every role api this workflow has, by short name (the shipped three, and any the
-        facility grew: a new `<role>_api.viba` next to them is a new role)."""
+        """Every role api this workflow has, by short name (the base three, and any the
+        norm grew: a new `<role>_api.viba` next to it is a new role)."""
         return sorted(name for name in self.files if is_api_file(name))
+
+    def declares(self) -> Dict[str, str]:
+        """这一场里哪几个处理者的接口来自那个仓库，各自按哪一版：`{角色: commit}`。
+
+        角色的名字就是表 `services` 里写的那种处理者名（`actor`、`critic`、`assistant`）。规范自己带
+        的那几份 api 不在里面——它们不来自那个仓库，也就没有那一版可记。
+        """
+        return {role_of_api(name): self.declare_commit for name in sorted(self.declared)}
 
     def tickets(self) -> Dict[str, str]:
         """The ticket programs, by short name."""
@@ -164,11 +191,15 @@ class Workflow:
         """跑这个规范里的程序时，模块按哪儿找，一个目录一项。
 
         写 import 的那个文件自己的目录先被找，所以单子放在 `tickets/` 里也 import 得到根上那几个 api；
-        规则在 `rules/` 里，也找得到根上那几个 api。
+        规则在 `rules/` 里，也找得到根上那几个 api。接口那个仓库的目录排在最后——基础那三个角色在那儿，
+        规范自己带的角色在前面。
         """
         if self.root is None:
             raise ValueError("这份流程不是从目录读出来的，没有规范目录可以找程序")
-        return [str(self.root / one) if one else str(self.root) for one in SEARCH_DIRS]
+        dirs = [str(self.root / one) if one else str(self.root) for one in SEARCH_DIRS]
+        if self.declare_dir is not None:
+            dirs.append(str(self.declare_dir))
+        return dirs
 
     def search_path(self) -> str:
         """同上，写成一串（`Environment.viba_path` 要的那种写法）。"""
@@ -190,7 +221,7 @@ class Workflow:
         return seed.hexdigest()
 
     # ------------------------------------------------------------------
-    # Reading one of the five classes
+    # Reading one of the classes
     # ------------------------------------------------------------------
 
     def steps_of(self, ticket: str) -> List[Step]:
@@ -266,19 +297,23 @@ def workflow_root(explicit=None, project_root=None) -> Path:
     if asked:
         root = Path(asked).expanduser()
         if not _looks_like_workflow(root):
-            raise FileNotFoundError(f"{asked} 不是一份规范（缺 actor_api.viba、tickets/ 或 requests/）")
+            raise FileNotFoundError(
+                f"{asked} 不是一份规范（缺 tickets/ 或 requests/，也没有说自己按哪一版接口写）")
         return root
     root = norm_home()
     if not _looks_like_workflow(root):
         raise FileNotFoundError(
-            f"找不到规范：{root} 里没有 actor_api.viba、tickets/ 或 requests/（用 {NORM_ENV} 另指一个目录）")
+            f"找不到规范：{root} 里没有 tickets/ 或 requests/（用 {NORM_ENV} 另指一个目录）")
     return root
 
 
 def _looks_like_workflow(root) -> bool:
+    """这个目录像不像一份规范：程序都在这儿，接口那几份要么自己带着、要么说了去哪个仓库拿。"""
     root = Path(root)
-    return ((root / f"{ROLES[0]}{VIBA_SUFFIX}").is_file() and (root / TICKETS_DIR).is_dir()
-            and (root / REQUESTS_DIR).is_dir())
+    if not ((root / TICKETS_DIR).is_dir() and (root / REQUESTS_DIR).is_dir()):
+        return False
+    return ((root / f"{ROLES[0]}{VIBA_SUFFIX}").is_file()
+            or (root / DECLARE_FILE).is_file())
 
 
 def load_workflow(root=None, project_root=None) -> Workflow:
@@ -296,6 +331,8 @@ def main(argv=None) -> int:
     root = workflow_root(explicit=args.where)
     workflow = Workflow.load(root)
     print(f"这一趟读的规范：{root}")
+    if workflow.declare_dir is not None:
+        print(f"  接口：{workflow.declare_dir} @ {workflow.declare_commit}")
     print(f"  角色：{'、'.join(workflow.apis())}")
     print(f"  工单：{'、'.join(sorted(workflow.tickets()))}")
     print(f"  请求：{'、'.join(workflow.requests())}")
@@ -309,7 +346,7 @@ if __name__ == "__main__":
 
 
 # ----------------------------------------------------------------------
-# Reading viba source: the same read for all five classes
+# Reading viba source: the same read for every class
 # ----------------------------------------------------------------------
 
 

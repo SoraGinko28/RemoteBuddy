@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from tickets.actor import actor_caps  # noqa: E402
 from tickets.assistant import assistant_handler, what_to_make  # noqa: E402
 from tickets.binding import finished, unimplemented_step  # noqa: E402
 from tickets.critic import critic_handler  # noqa: E402
+from tickets.declare import DECLARE_ENV, declare_home  # noqa: E402
 from tickets.handler import Handler, program_caps  # noqa: E402
 from tickets.issue import ticket_uid  # noqa: E402
 from tickets.layout import case_root, progress_root, tickets_root  # noqa: E402
@@ -112,6 +114,133 @@ class ATicketTest(unittest.TestCase):
         session = a_session(self.meeting)
         ticket = session.issue("close_the_meeting")
         self.assertIn("/rb_norm/tickets", read_ticket(self.meeting, ticket.uid).viba_path[0])
+
+
+def git(where, *arguments: str) -> str:
+    """在 `where` 里跑一条 git 命令，答它印出来的那行。"""
+    done = subprocess.run(
+        ["git", "-C", str(where), "-c", "user.name=test", "-c", "user.email=test@example.com",
+         *arguments],
+        capture_output=True, text=True, check=True)
+    return done.stdout.strip()
+
+
+def an_interface_repo(where: Path) -> str:
+    """造一个接口仓库（把现行的三份声明抄进去提交一次），答它的 commit id。"""
+    where.mkdir(parents=True, exist_ok=True)
+    for path in sorted(declare_home().glob("*_api.viba")):
+        shutil.copy2(path, where / path.name)
+    git(where, "init")
+    git(where, "add", ".")
+    git(where, "commit", "-m", "one")
+    return git(where, "rev-parse", "HEAD")
+
+
+def a_norm_against(where: Path, commit: str) -> Path:
+    """把现行的规范抄一份，改成"按 `commit` 那一版接口写"。"""
+    shutil.copytree(norm_home(), where)
+    (where / "api_declare").write_text(f"# 测试用\n{commit}\n", encoding="utf-8")
+    return where
+
+
+class TheApiDeclareTest(unittest.TestCase):
+    """接口那几份声明在另一个仓库里：单上记着按哪一版，找模块的路里也有那个目录。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.meeting = self.root / "meeting"
+        self.addCleanup(self.temporary.cleanup)
+        self.workflow = a_workflow()
+
+    def point_the_interface_at(self, where: Path) -> None:
+        """把这一趟读的接口指到别处（这一条用完就把环境变量还回去）。"""
+        before = os.environ.get(DECLARE_ENV)
+        os.environ[DECLARE_ENV] = str(where)
+        self.addCleanup(lambda: os.environ.__setitem__(DECLARE_ENV, before)
+                        if before is not None else os.environ.pop(DECLARE_ENV, None))
+
+    def test_the_ticket_says_which_version_of_the_interface_it_reads(self):
+        """单上按处理者记着接口那一版：actor、critic、assistant 各自一条，就是规范说的那一版。"""
+        ticket = a_session(self.meeting).issue("write_a_draft")
+        said = ticket.handler_name2api_declare_repo_commit_id
+        self.assertEqual(self.workflow.declares(), said)
+        self.assertEqual({"actor", "critic", "assistant"}, set(said))
+        self.assertEqual(self.workflow.declare_commit, said["actor"])
+        self.assertRegex(said["actor"], r"^[0-9a-f]{40}$")
+        back = read_ticket(self.meeting, ticket.uid)
+        self.assertEqual(said, back.handler_name2api_declare_repo_commit_id)
+
+    def test_a_ticket_written_before_this_member_existed_still_reads(self):
+        """早先发的单上没有这一项（那时候接口还在规范里）：读回来就是空的那一项，不是读不出来。"""
+        ticket = a_session(self.meeting).issue("write_a_draft")
+        path = tickets_root(self.meeting) / ticket.uid / "ticket.viba"
+        kept = [line for line in path.read_text(encoding="utf-8").splitlines()
+                if "$handler_name2api_declare_repo_commit_id" not in line]
+        path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        back = read_ticket(self.meeting, ticket.uid)
+        self.assertEqual({}, back.handler_name2api_declare_repo_commit_id)
+        self.assertEqual(ticket.viba_path, back.viba_path)
+
+    def test_the_interface_repo_is_on_the_ticket_viba_path(self):
+        """那三份基础角色不在规范目录里：单上找模块的路得把接口仓库也带上，跑的时候才找得到。"""
+        back = read_ticket(self.meeting, a_session(self.meeting).issue("write_a_draft").uid)
+        self.assertIn(str(self.workflow.declare_dir), back.viba_path)
+        self.assertTrue((self.workflow.declare_dir / "actor_api.viba").is_file())
+        self.assertEqual([], list(Path(self.workflow.root).glob("*_api.viba")))
+
+    def test_a_norm_that_brings_its_own_apis_records_no_version(self):
+        """规范自己带 api（没有 `api_declare`）：接口仓库一个目录都不读，单上也就没有那一项。"""
+        norm = self.root / "own"
+        shutil.copytree(norm_home(), norm)
+        (norm / "api_declare").unlink()
+        for path in sorted(declare_home().glob("*_api.viba")):
+            shutil.copy2(path, norm / path.name)
+        own = load_workflow(norm)
+        self.assertEqual({}, own.declares())
+        self.assertEqual("", own.declare_commit)
+        self.assertNotIn(str(declare_home()), own.search_dirs())
+        ticket = Session(self.meeting, CASE, workflow=own).issue("write_a_draft")
+        self.assertEqual({}, ticket.handler_name2api_declare_repo_commit_id)
+
+    def test_a_base_role_written_again_in_the_norm_is_refused(self):
+        """规范里另写一份 `actor_api.viba`：基础那三个属于接口仓库，抄成两份当场报出来。"""
+        norm = self.root / "double"
+        shutil.copytree(norm_home(), norm)
+        shutil.copy2(declare_home() / "actor_api.viba", norm / "actor_api.viba")
+        with self.assertRaises(ValueError):
+            load_workflow(norm)
+
+    def test_the_norm_and_the_interface_have_to_be_the_same_version(self):
+        """规范写着哪一版，接口仓库就得在哪一版：走了一版、或者底下有没提交的改动，都不算同一份。"""
+        repo = self.root / "RbApiDeclare"
+        first = an_interface_repo(repo)
+        norm = a_norm_against(self.root / "norm", first)
+        self.point_the_interface_at(repo)
+        self.assertEqual(first, load_workflow(norm).declare_commit)
+
+        # 接口往前走了一版，规范还写着前一版
+        (repo / "actor_api.viba").write_text(
+            (repo / "actor_api.viba").read_text(encoding="utf-8") + "# 接口改了一版\n",
+            encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "two")
+        second = git(repo, "rev-parse", "HEAD")
+        with self.assertRaises(ValueError):
+            load_workflow(norm)
+
+        # 规范改成新那一版就对了；接口下有没提交的改动又不行
+        (norm / "api_declare").write_text(f"{second}\n", encoding="utf-8")
+        self.assertEqual(second, load_workflow(norm).declare_commit)
+        (repo / "critic_api.viba").write_text(
+            (repo / "critic_api.viba").read_text(encoding="utf-8") + "# 还没提交\n",
+            encoding="utf-8")
+        with self.assertRaises(ValueError):
+            load_workflow(norm)
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "three")
+        (norm / "api_declare").write_text(f"{git(repo, 'rev-parse', 'HEAD')}\n", encoding="utf-8")
+        self.assertEqual(git(repo, "rev-parse", "HEAD"), load_workflow(norm).declare_commit)
 
 
 class TheProgressTest(unittest.TestCase):
