@@ -43,8 +43,8 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
     运行的那个 `viba_path`。
     """
 
-    def judge(env, code):
-        written = text_of(env, code)
+    def judge(env, under_judgment):
+        written = text_of(env, under_judgment)
         ops = _rule_compute()
         case = Environment(env.storage.sub(judgment),
                            EnvironmentCompute(lambda module, func_name: ops.get(func_name)),

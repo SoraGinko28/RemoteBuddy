@@ -17,7 +17,7 @@ checker     static_code_api       process python -m static_check
 * `agent` —— 会议里那个 agent（真会议是 `channel.AgentChannel`，演练和测试里塞一份脚本化的能力表）；
 * `critic` —— 在本地跑规则的那张 critic 能力表；
 * `assistant` —— 收消息、发单的那张 assistant 能力表；
-* `scripted <模块>:<函数>` —— 本进程里一张能力表，写这一步是 `write(prompt) -> code`；
+* `scripted <模块>:<函数>` —— 本进程里一张能力表，做那一步是 `do(prompt) -> 成果`；
 * `process <命令…>` —— 另起一个进程。宿主每一次把它跑一遍，接上 `--meeting / --case / --name`；那个
   进程自己照单算、自己写进度（`tickets.actor` 就是这个约定的一份实现）。`python` 这个词换成当前
   解释器。

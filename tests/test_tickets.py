@@ -246,11 +246,11 @@ class AWholeMeetingTest(unittest.TestCase):
         """答下的值落在 `<会议目录>/store/<案子>/` 下，一条数据路径一份。"""
         self.a_run()
         values = Store(case_root(self.meeting, CASE))
-        self.assertTrue(values.answered("drafted", "write_code"))
-        self.assertTrue(values.answered("revised", "revise_code"))
+        self.assertTrue(values.answered("drafted", "do_step"))
+        self.assertTrue(values.answered("revised", "redo_step"))
         self.assertTrue(values.answered("judged", "judge"))
         self.assertTrue(values.answered("closing", "closing_note"))
-        self.assertEqual(CODE, values.value("drafted", "write_code"))
+        self.assertEqual(CODE, values.value("drafted", "do_step"))
 
     def test_the_record_says_who_answered_what(self):
         """这场会的记录里：人说了什么、发了哪张单、谁答了哪一步。"""
@@ -258,7 +258,7 @@ class AWholeMeetingTest(unittest.TestCase):
         record = (self.meeting / "meeting_record.md").read_text(encoding="utf-8")
         self.assertIn(f"- 人类说了一句：{WORDS}", record)
         self.assertIn("- 发了一张单 write_a_draft-quicksort", record)
-        self.assertIn("- actor（actor）答了 drafted + write_code", record)
+        self.assertIn("- actor（actor）答了 drafted + do_step", record)
         self.assertIn("- critic（critic）答了 judged + judge", record)
         self.assertIn("- assistant（assistant）答了 closing + closing_note", record)
 
@@ -412,7 +412,7 @@ class TheMembersTest(unittest.TestCase):
         self.assertTrue(written)                      # 它写了一篇进度
         self.assertEqual("actor", written[0].who)
         self.assertTrue(answered(self.root / "meeting", "write_a_draft-quicksort"))
-        self.assertEqual([("greeted", "acknowledge"), ("drafted", "write_code"),
+        self.assertEqual([("greeted", "acknowledge"), ("drafted", "do_step"),
                           ("report_done", "report_done")], process.did)
 
 

@@ -1,9 +1,10 @@
-"""actor 这一侧：写代码这件事交给一个会写代码的 agent。
+"""actor 这一侧：做活这件事交给一个会做活的 agent。
 
-能力表（`actor_caps`）就是 api 里那四件事：回一句"知道了"、写一版代码、回一句"做好了"、照它说过的地方改一版。
-"写"落在谁身上由调用者给：`actor_caps(write)` 里是 `write(prompt) -> code`；真会议里用
+能力表（`actor_caps`）就是 api 里那四件事：回一句"知道了"、照题面做一版、回一句"做好了"、照它说过的
+地方再做一版。做成什么由给它的那份题面定，这一处不假定是一段代码。
+"做"落在谁身上由调用者给：`actor_caps(do)` 里是 `do(prompt) -> 成果`；真会议里用
 `meeting_actor_caps(channel, target)`，`channel.AgentChannel` 把话发进真会议（会议服务的 HTTP 面）、
-等那个 agent 干完、从它的工作区把文件读回来。
+等那个 agent 干完、从它的工作区把交出来的东西读回来。
 
 那两句回话（"知道了"/"做好了"）在真会议那个用法里是从**会议记录里读它自己说的那句**，不是这里编的：
 话由说话的人自己说。
@@ -26,28 +27,28 @@ from .channel import AgentChannel
 from .handler import Handler, program_caps
 
 
-def actor_caps(write: Callable[[str], str],
+def actor_caps(do: Callable[[str], str],
                say: Optional[Callable[[str, Any], None]] = None) -> Dict[str, Callable]:
-    """actor 的四个算子。`write(prompt) -> code` 就是那个会写代码的 agent。"""
+    """actor 的四个算子。`do(prompt) -> 成果` 就是那个会做活的 agent。"""
 
     def acknowledge(env, about):
-        return _said(say, "知道了，这就照题目写一版", _read_or(env, about))
+        return _said(say, "知道了，这就照题目做一版", _read_or(env, about))
 
-    def write_code(env, task, after):
-        return write(_first_prompt(text_of(env, task)))
+    def do_step(env, task, after):
+        return do(_first_prompt(text_of(env, task)))
 
-    def report_done(env, code, after):
-        return _said(say, "做好了", _read_or(env, code))
+    def report_done(env, result, after):
+        return _said(say, "做好了", _read_or(env, result))
 
-    def revise_code(env, code, objection):
-        previous = text_of(env, code)
+    def redo_step(env, result, objection):
+        previous = text_of(env, result)
         what = text_of(env, objection)
         if not what:
-            return previous                      # 它没说不合格：照原样，不必再写一版
-        return write(_revision_prompt(previous, what))
+            return previous                      # 它没说不合格：照原样，不必再做一版
+        return do(_revision_prompt(previous, what))
 
-    return {"acknowledge": acknowledge, "write_code": write_code,
-            "report_done": report_done, "revise_code": revise_code}
+    return {"acknowledge": acknowledge, "do_step": do_step,
+            "report_done": report_done, "redo_step": redo_step}
 
 
 def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable]:
@@ -56,39 +57,39 @@ def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable
     这一处一个文件名都不带：交什么由规范定，谁跑这一趟谁把它交进来。
 
     `acknowledge` 是**叫醒 agent 的那一下**：题面由它说进会议（它拿得到 `$about` 指的那份题面），
-    agent 因此开始干活——工单驱动的会议里没有别人负责叫醒它。`write_code` 接着等它把文件交出来。
+    agent 因此开始干活——工单驱动的会议里没有别人负责叫醒它。`do_step` 接着等它把东西交出来。
     """
 
     # 这一趟开工的时候那个文件是什么时候的：上一次留下的那一版不算这一趟的活。
     opened: Dict[str, Optional[int]] = {}
 
     def acknowledge(env, about):
-        # 题面说进会议就是叫醒 agent 的那一下：说完就回，不等它回话（它接着就去写了，
-        # 下一步 `write_code` 会等它把文件交出来）。
+        # 题面说进会议就是叫醒 agent 的那一下：说完就回，不等它回话（它接着就去做，
+        # 下一步 `do_step` 会等它把东西交出来）。
         path = channel.file(target)
         opened["before"] = path.stat().st_mtime_ns if path.is_file() else None
         channel.say(_writing_prompt(text_of(env, about), target))
-        return "知道了，这就照题目写一版"
+        return "知道了，这就照题目做一版"
 
-    def write_code(env, task, after):
+    def do_step(env, task, after):
         before = opened.pop("before", None)
         return channel.ensure_work(_writing_prompt(text_of(env, task), target), target,
                                    since=before, changed=before is not None)
 
-    def report_done(env, code, after):
+    def report_done(env, result, after):
         # 它这一轮说过的那句收尾话；没说过就用这一句（别在这儿空等）。
         return channel.wait_for_chat("final", timeout=10) or "做好了"
 
-    def revise_code(env, code, objection):
-        previous = text_of(env, code)
+    def redo_step(env, result, objection):
+        previous = text_of(env, result)
         what = text_of(env, objection)
         if not what:
             return previous                      # 它没说不合格：照原样，不必再叫一次 agent
         return channel.ensure_work(_revising_prompt(previous, what, target), target,
                                    force=True, changed=True)
 
-    return {"acknowledge": acknowledge, "write_code": write_code,
-            "report_done": report_done, "revise_code": revise_code}
+    return {"acknowledge": acknowledge, "do_step": do_step,
+            "report_done": report_done, "redo_step": redo_step}
 
 
 def actor_handler(meeting_dir, workflow, *, caps: Dict[str, Callable],
@@ -104,12 +105,12 @@ def actor_handler(meeting_dir, workflow, *, caps: Dict[str, Callable],
 
 
 def _first_prompt(task: str) -> str:
-    return f"照这份题面写一版代码：\n{task}"
+    return f"照这份题面做一版：\n{task}"
 
 
 def _revision_prompt(previous: str, objection: str) -> str:
     if objection:
-        return f"上一版被指出不合格：{objection}\n照它说的地方改一版：\n{previous}"
+        return f"上一版被指出不合格：{objection}\n照它说的地方再做一版：\n{previous}"
     return f"没人说不合格（照原样再交一版）：\n{previous}"
 
 
@@ -135,18 +136,18 @@ def _read_or(env, address):
 
 
 def writer_from(spec: str) -> Callable[[str], str]:
-    """`模块:函数` 里的那个 `write(prompt) -> code`。"""
+    """`模块:函数` 里的那个 `do(prompt) -> 成果`。"""
     import importlib
 
     module_name, _, attribute = spec.partition(":")
     if not module_name or not attribute:
-        raise SystemExit(f"--writer 要写成 模块:函数，收到的是 {spec!r}")
+        raise SystemExit(f"--doer 要写成 模块:函数，收到的是 {spec!r}")
     module = importlib.import_module(module_name)
     return getattr(module, attribute)
 
 
 def scripted_handler(meeting_dir, workflow, spec: str, *, name: str = "actor") -> Handler:
-    """脚本化的那个 actor：写只是 `write(prompt) -> code`（演练和测试用它替掉真 agent）。"""
+    """脚本化的那个 actor：做只是 `do(prompt) -> 成果`（演练和测试用它替掉真 agent）。"""
     return actor_handler(meeting_dir, workflow, caps=actor_caps(writer_from(spec)), name=name)
 
 
@@ -162,7 +163,7 @@ def main(argv=None) -> int:
     from .member import member_main
 
     def extra(parser):
-        parser.add_argument("--writer", default=None, help="写这一步从哪来：`模块:函数`")
+        parser.add_argument("--writer", default=None, help="做这一步从哪来：`模块:函数`")
         parser.add_argument("--meeting-url", default=None, help="真会议的服务地址")
         parser.add_argument("--meeting-id", default=None, help="真会议的会议号")
         parser.add_argument("--workspace", default=None, help="agent 干活的目录")
