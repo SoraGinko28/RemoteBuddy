@@ -177,7 +177,7 @@ in Python.
 (`<meeting>/tickets/<uid>/ticket.viba`), its progress is one file per attempt
 (`<meeting>/ticket_progress/<uid>/<time>-<handler>.viba`), and the answers land in the case under
 `<meeting>/store/<case>/`. The assistant receives the human message, works out which ticket is due
-from the values in the case, and writes it; every member of the table (`<norm>/services`) takes the
+from the values in the case, and writes it; every member of the table (`<norm>/members`) takes the
 tickets whose newest attempt is not its own, runs them with its own capability table, and appends
 one attempt. A ticket is done when one of its attempts answered `$ok`.
 

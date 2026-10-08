@@ -312,7 +312,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         """
         norm = self.root / "norm"
         shutil.copytree(norm_home(), norm)
-        write_table(norm / "services", [
+        write_table(norm / "members", [
             "actor actor_api agent",
             f"critic critic_api process python -m tickets.critic --workflow {norm}",
         ])

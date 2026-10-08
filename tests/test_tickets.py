@@ -509,7 +509,7 @@ class AWholeMeetingTest(unittest.TestCase):
 
 
 class WhatCountsAsWorkTest(unittest.TestCase):
-    """人说的哪句话算一份活：规范里 `requests/` 那几份程序说了算。"""
+    """人说的哪句话算一份活：规范里 `intake/` 那几份程序说了算。"""
 
     def setUp(self):
         self.workflow = a_workflow()
@@ -526,19 +526,19 @@ class WhatCountsAsWorkTest(unittest.TestCase):
         self.assertEqual("report.md", what_to_make(self.workflow, "report.md 改一下"))
 
     def test_the_norm_owns_the_rule(self):
-        """这一条是规范里那几份程序定的：换一份 requests/，认的就变了。"""
+        """这一条是规范里那几份程序定的：换一份 intake/，认的就变了。"""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         norm = Path(temporary.name) / "norm"
         shutil.copytree(norm_home(), norm)
-        (norm / "requests" / "what_to_make.viba").unlink()
-        (norm / "requests" / "only_readme.viba").write_text(
+        (norm / "intake" / "what_to_make.viba").unlink()
+        (norm / "intake" / "only_readme.viba").write_text(
             "__decl__ =\n    str\n  <- $env Env\n\n"
             "args = __get_args__ << __decl__\n\n"
             "the_words =\n    str\n  <- $env Env\n  <- { 人刚说的那句 }\n\n"
             "__impl__ = the_words << $env args.env\n", encoding="utf-8")
         own = load_workflow(norm)
-        self.assertEqual(["only_readme"], own.requests())
+        self.assertEqual(["only_readme"], own.intake())
         # 这一份答的是人刚说的那句（`the_words` 那一步的值）：不说"要交什么"就不算活
         self.assertEqual("你还在吗？", what_to_make(own, "你还在吗？"))
 
@@ -580,7 +580,7 @@ class TheMembersTest(unittest.TestCase):
             "  <- $code ($module_path str * $func_name str)\n"
             "  <- { 拿 $code 那份代码做静态检查 }\n", encoding="utf-8")
         self.workflow = load_workflow(self.norm)
-        path = self.norm / "services"
+        path = self.norm / "members"
         write_table(path, ["actor actor_api agent",
                            "checker static_code_analysis_api process python -m tests.process_checker"])
         rows = read_table(path)

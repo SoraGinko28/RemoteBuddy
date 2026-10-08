@@ -396,7 +396,7 @@ def _ticket_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
         "ran": bool(issued),
         "workflow_dir": str(workflow_root(project_root=project_root)),
         "digest": workflow.digest(),
-        "rules": sorted(workflow.rules()),
+        "acceptance": sorted(workflow.conditions()),
         "case": case,
         "target": _ticket_target(store),
         "tickets": [_ticket_row(meeting_dir, workflow, case, name, values, state)
@@ -2236,7 +2236,7 @@ class MeetingWebService:
     def _what_to_make(self, store: MeetingStore, message: str) -> str:
         """规范说这一句要它做的是什么：答出来的是要交的那个名字，答不出来就没有活可派。
 
-        哪一句算一份活不是这一处定的（`<规范>/requests/` 里那几份程序定的）；这一处只把它问出来，
+        哪一句算一份活不是这一处定的（`<规范>/intake/` 里那几份程序定的）；这一处只把它问出来，
         再照着起一趟。问不出来（规范那边坏了）就照实记在 journal 里，这一句当闲聊。
         """
         try:
@@ -2291,7 +2291,7 @@ class MeetingWebService:
 
     def _ticket_handlers(self, store: MeetingStore, meeting_id: str, target: str,
                          workflow, case: str) -> List[Any]:
-        """这一场有哪几个成员：读规范旁边那张表（`<规范>/services`，见 `tickets/table.py`）。
+        """这一场有哪几个成员：读规范里那张表（`<规范>/members`，见 `tickets/table.py`）。
 
         表里 `agent` 那一行用的就是会议里那个 agent：真会议是 `MeetingChannel`，
         `REMOTEBUDDY_TICKETS_WRITER` 或者 `tickets_caps_factory` 给的那份是脚本化的替身。表里还有

@@ -50,7 +50,7 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
 
 
 # ----------------------------------------------------------------------
-# 人说的那句算不算一份活：规范里 `requests/` 那几份程序说了算
+# 人说的那句算不算一份活：规范里 `intake/` 那几份程序说了算
 # ----------------------------------------------------------------------
 
 
@@ -58,7 +58,7 @@ def decision_caps(words: str) -> Dict[str, Callable]:
     """判断"这一句要不要它做活"时，规范那几份程序能问到的算子。
 
     只有两样：人刚说的那句（`the_words`），和这句话里像文件名的那一个词（`a_file_in`）。哪一句算一份活
-    不在这里定——那是规范里那几份程序的事，这一处只把这两样交给它们。
+    不在这里定——那是规范里 intake/ 那几份程序的事，这一处只把这两样交给它们。
     """
 
     def the_words(_env):
@@ -79,9 +79,9 @@ def what_to_make(workflow, words: str) -> str:
     每一份都得答出一个名字来（有一份答不出来，这一句就还没说清要交什么）；用头一份答的那个名字。
     那几份程序跑在一处临时目录上，不留东西——它们是算出来的，不是这一场会的记录。
     """
-    names = workflow.requests()
+    names = workflow.intake()
     if not names:
-        raise RuntimeError(f"这份规范里没有 requests/：人说的哪句话算一份活，得由规范说")
+        raise RuntimeError("这份规范里没有 intake/：人说的哪句话算一份活，得由规范说")
     caps = decision_caps(words)
     chosen = ""
     with tempfile.TemporaryDirectory() as where:
@@ -92,9 +92,9 @@ def what_to_make(workflow, words: str) -> str:
                                or builtins.get(f"{module}.{name}" if module else name)),
             workflow.search_path())
         for name in names:
-            answer = interpret(str(workflow.request_file(name)), environ)
+            answer = interpret(str(workflow.intake_file(name)), environ)
             if not finished(answer):
-                raise RuntimeError(f"requests/{name} 没跑完：{failure_in(answer)}")
+                raise RuntimeError(f"intake/{name} 没跑完：{failure_in(answer)}")
             said = _said_text(answer_of(answer))
             if not said:
                 return ""
@@ -108,7 +108,7 @@ def _said_text(node) -> str:
         return ""
     given = value_of(node)
     if not isinstance(given, str):
-        raise RuntimeError(f"requests/ 那几份程序答的是一个要交的名字（一段字），收到的是 {given!r}")
+        raise RuntimeError(f"intake/ 那几份程序答的是一个要交的名字（一段字），收到的是 {given!r}")
     return given.strip()
 
 

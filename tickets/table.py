@@ -1,7 +1,7 @@
 """这场会有哪几个成员：一份表，一行一个。
 
-一个成员是三样东西：**名字**、**它实现哪一份 api**、**怎么找到它**。表就在规范目录旁边
-（`<规范>/services`），一行一个成员，`#` 开头的是说明：
+一个成员是三样东西：**名字**、**它实现哪一份 api**、**怎么找到它**。表就在规范目录里
+（`<规范>/members`），一行一个成员，`#` 开头的是说明：
 
 ```
 # 名字       它实现哪份 api         怎么找到它
@@ -16,7 +16,7 @@ checker     static_code_api       process python -m static_check
 里，程序和规范两边都读它（见 `declare.py`）；规范里另写一份同名的是不行的。`怎么找到它` 有五种写法：
 
 * `agent` —— 会议里那个 agent（真会议是 `channel.AgentChannel`，演练和测试里塞一份脚本化的能力表）；
-* `critic` —— 在本地跑规则的那张 critic 能力表；
+* `critic` —— 在本地跑验收条件的那张 critic 能力表；
 * `assistant` —— 收消息、发单的那张 assistant 能力表；
 * `scripted <模块>:<函数>` —— 本进程里一张能力表，做那一步是 `do(prompt) -> 成果`；
 * `process <命令…>` —— 另起一个进程。宿主每一次把它跑一遍，接上 `--meeting / --case / --name`；那个
@@ -43,10 +43,10 @@ from .handler import Handler, line_of, program_caps
 from .progress import Stage, read_stages, unfinished
 from .workflow import is_api_file, role_of_api
 
-TABLE_NAME = "services"
+TABLE_NAME = "members"
 COMMENT = "#"
 KINDS = ("agent", "critic", "assistant", "scripted", "process")
-# 表里没写、规范目录旁边也没有那份表时用的：这场会就是这三个成员。
+# 表里没写、规范目录里也没有那份表时用的：这场会就是这三个成员。
 FALLBACK_ROWS = ("actor actor_api agent",
                  "critic critic_api critic",
                  "assistant assistant_api assistant")
@@ -73,7 +73,7 @@ class Row:
 
 
 def table_path(workflow) -> Optional[Path]:
-    """这份规范旁边那张表；规范不是从目录读出来的就没有表。"""
+    """这份规范里那张表；规范不是从目录读出来的就没有表。"""
     root = getattr(workflow, "root", None)
     if root is None:
         if isinstance(workflow, (str, Path)) and Path(workflow).is_dir():
@@ -125,7 +125,7 @@ def read_table(path) -> List[Row]:
 
 
 def members_of(workflow) -> List[Row]:
-    """这一场有哪几个成员：读规范旁边那张表；没有那份表就用默认那三个。"""
+    """这一场有哪几个成员：读规范里那张表；没有那份表就用默认那三个。"""
     return rows_of(table_path(workflow)) or [row_of(text) for text in FALLBACK_ROWS]
 
 
@@ -297,7 +297,7 @@ def _child_env(cwd=None) -> Dict[str, str]:
 def main(argv=None) -> int:
     """`python -m tickets.table`：看这场会有哪几个成员，或者加一个。"""
     parser = argparse.ArgumentParser(description="成员表：一个成员一行")
-    parser.add_argument("--table", default=None, help="那份表（不给就是 <规范>/services）")
+    parser.add_argument("--table", default=None, help="那张表（不给就是 <规范>/members）")
     parser.add_argument("--workflow", default=None, help="规范目录：表就在它旁边")
     parser.add_argument("--add", default=None, metavar="一行",
                         help="加一个成员：「名字 api 怎么找到它」")
