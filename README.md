@@ -161,17 +161,17 @@ ticket programs, the requests that decide which human lines are work, and the ru
 judges by. The program carries none of it.
 
 The interfaces between the two (which operators actor, assistant and critic have) live in a third
-repository, `RbApiDeclare` (`RbApiDeclare/rb_api/`; `REMOTEBUDDY_API_DECLARE` points elsewhere),
-because both sides depend on them and neither owns them. The norm's `api_declare` file names the
-commit it is written against; the facility checks the repository is on that commit, puts its
-directory on every ticket's `$VIBA_PATH`, and records the version per handler in the ticket's
+repository, `RbApiDeclare`, and **both repositories depend on it as a git submodule**
+(`RemoteBuddy-core/RbApiDeclare/`, `RbNorm/RbApiDeclare/`) at the same commit. The facility reads its
+own copy, checks the norm's copy is on that commit, puts the directory on every ticket's
+`$VIBA_PATH`, and records the version per handler in the ticket's
 `$handler_name2api_declare_repo_commit_id`.
 
-What the facility writes into a meeting directory is declared there too (`rb_api/ticket.viba`): a
-ticket (`Ticket`), one attempt at it (`TicketStage`), and a ticket's whole progress
-(`TicketProgress = AppendOnlyList[TicketStage]`). The program fills those in and reads them back by
-that declaration, and refuses on the spot when the two disagree — no member list is written in
-Python.
+What the facility writes into a meeting directory is declared in this repository
+(`tickets/ticket.viba`): a ticket (`Ticket`), one attempt at it (`TicketStage`), and a ticket's whole
+progress (`TicketProgress = AppendOnlyList[TicketStage]`). The program fills those in and reads them
+back by that declaration, and refuses on the spot when the two disagree — no member list is written
+in Python.
 
 `tickets/` is the harness: a ticket is one call written on the file system
 (`<meeting>/tickets/<uid>/ticket.viba`), its progress is one file per attempt

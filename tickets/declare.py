@@ -1,22 +1,25 @@
 """接口那几个声明：actor、critic、assistant 会哪些算子，写在另一个仓库里。
 
 那一份接口两边都要：规范里工单和规则 `import` 它，程序把它实现出来。所以它既不放在规范那个仓库里，
-也不放在程序这个仓库里，单独一个仓库（默认 `RbApiDeclare/rb_api/`），两边各自说自己按的是哪一版：
+也不放在程序这个仓库里，单独一个仓库（`RbApiDeclare`），**两边都以 submodule 依赖它**：
 
-* 规范那一侧：`<规范目录>/api_declare`，一个文件一行，写着那个仓库的 commit id；
-* 程序这一侧：发一张单的时候把这一版记在单上（`$handler_name2api_declare_repo_commit_id`），并把
-  那个目录放进单上的 `$VIBA_PATH`，跑的时候按它找得到 `actor_api` 这些名字。
+```
+RbNorm/RbApiDeclare/rb_api/             规范那一份
+RemoteBuddy-core/RbApiDeclare/rb_api/   程序这一份
+```
 
-那个仓库里还有一份 `ticket.viba`：**程序往会议目录里写的那几份数据写成什么**——一张单（`Ticket`）、
-一次尝试（`TicketStage`）、一张单的全部进度（`TicketProgress`）。程序照它拼、照它读，自己那一侧不写死
-成员；多一个少一个、类型不对，写的时候当场判一遍（`Definition`）。那几份数据里写 `InterpretResult`
-的地方，判的时候读的是 viba 自己那份 `interpret_result.viba`（`_the_module`）。
+"按哪一版写"不再写在一个文件里：submodule 指着哪个 commit，就是哪一版（git 的 gitlink 就是那个记录）。
+读的时候用程序自己那一份（`declare_home()`），核两件事：
 
-读的时候核一遍：那个仓库当前的 HEAD 就是 `api_declare` 写着的那个 commit，那份接口下没有没提交的
-改动。对不上就当场说清楚——不然读进去的声明和记在单上的那一版不是同一份。
+* 规范自己那份 submodule 和它指着同一个 commit（规范边上没有那份 submodule 就没有可核的：临时目录、
+  别人的目录）；
+* 这一份底下没有没提交的改动——不然读进去的不是那个 commit 里的东西。
 
-规范里没有 `api_declare` 这份文件，就是这份规范自己带 api（或者一个角色都不带）：这一处一份都不读，
-单上那一项也就是空的（`ticket.viba` 照旧从接口仓库读：那几份数据写成什么不属于某一份规范）。
+这一版记在每一张单上（`$handler_name2api_declare_repo_commit_id`），那个目录也在单上的 `$VIBA_PATH` 里，
+跑的时候按它找得到 `actor_api` 这些名字。
+
+**程序自己那些数据写成什么不在这里**：一张单、它的进度，都是程序自己的东西，写在程序仓库的
+`tickets/ticket.viba` 里，由下面那个 `Definition` 读。
 """
 
 from __future__ import annotations
@@ -32,72 +35,64 @@ from viba import viba_ast
 from viba.type import AstNodeType, VibaProgramErr, custom_module
 
 DECLARE_ENV = "REMOTEBUDDY_API_DECLARE"
-DECLARE_FILE = "api_declare"
 API_SUFFIX = "_api"
 VIBA_SUFFIX = ".viba"
-# 一张单和它的进度写成什么：接口仓库里那份文件，和里面那几个定义的名字
+# 这张单和它的进度写成什么：程序仓库里那份文件，和里面那几个定义的名字
 TICKET_FILE = f"ticket{VIBA_SUFFIX}"
 TICKET_NAME = "Ticket"
 STAGE_NAME = "TicketStage"
 PROGRESS_NAME = "TicketProgress"
-# 接口仓库里，声明放在这个包目录下；程序仓库旁边那一层
-DECLARE_PACKAGE = Path("RbApiDeclare") / "rb_api"
-DEFAULT_DECLARE = Path(__file__).resolve().parent.parent.parent / DECLARE_PACKAGE
-# 写下来的 commit id 至少这么长：太短的没法说它是哪一版
-SHORTEST_COMMIT = 7
+# 程序仓库里那份定义就在这个包目录下（`tickets/ticket.viba`）
+DEFINITIONS_HOME = Path(__file__).resolve().parent
+# 接口那个 submodule 叫什么，它里面的声明放在哪个包目录下
+DECLARE_REPO = "RbApiDeclare"
+DECLARE_PACKAGE = Path(DECLARE_REPO) / "rb_api"
+DEFAULT_DECLARE = Path(__file__).resolve().parent.parent / DECLARE_PACKAGE
 
 
 def declare_home() -> Path:
-    """接口那个仓库的声明目录在哪儿：`$REMOTEBUDDY_API_DECLARE` 指到哪儿就是哪儿。"""
+    """接口那份声明在哪儿：程序仓库里那个 submodule；`$REMOTEBUDDY_API_DECLARE` 可以另指一个。"""
     given = os.environ.get(DECLARE_ENV)
     return Path(given).expanduser() if given else DEFAULT_DECLARE
 
 
-def declared_commit(root) -> str:
-    """这份规范说它按哪一版接口写的：`<规范目录>/api_declare` 那一行。
-
-    没有那个文件就是空串（这份规范自己带 api）。文件在、里面却没有一行说出版本，那是写错了。
-    """
-    path = Path(root) / DECLARE_FILE
-    if not path.is_file():
-        return ""
-    for line in path.read_text(encoding="utf-8").splitlines():
-        text = line.strip()
-        if text and not text.startswith("#"):
-            return text.split()[0]
-    raise ValueError(f"{path} 里没有一行说按哪一版接口写的")
-
-
 def declared_apis(root, home=None) -> Tuple[Dict[str, str], str, Optional[Path]]:
-    """`root` 这一份规范用的接口：`({名字: 原文}, commit, 目录)`。
+    """这份规范跑起来用的接口：`({名字: 原文}, commit, 目录)`。
 
-    规范里没有 `api_declare` 就是 `({}, "", None)`。有它就把那个仓库的声明读一遍，读完核一下版本。
+    `home` 不给就是程序自己那份 submodule。`root` 是规范目录：它自己那份 submodule 要是也在，就核一下
+    两边指着同一个 commit——两边都依赖同一个仓库，指的不是同一个东西就不该跑。
     """
-    asked = declared_commit(root)
-    if not asked:
-        return {}, "", None
     where = Path(home) if home is not None else declare_home()
     files = {path.stem: path.read_text(encoding="utf-8")
              for path in sorted(where.glob(f"*{API_SUFFIX}{VIBA_SUFFIX}"))}
     if not files:
-        raise FileNotFoundError(
-            f"{Path(root) / DECLARE_FILE} 说了按 {asked[:SHORTEST_COMMIT]} 那一版写，"
-            f"但 {where} 里一份 *{API_SUFFIX}{VIBA_SUFFIX} 都没有")
-    head = head_of(where)
-    if len(asked) < SHORTEST_COMMIT or not head.startswith(asked):
-        raise ValueError(
-            f"接口对不上：规范按 {asked} 写的，{where} 现在是 {head}。"
-            f"把那个仓库切到写的那一版，或者改 {Path(root) / DECLARE_FILE} 这一行")
+        raise FileNotFoundError(f"{where} 里一份 *{API_SUFFIX}{VIBA_SUFFIX} 都没有：接口仓库读不到了")
+    ours = head_of(where)
+    theirs = the_norms_own(root)
+    if theirs is not None:
+        other = head_of(theirs)
+        if other != ours:
+            raise ValueError(
+                f"接口对不上：{theirs} 在 {other}，程序这边是 {ours}。"
+                f"两个 submodule 要指着同一个 commit（`git submodule update`）")
     uncommitted = uncommitted_in(where)
     if uncommitted:
         raise ValueError(
-            f"{where} 里有没提交的改动（{'、'.join(uncommitted)}）：读进去的就不是 {head} 那一版了。"
-            f"先提交，或者改 {Path(root) / DECLARE_FILE} 这一行")
-    return files, head, where
+            f"{where} 里有没提交的改动（{'、'.join(uncommitted)}）：读进去的就不是 {ours} 那一版了")
+    return files, ours, where
+
+
+def the_norms_own(root) -> Optional[Path]:
+    """规范自己那份 submodule 里那几份声明在哪儿；边上没有（临时目录、别人的目录）就是 None。"""
+    root = Path(root)
+    for candidate in (root / DECLARE_REPO, root.parent / DECLARE_REPO):
+        if (candidate / ".git").exists():
+            return candidate / "rb_api"
+    return None
 
 
 def head_of(where) -> str:
-    """这个仓库当前在哪一版：`git rev-parse HEAD`。"""
+    """这一份当前在哪一版：`git rev-parse HEAD`。"""
     done = _git(where, "rev-parse", "HEAD")
     if done.returncode != 0:
         raise ValueError(
@@ -106,7 +101,7 @@ def head_of(where) -> str:
 
 
 def uncommitted_in(where) -> list:
-    """这份接口下有没有没提交的改动，一项一个文件名。"""
+    """这一份底下有没有没提交的改动，一项一个文件名。"""
     done = _git(where, "status", "--porcelain", "--", ".")
     if done.returncode != 0:
         raise ValueError(f"读不出 {where} 的改动：{(done.stderr or '').strip()[-200:]}")
@@ -125,21 +120,21 @@ def _git(where, *arguments):
 
 
 # ----------------------------------------------------------------------
-# 那张单和它的进度写成什么：接口仓库里那份 `ticket.viba`
+# 程序自己那份数据写成什么：`tickets/ticket.viba`
 # ----------------------------------------------------------------------
 
 
 class Definition:
-    """接口仓库里一个定义读出来的样子：成员的名字、次序、类型，和照它判一次的判法。
+    """程序仓库那份 `ticket.viba` 里一个定义读出来的样子：成员的名字、次序、类型，和判法。
 
-    成员的名字、次序、类型都是这份定义说的：程序那一侧只往里填值、照它一个一个读回来。填出来的
-    东西合不合这份定义，写的时候判一遍（`check`）；这边多一个成员、少一个成员，`the_fields` 当场
-    说清楚。所以"一张单上有什么"只有这一处——改它改的是 `.viba`，不是 Python。
+    成员的名字、次序、类型都是这份定义说的：程序那一侧只往里填值、照它一个一个读回来。填出来的东西
+    合不合这份定义，写的时候判一遍（`check`）；这边多一个成员、少一个成员，`the_fields` 当场说清楚。
+    所以"一张单上有什么"只有这一处——改它改的是 `.viba`，不是 Python。
     """
 
     def __init__(self, name: str, where=None) -> None:
         self.name = name
-        self.home = Path(where) if where is not None else declare_home()
+        self.home = Path(where) if where is not None else DEFINITIONS_HOME
         self.module, self.path = _the_module(self.home)
         definition = next((one for one in self.module.module.body
                            if getattr(one, "name", "") == name), None)
@@ -176,23 +171,23 @@ class Definition:
 
 
 def ticket_definition(where=None) -> Definition:
-    """一张单写成什么：接口仓库里那个 `Ticket`。"""
+    """一张单写成什么：那份 `ticket.viba` 里的 `Ticket`。"""
     return _a_definition(TICKET_NAME, where)
 
 
 def stage_definition(where=None) -> Definition:
-    """一次尝试写成什么：接口仓库里那个 `TicketStage`。"""
+    """一次尝试写成什么：那份 `ticket.viba` 里的 `TicketStage`。"""
     return _a_definition(STAGE_NAME, where)
 
 
 def progress_definition(where=None) -> Definition:
-    """一张单的全部进度写成什么：接口仓库里那个 `TicketProgress`。"""
+    """一张单的全部进度写成什么：那份 `ticket.viba` 里的 `TicketProgress`。"""
     return _a_definition(PROGRESS_NAME, where)
 
 
 def _a_definition(name: str, where=None) -> Definition:
     """一个定义，一个目录读一次，往后照旧的答。"""
-    home = Path(where) if where is not None else declare_home()
+    home = Path(where) if where is not None else DEFINITIONS_HOME
     if (home, name) not in _DEFINITIONS:
         _DEFINITIONS[(home, name)] = Definition(name, home)
     return _DEFINITIONS[(home, name)]
@@ -203,7 +198,7 @@ _MODULES: Dict[Path, Tuple[Any, Path]] = {}
 
 
 def _the_module(home: Path) -> Tuple[Any, Path]:
-    """接口仓库那份 `ticket.viba` 读成一个模块，答 `(模块, 那份文件在哪儿)`。
+    """那个目录里的 `ticket.viba` 读成一个模块，答 `(模块, 那份文件在哪儿)`。
 
     viba 自己那份 `interpret_result.viba` 拼在前面：声明里写得出 `InterpretResult`，就是靠它在同一个
     模块里（`viba/interpret.py` 判一次跑的结果时用的是同一份声明）。一个目录读一次。
@@ -211,8 +206,7 @@ def _the_module(home: Path) -> Tuple[Any, Path]:
     if home not in _MODULES:
         path = home / TICKET_FILE
         if not path.is_file():
-            raise FileNotFoundError(
-                f"接口里没有 {path}：一张单和它的进度写成什么，是那个仓库说的")
+            raise FileNotFoundError(f"没有 {path}：一张单和它的进度写成什么，是程序仓库里那份文件说的")
         source = _result_source() + "\n" + path.read_text(encoding="utf-8")
         _MODULES[home] = (custom_module(source), path)
     return _MODULES[home]
@@ -245,7 +239,7 @@ def _collect_tags(node, out: List[str]) -> None:
             _collect_tags(inner, out)
 
 
-__all__ = ["declare_home", "declared_commit", "declared_apis", "head_of", "uncommitted_in",
+__all__ = ["declare_home", "declared_apis", "the_norms_own", "head_of", "uncommitted_in",
            "Definition", "ticket_definition", "stage_definition", "progress_definition",
-           "DECLARE_ENV", "DECLARE_FILE", "DEFAULT_DECLARE", "TICKET_FILE",
+           "DECLARE_ENV", "DEFAULT_DECLARE", "TICKET_FILE",
            "TICKET_NAME", "STAGE_NAME", "PROGRESS_NAME"]

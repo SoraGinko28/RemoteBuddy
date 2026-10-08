@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -24,8 +25,9 @@ from tickets.actor import actor_caps  # noqa: E402
 from tickets.assistant import assistant_handler, what_to_make  # noqa: E402
 from tickets.binding import finished, unimplemented_step  # noqa: E402
 from tickets.critic import critic_handler  # noqa: E402
-from tickets.declare import (DECLARE_ENV, declare_home, progress_definition,  # noqa: E402
-                             stage_definition, ticket_definition)
+from tickets import declare  # noqa: E402
+from tickets.declare import (DECLARE_ENV, DEFINITIONS_HOME, declare_home,  # noqa: E402
+                             progress_definition, stage_definition, ticket_definition)
 from tickets.handler import Handler, program_caps  # noqa: E402
 from tickets.issue import ticket_uid  # noqa: E402
 from tickets.layout import case_root, progress_root, tickets_root  # noqa: E402
@@ -114,7 +116,7 @@ class ATicketTest(unittest.TestCase):
         """单是一份值：和别处一样写得下、读得回（容器成员也照样）。"""
         session = a_session(self.meeting)
         ticket = session.issue("close_the_meeting")
-        self.assertIn("/rb_norm/tickets", read_ticket(self.meeting, ticket.uid).viba_path[0])
+        self.assertIn("/rb_norm/ticket_programs", read_ticket(self.meeting, ticket.uid).viba_path[0])
 
 
 def git(where, *arguments: str) -> str:
@@ -127,21 +129,31 @@ def git(where, *arguments: str) -> str:
 
 
 def an_interface_repo(where: Path) -> str:
-    """造一个接口仓库（把现行的声明抄进去提交一次），答它的 commit id。"""
-    where.mkdir(parents=True, exist_ok=True)
-    for path in sorted(declare_home().glob("*.viba")):
-        shutil.copy2(path, where / path.name)
+    """造一个接口仓库（`rb_api/` 下把现行的三份声明抄进去，提交一次），答它的 commit id。"""
+    (where / "rb_api").mkdir(parents=True, exist_ok=True)
+    for path in sorted(declare_home().glob("*_api.viba")):
+        shutil.copy2(path, where / "rb_api" / path.name)
     git(where, "init")
     git(where, "add", ".")
     git(where, "commit", "-m", "one")
     return git(where, "rev-parse", "HEAD")
 
 
-def a_norm_against(where: Path, commit: str) -> Path:
-    """把现行的规范抄一份，改成"按 `commit` 那一版接口写"。"""
-    shutil.copytree(norm_home(), where)
-    (where / "api_declare").write_text(f"# 测试用\n{commit}\n", encoding="utf-8")
-    return where
+def a_norm_depending_on(where: Path, interface: Path) -> Path:
+    """一份规范，边上挂着它自己那份接口（克隆一份，像 submodule 那样），答规范目录。"""
+    norm = where / "rb_norm"
+    shutil.copytree(norm_home(), norm)
+    subprocess.run(["git", "clone", "-q", str(interface), str(where / "RbApiDeclare")], check=True)
+    return norm
+
+
+def another_version(where: Path, name: str, line: str, message: str) -> str:
+    """接口往前走一版：往一个声明后面添一行，提交，答新的 commit id。"""
+    path = where / name
+    path.write_text(path.read_text(encoding="utf-8") + line, encoding="utf-8")
+    git(where, "add", ".")
+    git(where, "commit", "-m", message)
+    return git(where, "rev-parse", "HEAD")
 
 
 def point_the_at(case: unittest.TestCase, where: Path) -> None:
@@ -206,19 +218,21 @@ class TheApiDeclareTest(unittest.TestCase):
         self.assertTrue((self.workflow.declare_dir / "actor_api.viba").is_file())
         self.assertEqual([], list(Path(self.workflow.root).glob("*_api.viba")))
 
-    def test_a_norm_that_brings_its_own_apis_records_no_version(self):
-        """规范自己带 api（没有 `api_declare`）：接口仓库一个目录都不读，单上也就没有那一项。"""
+    def test_a_role_the_norm_grows_is_not_in_that_table(self):
+        """规范自己带一个角色：它不来自接口仓库，单上那一项里就没有它。"""
         norm = self.root / "own"
         shutil.copytree(norm_home(), norm)
-        (norm / "api_declare").unlink()
-        for path in sorted(declare_home().glob("*_api.viba")):
-            shutil.copy2(path, norm / path.name)
+        (norm / "static_code_api.viba").write_text(
+            "check_static =\n"
+            "    ($module_path str * $func_name str)\n"
+            "  <- $env Env\n"
+            "  <- $code ($module_path str * $func_name str)\n"
+            "  <- { 拿 $code 那份代码做静态检查 }\n", encoding="utf-8")
         own = load_workflow(norm)
-        self.assertEqual({}, own.declares())
-        self.assertEqual("", own.declare_commit)
-        self.assertNotIn(str(declare_home()), own.search_dirs())
+        self.assertEqual({"actor", "critic", "assistant"}, set(own.declares()))
+        self.assertIn("static_code_api", own.apis())
         ticket = Session(self.meeting, CASE, workflow=own).issue("write_a_draft")
-        self.assertEqual({}, ticket.handler_name2api_declare_repo_commit_id)
+        self.assertEqual(own.declares(), ticket.handler_name2api_declare_repo_commit_id)
 
     def test_a_base_role_written_again_in_the_norm_is_refused(self):
         """规范里另写一份 `actor_api.viba`：基础那三个属于接口仓库，抄成两份当场报出来。"""
@@ -228,36 +242,31 @@ class TheApiDeclareTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_workflow(norm)
 
-    def test_the_norm_and_the_interface_have_to_be_the_same_version(self):
-        """规范写着哪一版，接口仓库就得在哪一版：走了一版、或者底下有没提交的改动，都不算同一份。"""
-        repo = self.root / "RbApiDeclare"
-        first = an_interface_repo(repo)
-        norm = a_norm_against(self.root / "norm", first)
-        self.point_the_interface_at(repo)
-        self.assertEqual(first, load_workflow(norm).declare_commit)
+    def test_the_two_submodules_have_to_be_the_same_version(self):
+        """程序那份和规范那份得指着同一个 commit：规范还停在上一版就当场报出来。"""
+        ours = self.root / "RbApiDeclare"
+        an_interface_repo(ours)
+        norm = a_norm_depending_on(self.root / "RbNorm", ours)
+        point_the_at(self, ours / "rb_api")
+        self.assertEqual(git(ours, "rev-parse", "HEAD"), load_workflow(norm).declare_commit)
 
-        # 接口往前走了一版，规范还写着前一版
-        (repo / "actor_api.viba").write_text(
-            (repo / "actor_api.viba").read_text(encoding="utf-8") + "# 接口改了一版\n",
-            encoding="utf-8")
-        git(repo, "add", ".")
-        git(repo, "commit", "-m", "two")
-        second = git(repo, "rev-parse", "HEAD")
+        # 接口往前走了一版，规范那份还停在旧的那个 commit
+        another_version(ours / "rb_api", "actor_api.viba", "# 接口改了一版\n", "two")
         with self.assertRaises(ValueError):
             load_workflow(norm)
 
-        # 规范改成新那一版就对了；接口下有没提交的改动又不行
-        (norm / "api_declare").write_text(f"{second}\n", encoding="utf-8")
-        self.assertEqual(second, load_workflow(norm).declare_commit)
-        (repo / "critic_api.viba").write_text(
-            (repo / "critic_api.viba").read_text(encoding="utf-8") + "# 还没提交\n",
+        # 规范那份跟上就对了
+        theirs = norm.parent / "RbApiDeclare"
+        git(theirs, "fetch", "-q", "origin")
+        git(theirs, "reset", "-q", "--hard", "FETCH_HEAD")
+        self.assertEqual(git(ours, "rev-parse", "HEAD"), load_workflow(norm).declare_commit)
+
+        # 程序这一份底下有没提交的改动：也不行
+        (ours / "rb_api" / "critic_api.viba").write_text(
+            (ours / "rb_api" / "critic_api.viba").read_text(encoding="utf-8") + "# 还没提交\n",
             encoding="utf-8")
         with self.assertRaises(ValueError):
             load_workflow(norm)
-        git(repo, "add", ".")
-        git(repo, "commit", "-m", "three")
-        (norm / "api_declare").write_text(f"{git(repo, 'rev-parse', 'HEAD')}\n", encoding="utf-8")
-        self.assertEqual(git(repo, "rev-parse", "HEAD"), load_workflow(norm).declare_commit)
 
 
 class WhatIsWrittenTest(unittest.TestCase):
@@ -296,30 +305,21 @@ class WhatIsWrittenTest(unittest.TestCase):
         self.assertEqual(1, len(read_stages(self.meeting, stage.uid)))
 
     def test_a_program_that_disagrees_with_the_definition_is_refused(self):
-        """接口里那份定义多一个成员（程序这边填不出来）：写单当场说清楚，不留到跑的时候。"""
-        repo = self.root / "RbApiDeclare"
-        an_interface_repo(repo)
-        (repo / "ticket.viba").write_text(
-            (repo / "ticket.viba").read_text(encoding="utf-8").replace(
-                "  * $time datetime", "  * $time datetime\n  * $nobody str"),
-            encoding="utf-8")
-        git(repo, "add", ".")
-        git(repo, "commit", "-m", "a member the program does not fill")
-        norm = a_norm_against(self.root / "norm", git(repo, "rev-parse", "HEAD"))
-        point_the_at(self, repo)
-        workflow = load_workflow(norm)
-        with self.assertRaises(ValueError) as refused:
-            Session(self.meeting, CASE, workflow=workflow).issue("write_a_draft")
+        """那份定义里多一个成员（程序这边填不出来）：写单当场说清楚，不留到跑的时候。"""
+        home = self.root / "definitions"
+        home.mkdir()
+        (home / "ticket.viba").write_text(
+            (DEFINITIONS_HOME / "ticket.viba").read_text(encoding="utf-8").replace(
+                "  * $time datetime", "  * $time datetime\n  * $nobody str"), encoding="utf-8")
+        with mock.patch.object(declare, "DEFINITIONS_HOME", home):
+            with self.assertRaises(ValueError) as refused:
+                a_session(self.meeting).issue("write_a_draft")
         self.assertIn("$nobody", str(refused.exception))
 
     def test_a_definition_that_is_not_there_is_refused(self):
-        """接口里连这份定义都没有：读的时候就说清楚，不是跑到一半才发现。"""
-        repo = self.root / "RbApiDeclare"
-        an_interface_repo(repo)
-        (repo / "ticket.viba").unlink()
-        point_the_at(self, repo)
+        """那份文件不在：读的时候就说清楚，不是跑到一半才发现。"""
         with self.assertRaises(FileNotFoundError):
-            ticket_definition()
+            ticket_definition(self.root / "nowhere")
 
 
 class TheProgressTest(unittest.TestCase):

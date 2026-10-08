@@ -1,17 +1,16 @@
 """一份规范：开会前定好的那几类 viba 文件，和"读它们"这件事。
 
-    1. `tickets/*.viba`        工单程序：一场会很多张，都是开会前写好的
+    1. `ticket_programs/*.viba`  工单程序：一场会很多张，都是开会前写好的
     2. `requests/*.viba`       人说的哪句话算一份活：答出要交的那个名字，答不出来就不开案子
     3. `rules/*.viba`          规则：critic 判案时跑的程序
-    4. `api_declare`           按哪一版接口写的（那一版在另一个仓库里，见 `declare.py`）
-    5. `<角色>_api.viba`       规范自己带的角色（基础那三个不在这儿）
+    4. `<角色>_api.viba`       规范自己带的角色（基础那三个不在这儿，在 submodule 里）
 
 它们合起来就是这场会的规范：工单是一张单要跑的那段程序，请求那几份说的是人说的哪句话算一份要交的活，
 规则是 critic 判案时跑的程序，api 的声明是每一步能调到的算子。
 
 actor、critic、assistant 那三份声明**不在规范目录里**：它们在 `RbApiDeclare` 那个仓库里，程序和规范
-两边都依赖它（`api_declare` 那一行说按它的哪一版写）。这一处读的时候把那个目录也读进来，跑的时候按
-`$VIBA_PATH` 一起找；单上记着的是哪一版，核法在 `declare.py` 里。
+两边都以 submodule 依赖它。这一处读的时候把那个目录也读进来，跑的时候按 `$VIBA_PATH` 一起找；单上
+记着的是哪一版，核法在 `declare.py` 里。
 
 **规范不在程序里，在它自己的仓库里**（就像 Claude Code 的 skills 之于它的二进制）：这份程序只负责
 找一个目录，找到谁读谁——
@@ -45,7 +44,7 @@ from . import _viba  # noqa: F401
 
 from viba import viba_ast
 
-from .declare import DECLARE_FILE, declared_apis
+from .declare import declared_apis
 
 ROLES = ("actor_api", "assistant_api", "critic_api")
 API_SUFFIX = "_api"
@@ -74,11 +73,11 @@ NORM_PACKAGE = "rb_norm"
 DEFAULT_NORM = Path(__file__).resolve().parent.parent.parent / "RbNorm" / NORM_PACKAGE
 # 程序里那三个角色（不是上限：多一份 api 文件就多一个角色）
 ROLE_OF_API = {api: role_of_api(api) for api in ROLES}
-TICKETS_DIR = "tickets"
+TICKET_PROGRAMS_DIR = "ticket_programs"
 REQUESTS_DIR = "requests"
 RULES_DIR = "rules"
 # 模块按哪儿找（冒号分开的几个目录，次序就是这个）：单子自己的目录先被找，然后这几个
-SEARCH_DIRS = (TICKETS_DIR, "", RULES_DIR)
+SEARCH_DIRS = (TICKET_PROGRAMS_DIR, "", RULES_DIR)
 VIBA_SUFFIX = ".viba"
 RET = "__impl__"
 SUB_ENVS = ("sub_env", "tmp_sub_env")
@@ -129,7 +128,7 @@ class Workflow:
             if commit:
                 where += f"，也不在 {declare_dir} 里"
             raise FileNotFoundError(f"少了 {where}")
-        for folder in (TICKETS_DIR, REQUESTS_DIR, RULES_DIR):
+        for folder in (TICKET_PROGRAMS_DIR, REQUESTS_DIR, RULES_DIR):
             directory = root / folder
             if not directory.is_dir():
                 raise FileNotFoundError(f"少了目录 {directory}")
@@ -176,8 +175,8 @@ class Workflow:
     # ------------------------------------------------------------------
 
     def ticket_file(self, ticket: str) -> Path:
-        """这张工单的程序在哪：`<规范>/tickets/<工单>.viba`。"""
-        return self._under(TICKETS_DIR, f"{ticket}{VIBA_SUFFIX}")
+        """这张工单的程序在哪：`<规范>/ticket_programs/<工单>.viba`。"""
+        return self._under(TICKET_PROGRAMS_DIR, f"{ticket}{VIBA_SUFFIX}")
 
     def rule_file(self, rule: str) -> Path:
         """这条规则的程序在哪：`<规范>/rules/<规则>.viba`。"""
@@ -190,7 +189,7 @@ class Workflow:
     def search_dirs(self) -> List[str]:
         """跑这个规范里的程序时，模块按哪儿找，一个目录一项。
 
-        写 import 的那个文件自己的目录先被找，所以单子放在 `tickets/` 里也 import 得到根上那几个 api；
+        写 import 的那个文件自己的目录先被找，所以单子放在 `ticket_programs/` 里也 import 得到根上那几个 api；
         规则在 `rules/` 里，也找得到根上那几个 api。接口那个仓库的目录排在最后——基础那三个角色在那儿，
         规范自己带的角色在前面。
         """
@@ -297,23 +296,22 @@ def workflow_root(explicit=None, project_root=None) -> Path:
     if asked:
         root = Path(asked).expanduser()
         if not _looks_like_workflow(root):
-            raise FileNotFoundError(
-                f"{asked} 不是一份规范（缺 tickets/ 或 requests/，也没有说自己按哪一版接口写）")
+            raise FileNotFoundError(f"{asked} 不是一份规范（缺 ticket_programs/ 或 requests/）")
         return root
     root = norm_home()
     if not _looks_like_workflow(root):
         raise FileNotFoundError(
-            f"找不到规范：{root} 里没有 tickets/ 或 requests/（用 {NORM_ENV} 另指一个目录）")
+            f"找不到规范：{root} 里没有 ticket_programs/ 或 requests/（用 {NORM_ENV} 另指一个目录）")
     return root
 
 
 def _looks_like_workflow(root) -> bool:
-    """这个目录像不像一份规范：程序都在这儿，接口那几份要么自己带着、要么说了去哪个仓库拿。"""
+    """这个目录像不像一份规范：工单程序和请求那两份都在这儿。
+
+    接口（`<角色>_api.viba`）不在这儿：它在自己的仓库里，两边都以 submodule 依赖它（`declare.py`）。
+    """
     root = Path(root)
-    if not ((root / TICKETS_DIR).is_dir() and (root / REQUESTS_DIR).is_dir()):
-        return False
-    return ((root / f"{ROLES[0]}{VIBA_SUFFIX}").is_file()
-            or (root / DECLARE_FILE).is_file())
+    return (root / TICKET_PROGRAMS_DIR).is_dir() and (root / REQUESTS_DIR).is_dir()
 
 
 def load_workflow(root=None, project_root=None) -> Workflow:
