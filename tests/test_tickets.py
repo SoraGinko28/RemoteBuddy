@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from tickets import _viba  # noqa: E402,F401
 from tickets.actor import actor_caps  # noqa: E402
 from tickets.assistant import assistant_handler, what_to_make  # noqa: E402
-from tickets.binding import finished, unimplemented_step  # noqa: E402
+from tickets.binding import Binding, finished, unimplemented_step  # noqa: E402
 from tickets.critic import critic_handler  # noqa: E402
 from tickets import declare  # noqa: E402
 from tickets.declare import (DECLARE_ENV, DEFINITIONS_HOME, declare_home,  # noqa: E402
@@ -167,11 +167,11 @@ def point_the_at(case: unittest.TestCase, where: Path) -> None:
 def the_written_ticket(meeting, uid: str):
     """盘上那张单读回来的那段 viba 数据（不是 `Ticket`，是它本来那一段）。
 
-    走的是设施自己那条读法（`EnvironmentStorage` + `read_snapshot`），所以核的是盘上那份原文。
+    走的是设施自己那条读法（`EnvironmentStorage` + `get_snapshot`），所以核的是盘上那份原文。
     """
-    from viba.interpret import Environment, EnvironmentStorage, read_snapshot
+    from viba.interpret import Environment, EnvironmentStorage, get_snapshot
 
-    return read_snapshot(
+    return get_snapshot(
         Environment(EnvironmentStorage(uid, None, str(tickets_root(meeting))), None), "ticket")
 
 
@@ -622,6 +622,60 @@ class TheMembersTest(unittest.TestCase):
         self.assertTrue(answered(self.root / "meeting", "write_a_draft-quicksort"))
         self.assertEqual([("greeted", "acknowledge"), ("drafted", "do_step"),
                           ("report_done", "report_done")], process.did)
+
+
+class TheHostsBuiltinOperatorsTest(unittest.TestCase):
+    """viba 带的那些算子由这一侧的宿主答：算出来的就是值本身，不是地址。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.where = Path(self.temporary.name) / "case"
+        self.where.mkdir()
+        self.addCleanup(self.temporary.cleanup)
+
+    def a_run(self, source: str) -> str:
+        """在一个空案子上跑一段程序，答它写成 viba 源文的那份答复。"""
+        from viba import viba_ast
+        from viba.interpret import interpret
+
+        (self.where / "the_program.viba").write_text(
+            "__decl__ =\n    Any\n  <- $env Env\n\n"
+            "args = __get_args__ << __decl__\n\n" + source + "\n", encoding="utf-8")
+        binding = Binding("tester", {}, self.where)
+        answer = interpret(str(self.where / "the_program.viba"), binding.env(""))
+        return viba_ast.unparse_type(answer.data)
+
+    def test_a_builtin_answers_its_value_and_not_an_address(self):
+        """`le` 答的是那个 bool；答成地址的话，拿它当类型用的人就全错了。"""
+        self.assertEqual("$ok true",
+                         self.a_run("__impl__ = le << $env args.env << $x 1 << $y 4"))
+
+    def test_if_runs_only_the_branch_the_condition_picks(self):
+        """`if` 是 viba 发的那两个开关：只有被选中的那一支跑，另一支一次都不跑。"""
+        source = ("__impl__ = if\n"
+                  "  << $env ($sub_env << args.env << \"if\")\n"
+                  "  << $cond (le << $env args.env << $x ${left} << $y ${right})\n"
+                  "  << $t (builtin.echo << $x \"took the true branch\")\n"
+                  "  << $f (builtin.echo << $x \"took the false branch\")\n")
+        self.assertEqual('$ok "took the true branch"',
+                         self.a_run(source.replace("${left}", "1").replace("${right}", "4")))
+        self.assertEqual('$ok "took the false branch"',
+                         self.a_run(source.replace("${left}", "9").replace("${right}", "4")))
+
+    def test_the_string_operators_viba_declares_are_answered(self):
+        """`builtin.viba` 里那几个字符串算子：宿主答得上来，用起来就是值。"""
+        self.assertEqual('$ok "a-b-c"',
+                         self.a_run('__impl__ = join << $env args.env << $parts (split '
+                                    '<< $env args.env << $x "a,b,c" << $separator ",") '
+                                    '<< $separator "-"'))
+        self.assertEqual("$ok 2",
+                         self.a_run('__impl__ = find << $env args.env << $x "hello" '
+                                    '<< $needle "ll"'))
+        self.assertEqual("$ok nil",
+                         self.a_run('__impl__ = find << $env args.env << $x "hello" '
+                                    '<< $needle "zz"'))
+        self.assertEqual('$ok "a,b"',
+                         self.a_run('__impl__ = trim << $env args.env << $x "  a,b  "'))
 
 
 class TheHandlerTest(unittest.TestCase):

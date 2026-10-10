@@ -23,7 +23,7 @@ from . import _viba  # noqa: F401
 
 from viba import viba_ast
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
-                            not_implemented, read_snapshot, viba_data, write_snapshot)
+                            not_implemented, get_snapshot, viba_data, put_snapshot)
 
 from .builtins import the_table as the_builtin_table
 
@@ -72,17 +72,23 @@ class Binding:
                            EnvironmentCompute(self.get_func), self.viba_path)
 
     def get_func(self, module: str, func_name: str):
-        """解释器问：这一步在这里怎么答。"""
+        """解释器问：这一步在这里怎么答。
+
+        角色自己那张表里的算子答的是**地址**：api 就是那么声明的，值留在案子里，要用的人照地址来读。
+        viba 带的那些算子（`builtin.viba`）答的是**值本身**——它们是算出来的，`add` 就是那个和、
+        `if` 的开关就是那个分支；换成地址，程序拿到的东西就不是它声明的那个类型了。
+        """
         impl = self.caps.get(func_name)
         if impl is None and module:
             impl = self.caps.get(f"{module}.{func_name}")
-        if impl is None:
-            impl = self.builtins.get(f"{module}.{func_name}" if module else func_name)
-        if impl is None and not module:
-            impl = self.builtins.get(func_name)
-        if impl is None:
-            return self._from_the_storage(func_name)
-        return self._answer(func_name, impl)
+        if impl is not None:
+            return self._answer(func_name, impl)
+        one = self.builtins.get(f"{module}.{func_name}" if module else func_name)
+        if one is None and not module:
+            one = self.builtins.get(func_name)
+        if one is not None:
+            return one
+        return self._from_the_storage(func_name)
 
     def _answer(self, func_name: str, impl: Callable):
         """这一步由它算：案子里已经有值就回放，没有就算一次、把值留在这条数据路径下。
@@ -94,7 +100,7 @@ class Binding:
 
         def step(env, *args):
             module_path = env.storage.cur_storage_path
-            recorded = read_snapshot(env, func_name)
+            recorded = get_snapshot(env, func_name)
             if recorded is not None:
                 self.did.append((module_path, func_name, "replayed"))
                 return step_address(module_path, func_name)
@@ -104,7 +110,7 @@ class Binding:
                 self.deferred.append((module_path, func_name))
                 return value.node
             if func_name not in self.programs and func_name not in self.builtins:
-                write_snapshot(env, value, func_name)
+                put_snapshot(env, value, func_name)
                 self.did.append((module_path, func_name, value))
             return step_address(module_path, func_name)
 
@@ -118,7 +124,7 @@ class Binding:
 
         def step(env, *args):
             module_path = env.storage.cur_storage_path
-            recorded = read_snapshot(env, func_name)
+            recorded = get_snapshot(env, func_name)
             if recorded is not None:
                 self.did.append((module_path, func_name, "replayed"))
                 return step_address(module_path, func_name)
@@ -183,7 +189,7 @@ def read_stored(env, address) -> Any:
     module_path, name = step_of(address)
     from .values import leaf_value
 
-    value = leaf_value(read_snapshot(environment_at(env, module_path), name))
+    value = leaf_value(get_snapshot(environment_at(env, module_path), name))
     if value is None:
         raise RuntimeError(f"那一步还没答：{module_path or '这个案子'} + {name}")
     return value

@@ -19,8 +19,8 @@ from typing import Callable, Dict, List
 from . import _viba  # noqa: F401
 
 from viba import viba_ast
-from viba.interpret import (Environment, EnvironmentCompute, interpret, read_snapshot,
-                            write_snapshot)
+from viba.interpret import (Environment, EnvironmentCompute, interpret, get_snapshot,
+                            put_snapshot)
 
 from .binding import answer_of, failure_in, finished, text_of
 from .builtins import the_table as the_builtin_table
@@ -49,7 +49,7 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
         case = Environment(env.storage.sub(judgment),
                            EnvironmentCompute(lambda module, func_name: ops.get(func_name)),
                            env.viba_path)
-        write_snapshot(case, written, CODE_UNDER_JUDGMENT)
+        put_snapshot(case, written, CODE_UNDER_JUDGMENT)
         objections: List[str] = []
         for condition in workflow.conditions():
             answer = interpret(str(_condition_file(condition, workflow, env, acceptance_dir)), case)
@@ -57,7 +57,7 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
                 raise RuntimeError(f"验收条件 {condition} 没跑完：{failure_in(answer)}")
             if not _verdict(answer, condition):
                 objections.append(_objection(condition))
-        write_snapshot(env, "；".join(objections), "objection")
+        put_snapshot(env, "；".join(objections), "objection")
         return not objections
 
     caps = {"judge": judge}
@@ -91,7 +91,7 @@ def _rule_compute() -> Dict[str, Callable]:
     """
 
     def code_under_judgment(env):
-        return read_snapshot(env, CODE_UNDER_JUDGMENT)
+        return get_snapshot(env, CODE_UNDER_JUDGMENT)
 
     def widest_parameters(env, code):
         """参数最多的那个函数有几个参数：数最外层括号里的逗号。"""

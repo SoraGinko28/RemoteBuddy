@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, Optional
 from . import _viba  # noqa: F401
 
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
-                            interpret, write_snapshot)
+                            interpret, put_snapshot)
 
 from .binding import answer_of, failure_in, finished, read_stored, value_of
 from .builtins import the_table as the_builtin_table
@@ -34,7 +34,7 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
 
     def stated_task(env, words: str = ""):
         """人类说了什么：落在案子自己的数据路径下。"""
-        write_snapshot(env, words, "stated_task")
+        put_snapshot(env, words, "stated_task")
         return words
 
     def closing_note(env, result, verdict):
