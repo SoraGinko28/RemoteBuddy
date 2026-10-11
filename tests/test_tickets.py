@@ -35,7 +35,8 @@ from tickets.layout import case_root, progress_root, tickets_root  # noqa: E402
 from tickets.plan import due, next_ticket, ticket_named  # noqa: E402
 from tickets.progress import (a_stage, answered, progress_node, read_stages,  # noqa: E402
                              the_state, unfinished, write_stage)
-from tickets.session import BROKEN, OK, STUCK, Session, open_work  # noqa: E402
+from tickets.session import (BROKEN, OK, STUCK, Session, open_work,  # noqa: E402
+                             remember_the_norm, the_norm_of, worth_another_round)
 from tickets.table import (Process, Row, members_for, members_of, read_table, row_of,  # noqa: E402
                            write_table)
 from tickets.ticket import read_ticket, ticket_uids, tickets  # noqa: E402
@@ -540,6 +541,39 @@ class AWholeMeetingTest(unittest.TestCase):
         self.assertIn("critic", outcome.failure)
         self.assertIn("judge_the_draft-quicksort", outcome.failure)
         self.assertIn("没有 args.env", outcome.failure)
+
+    def test_a_ticket_that_stops_the_same_way_three_times_is_not_tried_again(self):
+        """同一句话连着试了三次，就不该再起一趟：再跑一遍还是它，等人（或等法）改。"""
+        session = a_session(self.meeting)
+        handlers = the_handlers(self.meeting, self.workflow)
+        session.stated_task(WORDS, handlers[0])
+        session.issue("write_a_draft")                                    # 发了一张，还没人试过
+        self.assertTrue(worth_another_round(self.meeting, tries=3))
+        for _round in range(3):
+            # 只有 assistant 和 critic：谁都不会 actor 那一步，轮着说同一句话
+            session.run(handlers[:2], out=lambda _line: None)
+        self.assertFalse(worth_another_round(self.meeting, tries=3))
+
+    def test_the_norm_a_meeting_was_opened_under_is_remembered(self):
+        """这一场会开在哪份法下：记在案子那份值里，后来的人照着比。"""
+        self.assertIsNone(the_norm_of(self.meeting, CASE))
+        remember_the_norm(self.meeting, CASE, "/x/RbNormViba2/rb_norm")
+        self.assertEqual("/x/RbNormViba2/rb_norm", the_norm_of(self.meeting, CASE))
+        self.assertIsNone(the_norm_of(self.meeting, ""))
+
+    def test_a_ticket_that_stopped_differently_is_tried_again(self):
+        """最后几次停的不是同一句：还值得再起一趟（多半是这一轮断了，再来一轮就好）。"""
+        session = a_session(self.meeting)
+        handlers = the_handlers(self.meeting, self.workflow)
+        session.stated_task(WORDS, handlers[0])
+        session.run([handlers[0]], out=lambda _line: None)                 # 没人接：不是它的事
+
+        def broke(_env, *_given):
+            raise RuntimeError("这一轮断了")
+
+        handlers[2].caps["do_step"] = broke
+        session.run(handlers, out=lambda _line: None)                      # actor 那一步没跑起来
+        self.assertTrue(worth_another_round(self.meeting, tries=2))
 
     def test_an_unfinished_meeting_says_where_it_stopped(self):
         """没跑完的一趟说得清：哪个案子、人说的哪句话（进程死没死都不必知道）。"""
@@ -1076,22 +1110,28 @@ class WhatACriticCanReadInADesignTest(unittest.TestCase):
         return where
 
     def a_run(self, where, roots) -> str:
+        """把那份文档当**判的那一份**交过去（像真的单那样），跑一遍这条验收条件。"""
         from viba import viba_ast
         from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
-                                    interpret)
+                                    interpret, put_snapshot)
         from tickets import critic
 
         wanted = ", ".join('"' + one + '"' for one in roots)
         (self.case / "the_condition.viba").write_text(
             "__decl__ =\n    str\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
-            "what_stops_this_design =\n    str\n  <- $env Env\n  <- $path str\n"
+            "under_judgment =\n    str\n  <- $env Env\n\n"
+            "what_stops_this_design =\n    str\n  <- $env Env\n  <- $design str\n"
             "  <- $roots list[str]\n\n"
-            f'__impl__ = what_stops_this_design << $env args.env << $path "{where}"\n'
+            "__impl__ = what_stops_this_design << $env args.env\n"
+            "  << $design (under_judgment << $env args.env)\n"
             f"  << $roots ListLiteral[{wanted}]\n", encoding="utf-8")
         table = critic._rule_compute(None)
         env = Environment(EnvironmentStorage("", None, str(self.case)),
                           EnvironmentCompute(lambda module, name: table.get(name)))
-        answer = interpret(str(self.case / "the_condition.viba"), env)
+        # 判的时候这一份摆在 `judgment/` 底下，条件就是在那儿读它的（`critic.judge` 那一处）
+        judged = Environment(env.storage.sub("judgment"), env.compute, env.viba_path)
+        put_snapshot(judged, where.read_text(encoding="utf-8"), "under_judgment")
+        answer = interpret(str(self.case / "the_condition.viba"), judged)
         return viba_ast.unparse_type(answer.data)
 
     def test_a_design_where_every_type_is_used_is_fine(self):

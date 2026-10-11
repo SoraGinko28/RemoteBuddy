@@ -88,7 +88,8 @@ from tickets.meeting import a_file_in
 from tickets.meeting import case_for, cases_of, run_for_meeting
 from tickets.plan import due as due_ticket, ticket_named
 from tickets.progress import the_state
-from tickets.session import OK, open_work
+from tickets.session import (OK, open_work, remember_the_norm, the_norm_of,
+                             worth_another_round)
 from tickets.table import members_for, members_of
 from tickets.ticket import read_ticket, ticket_uids
 from tickets.values import Store as ValueStore
@@ -108,6 +109,10 @@ MEETING_ORDER = "order"
 # 因为两个服务共享的正是这个目录；数据共享、驱动不共享。
 DRIVER_STATE = "driver.json"
 DRIVER_HEARTBEAT_SECONDS = 20.0
+# 一趟工单跑完还欠着单：自己接着起一趟，不用人来叫醒。同一句话连着说了这么多遍还是它，
+# 就不试了（`tickets.session.worth_another_round`）；两趟之间隔这么久。
+TICKET_TRIES = int(os.environ.get("REMOTEBUDDY_TICKET_TRIES", "3"))
+TICKET_PAUSE = float(os.environ.get("REMOTEBUDDY_TICKET_PAUSE", "20"))
 # 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
 CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
@@ -341,13 +346,14 @@ def _ticket_target(store: MeetingStore) -> str:
 
 
 def _uid_of(meeting_dir, name: str, case: str) -> str:
-    """这张单的号：发过就是那个号，还没发就照现在这个案子算出来。"""
-    issued = ticket_named(meeting_dir, name)
-    if issued is not None:
-        return issued
+    """这张单的号：这个案子的那一张；这个案子还没有就看这场会里叫这个名字的那一张。"""
     from tickets.issue import ticket_uid
 
-    return ticket_uid(name, case_root(meeting_dir, case) if case else name)
+    where = case_root(meeting_dir, case) if case else None
+    issued = ticket_named(meeting_dir, name, where)
+    if issued is not None:
+        return issued
+    return ticket_uid(name, where if where is not None else name)
 
 
 def _ticket_row(meeting_dir, workflow, case: str, name: str, values, state) -> Dict[str, Any]:
@@ -2261,6 +2267,8 @@ class MeetingWebService:
             thread = threading.Thread(target=self._run_tickets,
                                       args=(meeting_id, message, target, case), daemon=True)
             self.ticket_jobs[meeting_id] = thread
+        # 这一场是按哪份法开的：别的法下开的会不动（同一份会议目录可能被几个区域看着）。
+        self._the_same_norm(store)
         # 谁握着这一场会的租约，谁才动它。另一个服务驱动着的时候这里就拒了。
         self._ensure_driver(store)
         # 阶段先不动：这一趟里真正叫醒 agent 的是 actor 发进会议的那句题面（走消息那条路，
@@ -2325,11 +2333,15 @@ class MeetingWebService:
                                data={"outcome": outcome.outcome, "rounds": outcome.rounds})
             if outcome.outcome == OK:
                 store.update(status="running", phase="completion_proposed",
-                             control_owner="none", recovery_required=False)
+                             control_owner="none", recovery_required=False, failure=None)
             else:
                 store.update(status="running", phase="api_error", control_owner="none",
                              failure=f"工单没跑完：{outcome.outcome}（{outcome.failure}）",
                              recovery_required=True)
+                # 还欠着的单没人接、或者哪一手没跑起来：不用人来叫醒，自己接着起一趟。同一句话
+                # 连着说了这么多遍还是它，就停在这儿——再跑一遍是同一句，等人（或等法）改。
+                if worth_another_round(_tickets_home(store), TICKET_TRIES):
+                    self._another_ticket_round(meeting_id, message, target, case)
         except Exception as exc:                    # noqa: BLE001 - 后台线程：写进 journal 才算有人知道
             try:
                 self.load_store(meeting_id).append_event(
@@ -2348,6 +2360,46 @@ class MeetingWebService:
             if pending:
                 # 跑这一趟的时候人又说了话：接着跑那一句
                 self._start_tickets(self.load_store(meeting_id), meeting_id, *pending)
+
+    def _the_same_norm(self, store: MeetingStore) -> None:
+        """这一场是按哪份法开的：这一台读的是别的法就不动它，把话说清楚。
+
+        法是这一场会自己的身份的一部分——一场会开在哪份法下，它每一趟都由那份法判。几个区域共用一份
+        会议目录的时候，另一份法来跑同一批单只会得到"这一步没人认"这种假答案（单上的程序不在它的法
+        里）。第一次动这一场会的那个区域把这份法记在案子里，后来的人照着比。
+
+        还没记过（这是第一趟）：记上这一台读的那份。
+        """
+        home = _tickets_home(store)
+        case = _the_case(home)
+        if not case:
+            return
+        here = str(workflow_root(project_root=self.project_root))
+        recorded = the_norm_of(home, case)
+        if recorded is None:
+            remember_the_norm(home, case, here)
+            return
+        if recorded != here:
+            raise WebError(409, f"这场会开在另一份法下（{recorded}）；这一台读的是 {here}")
+
+    def _another_ticket_round(self, meeting_id: str, message: str, target: str,
+                              case: Optional[str]) -> None:
+        """等一会儿再起一趟：这一趟没跑完，但还值得再试。
+
+        等那一会儿是让这一趟利索地收尾（那个跑着的线程还没从表里摘掉），也是给 agent 那一轮的收尾
+        留出时间——急着起下一趟会把刚起的一轮打断。到点的时候要是已经有人在跑（比如人又说了一句），
+        这一趟就不起了：那一句才是该跑的那一句。
+        """
+        def again() -> None:
+            with self.lock:
+                running = self.ticket_jobs.get(meeting_id)
+            if running is not None:
+                return
+            self._start_tickets(self.load_store(meeting_id), meeting_id, message, target, case)
+
+        timer = threading.Timer(TICKET_PAUSE, again)
+        timer.daemon = True
+        timer.start()
 
     def unfinished_tickets(self, store: MeetingStore) -> Optional[Tuple[str, str, str]]:
         """这一场有没有没跑完的一趟：(案子, 人类那句话, 要交的那个名字)，没有就是 None。

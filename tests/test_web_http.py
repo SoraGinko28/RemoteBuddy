@@ -354,6 +354,13 @@ class MeetingWebServiceTest(unittest.TestCase):
             def file(self, name):
                 return self.working / name
 
+            def is_a_tree(self, name):
+                return str(name).endswith("/")
+
+            def stamp(self, name):
+                path = self.file(name)
+                return path.stat().st_mtime_ns if path.is_file() else None
+
             def wait_for_chat(self, _message_type, timeout=None):
                 return "知道了"
 

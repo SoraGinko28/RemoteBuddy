@@ -204,23 +204,22 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
                 return f"受理跑不起来：{type(bad).__name__}: {bad}"
         return "这几句话，它的受理一句都没答出要交的那个名字"
 
-    def what_stops_this_design(env, path, roots):
+    def what_stops_this_design(env, design, roots):
         """这份设计文档哪儿不成立；一段都不差就是空串。
 
-        一份设计文档（markdown，主体是 ```viba 段落）要守的三条：
-        每一段都编译得过；里面引用到的每个名字都解析得出来；除根以外，每个定义都被别的定义用到。
+        判的是**交过来的那一份**（文档本身，不是它在盘上的哪个文件）：一份设计文档（markdown，主体是
+        ```viba 段落）要守的三条：每一段都编译得过；里面引用到的每个名字都解析得出来；除根以外，每个
+        定义都被别的定义用到。
 
         哪些算"根"是**验收条件那一侧**说的事（这份文档的顶层是哪几个类型，写文档的人自己知道）；
         这一处只把这三条查一遍，把第一处不对的话带回去。
         """
-        where = _root_of(env, path)
-        try:
-            source = where.read_text(encoding="utf-8")
-        except OSError as bad:
-            return f"{type(bad).__name__}: {bad}"
+        source = text_of(env, design)
+        if not source.strip():
+            return "交过来这一份是空的"
         blocks = re.findall(r"```viba\n(.*?)```", source, re.S)
         if not blocks:
-            return f"{where} 里一段 ```viba 都没有"
+            return "这一份里一段 ```viba 都没有"
         joined = "".join(blocks)
         try:
             tree = viba_ast.parse(joined)

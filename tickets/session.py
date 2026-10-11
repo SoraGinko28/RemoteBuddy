@@ -25,7 +25,7 @@ from . import plan
 from .binding import Binding
 from .handler import Handler
 from .layout import case_root, case_of, record_path
-from .progress import Stage, finished, unfinished
+from .progress import Stage, finished, read_stages, unfinished
 from .values import Store
 from .workflow import Workflow
 
@@ -35,6 +35,9 @@ UNFINISHED = "unfinished"
 BROKEN = "broken"
 # 停下的一手里，这一手是"不是它的事"：轮换，不是走不动。
 NOT_MINE = "$not_implemented_err"
+# 这一场会开在哪一份规范下：记在案子那份值里的这一条（开第一趟的时候记一次）。
+NORM_ROOT_PATH = ""
+NORM_ROOT_NAME = "norm_root"
 
 
 @dataclass
@@ -107,8 +110,8 @@ class Session:
         return plan.due(self.workflow, self.values, name)[1]
 
     def ticket_of(self, name: str) -> Optional[str]:
-        """叫这个名字的单发过没有。"""
-        return plan.ticket_named(self.meeting_dir, name)
+        """这个案子里叫这个名字的单发过没有。"""
+        return plan.ticket_named(self.meeting_dir, name, self.root)
 
     def issue(self, name: str):
         """发出这一张单，答它落在哪儿。"""
@@ -185,6 +188,44 @@ def _broke(handler: Handler, stage: Stage) -> str:
     return f"{handler.name} 在 {stage.uid} 上没跑起来：{stage.stop()}"
 
 
+def worth_another_round(meeting_dir, tries: int = 3) -> bool:
+    """还欠着的单，值不值得再跑一趟。
+
+    说得清的只有进度：那一张单到最后停在哪句话上、这句话已经听过几遍了。同一句话听过 `tries` 遍，
+    再跑一遍还是它——不值得；还没听够那么多遍（或者一张单一次都没试过），就值得再试一趟。
+
+    数的是这句话在**整份进度里**出现过几遍，不是最后几篇连着几遍：两个处理者轮着试同一张单，同一个人
+    不连写两篇，所以同一句话本来就是隔着别的停下记录出现的。
+    """
+    outstanding = unfinished(meeting_dir)
+    if not outstanding:
+        return False
+    for uid in outstanding:
+        stops = [stage.stop() for stage in read_stages(meeting_dir, uid)]
+        if not stops or stops.count(stops[-1]) < tries:
+            return True
+    return False
+
+
+def the_norm_of(meeting_dir, case: str) -> Optional[str]:
+    """这一场会开在哪一份规范下；还没记过就是 None。
+
+    法是这一场会自己的身份的一部分：一场会的每一趟都由同一份法判。同时开着几个区域（一个区域一个
+    `REMOTEBUDDY_NORM`）、而它们共用一份会议目录的时候，这一条就是"哪一份法说了算"的凭据。
+    """
+    if not case:
+        return None
+    got = Store(case_root(meeting_dir, case), record_path(meeting_dir)).value(
+        NORM_ROOT_PATH, NORM_ROOT_NAME)
+    return None if got is None else str(got)
+
+
+def remember_the_norm(meeting_dir, case: str, root: str) -> None:
+    """这一场会开在哪一份规范下，记在它的案子那份值里（开第一趟的时候记一次）。"""
+    Store(case_root(meeting_dir, case), record_path(meeting_dir)).write(
+        NORM_ROOT_PATH, NORM_ROOT_NAME, root)
+
+
 def open_work(meeting_dir) -> Optional[Tuple[str, str, str]]:
     """这场会有没有没跑完的一趟：`(案子, 人类那句话, 要交的那个名字)`，没有就是 None。
 
@@ -214,4 +255,6 @@ def _say(out: Optional[Callable[[str], None]], line: str) -> None:
         out(line)
 
 
-__all__ = ["Session", "Outcome", "open_work", "OK", "STUCK", "UNFINISHED", "BROKEN"]
+__all__ = ["Session", "Outcome", "open_work", "worth_another_round", "the_norm_of",
+           "remember_the_norm", "OK", "STUCK",
+           "UNFINISHED", "BROKEN"]

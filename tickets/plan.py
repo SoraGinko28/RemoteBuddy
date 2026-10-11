@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
+from .issue import ticket_uid
 from .layout import TICKETS_DIR
 from .ticket import ticket_uids
 from .values import Store
@@ -51,11 +52,16 @@ def issued(meeting_dir) -> list:
     return ticket_uids(meeting_dir)
 
 
-def ticket_named(meeting_dir, name: str) -> Optional[str]:
-    """这场会里发过的那张叫这个名字的单的号；没发过就是 None。
+def ticket_named(meeting_dir, name: str, values_root=None) -> Optional[str]:
+    """这场会里那张叫这个名字的单的号；没发过就是 None。
 
-    一个案子里同一张单只发一次：发过就不再发第二张（做完了才算走到下一步）。
+    一个案子里同一张单只发一次：发过就不再发第二张（做完了才算走到下一步）。号是 `<名字>-<案子>`
+    （`issue.ticket_uid`），所以给了 `values_root`（那个案子的值那一层）就只认这个案子的那一张；
+    不给就认这场会里叫这个名字的任何一张（页面上清点用）。
     """
+    if values_root is not None:
+        uid = ticket_uid(name, values_root)
+        return uid if uid in ticket_uids(meeting_dir) else None
     head = f"{name}-"
     for uid in ticket_uids(meeting_dir):
         if uid == name or uid.startswith(head):
