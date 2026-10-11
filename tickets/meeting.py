@@ -43,6 +43,22 @@ def a_file_in(words: str) -> str:
     return ""
 
 
+PATH_IN_PUNCTUATION = "，。；：、（）()[]<>「」『』\"'"
+
+
+def a_path_in(words: str) -> str:
+    """这句话里像路径的那一个词：带斜杠、不是网址；没有就是空。
+
+    跟 `a_file_in` 一样是给规范用的一个算子。立法那几份受理程序问的是"要立的那份法在哪儿"，
+    那是一个目录，不是文件名——所以认的是斜杠，不是点。
+    """
+    for token in (words or "").split():
+        cleaned = token.strip(PATH_IN_PUNCTUATION)
+        if "/" in cleaned and not cleaned.startswith("http"):
+            return cleaned
+    return ""
+
+
 def case_for(target: str, fallback: str = "meeting", tag=None) -> str:
     """这一趟跑在哪个案子下：`case/<要交的那个名字>`，没名字就用 fallback。
 
@@ -87,5 +103,5 @@ def cases_of(meeting_dir) -> List[str]:
     return cases(meeting_dir)
 
 
-__all__ = ["run_for_meeting", "the_assistant", "a_file_in", "case_for", "values_of",
+__all__ = ["run_for_meeting", "the_assistant", "a_file_in", "a_path_in", "case_for", "values_of",
            "cases_of", "record_path", "case_root"]

@@ -678,6 +678,158 @@ class TheHostsBuiltinOperatorsTest(unittest.TestCase):
                          self.a_run('__impl__ = trim << $env args.env << $x "  a,b  "'))
 
 
+FILES_MISSING = '''files_missing =
+    list[str]
+  <- $env Env
+  <- $root str
+  <- $wanted list[str]
+
+'''
+
+EVERY_COMPLETE = '''every_program_is_complete =
+    bool
+  <- $env Env
+  <- $root str
+
+'''
+
+EVERY_DECLARED_STRANGER = '''every_operator_is_declared =
+    bool
+  <- $env Env
+  <- $root str
+
+nobody_declares_this =
+    bool
+  <- $env Env
+
+'''
+
+EVERY_DECLARED_FINE = '''every_operator_is_declared =
+    bool
+  <- $env Env
+  <- $root str
+
+'''
+
+UNDER = '''under_judgment =
+    Any
+  <- $env Env
+
+'''
+
+
+class WhatACriticCanReadInALawTest(unittest.TestCase):
+    """判一份法要用的那几个算子：单上交过来的那一份、读目录、读程序、算名字。
+
+    一份法要判的不是代码而是一整份规范（受理、组织、流程、验收四个部分），所以 critic 那一边多几个
+    算子：`under_judgment` 是单上交过来的那一份，`files_missing` 数缺哪几条，两个 `every_...` 把它
+    底下的程序逐份看一遍。
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.where = Path(self.temporary.name)
+        self.case = self.where / "case"
+        self.case.mkdir()
+        self.draft = self.where / "draft"
+        for part in ("intake", "ticket_programs", "acceptance"):
+            (self.draft / part).mkdir(parents=True)
+        (self.draft / "members").write_text("actor actor_api agent\n", encoding="utf-8")
+
+    def a_program(self, name: str, source: str) -> Path:
+        path = self.draft / "acceptance" / f"{name}.viba"
+        path.write_text(source, encoding="utf-8")
+        return path
+
+    def a_run(self, source: str, decl: str = "bool") -> str:
+        """在一个空案子上跑一段程序，答它写成 viba 源文的那份答复。"""
+        from viba import viba_ast
+        from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                                    interpret)
+        from tickets import critic
+
+        (self.case / "the_condition.viba").write_text(
+            f"__decl__ =\n    {decl}\n  <- $env Env\n\n"
+            "args = __get_args__ << __decl__\n\n" + source + "\n", encoding="utf-8")
+        table = critic._rule_compute(None)
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        answer = interpret(str(self.case / "the_condition.viba"), env)
+        return viba_ast.unparse_type(answer.data)
+
+    def test_the_path_in_a_sentence_is_the_one_with_a_slash(self):
+        """受理要问的是"要立的那份法在哪儿"：那是一个目录，所以认斜杠，不认点。"""
+        from tickets.meeting import a_path_in
+
+        self.assertEqual("/Users/x/RbNormViba", a_path_in("把法写到 /Users/x/RbNormViba 里"))
+        self.assertEqual("~/w/RbNormViba", a_path_in("（~/w/RbNormViba）"))
+        self.assertEqual("", a_path_in("把法写出来"))
+        self.assertEqual("", a_path_in("看 https://example.com/a/b"))
+
+    def test_the_decision_table_hands_it_a_path_operator(self):
+        """受理那几份程序能问到的名字里有它。"""
+        from tickets.assistant import decision_caps
+
+        self.assertIn("a_path_in", decision_caps("写到 /a/b"))
+
+    def test_it_says_which_parts_a_law_is_missing(self):
+        self.assertEqual('$ok ListLiteral["README.md"]',
+                         self.a_run(FILES_MISSING +
+                                    '__impl__ = files_missing\n'
+                                    '  << $env args.env\n'
+                                    f'  << $root "{self.draft}"\n'
+                                    '  << $wanted ListLiteral["intake", "members", '
+                                    '"ticket_programs", "acceptance", "README.md"]'))
+
+    def test_a_program_with_no_body_is_not_complete(self):
+        """只写提示、没写 `__impl__` 的那一份是类型，不是能跑的步骤。"""
+        self.a_program("half_written",
+                       "__decl__ =\n    bool\n  <- $env Env\n")
+        self.assertEqual("$ok false", self.a_run(
+            EVERY_COMPLETE + f'__impl__ = every_program_is_complete << $env args.env '
+                             f'<< $root "{self.draft}"'))
+
+        self.a_program("half_written",
+                       "__decl__ =\n    bool\n  <- $env Env\n\n__impl__ = true\n")
+        self.assertEqual("$ok true", self.a_run(
+            EVERY_COMPLETE + f'__impl__ = every_program_is_complete << $env args.env '
+                             f'<< $root "{self.draft}"'))
+
+    def test_a_program_calling_a_step_nobody_declares_is_refused(self):
+        """调到的名字要么自己声明、要么角色 api 声明、要么 viba 自带或解释器自己回答。"""
+        self.a_program("asks_for_a_stranger",
+                       "__decl__ =\n    bool\n  <- $env Env\n\n"
+                       "__impl__ = nobody_declares_this << $env args.env\n")
+        self.assertEqual("$ok false", self.a_run(
+            EVERY_DECLARED_STRANGER + f'__impl__ = every_operator_is_declared << $env args.env '
+                                      f'<< $root "{self.draft}"'))
+
+        self.a_program("asks_for_a_stranger",
+                       "__decl__ =\n    bool\n  <- $env Env\n\n"
+                       "here = le\n"
+                       "  << $env args.env\n"
+                       "  << $x 1\n"
+                       "  << $y 4\n\n"
+                       "__impl__ = here\n")
+        self.assertEqual("$ok true", self.a_run(
+            EVERY_DECLARED_FINE + f'__impl__ = every_operator_is_declared << $env args.env '
+                                  f'<< $root "{self.draft}"'))
+
+    def test_under_judgment_is_the_thing_the_ticket_handed_over(self):
+        """单上交过来的那一份：验收条件读它读的就是它。"""
+        from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                                    put_snapshot)
+        from tickets import critic
+
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: critic._rule_compute(None).get(name)))
+        put_snapshot(env, "一份法在 /tmp/draft", critic.UNDER_JUDGMENT)
+        self.assertEqual('$ok "一份法在 /tmp/draft"',
+                         self.a_run(UNDER + "__impl__ = under_judgment << $env args.env",
+                                    decl="Any"))
+
+
 class TheHandlerTest(unittest.TestCase):
     """一个处理者：轮到谁接哪张单。"""
 

@@ -26,7 +26,7 @@ from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
 from .binding import answer_of, failure_in, finished, read_stored, value_of
 from .builtins import the_table as the_builtin_table
 from .handler import Handler, program_caps
-from .meeting import a_file_in
+from .meeting import a_file_in, a_path_in
 
 
 def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Callable]:
@@ -57,8 +57,9 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
 def decision_caps(words: str) -> Dict[str, Callable]:
     """判断"这一句要不要它做活"时，规范那几份程序能问到的算子。
 
-    只有两样：人刚说的那句（`the_words`），和这句话里像文件名的那一个词（`a_file_in`）。哪一句算一份活
-    不在这里定——那是规范里 intake/ 那几份程序的事，这一处只把这两样交给它们。
+    三样：人刚说的那句（`the_words`）、这句话里像文件名的那一个词（`a_file_in`）、像路径的那一个词
+    （`a_path_in`）。哪一句算一份活不在这里定——那是规范里 intake/ 那几份程序的事，这一处只把这三样
+    交给它们。
     """
 
     def the_words(_env):
@@ -67,10 +68,14 @@ def decision_caps(words: str) -> Dict[str, Callable]:
     def a_file_in_op(_env, text):
         return a_file_in(str(value_of(text)))
 
+    def a_path_in_op(_env, text):
+        return a_path_in(str(value_of(text)))
+
     def says(_env, text, word):
         return str(value_of(word)) in str(value_of(text))
 
-    return {"the_words": the_words, "a_file_in": a_file_in_op, "says": says}
+    return {"the_words": the_words, "a_file_in": a_file_in_op, "a_path_in": a_path_in_op,
+            "says": says}
 
 
 def what_to_make(workflow, words: str) -> str:
