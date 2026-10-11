@@ -13,12 +13,14 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
 from . import _viba  # noqa: F401
 
+from viba import is_complete as _design
 from viba import viba_ast
 from viba.interpret import (Environment, EnvironmentCompute, interpret, get_snapshot,
                             put_snapshot)
@@ -202,6 +204,55 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
                 return f"受理跑不起来：{type(bad).__name__}: {bad}"
         return "这几句话，它的受理一句都没答出要交的那个名字"
 
+    def what_stops_this_design(env, path, roots):
+        """这份设计文档哪儿不成立；一段都不差就是空串。
+
+        一份设计文档（markdown，主体是 ```viba 段落）要守的三条：
+        每一段都编译得过；里面引用到的每个名字都解析得出来；除根以外，每个定义都被别的定义用到。
+
+        哪些算"根"是**验收条件那一侧**说的事（这份文档的顶层是哪几个类型，写文档的人自己知道）；
+        这一处只把这三条查一遍，把第一处不对的话带回去。
+        """
+        where = _root_of(env, path)
+        try:
+            source = where.read_text(encoding="utf-8")
+        except OSError as bad:
+            return f"{type(bad).__name__}: {bad}"
+        blocks = re.findall(r"```viba\n(.*?)```", source, re.S)
+        if not blocks:
+            return f"{where} 里一段 ```viba 都没有"
+        joined = "".join(blocks)
+        try:
+            tree = viba_ast.parse(joined)
+        except SyntaxError as bad:
+            return f"有一段编译不过：{bad}"
+        checker = _design_checker(joined)
+        if checker is None:
+            return "有一段编译不过"
+        definitions = checker._definitions_of(_design.ENTRY_MODULE_NAME)   # noqa: SLF001
+        used = {name: _names_in(node.body) for name, node in definitions.items()}
+        parameters = {one for node in definitions.values()
+                      for one in (getattr(node, "generic_params", None) or ())}
+        for name, names in sorted(used.items()):
+            for one in sorted(names):
+                if _bare(one) in definitions or one in parameters:
+                    continue
+                if _is_a_builtin_name(one):
+                    continue
+                if checker._resolve(one, _design.ENTRY_MODULE_NAME) is None:  # noqa: SLF001
+                    return f"{name} 引用到的 {one} 解析不出来"
+        wanted = {str(one) for one in a_list(roots)}
+        loose = sorted(name for name in definitions
+                       if name not in wanted
+                       and not any(name in names for other, names in used.items() if other != name))
+        if loose:
+            return f"这几个定义了没人用，也不在根里：{'、'.join(loose)}"
+        for name in sorted(wanted):
+            if name not in definitions:
+                return f"说好的根 {name} 这份文档里没有"
+        assert tree is not None
+        return ""
+
     table = dict(the_builtin_table())
     table["under_judgment"] = under_judgment
     table["widest_parameters"] = widest_parameters
@@ -210,7 +261,53 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
     table["every_operator_is_declared"] = every_operator_is_declared
     table["what_stops_this_norm"] = what_stops_this_norm
     table["why_the_intake_says_nothing"] = why_the_intake_says_nothing
+    table["what_stops_this_design"] = what_stops_this_design
     return table
+
+
+def _is_a_builtin_name(name: str) -> bool:
+    """这个名字是不是 viba 自带那一套里的（`Object`、`Oneof`、`list`、`Env`……）。
+
+    `Any` 是个例外：它在自带那一套里查不到（它是顶类型，不是一条定义），所以单列出来。
+    """
+    if name == "Any":
+        return True
+    from viba.type import BUILTIN_MODULE, Ok
+
+    return isinstance(BUILTIN_MODULE.lookup(name), Ok)
+
+
+def _design_checker(source: str):
+    """一份设计文档编译出来、并且把包里那几个模块都挂上的那个查名字的东西；编译不过就是 None。"""
+    pool = _design._add_file(_design.empty_pool(), _design.ENTRY_FILE_NAME,     # noqa: SLF001
+                             _design.ENTRY_MODULE_NAME, source)
+    if pool is None:
+        return None
+    for file_name, module_name, text in _design._dependencies((), ()):          # noqa: SLF001
+        added = _design._add_file(pool, file_name, module_name, text)           # noqa: SLF001
+        if added is not None:
+            pool = added
+    return _design._Checker(pool, set())                                        # noqa: SLF001
+
+
+def _names_in(node) -> set:
+    """一段类型表达式里引用到的名字（点分名照原样留着）。"""
+    out = set()
+    stack = [node]
+    while stack:
+        here = stack.pop()
+        for attr in ("name", "constructor"):
+            got = getattr(here, attr, None)
+            if isinstance(got, str):
+                out.add(got)
+        for attr in ("body", "type", "left", "right", "result", "argument", "function",
+                     "tagged_type", "type_name", "constructor_name"):
+            child = getattr(here, attr, None)
+            if child is not None:
+                stack.append(child)
+        for attr in ("args", "elements"):
+            stack.extend(getattr(here, attr, ()) or ())
+    return out
 
 
 def _norm_at(root: Path) -> Workflow:

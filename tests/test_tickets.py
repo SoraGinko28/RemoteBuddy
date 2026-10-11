@@ -1008,6 +1008,65 @@ class WhatTheActorHandsOverTest(unittest.TestCase):
         self.assertEqual(120.0, channel.chat_timeout)     # 没说的那个照旧
 
 
+class WhatACriticCanReadInADesignTest(unittest.TestCase):
+    """判一份 viba 设计文档要用的那个算子：编译、名字解析、有没有走不到的类型。"""
+
+    CLEAN = ("Root =\n    Object\n  * $one Used\n\n"
+             "Used =\n    Object\n  * $n int\n")
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.case = Path(self.temporary.name) / "case"
+        self.case.mkdir()
+
+    def a_design(self, source: str) -> Path:
+        where = Path(self.temporary.name) / "design.md"
+        where.write_text("# 一份设计\n\n```viba\n" + source + "```\n", encoding="utf-8")
+        return where
+
+    def a_run(self, where, roots) -> str:
+        from viba import viba_ast
+        from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                                    interpret)
+        from tickets import critic
+
+        wanted = ", ".join('"' + one + '"' for one in roots)
+        (self.case / "the_condition.viba").write_text(
+            "__decl__ =\n    str\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+            "what_stops_this_design =\n    str\n  <- $env Env\n  <- $path str\n"
+            "  <- $roots list[str]\n\n"
+            f'__impl__ = what_stops_this_design << $env args.env << $path "{where}"\n'
+            f"  << $roots ListLiteral[{wanted}]\n", encoding="utf-8")
+        table = critic._rule_compute(None)
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        answer = interpret(str(self.case / "the_condition.viba"), env)
+        return viba_ast.unparse_type(answer.data)
+
+    def test_a_design_where_every_type_is_used_is_fine(self):
+        self.assertEqual('$ok ""', self.a_run(self.a_design(self.CLEAN), ["Root"]))
+
+    def test_a_type_nobody_uses_is_named(self):
+        loose = self.CLEAN + "\nLonely =\n    Object\n  * $n int\n"
+        said = self.a_run(self.a_design(loose), ["Root"])
+        self.assertIn("Lonely", said)
+        self.assertIn("没人用", said)
+
+    def test_a_name_that_does_not_resolve_is_named(self):
+        said = self.a_run(self.a_design("Root =\n    Object\n  * $one Nowhere\n"), ["Root"])
+        self.assertIn("Nowhere", said)
+        self.assertIn("解析不出来", said)
+
+    def test_a_block_that_does_not_compile_says_so(self):
+        said = self.a_run(self.a_design("Root =\n    Object\n  *\n"), ["Root"])
+        self.assertIn("编译不过", said)
+
+    def test_a_root_that_is_not_there_says_so(self):
+        said = self.a_run(self.a_design(self.CLEAN), ["Root", "Missing"])
+        self.assertIn("Missing", said)
+
+
 class TheHandlerTest(unittest.TestCase):
     """一个处理者：轮到谁接哪张单。"""
 
