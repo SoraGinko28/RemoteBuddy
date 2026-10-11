@@ -333,6 +333,29 @@ class MeetingWebServiceTest(unittest.TestCase):
         record = (Path(store.run_dir) / "meeting_record.md").read_text(encoding="utf-8")
         self.assertIn("- critic（critic）答了", record)
 
+    def test_the_boot_resume_does_not_take_another_services_meeting(self):
+        """服务刚起来时只接自己驱过的会：驱动记录里写着别的服务就不动它（各读各的法）。
+
+        这一场故意还欠着单（写的那一步坏掉），所以"该不该接着跑"是真被问到的。
+        """
+        def a_writer_that_breaks(_prompt):
+            raise RuntimeError("先不写")
+
+        service = self.tickets_service(
+            lambda _s, _m, _t: actor_caps(a_writer_that_breaks))
+        store = service.start({"message": "写一个快速排序，放到 quicksort.py",
+                               "meeting_id": "orders-boot"})
+        self.wait_for_tickets(service, "orders-boot")
+        started = lambda: len([one for one in service.events("orders-boot", 0)["events"]
+                               if one.get("phase") == "tickets_started"])
+        self.assertEqual(1, started())                    # 先跑过一趟
+        self.assertIsNotNone(service.unfinished_tickets(store))    # 还欠着单
+        service._driver_path(store).write_text(
+            json.dumps({"pid": 1, "url": "http://127.0.0.1:9999",
+                        "workspace": str(store.workspace_path)}), encoding="utf-8")
+        self.assertEqual([], service.resume_unfinished_tickets())
+        self.assertEqual(1, started())                    # 一趟都没新起
+
     def test_an_instruction_from_the_order_is_not_a_new_human_message(self):
         """工单派活那句走的也是消息接口：会议得认得出它是工单说的，不再从头发一遍单。"""
         words = "写一个快速排序，放到 quicksort.py"

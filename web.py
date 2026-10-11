@@ -2408,7 +2408,12 @@ class MeetingWebService:
         return open_work(_tickets_home(store))
 
     def resume_unfinished_tickets(self) -> List[str]:
-        """服务刚起来：把没跑完的那几趟接着跑（一趟一个案子，从那些单读到哪儿了）。"""
+        """服务刚起来：把没跑完的那几趟接着跑（一趟一个案子，从那些单读到哪儿了）。
+
+        只接自己驱的那些：会议目录是几台服务共用的，另一台读的是另一份法——它去跑别人的会，
+        发的是它那份法的单，只会得出"这一步没人认"这种假答案（第 1 节那件事就是这么来的）。
+        驱动记录里写着是哪一台；写着别人的就跳过。
+        """
         resumed: List[str] = []
         for meeting in self.list_meetings()["meetings"]:
             meeting_id = str(meeting.get("meeting_id") or "")
@@ -2416,6 +2421,10 @@ class MeetingWebService:
                 continue
             try:
                 store = self.load_store(meeting_id)
+                state = self._driver_state(store)
+                driver_url = str((state or {}).get("url") or "")
+                if driver_url and self.public_url and driver_url != self.public_url:
+                    continue
                 unfinished = self.unfinished_tickets(store)
                 if unfinished is None:
                     continue
