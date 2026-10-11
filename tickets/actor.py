@@ -73,7 +73,7 @@ def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable
     def do_step(env, task, after):
         before = opened.pop("before", None)
         return channel.ensure_work(_writing_prompt(text_of(env, task), target), target,
-                                   since=before, changed=before is not None)
+                                   since=before, changed=_must_change(channel, target, before))
 
     def report_done(env, result, after):
         # 它这一轮说过的那句收尾话；没说过就用这一句（别在这儿空等）。
@@ -85,7 +85,7 @@ def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable
         if not what:
             return previous                      # 它没说不合格：照原样，不必再叫一次 agent
         return channel.ensure_work(_revising_prompt(previous, what, target), target,
-                                   force=True, changed=True)
+                                   force=True, changed=_must_change(channel, target, None))
 
     return {"acknowledge": acknowledge, "do_step": do_step,
             "report_done": report_done, "redo_step": redo_step}
@@ -111,6 +111,18 @@ def _revision_prompt(previous: str, objection: str) -> str:
     if objection:
         return f"上一版被指出不合格：{objection}\n照它说的地方再做一版：\n{previous}"
     return f"没人说不合格（照原样再交一版）：\n{previous}"
+
+
+def _must_change(channel, target: str, before) -> bool:
+    """这一趟得真把它改了吗？
+
+    一份文件：上一版已经在，就得看见它这一趟真改过。**一棵树**不这么看——它没有"哪一刻算改过"，
+    只有"这一版比上一版好吗"，那是**下一次判决**说的话（一份法改没改好，由验收条件判，不由时刻判）。
+    树这边不设这一条，免得改了的那一版因为在上一轮落的盘而被当成没改。
+    """
+    if channel.is_a_tree(target):
+        return False
+    return before is not None
 
 
 def _writing_prompt(task: str, target: str) -> str:

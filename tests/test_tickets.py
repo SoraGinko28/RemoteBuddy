@@ -989,6 +989,15 @@ class WhatTheActorHandsOverTest(unittest.TestCase):
                                                                            encoding="utf-8")
         self.assertNotEqual(before, channel.stamp("rb_norm/"))
 
+    def test_a_tree_is_not_required_to_change_during_the_attempt(self):
+        """一棵树没有"哪一刻算改过"：改没改好由下一次判决说，不由时刻说。"""
+        from tickets.actor import _must_change
+
+        channel = self.AChannel(self.workspace)
+        self.assertFalse(_must_change(channel, "rb_norm/", (2, 123)))
+        self.assertTrue(_must_change(channel, "words.py", 123))
+        self.assertFalse(_must_change(channel, "words.py", None))
+
     def test_the_three_waits_can_be_given_by_the_region(self):
         """一个区域就是一个在跑的程序：它那几个时限由它的环境变量说。"""
         with mock.patch.dict(os.environ, {"REMOTEBUDDY_TURN_TIMEOUT": "1800",
