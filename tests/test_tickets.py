@@ -987,6 +987,21 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
     INTAKE = ("why_the_intake_says_nothing =\n    str\n  <- $env Env\n  <- $root str\n"
               "  <- $sentences list[str]\n\n")
 
+    def test_a_command_that_passes_answers_nothing_and_a_failing_one_says_so(self):
+        """跑一条命令：过了答空串，没过把退出码与最后一截输出带回来。"""
+        from tickets import critic
+        from viba import viba_ast
+        from viba.interpret import Environment, EnvironmentCompute, EnvironmentStorage
+
+        table = critic._rule_compute(None, str(self.case))
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        self.assertEqual("", table["what_stops_this_command"](env, viba_ast.Constant("true")))
+        said = table["what_stops_this_command"](
+            env, viba_ast.Constant("echo 坏了 >&2; exit 3"))
+        self.assertIn("退出码 3", said)
+        self.assertIn("坏了", said)
+
     def test_a_program_may_call_the_modules_viba_ships(self):
         """`if` 这种随包发的模块名也算有人认领：程序直接叫它们，解释器自己在包里找。"""
         from tickets import critic

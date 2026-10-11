@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -50,6 +52,11 @@ NATIVE_NAMES = frozenset({
 # 一份程序里本来就有、不归谁实现的那几个名字。
 SYNTAX_NAMES = frozenset({"__decl__", "__impl__", "__get_args__", "__dyn_call__",
                           "__dyn_method__"})
+
+# 跑一条命令（`what_stops_this_command`）：最多等这么久、回来最多印这几行。
+# 时限一到就当"没跑完"处理。
+THE_COMMAND_TIMEOUT = float(os.environ.get("REMOTEBUDDY_COMMAND_TIMEOUT", "900"))
+THE_COMMAND_LINES = 12
 
 # 这一处只说"是哪条验收条件说不合格"：它叫什么、要说什么话，都是规范的事，这一处不认识它们。
 # （要它自己说那句话，就得有一处 api 让它把话交出来，那是另一样东西。）
@@ -312,6 +319,24 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
             return "这几样还没写成定义：" + "、".join(missing)
         return ""
 
+    def what_stops_this_command(env, command):
+        """把这条命令跑一遍：过了答空串，没过把退出码与最后一截输出带回来。
+
+        在工作区里跑（这一场会的活都在那个目录底下），有时限。跑哪条命令是**验收条件那一侧**写的：
+        法是照这一场会写的，它说跑什么就跑什么；这一处只做两件事——跑、把结果说清楚。
+        """
+        line = text_of(env, command)
+        where = Path(workspace) if workspace is not None else Path.cwd()
+        try:
+            done = subprocess.run(line, shell=True, cwd=str(where), capture_output=True,
+                                  text=True, timeout=THE_COMMAND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return f"「{line}」跑了 {THE_COMMAND_TIMEOUT:g} 秒还没完"
+        if done.returncode == 0:
+            return ""
+        said = ((done.stdout or "") + (done.stderr or "")).strip().splitlines()
+        return f"「{line}」退出码 {done.returncode}：" + " / ".join(said[-THE_COMMAND_LINES:])
+
     table = dict(the_builtin_table())
     table["under_judgment"] = under_judgment
     table["widest_parameters"] = widest_parameters
@@ -324,6 +349,7 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
     table["what_stops_this_declaration"] = what_stops_this_declaration
     table["what_is_not_covered"] = what_is_not_covered
     table["definitions_missing"] = definitions_missing
+    table["what_stops_this_command"] = what_stops_this_command
     return table
 
 
