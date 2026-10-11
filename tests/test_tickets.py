@@ -987,6 +987,23 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
     INTAKE = ("why_the_intake_says_nothing =\n    str\n  <- $env Env\n  <- $root str\n"
               "  <- $sentences list[str]\n\n")
 
+    def test_a_program_may_call_the_modules_viba_ships(self):
+        """`if` 这种随包发的模块名也算有人认领：程序直接叫它们，解释器自己在包里找。"""
+        from tickets import critic
+        from viba import viba_ast
+        from viba.interpret import Environment, EnvironmentCompute, EnvironmentStorage
+
+        where = self.a_norm(self.TABLE)
+        (where / "acceptance" / "one.viba").write_text(
+            "__decl__ =\n    Any\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+            "__impl__ = if\n  << $env (args.env.sub_env << args.env << \"if\")\n"
+            "  << $cond true\n  << $t (echo << $x 1)\n  << $f (echo << $x 2)\n",
+            encoding="utf-8")
+        table = critic._rule_compute(load_workflow(where))
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        self.assertTrue(table["every_operator_is_declared"](env, viba_ast.Constant(str(where))))
+
     def test_a_due_rule_nobody_can_run_counts_as_a_program_that_is_not_complete(self):
         """写了"什么时候该发"那一格的法，那一格里的程序也在"每份程序都写全了"那一条的账上。"""
         from tickets import critic
@@ -1361,6 +1378,32 @@ class WhatACriticCanReadInADesignTest(unittest.TestCase):
         put_snapshot(judged, where.read_text(encoding="utf-8"), "under_judgment")
         answer = interpret(str(self.case / "the_condition.viba"), judged)
         return viba_ast.unparse_type(answer.data)
+
+    def test_a_definition_that_is_only_mentioned_by_name_does_not_count(self):
+        """一份设计要把这几样写成定义，只在正文里点个名不算：这一条认的是定义。"""
+        from tickets import critic
+        from viba import viba_ast
+        from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                                    interpret, put_snapshot)
+
+        doc = ("# 一份设计\n\n正文里点到 _Compact 与 _ResumableCall 这两个名字。\n\n"
+               "```viba\n_Compact =\n    Object\n  * $tasks list[Any]\n```\n")
+        (self.case / "the_condition.viba").write_text(
+            "__decl__ =\n    str\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+            "under_judgment =\n    str\n  <- $env Env\n\n"
+            "definitions_missing =\n    str\n  <- $env Env\n  <- $document str\n"
+            "  <- $names list[str]\n\n"
+            "__impl__ = definitions_missing << $env args.env\n"
+            "  << $document (under_judgment << $env args.env)\n"
+            '  << $names ListLiteral["_Compact", "_ResumableCall"]\n', encoding="utf-8")
+        table = critic._rule_compute(None)
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        judged = Environment(env.storage.sub("judgment"), env.compute, env.viba_path)
+        put_snapshot(judged, doc, "under_judgment")
+        said = viba_ast.unparse_type(interpret(str(self.case / "the_condition.viba"), judged).data)
+        self.assertIn("还没写成定义", said)
+        self.assertIn("_ResumableCall", said)
 
     def test_a_whole_file_of_viba_source_is_not_this_conditions_business(self):
         """整份就是 viba 源码的那种交付（一份声明文件）不归这一条管：它走 `what_stops_this_declaration`。"""

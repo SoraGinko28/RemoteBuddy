@@ -176,7 +176,7 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
         认领的四种：这份程序自己声明的、这张角色 api 声明的、viba 自带那一套、解释器自己回答的。
         """
         known = {_bare(one) for one in the_builtin_table()}
-        known |= NATIVE_NAMES | SYNTAX_NAMES
+        known |= NATIVE_NAMES | SYNTAX_NAMES | shipped_module_names()
         if workflow is not None:
             for api in workflow.apis():
                 known |= {_bare(one) for one in workflow.ops_of(api)}
@@ -291,6 +291,27 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
             return "这几组没点到：" + "、".join(missing)
         return ""
 
+    def definitions_missing(env, document, names):
+        """这几样在这份交付里还没写成定义；一样不差就是空串；不是这一种交付就是 nil。
+
+        认的是**定义**（`X = …`，`X = Hint[{…}]` 这种也算），不是正文里提到过：一份设计不能只在
+        一句话里点个名就算交代过了。`names` 是要它有定义的那些名字，由验收条件那一侧说。
+        """
+        source = text_of(env, document)
+        blocks = re.findall(r"```viba\n(.*?)```", source, re.S)
+        if not blocks:
+            return None                        # 没有 viba 段落：这一条不管这一份
+        joined = "".join(blocks)
+        checker = _design_checker(joined)
+        if checker is None:
+            return "这一份里的 viba 段落编译不过"
+        defined = set(checker._definitions_of(_design.ENTRY_MODULE_NAME))    # noqa: SLF001
+        wanted = [str(one) for one in a_list(names)]
+        missing = [one for one in wanted if one not in defined]
+        if missing:
+            return "这几样还没写成定义：" + "、".join(missing)
+        return ""
+
     table = dict(the_builtin_table())
     table["under_judgment"] = under_judgment
     table["widest_parameters"] = widest_parameters
@@ -302,6 +323,7 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
     table["what_stops_this_design"] = what_stops_this_design
     table["what_stops_this_declaration"] = what_stops_this_declaration
     table["what_is_not_covered"] = what_is_not_covered
+    table["definitions_missing"] = definitions_missing
     return table
 
 
@@ -392,6 +414,18 @@ def _declared_members(definition):
             elif child is not None and type(child).__module__.startswith("viba"):
                 stack.append(child)
     return out
+
+
+def shipped_module_names() -> set:
+    """viba 随包发的那几份模块的名字（`if`、`sequential`、`apply`……），一个模块名一项。
+
+    它们不是宿主实现的算子，是一份份 viba 模块：程序直接叫它们的名字，解释器自己在包里找
+    （`viba/if.viba` 那份文件自己说"调它的模块不用 import"）。
+    """
+    from viba import interpret as the_interpreter
+
+    package = Path(the_interpreter.__file__).resolve().parent
+    return {one.stem for one in package.glob(f"*{'.viba'}")}
 
 
 def _is_a_builtin_name(name: str) -> bool:
