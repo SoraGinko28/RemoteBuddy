@@ -24,6 +24,7 @@ from tickets import _viba  # noqa: E402,F401
 from tickets.actor import actor_caps  # noqa: E402
 from tickets.assistant import assistant_handler, what_to_make  # noqa: E402
 from tickets.binding import Binding, finished, unimplemented_step  # noqa: E402
+from tickets.channel import AgentChannel  # noqa: E402
 from tickets.critic import critic_handler  # noqa: E402
 from tickets import declare  # noqa: E402
 from tickets.declare import (DECLARE_ENV, DEFINITIONS_HOME, declare_home,  # noqa: E402
@@ -841,6 +842,84 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
         self.assertEqual('$ok "一份法在 /tmp/draft"',
                          self.a_run(UNDER + "__impl__ = under_judgment << $env args.env",
                                     decl="Any"))
+
+
+class WhatTheActorHandsOverTest(unittest.TestCase):
+    """actor 那条线交给谁：一个文件，还是一棵树。
+
+    真会议里那一头是 agent 在 tmux 里干活，这里用不走网络的替身：`say` 记下来，`wait_for_turn`
+    立刻答"这一轮停了"，别的一样（等东西交出来、比改动时刻）。
+    """
+
+    class AChannel(AgentChannel):
+        """不走网络的那一条线。"""
+
+        def __init__(self, workspace, **knobs):
+            super().__init__("", "the-meeting", workspace, **knobs)
+            self.said = []
+
+        def say(self, message):
+            self.said.append(message)
+            return {}
+
+        def chats(self, message_type=None):
+            return [{"content": "DONE"}] * len(self.said)
+
+        def turn_in_flight(self):
+            return False
+
+        def wait_for_turn(self, before, timeout=None):
+            return {"phase": "waiting_for_user", "status": "running", "control_owner": "none"}
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.workspace = Path(self.temporary.name)
+
+    def test_a_tree_is_a_directory_that_ends_with_a_slash(self):
+        channel = self.AChannel(self.workspace)
+        self.assertTrue(channel.is_a_tree("rb_norm/"))
+        self.assertFalse(channel.is_a_tree("words.py"))
+        (self.workspace / "rb_norm").mkdir()
+        self.assertTrue(channel.is_a_tree("rb_norm"))     # 已经在那儿的一个目录也算
+
+    def test_a_tree_comes_back_as_its_path_not_its_text(self):
+        """一份法是一棵树：交回来的是那条路径，验收条件照它自己去看。"""
+        channel = self.AChannel(self.workspace)
+        (self.workspace / "rb_norm" / "acceptance").mkdir(parents=True)
+        (self.workspace / "rb_norm" / "acceptance" / "one.viba").write_text("__impl__ = true\n",
+                                                                           encoding="utf-8")
+        self.assertEqual(str(self.workspace / "rb_norm"),
+                         channel.ensure_work("写这一份", "rb_norm/"))
+
+    def test_a_file_still_comes_back_as_its_text(self):
+        channel = self.AChannel(self.workspace)
+        (self.workspace / "words.py").write_text("def words(text):\n    return text.split()\n",
+                                                encoding="utf-8")
+        self.assertTrue(channel.ensure_work("写这一份", "words.py").startswith("def words"))
+
+    def test_a_tree_that_nothing_changed_is_not_a_revision(self):
+        """改版那一步比的是这一棵树本身：一份新文件才算改过。"""
+        channel = self.AChannel(self.workspace, file_timeout=0.2, poll=0.05)
+        (self.workspace / "rb_norm").mkdir()
+        (self.workspace / "rb_norm" / "members").write_text("actor actor_api agent\n",
+                                                            encoding="utf-8")
+        before = channel.stamp("rb_norm/")
+        with self.assertRaises(TimeoutError):
+            channel.wait_for_change(self.workspace / "rb_norm", before)
+        (self.workspace / "rb_norm" / "acceptance").mkdir()
+        (self.workspace / "rb_norm" / "acceptance" / "one.viba").write_text("__impl__ = true\n",
+                                                                           encoding="utf-8")
+        self.assertNotEqual(before, channel.stamp("rb_norm/"))
+
+    def test_the_three_waits_can_be_given_by_the_region(self):
+        """一个区域就是一个在跑的程序：它那几个时限由它的环境变量说。"""
+        with mock.patch.dict(os.environ, {"REMOTEBUDDY_TURN_TIMEOUT": "1800",
+                                          "REMOTEBUDDY_FILE_TIMEOUT": "300"}):
+            channel = self.AChannel(self.workspace)
+        self.assertEqual(1800.0, channel.turn_timeout)
+        self.assertEqual(300.0, channel.file_timeout)
+        self.assertEqual(120.0, channel.chat_timeout)     # 没说的那个照旧
 
 
 class TheHandlerTest(unittest.TestCase):

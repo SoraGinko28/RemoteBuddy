@@ -60,14 +60,13 @@ def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable
     agent 因此开始干活——工单驱动的会议里没有别人负责叫醒它。`do_step` 接着等它把东西交出来。
     """
 
-    # 这一趟开工的时候那个文件是什么时候的：上一次留下的那一版不算这一趟的活。
-    opened: Dict[str, Optional[int]] = {}
+    # 这一趟开工的时候那个东西是什么时候的：上一次留下的那一版不算这一趟的活。
+    opened: Dict[str, object] = {}
 
     def acknowledge(env, about):
         # 题面说进会议就是叫醒 agent 的那一下：说完就回，不等它回话（它接着就去做，
         # 下一步 `do_step` 会等它把东西交出来）。
-        path = channel.file(target)
-        opened["before"] = path.stat().st_mtime_ns if path.is_file() else None
+        opened["before"] = channel.stamp(target)
         channel.say(_writing_prompt(text_of(env, about), target))
         return "知道了，这就照题目做一版"
 
