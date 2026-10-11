@@ -32,10 +32,10 @@ from tickets.declare import (DECLARE_ENV, DEFINITIONS_HOME, declare_home,  # noq
 from tickets.handler import Handler, program_caps  # noqa: E402
 from tickets.issue import ticket_uid  # noqa: E402
 from tickets.layout import case_root, progress_root, tickets_root  # noqa: E402
-from tickets.plan import due, next_ticket  # noqa: E402
+from tickets.plan import due, next_ticket, ticket_named  # noqa: E402
 from tickets.progress import (a_stage, answered, progress_node, read_stages,  # noqa: E402
                              the_state, unfinished, write_stage)
-from tickets.session import OK, STUCK, Session, open_work  # noqa: E402
+from tickets.session import BROKEN, OK, STUCK, Session, open_work  # noqa: E402
 from tickets.table import (Process, Row, members_for, members_of, read_table, row_of,  # noqa: E402
                            write_table)
 from tickets.ticket import read_ticket, ticket_uids, tickets  # noqa: E402
@@ -413,6 +413,27 @@ class ThePlanTest(unittest.TestCase):
                           "write_a_draft-quicksort"], ticket_uids(self.meeting))
         self.assertIsNone(next_ticket(self.workflow, session.values))
 
+    def test_a_ticket_already_issued_is_found_by_its_name(self):
+        """发过的单按名字找得到：号是 `<名字>-<案子>`，名字在前头。"""
+        session = a_session(self.meeting)
+        session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
+        session.issue("write_a_draft")
+        self.assertEqual("write_a_draft-quicksort",
+                         ticket_named(self.meeting, "write_a_draft"))
+        self.assertIsNone(ticket_named(self.meeting, "judge_the_draft"))
+
+    def test_a_ticket_already_issued_is_not_issued_again(self):
+        """发过就不再发第二张：再跑一趟（被叫醒接着跑就是这一种）一张都不新发。"""
+        session = a_session(self.meeting)
+        handlers = the_handlers(self.meeting, self.workflow)
+        session.stated_task(WORDS, handlers[0])
+        first = []
+        session.run([handlers[0]], out=first.append)
+        again = []
+        session.run([handlers[0]], out=again.append)
+        self.assertEqual(1, len([one for one in first if "发了一张单" in one]))
+        self.assertEqual([], [one for one in again if "发了一张单" in one])
+
 
 class AWholeMeetingTest(unittest.TestCase):
     """一场会：一句话进来，五张单一路走到 ok。"""
@@ -499,6 +520,26 @@ class AWholeMeetingTest(unittest.TestCase):
         self.assertEqual(STUCK, outcome.outcome)
         self.assertIn("write_a_draft-quicksort", outcome.failure)
         self.assertFalse(answered(self.meeting, "write_a_draft-quicksort"))
+
+    def test_a_step_that_broke_says_so_instead_of_nobody_answers(self):
+        """哪个实现坏了：那一手是 `$underlying_viba_op_err`，当场说清楚，不写成"没人接"。
+
+        判的人自己没答过一步（它是那一步的实现，抛出来的就是那一手），所以这一条不是从"谁答了什么"
+        看出来的，是从那一手停下的那一支看出来的。
+        """
+        session = a_session(self.meeting)
+        handlers = the_handlers(self.meeting, self.workflow)
+        session.stated_task(WORDS, handlers[0])
+
+        def broke(_env, *_given):
+            raise RuntimeError("验收条件跑不起来：没有 args.env")
+
+        handlers[1].caps["judge"] = broke
+        outcome = session.run(handlers, out=lambda _line: None)
+        self.assertEqual(BROKEN, outcome.outcome)
+        self.assertIn("critic", outcome.failure)
+        self.assertIn("judge_the_draft-quicksort", outcome.failure)
+        self.assertIn("没有 args.env", outcome.failure)
 
     def test_an_unfinished_meeting_says_where_it_stopped(self):
         """没跑完的一趟说得清：哪个案子、人说的哪句话（进程死没死都不必知道）。"""

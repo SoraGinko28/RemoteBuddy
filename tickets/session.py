@@ -7,7 +7,9 @@
 
 值落在案子里，下一轮谁再跑那段程序，跑到那一步就是回放，接着往前走。**到这儿算完**：每一张发出去的
 单都做完了（`progress.finished`），而且没有该发的下一张。**走不动**：一整轮下来没有哪一步答出了新值、
-也没有哪张单做完——那一步谁都不会，没人接。
+也没有哪张单做完——那一步谁都不会，没人接。**没跑起来**：哪一手停下的不是"不是它的事"（
+`$not_implemented_err`），而是"这一步的实现坏了"（`$underlying_viba_op_err` 那种）——那是当场要说的
+一句话，按 `broken` 交出去，不混进"没人接"里。
 
 一轮只往前走一步，是因为单上只留得下已经算好的实参：下一步的调用要等上一步答完才写得出来。
 """
@@ -139,13 +141,13 @@ class Session:
                 for stage in handler.tick():
                     written.append((handler.name, stage))
                     _say(out, handler.line(stage))
+                    broken_line = _broke(handler, stage)
+                    if broken_line:
+                        broken = broken_line
                 for module_path, func_name in getattr(handler, "did", ()):
                     line = handler.answered_line(module_path, func_name)
                     self.values.record(line)
                     _say(out, line)
-                    kind = _stop_kind(stage)
-                    if kind and kind != NOT_MINE:
-                        broken = f"{handler.name} 在 {stage.uid} 上没跑起来：{stage.stop()}"
             stages.extend(written)
             if broken:
                 return Outcome(BROKEN, index, case=self.case, stages=stages, failure=broken)
@@ -166,6 +168,21 @@ def _stop_kind(stage: Stage) -> str:
     from .binding import stop_kind
 
     return stop_kind(stage.result)
+
+
+def _broke(handler: Handler, stage: Stage) -> str:
+    """这一手是不是没跑起来；是就说清楚是谁在哪张单上停下的。
+
+    停下只有两种：答"这一步不是它的事"（`$not_implemented_err`）是轮换——轮到下一个人接着做；
+    答别的（`$underlying_viba_op_err` 那种"这一步的实现坏了"）再跑一遍还是同一句，当场说清楚，
+    不能当成"没人接"混过去。
+    """
+    if stage.answered():
+        return ""
+    kind = _stop_kind(stage)
+    if not kind or kind == NOT_MINE:
+        return ""
+    return f"{handler.name} 在 {stage.uid} 上没跑起来：{stage.stop()}"
 
 
 def open_work(meeting_dir) -> Optional[Tuple[str, str, str]]:

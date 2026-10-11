@@ -56,9 +56,9 @@ def ticket_named(meeting_dir, name: str) -> Optional[str]:
 
     一个案子里同一张单只发一次：发过就不再发第二张（做完了才算走到下一步）。
     """
-    suffix = f"-{name}"
+    head = f"{name}-"
     for uid in ticket_uids(meeting_dir):
-        if uid == name or uid.endswith(suffix):
+        if uid == name or uid.startswith(head):
             return uid
     return None
 
