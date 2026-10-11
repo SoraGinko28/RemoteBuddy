@@ -776,6 +776,16 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
 
         self.assertIn("a_path_in", decision_caps("写到 /a/b"))
 
+    def test_the_note_may_be_a_sentence_around_the_path(self):
+        """单上交过来的常常是一句话：认得出路径就认路径。"""
+        self.assertEqual('$ok ListLiteral["README.md"]',
+                         self.a_run(FILES_MISSING +
+                                    '__impl__ = files_missing\n'
+                                    '  << $env args.env\n'
+                                    '  << $root "本法写在 ' + str(self.draft) + '。"\n'
+                                    '  << $wanted ListLiteral["intake", "members", '
+                                    '"ticket_programs", "acceptance", "README.md"]'))
+
     def test_it_says_which_parts_a_law_is_missing(self):
         self.assertEqual('$ok ListLiteral["README.md"]',
                          self.a_run(FILES_MISSING +

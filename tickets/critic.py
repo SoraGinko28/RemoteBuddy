@@ -26,6 +26,7 @@ from viba.interpret import (Environment, EnvironmentCompute, interpret, get_snap
 from .binding import answer_of, failure_in, finished, text_of
 from .builtins import _a_list, the_table as the_builtin_table
 from .handler import Handler, program_caps
+from .meeting import a_path_in
 from .ticket import a_list
 from .workflow import ACCEPTANCE_DIR, INTAKE_DIR, TICKET_PROGRAMS_DIR, Workflow
 
@@ -122,7 +123,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
 
     def files_missing(env, root, wanted):
         """一份想要的清单里，那个目录底下没有的那几条。"""
-        where = Path(text_of(env, root))
+        where = _root_of(env, root)
         have = set()
         if where.is_dir():
             have = {str(one.relative_to(where)) for one in where.rglob("*")}
@@ -130,7 +131,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
 
     def every_program_is_complete(env, root):
         """这个目录底下的每份程序都写全了没有：`__decl__` 与 `__impl__` 都在。"""
-        for path in _program_files(Path(text_of(env, root))):
+        for path in _program_files(_root_of(env, root)):
             try:
                 source = path.read_text(encoding="utf-8")
                 names = {one.name for one in viba_ast.parse(source).body
@@ -151,7 +152,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
         if workflow is not None:
             for api in workflow.apis():
                 known |= {_bare(one) for one in workflow.ops_of(api)}
-        for path in _program_files(Path(text_of(env, root))):
+        for path in _program_files(_root_of(env, root)):
             try:
                 tree = viba_ast.parse(path.read_text(encoding="utf-8"))
             except (OSError, SyntaxError, UnicodeDecodeError):
@@ -169,6 +170,16 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
     table["every_program_is_complete"] = every_program_is_complete
     table["every_operator_is_declared"] = every_operator_is_declared
     return table
+
+
+def _root_of(env, root) -> Path:
+    """这一段字说的那个目录。
+
+    单上交过来的常常是一句话（"本法写在 /…。"）：认得出路径就认路径，认不出就当整段就是那个目录。
+    认路径的写法跟受理那一侧同一个（`meeting.a_path_in`）——一处认路径，两处用。
+    """
+    said = text_of(env, root)
+    return Path(a_path_in(said) or said.strip())
 
 
 def _bare(name: str) -> str:
