@@ -436,6 +436,90 @@ class ThePlanTest(unittest.TestCase):
         self.assertEqual([], [one for one in again if "发了一张单" in one])
 
 
+class WhatTheLawSaysAboutWhenATicketIsDueTest(unittest.TestCase):
+    """法给某一张单写的"现在是它的时候吗"：发单那一条照它算。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.meeting = Path(self.temporary.name) / "meeting"
+        self.norm = Path(self.temporary.name) / "rb_norm"
+        shutil.copytree(norm_home(), self.norm)
+
+    def a_law_that_says(self, ticket: str, source: str) -> None:
+        """给这一张单写一条"什么时候该发"（`due/<名字>.viba`）。"""
+        where = self.norm / "due"
+        where.mkdir(exist_ok=True)
+        (where / f"{ticket}.viba").write_text(
+            "__decl__ =\n    Any\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+            + source, encoding="utf-8")
+
+    def a_workflow(self):
+        return load_workflow(self.norm)
+
+    def a_session(self):
+        return Session(self.meeting, CASE, workflow=self.a_workflow())
+
+    def a_ready_case(self):
+        """人说一句话、assistant 收下：案子开起来了，一张单都还没发。"""
+        session = self.a_session()
+        session.stated_task(WORDS, assistant_handler(self.meeting, self.a_workflow()))
+        return session
+
+    def test_a_law_holds_a_ticket_back_until_the_value_says_so(self):
+        """法说"判决是 true 才收尾"：判决是 false 的时候，收尾这一张不该发；改成 true 就发。"""
+        self.a_law_that_says(
+            "close_the_meeting",
+            "the_value =\n    Any\n  <- $env Env\n  <- $module_path str\n  <- $func_name str\n\n"
+            "eq_bool =\n    bool\n  <- $env Env\n  <- $x Any\n  <- $y Any\n\n"
+            '__impl__ = eq_bool << $env args.env\n'
+            '  << $x (the_value << $env args.env << $module_path "judged_revision"'
+            ' << $func_name "judge")\n'
+            '  << $y true\n')
+        workflow = self.a_workflow()
+        session = self.a_ready_case()
+        # 收尾要读的那两步都答过了，判决说"不合格"
+        session.values.write("revised", "redo_step", "改过的那一版")
+        session.values.write("judged_revision", "judge", False)
+        wanted, why = due(workflow, session.values, "close_the_meeting")
+        self.assertFalse(wanted)
+        self.assertIn("还不是它的时候", why)
+        # 判决改成"合格"：这一张就该发了
+        session.values.write("judged_revision", "judge", True)
+        wanted, why = due(workflow, session.values, "close_the_meeting")
+        self.assertTrue(wanted)
+        self.assertIn("就是它的时候", why)
+
+    def test_a_law_that_says_nothing_keeps_the_old_rule(self):
+        """没写这一条的单照旧：要读的都在、自己还没做过，就该发了。"""
+        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "write_a_draft")
+        self.assertTrue(wanted)
+        self.assertEqual("要读的都在，自己还没做过", why)
+
+    def test_a_law_may_hold_a_step_back_with_a_sentence(self):
+        """法答一句话就是"还不该发，原因是这句"。"""
+        self.a_law_that_says("write_a_draft", '__impl__ = "还没到点"\n')
+        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "write_a_draft")
+        self.assertFalse(wanted)
+        self.assertEqual("还没到点", why)
+
+    def test_a_law_that_says_nil_keeps_the_old_rule(self):
+        """法答 `nil` 就是"这一条不管"：照旧按那两条算。"""
+        self.a_law_that_says("write_a_draft", "__impl__ = nil\n")
+        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "write_a_draft")
+        self.assertTrue(wanted)
+        self.assertEqual("要读的都在，自己还没做过", why)
+
+    def test_a_step_held_back_by_the_law_is_said_so_when_the_meeting_stops(self):
+        """法扣着不发的那一张，走不动时要说清是法说什么，不是含混一句"没人接"。"""
+        self.a_law_that_says("write_a_draft", '__impl__ = "还没到点"\n')
+        workflow = self.a_workflow()
+        session = self.a_ready_case()
+        outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _line: None)
+        self.assertEqual(STUCK, outcome.outcome)
+        self.assertIn("还没到点", outcome.failure)
+
+
 class AWholeMeetingTest(unittest.TestCase):
     """一场会：一句话进来，五张单一路走到 ok。"""
 

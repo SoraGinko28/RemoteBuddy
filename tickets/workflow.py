@@ -77,6 +77,9 @@ ROLE_OF_API = {api: role_of_api(api) for api in ROLES}
 TICKET_PROGRAMS_DIR = "ticket_programs"
 INTAKE_DIR = "intake"
 ACCEPTANCE_DIR = "acceptance"
+# 这一张单什么时候该发（可选的一格）：一份法可以给某几张单写一条"现在是它的时候吗"。
+# 没写这一格的规范照旧：要读的都在、自己还没做过，就该发了。
+DUE_DIR = "due"
 # 模块按哪儿找（冒号分开的几个目录，次序就是这个）：单子自己的目录先被找，然后这几个
 SEARCH_DIRS = (TICKET_PROGRAMS_DIR, "", ACCEPTANCE_DIR)
 VIBA_SUFFIX = ".viba"
@@ -98,10 +101,12 @@ class Workflow:
 
     def __init__(self, files: Dict[str, str], conditions: Iterable[str] = (),
                  intake: Iterable[str] = (), root=None, declared: Iterable[str] = (),
-                 declare_dir=None, declare_commit: str = ""):
+                 declare_dir=None, declare_commit: str = "", due: Iterable[str] = ()):
         self.files = dict(files)
         self.condition_names = tuple(conditions)
         self.intake_names = tuple(intake)
+        # 哪几张单有"什么时候该发"那一条（`due/<单子的名字>.viba`）；没写的不在里面
+        self.due_names = tuple(due)
         # 这一份流程是从哪个目录读出来的（成员表 `members` 就在它里面）；不是从目录读的就没有
         self.root = Path(root) if root is not None else None
         # 哪几份 api 是从接口那个仓库读来的，按的是哪一版、那个目录在哪儿（规范自己带的那几份不在里面）
@@ -137,8 +142,9 @@ class Workflow:
                 files[path.stem] = path.read_text(encoding="utf-8")
         conditions = sorted(path.stem for path in (root / ACCEPTANCE_DIR).glob(f"*{VIBA_SUFFIX}"))
         intake = sorted(path.stem for path in (root / INTAKE_DIR).glob(f"*{VIBA_SUFFIX}"))
+        due = sorted(path.stem for path in (root / DUE_DIR).glob(f"*{VIBA_SUFFIX}"))
         return cls(files, conditions, intake, root=root, declared=declared,
-                   declare_dir=declare_dir, declare_commit=commit)
+                   declare_dir=declare_dir, declare_commit=commit, due=due)
 
     def apis(self) -> List[str]:
         """Every role api this workflow has, by short name (the base three, and any the
@@ -158,6 +164,16 @@ class Workflow:
         return {name: source for name, source in self.files.items()
                 if not is_api_file(name) and name not in self.condition_names
                 and name not in self.intake_names}
+
+    def due_rules(self) -> List[str]:
+        """哪几张单有"什么时候该发"那一条，按名字排。"""
+        return list(self.due_names)
+
+    def due_file(self, ticket: str) -> Optional[Path]:
+        """这一张单"什么时候该发"那一条在哪：`<规范>/due/<单子的名字>.viba`；没写就是 None。"""
+        if ticket not in self.due_names:
+            return None
+        return self._under(DUE_DIR, f"{ticket}{VIBA_SUFFIX}")
 
     def intake(self) -> List[str]:
         """受理：这个目录里那几份程序的名字，按名字排。"""

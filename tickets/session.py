@@ -137,6 +137,7 @@ class Session:
             if due is not None and self.ticket_of(due) is None:
                 ticket = self.issue(due)
                 _say(out, f"- 发了一张单：{ticket.uid}")
+            issued = bool(plan.issued(self.meeting_dir))
             before = set(self.values.stored())
             written: List[Tuple[str, Stage]] = []
             broken = ""
@@ -156,14 +157,40 @@ class Session:
                 return Outcome(BROKEN, index, case=self.case, stages=stages, failure=broken)
             advanced = bool(set(self.values.stored()) - before) or any(
                 stage.answered() for _who, stage in written)
-            if self.due() is None and finished(self.meeting_dir):
+            if self.due() is None and issued and finished(self.meeting_dir):
+                # 发出去的单都做完了、也没有该发的下一张：这一趟到头了。一张都没发出去的不算——
+                # 那是法扣着不发（哪一步都不该做），要走下面那条"走不动"，把法的理由带出来。
                 return Outcome(OK, index, case=self.case, stages=stages)
             if not advanced:
                 outstanding = unfinished(self.meeting_dir)
                 return Outcome(STUCK, index, case=self.case, stages=stages,
-                               failure=f"没人接：{'、'.join(outstanding) or '没有下一张单'}")
+                               failure=_why_stuck(self, outstanding))
         return Outcome(UNFINISHED, max_rounds, case=self.case, stages=stages,
                        failure=f"跑满了 {max_rounds} 轮")
+
+
+def _why_stuck(session: "Session", outstanding: List[str]) -> str:
+    """走不动了：还欠着哪几张，每一张为什么还不该发（或者没人接）。
+
+    "没人接"与"法说还不是它的时候"是两回事：前者要人去实现那一步，后者要等（或者要改法）。
+    把每一张停下的那句话带出来，看得见是哪一种。
+    """
+    if outstanding:
+        said = [f"{uid}（{session.due_why(_ticket_name(session, uid))}）" for uid in outstanding]
+    else:
+        # 一张单都还没发出去：那是法扣着不发（哪一步都不该做，或者还没到时候）
+        said = [f"{name}（{session.due_why(name)}）" for name in sorted(session.workflow.tickets())]
+    if not said:
+        return "没有下一张单"
+    return "走不动了：还欠着 " + "、".join(said)
+
+
+def _ticket_name(session: "Session", uid: str) -> str:
+    """一张单的号换成它的名字（`<名字>-<案子>` 前头那一段）；认不出来就是它自己。"""
+    for name in session.workflow.tickets():
+        if uid == name or uid.startswith(f"{name}-"):
+            return name
+    return uid
 
 
 def _stop_kind(stage: Stage) -> str:
