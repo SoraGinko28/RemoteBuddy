@@ -1522,10 +1522,11 @@ class WhatACriticCanReadInADeclarationTest(unittest.TestCase):
         mine = ("MyOwn =\n    Object\n  * $whatever (int <- $env Env <- $n int)\n")
         self.assertEqual('$ok ""', self.a_run(mine, ["MyOwn"]))
 
-    def test_a_broken_source_that_names_one_of_them_says_so(self):
-        """提到该声明的名字、却编译不过的：那是它管的，要说出来（不能因为坏就说不归它管）。"""
-        said = self.a_run("InterpreterMembers =\n    Object\n  *\n", ["InterpreterMembers"])
-        self.assertIn("编译不过", said)
+    def test_a_source_that_is_not_viba_at_all_is_not_this_conditions_business(self):
+        """整份不是 viba 源码（比如改的是一个 .py 文件）：这一条答 nil，交给管那种交付的那一条。"""
+        said = self.a_run('def _load():\n    return InterpreterMembers\n',
+                          ["InterpreterMembers"])
+        self.assertEqual("$ok nil", said)
 
 
 class TheHandlerTest(unittest.TestCase):

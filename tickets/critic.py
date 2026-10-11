@@ -254,7 +254,9 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
         三条和设计那一条一样（编译得过、名字解析得出来、除根以外没有没人用的定义），只是这里没有
         ```viba 段落可挑，整份就是源码；`names` 是这一份该声明的那些名字（它的根）。
 
-        整份不是 viba 源码（是文档）、或者一个该声明的名字都没有的，不是这一条管的（答 nil）。
+        整份不是 viba 源码（是文档、或者是一份别的语言的源码）的，不是这一条管的（答 nil）：一份法
+        可以同时管几种交付，这一条只管"整份是 viba 源码的那一种"，判不了的东西不硬判。跑不起来
+        的那种坏法由法里另一条管（比如"这个工作区的测试还跑得起来"）。
         """
         source = text_of(env, source_text)
         if not source.strip():
@@ -265,10 +267,7 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
         try:
             tree = viba_ast.parse(source)
         except SyntaxError:
-            # 编译不过：只有它提到了该声明的名字，才说明这一份是这一条管的（那就要说编译不过）
-            if not any(name in source for name in wanted):
-                return None
-            return f"这一段编译不过"
+            return None                        # 整份不是 viba 源码：这一条不管这一份
         defined = {one.name for one in tree.body if isinstance(one, viba_ast.TypeDefinition)}
         if wanted and not (wanted & defined):
             return None                        # 该声明的名字一个都没有：不是这一条管的
