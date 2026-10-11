@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from .handler import Handler
-from .layout import CASE_PREFIX, case_root, record_path
+from .layout import CASE_PREFIX, STORE_DIR, case_root, record_path
 from .session import Outcome, Session
 from .values import Store
 
@@ -70,6 +70,25 @@ def case_for(target: str, fallback: str = "meeting", tag=None) -> str:
     stem = Path(target).stem if target else ""
     name = stem or fallback
     return f"{CASE_PREFIX}/{name}" if tag is None else f"{CASE_PREFIX}/{name}-{tag}"
+
+
+def case_for_pass(meeting_dir, target: str, fallback: str = "meeting") -> str:
+    """这一趟跑在哪个案子下：数着盘上已经有的那些，取头一个还没用过的号。
+
+    头一趟是 `case/<名字>`，再用一次就是 `case/<名字>-2`，依此类推。数的是**盘上已经有的案子目录**，
+    不是进程里记着的次数：服务重起过、或者别的服务起过这一趟，都不该让第二句话被"这几步都答过了"
+    挡回去而什么也不做。
+    """
+    where = Path(meeting_dir) / STORE_DIR / CASE_PREFIX
+    used = {one.name for one in where.iterdir()} if where.is_dir() else set()
+    stem = Path(target).stem if target else ""
+    name = stem or fallback
+    if name not in used:
+        return case_for(target, fallback)
+    tag = 2
+    while f"{name}-{tag}" in used:
+        tag += 1
+    return case_for(target, fallback, tag)
 
 
 def the_assistant(handlers: Sequence[Handler], issuer: Optional[Handler] = None) -> Handler:

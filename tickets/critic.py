@@ -55,17 +55,20 @@ SYNTAX_NAMES = frozenset({"__decl__", "__impl__", "__get_args__", "__dyn_call__"
 
 
 def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
-                acceptance_dir=None) -> Dict[str, Callable]:
+                acceptance_dir=None, workspace=None) -> Dict[str, Callable]:
     """critic 的能力表：`judge`（拿那一份、自己找验收条件、逐条判）加上跑它们的那几个算子。
 
     `acceptance_dir` 是验收条件在哪儿；不给就看这份流程是从哪个目录读出来的（规范那一套：它们在
     `<规范>/acceptance/`，由 `Workflow.condition_file` 指）。两份都没有（流程是拿现成的源码拼的）才退回
     这次运行的那个 `viba_path`。
+
+    `workspace` 是这一场会在哪个目录里跑：验收条件里写的相对路径照它找（一场会里的活都在那个目录
+    底下）。不给就是进程现在这个目录。
     """
 
     def judge(env, under_judgment):
         written = text_of(env, under_judgment)
-        ops = _rule_compute(workflow)
+        ops = _rule_compute(workflow, workspace)
         case = Environment(env.storage.sub(judgment),
                            EnvironmentCompute(lambda module, func_name: ops.get(func_name)),
                            env.viba_path)
@@ -82,7 +85,7 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
         return not objections
 
     caps = {"judge": judge}
-    caps.update(_rule_compute(workflow))
+    caps.update(_rule_compute(workflow, workspace))
     return caps
 
 
@@ -110,7 +113,7 @@ def _condition_file(condition: str, workflow, env, acceptance_dir):
     return Path(env.viba_path) / f"{condition}.viba"
 
 
-def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
+def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callable]:
     """验收条件能调到的算子：viba 带的那些，加上这一处自己给的这几个。
 
     一条验收条件能调到什么，跑不出跑它的那个宿主给的表（`viba/builtin.viba` 那些算术、比较、字符串
@@ -134,7 +137,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
 
     def files_missing(env, root, wanted):
         """一份想要的清单里，那个目录底下没有的那几条。"""
-        where = _root_of(env, root)
+        where = _root_of(env, root, workspace)
         have = set()
         if where.is_dir():
             have = {str(one.relative_to(where)) for one in where.rglob("*")}
@@ -142,7 +145,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
 
     def every_program_is_complete(env, root):
         """这个目录底下的每份程序都写全了没有：`__decl__` 与 `__impl__` 都在。"""
-        for path in _program_files(_root_of(env, root)):
+        for path in _program_files(_root_of(env, root, workspace)):
             try:
                 source = path.read_text(encoding="utf-8")
                 names = {one.name for one in viba_ast.parse(source).body
@@ -163,7 +166,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
         if workflow is not None:
             for api in workflow.apis():
                 known |= {_bare(one) for one in workflow.ops_of(api)}
-        for path in _program_files(_root_of(env, root)):
+        for path in _program_files(_root_of(env, root, workspace)):
             try:
                 tree = viba_ast.parse(path.read_text(encoding="utf-8"))
             except (OSError, SyntaxError, UnicodeDecodeError):
@@ -181,7 +184,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
         那张成员表得是一张表，三个程序目录里得是能跑的程序。读不起来的话就把那句话带回去。
         """
         try:
-            _norm_at(_root_of(env, root))
+            _norm_at(_root_of(env, root, workspace))
         except Exception as bad:               # noqa: BLE001 - 读不起来就是不合格，原因是这一句
             return f"{type(bad).__name__}: {bad}"
         return ""
@@ -193,7 +196,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
         把它读起来、照着它自己的受理跑一遍。
         """
         try:
-            workflow = _norm_at(_root_of(env, root))
+            workflow = _norm_at(_root_of(env, root, workspace))
         except Exception as bad:               # noqa: BLE001
             return f"{type(bad).__name__}: {bad}"
         for one in a_list(sentences):
@@ -252,6 +255,27 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
         assert tree is not None
         return ""
 
+    def what_is_not_covered(env, document, root):
+        """这份文档没点到 `root` 底下哪几组；一组不差就是空串。
+
+        判的是**交过来的那一份**（文档本身，不是它在盘上的哪个文件）：`root` 底下直接放着的每一组
+        （一个目录就是一组）都要在文档里点到。点到的写法是写出那一组的路径，也就是它的名字后面跟着
+        一个 `/`（`tests/data/type_descriptor/` 这种写法）。
+
+        "该有哪几组"是那一片目录自己的事（不用写在验收条件里）；这一处只查点到没有，把没点到的带回去。
+        """
+        said = text_of(env, document)
+        where = _root_of(env, root, workspace)
+        if not where.is_dir():
+            return f"{where} 不是一个目录"
+        groups = sorted(one.name for one in where.iterdir() if one.is_dir())
+        if not groups:
+            return f"{where} 底下一组都没有"
+        missing = [name for name in groups if f"{name}/" not in said]
+        if missing:
+            return "这几组没点到：" + "、".join(missing)
+        return ""
+
     table = dict(the_builtin_table())
     table["under_judgment"] = under_judgment
     table["widest_parameters"] = widest_parameters
@@ -261,6 +285,7 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
     table["what_stops_this_norm"] = what_stops_this_norm
     table["why_the_intake_says_nothing"] = why_the_intake_says_nothing
     table["what_stops_this_design"] = what_stops_this_design
+    table["what_is_not_covered"] = what_is_not_covered
     return table
 
 
@@ -319,14 +344,20 @@ def _norm_at(root: Path) -> Workflow:
     return workflow
 
 
-def _root_of(env, root) -> Path:
+def _root_of(env, root, workspace=None) -> Path:
     """这一段字说的那个目录。
 
     单上交过来的常常是一句话（"本法写在 /…。"）：认得出路径就认路径，认不出就当整段就是那个目录。
     认路径的写法跟受理那一侧同一个（`meeting.a_path_in`）——一处认路径，两处用。
+
+    写的是相对路径就照 `workspace` 找：一场会的活都在那个目录底下，法是照那场会写的，里面不该出现
+    写死的绝对路径。
     """
     said = text_of(env, root)
-    return Path(a_path_in(said) or said.strip())
+    where = Path(a_path_in(said) or said.strip())
+    if workspace is not None and not where.is_absolute():
+        where = Path(workspace) / where
+    return where
 
 
 def _bare(name: str) -> str:

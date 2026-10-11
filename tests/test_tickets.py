@@ -554,6 +554,19 @@ class AWholeMeetingTest(unittest.TestCase):
             session.run(handlers[:2], out=lambda _line: None)
         self.assertFalse(worth_another_round(self.meeting, tries=3))
 
+    def test_each_pass_gets_its_own_case_counted_from_disk(self):
+        """一场会的每一趟有自己的案子：号码数的是盘上已经有的那些，不是进程里的次数。"""
+        from tickets.meeting import case_for_pass
+
+        first = case_for_pass(self.meeting, "quicksort.py")
+        self.assertEqual("case/quicksort", first)
+        case_root(self.meeting, first).mkdir(parents=True)
+        self.assertEqual("case/quicksort-2", case_for_pass(self.meeting, "quicksort.py"))
+        case_root(self.meeting, "case/quicksort-2").mkdir(parents=True)
+        self.assertEqual("case/quicksort-3", case_for_pass(self.meeting, "quicksort.py"))
+        # 没点名字的那一趟用 fallback（会议号）
+        self.assertEqual("case/the-meeting", case_for_pass(self.meeting, "", fallback="the-meeting"))
+
     def test_the_norm_a_meeting_was_opened_under_is_remembered(self):
         """这一场会开在哪份法下：记在案子那份值里，后来的人照着比。"""
         self.assertIsNone(the_norm_of(self.meeting, CASE))
@@ -994,6 +1007,57 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
         self.assertEqual('$ok "一份法在 /tmp/draft"',
                          self.a_run(UNDER + "__impl__ = under_judgment << $env args.env",
                                     decl="Any"))
+
+
+class WhatACriticCanReadInASurveyTest(unittest.TestCase):
+    """判一份梳理覆盖全了没有的那个算子：这个目录底下每一组都点到了吗。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.workspace = Path(self.temporary.name) / "workspace"
+        (self.workspace / "tests" / "data" / "alpha").mkdir(parents=True)
+        (self.workspace / "tests" / "data" / "beta").mkdir(parents=True)
+        (self.workspace / "tests" / "data" / "gamma").mkdir(parents=True)
+        self.case = Path(self.temporary.name) / "case"
+        self.case.mkdir()
+
+    def a_run(self, document: str, root: str, workspace=None) -> str:
+        from tickets import critic
+        from viba import viba_ast
+        from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                                    get_snapshot, put_snapshot)
+
+        table = critic._rule_compute(None, workspace)
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        put_snapshot(env, document, "the_document")
+        return table["what_is_not_covered"](
+            env, get_snapshot(env, "the_document"), viba_ast.Constant(root))
+
+    def test_a_document_that_points_at_every_group_is_fine(self):
+        """三组都写到了（写的是路径：`tests/data/<组>/`），就是空串。"""
+        self.assertEqual("", self.a_run(
+            "见 tests/data/alpha/ 与 tests/data/beta/ 与 tests/data/gamma/",
+            "tests/data", self.workspace))
+
+    def test_a_group_nobody_pointed_at_is_named(self):
+        """少写的那一组按名字带回去。"""
+        said = self.a_run("只看 tests/data/alpha/ 和 tests/data/beta/",
+                          "tests/data", self.workspace)
+        self.assertIn("gamma", said)
+        self.assertNotIn("alpha", said)
+
+    def test_a_name_without_the_slash_is_not_pointing_at_it(self):
+        """光提到那个名字不算点到：点的是那一组的路径。"""
+        said = self.a_run("alpha、beta、gamma 各一组", "tests/data", self.workspace)
+        self.assertIn("alpha", said)
+
+    def test_a_root_that_is_not_there_says_so(self):
+        """那一组都不在的目录：说清楚是哪一条路径。"""
+        said = self.a_run("随便", "tests/nothing", self.workspace)
+        self.assertIn("不是一个目录", said)
+        self.assertIn(str(self.workspace / "tests" / "nothing"), said)
 
 
 class WhatTheActorHandsOverTest(unittest.TestCase):

@@ -85,7 +85,7 @@ from tickets.channel import LoopbackChannel
 from tickets.layout import case_root, record_path as ticket_record_path
 from tickets.assistant import what_to_make as what_to_make_of_norm
 from tickets.meeting import a_file_in
-from tickets.meeting import case_for, cases_of, run_for_meeting
+from tickets.meeting import case_for_pass, cases_of, run_for_meeting
 from tickets.plan import due as due_ticket, ticket_named
 from tickets.progress import the_state
 from tickets.session import (OK, open_work, remember_the_norm, the_norm_of,
@@ -2317,10 +2317,8 @@ class MeetingWebService:
         try:
             store = self.load_store(meeting_id)
             if case is None:
-                with self.lock:
-                    runs = self.ticket_runs.get(meeting_id, 0) + 1
-                    self.ticket_runs[meeting_id] = runs
-                case = case_for(target, fallback=meeting_id, tag=None if runs == 1 else runs)
+                # 这一趟该用哪个案子：数盘上已经有的那些（不是数这个进程起过几趟）
+                case = case_for_pass(_tickets_home(store), target, fallback=meeting_id)
             workflow = load_workflow(project_root=self.project_root)
             handlers = self._ticket_handlers(store, meeting_id, target, workflow, case)
             store.append_event("state", "assistant", "tickets_started",

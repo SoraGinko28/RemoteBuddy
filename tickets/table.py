@@ -234,8 +234,8 @@ def members_for(rows: Sequence[Row], *, workflow, meeting_dir, case: str,
                                programs=workflow.tickets())
         elif row.kind == "critic":
             one = Handler(row.name, role,
-                          {**program_caps(workflow), **critic_caps(workflow)}, meeting_dir,
-                          programs=workflow.tickets())
+                          {**program_caps(workflow), **critic_caps(workflow, workspace=cwd)},
+                          meeting_dir, programs=workflow.tickets())
         elif row.kind == "assistant":
             one = Handler(row.name, role,
                           {**program_caps(workflow), **assistant_caps(assistant_say)},
