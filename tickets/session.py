@@ -109,6 +109,11 @@ class Session:
         """这一张为什么该发（或者不该发）：一句话。"""
         return plan.due(self.workflow, self.values, name)[1]
 
+    def _the_law_is_holding_something_back(self) -> bool:
+        """这场会还欠着的单里，有没有法扣着不发的。"""
+        return any(plan.the_law_holds_it_back(self.workflow, self.values, name)
+                   for name in self.workflow.tickets())
+
     def ticket_of(self, name: str) -> Optional[str]:
         """这个案子里叫这个名字的单发过没有。"""
         return plan.ticket_named(self.meeting_dir, name, self.root)
@@ -157,9 +162,11 @@ class Session:
                 return Outcome(BROKEN, index, case=self.case, stages=stages, failure=broken)
             advanced = bool(set(self.values.stored()) - before) or any(
                 stage.answered() for _who, stage in written)
-            if self.due() is None and issued and finished(self.meeting_dir):
-                # 发出去的单都做完了、也没有该发的下一张：这一趟到头了。一张都没发出去的不算——
-                # 那是法扣着不发（哪一步都不该做），要走下面那条"走不动"，把法的理由带出来。
+            if (self.due() is None and issued and finished(self.meeting_dir)
+                    and not self._the_law_is_holding_something_back()):
+                # 发出去的单都做完了、也没有该发的下一张：这一趟到头了。
+                # 两种不算到头：一张单都没发出去（哪一步都不该做），或者法正扣着某一张不发
+                # （比如判决还没过）——那都要走下面那条"走不动"，把法的理由带出来。
                 return Outcome(OK, index, case=self.case, stages=stages)
             if not advanced:
                 outstanding = unfinished(self.meeting_dir)

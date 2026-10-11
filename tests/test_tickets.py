@@ -490,6 +490,18 @@ class WhatTheLawSaysAboutWhenATicketIsDueTest(unittest.TestCase):
         self.assertTrue(wanted)
         self.assertIn("就是它的时候", why)
 
+    def test_a_meeting_the_law_will_not_let_close_is_not_a_finished_meeting(self):
+        """前面的单都做完了，法却扣着最后一张：这一趟不算"算完"，是走不动。"""
+        self.a_law_that_says("close_the_meeting", '__impl__ = false\n')
+        workflow = self.a_workflow()
+        session = self.a_ready_case()
+        outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _line: None)
+        self.assertEqual(STUCK, outcome.outcome)
+        self.assertIn("close_the_meeting", outcome.failure)
+        self.assertIn("还不是它的时候", outcome.failure)
+        # 最后那一张根本没发出去（法不让它发）
+        self.assertNotIn("close_the_meeting-quicksort", ticket_uids(self.meeting))
+
     def test_a_law_that_says_nothing_keeps_the_old_rule(self):
         """没写这一条的单照旧：要读的都在、自己还没做过，就该发了。"""
         wanted, why = due(self.a_workflow(), self.a_ready_case().values, "write_a_draft")

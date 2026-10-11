@@ -39,17 +39,41 @@ def workflow_of(root) -> Workflow:
 
 def due(workflow: Workflow, values: Store, ticket: str) -> Tuple[bool, str]:
     """这一张现在该发吗？读这个案子的值算（法写了"什么时候该发"那一条就照它算）。"""
+    ready, why = _reads_and_answers(workflow, values, ticket)
+    if not ready:
+        return False, why
+    rule = workflow.due_file(ticket) if hasattr(workflow, "due_file") else None
+    if rule is not None:
+        said = the_law_says(rule, values, workflow)
+        if said is not None:
+            return said
+    return True, "要读的都在，自己还没做过"
+
+
+def the_law_holds_it_back(workflow: Workflow, values: Store, ticket: str) -> bool:
+    """这一张是不是法扣着不发：别的都不缺，就是法说"还不是它的时候"。
+
+    这一条与"没人接"、与"还缺哪一步"都不一样：那两种是这一场会自己的事，这一种是法的话——它是说
+    这一次的活还没到能收的地步（比如判决还没过）。
+    """
+    ready, _why = _reads_and_answers(workflow, values, ticket)
+    if not ready:
+        return False
+    rule = workflow.due_file(ticket) if hasattr(workflow, "due_file") else None
+    if rule is None:
+        return False
+    said = the_law_says(rule, values, workflow)
+    return said is not None and not said[0]
+
+
+def _reads_and_answers(workflow: Workflow, values: Store, ticket: str) -> Tuple[bool, str]:
+    """那两条老规矩：要读的都在、自己还没答过。"""
     for module_path, name in workflow.addresses_in(ticket):
         if not values.answered(module_path, name):
             return False, f"还缺 {module_path or '这个案子'} + {name}"
     for module_path, name in workflow.answers_of(ticket):
         if values.answered(module_path, name):
             return False, f"{module_path or '这个案子'} + {name} 已经答过了"
-    rule = workflow.due_file(ticket) if hasattr(workflow, "due_file") else None
-    if rule is not None:
-        said = the_law_says(rule, values, workflow)
-        if said is not None:
-            return said
     return True, "要读的都在，自己还没做过"
 
 
