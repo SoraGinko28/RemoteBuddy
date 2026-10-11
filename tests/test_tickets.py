@@ -764,6 +764,9 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
 
         self.assertEqual("/Users/x/RbNormViba", a_path_in("把法写到 /Users/x/RbNormViba 里"))
         self.assertEqual("~/w/RbNormViba", a_path_in("（~/w/RbNormViba）"))
+        # 中文那句话里路径前后常常没有空格：认的是一段连着写的字，不是拿空格分开的词。
+        self.assertEqual("/Users/x/RbNormViba/LAW.txt",
+                         a_path_in("交到 /Users/x/RbNormViba/LAW.txt：里面写一行，说这份法写在哪儿。"))
         self.assertEqual("", a_path_in("把法写出来"))
         self.assertEqual("", a_path_in("看 https://example.com/a/b"))
 

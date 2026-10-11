@@ -43,7 +43,8 @@ def a_file_in(words: str) -> str:
     return ""
 
 
-PATH_IN_PUNCTUATION = "，。；：、（）()[]<>「」『』\"'"
+# 一张路径：一段连着写的字，前面不是一个字的尾巴、也不是网址的一部分。
+PATH_IN_WORDS = re.compile(r"(?<![A-Za-z0-9._~:/-])[A-Za-z0-9._~-]*(?:/[A-Za-z0-9._~-]+)+")
 
 
 def a_path_in(words: str) -> str:
@@ -51,11 +52,12 @@ def a_path_in(words: str) -> str:
 
     跟 `a_file_in` 一样是给规范用的一个算子。立法那几份受理程序问的是"要立的那份法在哪儿"，
     那是一个目录，不是文件名——所以认的是斜杠，不是点。
+    一条路径是一段连着写的字，不是拿空格分开的一个词：中文那句话里路径前后常常没有空格，
+    所以照写法认（`re`），不照分词认。
     """
-    for token in (words or "").split():
-        cleaned = token.strip(PATH_IN_PUNCTUATION)
-        if "/" in cleaned and not cleaned.startswith("http"):
-            return cleaned
+    for token in PATH_IN_WORDS.findall(words or ""):
+        if not token.startswith("http"):
+            return token
     return ""
 
 
