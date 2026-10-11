@@ -975,6 +975,22 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
     INTAKE = ("why_the_intake_says_nothing =\n    str\n  <- $env Env\n  <- $root str\n"
               "  <- $sentences list[str]\n\n")
 
+    def test_a_due_rule_nobody_can_run_counts_as_a_program_that_is_not_complete(self):
+        """写了"什么时候该发"那一格的法，那一格里的程序也在"每份程序都写全了"那一条的账上。"""
+        from tickets import critic
+        from viba import viba_ast
+        from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage)
+
+        where = self.a_norm(self.TABLE)
+        (where / "due").mkdir(exist_ok=True)
+        (where / "due" / "one.viba").write_text(
+            "__decl__ =\n    bool\n  <- $env Env\n\n__impl__ = true && false\n",
+            encoding="utf-8")
+        table = critic._rule_compute(load_workflow(where))
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        self.assertFalse(table["every_operator_is_declared"](env, viba_ast.Constant(str(where))))
+
     def test_a_law_that_is_a_norm_loads(self):
         """读得起来才算一份规范：四个部分加那张表；读得起来这条答空串。"""
         where = self.a_norm(self.TABLE)

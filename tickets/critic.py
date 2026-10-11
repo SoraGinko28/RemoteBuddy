@@ -32,7 +32,8 @@ from .handler import Handler, program_caps
 from .meeting import a_path_in
 from .table import members_of
 from .ticket import a_list
-from .workflow import ACCEPTANCE_DIR, INTAKE_DIR, TICKET_PROGRAMS_DIR, Workflow
+from .workflow import (ACCEPTANCE_DIR, DUE_DIR, INTAKE_DIR, TICKET_PROGRAMS_DIR,
+                      Workflow)
 
 JUDGMENT_DIR = "judgment"
 UNDER_JUDGMENT = "under_judgment"
@@ -475,7 +476,7 @@ def _program_files(root: Path) -> List[Path]:
     别的 `.viba`（比如 `constitution.viba` 那样只写类型、不跑的文件）不算程序，不在这儿看。
     """
     out: List[Path] = []
-    for part in (INTAKE_DIR, TICKET_PROGRAMS_DIR, ACCEPTANCE_DIR):
+    for part in (INTAKE_DIR, TICKET_PROGRAMS_DIR, ACCEPTANCE_DIR, DUE_DIR):
         out.extend(sorted((root / part).glob("*.viba")))
     return out
 
