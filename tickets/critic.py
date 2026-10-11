@@ -221,52 +221,50 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
         return "这几句话，它的受理一句都没答出要交的那个名字"
 
     def what_stops_this_design(env, design, roots):
-        """这份设计文档哪儿不成立；一段都不差就是空串。
+        """这份设计哪儿不成立；一段都不差就是空串；不是这一种交付（没有 ```viba 段落）就是 nil。
 
-        判的是**交过来的那一份**（文档本身，不是它在盘上的哪个文件）：一份设计文档（markdown，主体是
-        ```viba 段落）要守的三条：每一段都编译得过；里面引用到的每个名字都解析得出来；除根以外，每个
-        定义都被别的定义用到。
+        判的是**交过来的那一份**（文档本身，不是它在盘上的哪个文件）：主体是文档、里面一段一段
+        ```viba 的那一种。它要守的三条：每一段都编译得过；引用到的每个名字都解析得出来；除根以外，
+        每个定义都被别的定义用到。哪些算"根"是**验收条件那一侧**说的事。
 
-        哪些算"根"是**验收条件那一侧**说的事（这份文档的顶层是哪几个类型，写文档的人自己知道）；
-        这一处只把这三条查一遍，把第一处不对的话带回去。
+        整份就是 viba 源码的那一种交付（一份声明文件）不走这一条，走 `what_stops_this_declaration`：
+        两种交付长得不一样，各自有自己的一条，谁也别说别人不合格（答 nil，见 `_verdict`）。
         """
         source = text_of(env, design)
         if not source.strip():
             return "交过来这一份是空的"
         blocks = re.findall(r"```viba\n(.*?)```", source, re.S)
         if not blocks:
-            return "这一份里一段 ```viba 都没有"
-        joined = "".join(blocks)
+            return None                        # 没有 viba 段落：这一条不管这一份
+        return _what_stops_the_source("".join(blocks), {str(one) for one in a_list(roots)},
+                                     "这一段")
+
+    def what_stops_this_declaration(env, source_text, names):
+        """这一份声明哪儿不成立；一段都不差就是空串；不是这一种交付就是 nil。
+
+        判的是**交过来的那一份 viba 源码**（一份声明文件就是整份源码，没有 markdown 包着）：它要守的
+        三条和设计那一条一样（编译得过、名字解析得出来、除根以外没有没人用的定义），只是这里没有
+        ```viba 段落可挑，整份就是源码；`names` 是这一份该声明的那些名字（它的根）。
+
+        整份不是 viba 源码（是文档）、或者一个该声明的名字都没有的，不是这一条管的（答 nil）。
+        """
+        source = text_of(env, source_text)
+        if not source.strip():
+            return "交过来这一份是空的"
+        wanted = {str(one) for one in a_list(names)}
+        if re.search(r"```viba\n", source):
+            return None                        # 是文档，不是一份声明：这一条不管这一份
         try:
-            tree = viba_ast.parse(joined)
-        except SyntaxError as bad:
-            return f"有一段编译不过：{bad}"
-        checker = _design_checker(joined)
-        if checker is None:
-            return "有一段编译不过"
-        definitions = checker._definitions_of(_design.ENTRY_MODULE_NAME)   # noqa: SLF001
-        used = {name: _names_in(node.body) for name, node in definitions.items()}
-        parameters = {one for node in definitions.values()
-                      for one in (getattr(node, "generic_params", None) or ())}
-        for name, names in sorted(used.items()):
-            for one in sorted(names):
-                if _bare(one) in definitions or one in parameters:
-                    continue
-                if _is_a_builtin_name(one):
-                    continue
-                if checker._resolve(one, _design.ENTRY_MODULE_NAME) is None:  # noqa: SLF001
-                    return f"{name} 引用到的 {one} 解析不出来"
-        wanted = {str(one) for one in a_list(roots)}
-        loose = sorted(name for name in definitions
-                       if name not in wanted
-                       and not any(name in names for other, names in used.items() if other != name))
-        if loose:
-            return f"这几个定义了没人用，也不在根里：{'、'.join(loose)}"
-        for name in sorted(wanted):
-            if name not in definitions:
-                return f"说好的根 {name} 这份文档里没有"
-        assert tree is not None
-        return ""
+            tree = viba_ast.parse(source)
+        except SyntaxError:
+            # 编译不过：只有它提到了该声明的名字，才说明这一份是这一条管的（那就要说编译不过）
+            if not any(name in source for name in wanted):
+                return None
+            return f"这一段编译不过"
+        defined = {one.name for one in tree.body if isinstance(one, viba_ast.TypeDefinition)}
+        if wanted and not (wanted & defined):
+            return None                        # 该声明的名字一个都没有：不是这一条管的
+        return _what_stops_the_source(source, wanted, "这一段")
 
     def what_is_not_covered(env, document, root):
         """这份文档没点到 `root` 底下哪几组；一组不差就是空串。
@@ -276,6 +274,7 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
         一个 `/`（`tests/data/type_descriptor/` 这种写法）。
 
         "该有哪几组"是那一片目录自己的事（不用写在验收条件里）；这一处只查点到没有，把没点到的带回去。
+        一组都没点到的，那它不是这一条管的（答 `nil`）：一份法可以同时管几种交付。
         """
         said = text_of(env, document)
         where = _root_of(env, root, workspace)
@@ -284,6 +283,8 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
         groups = sorted(one.name for one in where.iterdir() if one.is_dir())
         if not groups:
             return f"{where} 底下一组都没有"
+        if not any(f"{name}/" in said for name in groups):
+            return None                        # 一组都没点到：这一份不是这一条管的
         missing = [name for name in groups if f"{name}/" not in said]
         if missing:
             return "这几组没点到：" + "、".join(missing)
@@ -298,8 +299,98 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
     table["what_stops_this_norm"] = what_stops_this_norm
     table["why_the_intake_says_nothing"] = why_the_intake_says_nothing
     table["what_stops_this_design"] = what_stops_this_design
+    table["what_stops_this_declaration"] = what_stops_this_declaration
     table["what_is_not_covered"] = what_is_not_covered
     return table
+
+
+def _what_stops_the_source(source: str, wanted: set, where: str) -> str:
+    """一段 viba 源码要守的三条：编译得过、引用的名字解析得出来、除根外没有没人用的定义。
+
+    答第一处不对的话；都对就是空串。`where` 是说话时指它那一段的写法（"这一段"／"有一段"）。
+    """
+    try:
+        viba_ast.parse(source)
+    except SyntaxError as bad:
+        return f"{where}编译不过：{bad}"
+    checker = _design_checker(source)
+    if checker is None:
+        return f"{where}编译不过"
+    definitions = checker._definitions_of(_design.ENTRY_MODULE_NAME)   # noqa: SLF001
+    used = {name: _names_in(node.body) for name, node in definitions.items()}
+    parameters = {one for node in definitions.values()
+                  for one in (getattr(node, "generic_params", None) or ())}
+    for name, names in sorted(used.items()):
+        for one in sorted(names):
+            if _bare(one) in definitions or one in parameters:
+                continue
+            if _is_a_builtin_name(one):
+                continue
+            if checker._resolve(one, _design.ENTRY_MODULE_NAME) is None:  # noqa: SLF001
+                return f"{name} 引用到的 {one} 解析不出来"
+    loose = sorted(name for name in definitions
+                   if name not in wanted
+                   and not any(name in names for other, names in used.items() if other != name))
+    if loose:
+        return f"这几个定义了没人用，也不在根里：{'、'.join(loose)}"
+    for name in sorted(wanted):
+        if name not in definitions:
+            return f"说好的根 {name} 这份里没有"
+    return _what_differs_from_the_interpreter(definitions, wanted)
+
+
+def _what_differs_from_the_interpreter(definitions, wanted) -> str:
+    """根里那些定义声明的成员，和解释器自己回答的那几条一样吗；不一样就说第一处。
+
+    解释器自己回答的那五个成员（`$get_attr` 那五个）实现是定了的，写下来的那条链要与它一样——
+    一份声明的用处就是把实现已经定了的东西写下来。写的是别的成员就不管（它们没有"实现已经定了"
+    这一说）。
+    """
+    from viba.viba_ast.tagged import interpreter_member_chain
+
+    for name in sorted(wanted):
+        definition = definitions.get(name)
+        if definition is None:
+            continue
+        for tag, declared in _declared_members(definition):
+            given = interpreter_member_chain(tag)
+            if given is None:
+                continue
+            here = viba_ast.unparse_type(declared)
+            there = viba_ast.unparse_type(given)
+            if _the_same_chain(here) != _the_same_chain(there):
+                return (f"{name} 里 {tag} 和解释器自己答的不一样："
+                        f"声明的是 {here}，解释器答的是 {there}")
+    return ""
+
+
+def _the_same_chain(text: str) -> str:
+    """一条链写成比得动的样子：去掉空格与括号。
+
+    同一件事有两种写法（`A <- $x B <- $y C` 与 `(A <- $x B) <- $y C`），比的是它说的那条链，
+    不是那句话怎么打的括号。
+    """
+    return re.sub(r"[\s()]+", "", text)
+
+
+def _declared_members(definition):
+    """一个定义里，那些带一条链的成员：`(tag, 那条链)`，按写的次序。"""
+    out = []
+    stack = [definition.body]
+    while stack:
+        here = stack.pop()
+        if isinstance(here, viba_ast.Tagged):
+            argument = getattr(here, "type", None)
+            if argument is not None:
+                out.append((here.tag, argument))
+            continue
+        for attr in ("left", "right", "elements", "function", "argument", "body"):
+            child = getattr(here, attr, None)
+            if isinstance(child, list):
+                stack.extend(child)
+            elif child is not None and type(child).__module__.startswith("viba"):
+                stack.append(child)
+    return out
 
 
 def _is_a_builtin_name(name: str) -> bool:

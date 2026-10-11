@@ -1094,8 +1094,16 @@ class WhatACriticCanReadInASurveyTest(unittest.TestCase):
 
     def test_a_name_without_the_slash_is_not_pointing_at_it(self):
         """光提到那个名字不算点到：点的是那一组的路径。"""
-        said = self.a_run("alpha、beta、gamma 各一组", "tests/data", self.workspace)
-        self.assertIn("alpha", said)
+        said = self.a_run("见 tests/data/alpha/，另外 beta 和 gamma 也看看",
+                          "tests/data", self.workspace)
+        self.assertIn("beta", said)
+        self.assertIn("gamma", said)
+        self.assertNotIn("alpha", said)
+
+    def test_a_document_that_points_at_no_group_is_not_this_conditions_business(self):
+        """一组都没点到的文档不是这一条管的：答 nil，让管它的那一条去说（一份法可以管几种交付）。"""
+        self.assertIsNone(self.a_run("这是一份设计，底下没有测试程序的清单",
+                                     "tests/data", self.workspace))
 
     def test_a_root_that_is_not_there_says_so(self):
         """那一组都不在的目录：说清楚是哪一条路径。"""
@@ -1242,8 +1250,11 @@ class WhatACriticCanReadInADesignTest(unittest.TestCase):
         answer = interpret(str(self.case / "the_condition.viba"), judged)
         return viba_ast.unparse_type(answer.data)
 
-    def test_a_design_where_every_type_is_used_is_fine(self):
-        self.assertEqual('$ok ""', self.a_run(self.a_design(self.CLEAN), ["Root"]))
+    def test_a_whole_file_of_viba_source_is_not_this_conditions_business(self):
+        """整份就是 viba 源码的那种交付（一份声明文件）不归这一条管：它走 `what_stops_this_declaration`。"""
+        where = Path(self.temporary.name) / "a_declaration.viba"
+        where.write_text(self.CLEAN, encoding="utf-8")
+        self.assertEqual('$ok nil', self.a_run(where, ["Root"]))
 
     def test_a_type_nobody_uses_is_named(self):
         loose = self.CLEAN + "\nLonely =\n    Object\n  * $n int\n"
@@ -1263,6 +1274,85 @@ class WhatACriticCanReadInADesignTest(unittest.TestCase):
     def test_a_root_that_is_not_there_says_so(self):
         said = self.a_run(self.a_design(self.CLEAN), ["Root", "Missing"])
         self.assertIn("Missing", said)
+
+
+class WhatACriticCanReadInADeclarationTest(unittest.TestCase):
+    """判一份声明文件（整份就是 viba 源码）要用的那个算子：同样三条，只是没有 markdown 段落。"""
+
+    # 解释器自己回答的那五个成员，写法和 `viba_ast/tagged.py` 里那几条链一样
+    CLEAN = ("InterpreterMembers =\n    Object\n"
+             "  * $get_attr (Any <- $env Env <- $value Any <- $name str)\n"
+             "  * $get_item (Any <- $env Env <- $container Any <- $address Any)\n"
+             "  * $in (bool <- $env Env <- $container Any <- $piece Any)\n"
+             "  * $len (int <- $env Env <- $container Any)\n"
+             "  * $keys (list[str] <- $env Env <- $table Any)\n")
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.case = Path(self.temporary.name) / "case"
+        self.case.mkdir()
+
+    def a_run(self, source: str, names) -> str:
+        """把这一份源码当**判的那一份**交过去（像真的单那样），跑一遍这条验收条件。"""
+        from viba import viba_ast
+        from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                                    interpret, put_snapshot)
+        from tickets import critic
+
+        wanted = ", ".join('"' + one + '"' for one in names)
+        (self.case / "the_condition.viba").write_text(
+            "__decl__ =\n    str\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+            "under_judgment =\n    str\n  <- $env Env\n\n"
+            "what_stops_this_declaration =\n    str\n  <- $env Env\n  <- $declaration str\n"
+            "  <- $names list[str]\n\n"
+            "__impl__ = what_stops_this_declaration << $env args.env\n"
+            "  << $declaration (under_judgment << $env args.env)\n"
+            f"  << $names ListLiteral[{wanted}]\n", encoding="utf-8")
+        table = critic._rule_compute(None)
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        judged = Environment(env.storage.sub("judgment"), env.compute, env.viba_path)
+        put_snapshot(judged, source, "under_judgment")
+        answer = interpret(str(self.case / "the_condition.viba"), judged)
+        return viba_ast.unparse_type(answer.data)
+
+    def test_a_declaration_that_holds_together_is_fine(self):
+        """整份就是源码的一份声明：编译得过、名字解析得出来、没有没人用的定义，就是空串。"""
+        self.assertEqual('$ok ""', self.a_run(self.CLEAN, ["InterpreterMembers"]))
+
+    def test_a_definition_nobody_uses_is_named(self):
+        loose = self.CLEAN + "Lonely =\n    Object\n  * $n int\n"
+        self.assertIn("Lonely", self.a_run(loose, ["InterpreterMembers"]))
+
+    def test_a_document_is_not_this_conditions_business(self):
+        """有 ```viba 段落的那种（主体是文档）不归这一条管。"""
+        said = self.a_run("# 一份设计\n\n```viba\n" + self.CLEAN + "```\n",
+                          ["InterpreterMembers"])
+        self.assertEqual("$ok nil", said)
+
+    def test_a_source_that_declares_none_of_the_names_is_not_its_business(self):
+        """该声明的名字一个都没有的那一份不是这一条管的（答 nil）。"""
+        said = self.a_run("Other =\n    Object\n  * $n int\n", ["InterpreterMembers"])
+        self.assertEqual("$ok nil", said)
+
+    def test_a_member_the_interpreter_answers_must_be_declared_the_way_it_answers_it(self):
+        """解释器自己回答的那五个成员，声明的那条链要和它答的一样：写的和答的不一样就不是描述。"""
+        said = self.a_run(self.CLEAN.replace("$value Any", "$box Any"),
+                          ["InterpreterMembers"])
+        self.assertIn("$get_attr", said)
+        self.assertIn("$box", said)
+        self.assertIn("$value", said)
+
+    def test_a_member_the_interpreter_does_not_answer_is_left_alone(self):
+        """别的成员没有"实现已经定了"这一说：写成什么样都不归这一条管。"""
+        mine = ("MyOwn =\n    Object\n  * $whatever (int <- $env Env <- $n int)\n")
+        self.assertEqual('$ok ""', self.a_run(mine, ["MyOwn"]))
+
+    def test_a_broken_source_that_names_one_of_them_says_so(self):
+        """提到该声明的名字、却编译不过的：那是它管的，要说出来（不能因为坏就说不归它管）。"""
+        said = self.a_run("InterpreterMembers =\n    Object\n  *\n", ["InterpreterMembers"])
+        self.assertIn("编译不过", said)
 
 
 class TheHandlerTest(unittest.TestCase):
