@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Tuple
 
 from . import _viba  # noqa: F401
 
@@ -73,8 +73,9 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
             answer = interpret(str(_condition_file(condition, workflow, env, acceptance_dir)), case)
             if not finished(answer):
                 raise RuntimeError(f"验收条件 {condition} 没跑完：{failure_in(answer)}")
-            if not _verdict(answer, condition):
-                objections.append(_objection(condition))
+            passed, why = _verdict(answer, condition)
+            if not passed:
+                objections.append(why or _objection(condition))
         put_snapshot(env, "；".join(objections), "objection")
         return not objections
 
@@ -83,13 +84,19 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
     return caps
 
 
-def _verdict(answer, condition: str) -> bool:
-    """验收条件跑完答下的那个 bool；它不是 bool 就当场说清楚。"""
+def _verdict(answer, condition: str) -> Tuple[bool, str]:
+    """这条验收条件过了没有；没过的话，它说的那句是什么。
+
+    两种答法：答 `bool` 就是"过了没有"；答一句话就是"没过，原因是这句"——答空串是过了。答一句话
+    的那种，是为了让不合格的理由回到做活的人手里（只说一句"某某条件说不合格"，他没法改）。
+    """
     said = answer_of(answer)
     piece = None if said is None else getattr(said, "data", None)
-    if not (isinstance(piece, viba_ast.Constant) and isinstance(piece.value, bool)):
-        raise RuntimeError(f"验收条件 {condition} 答的不是 bool：{piece!r}")
-    return piece.value
+    if isinstance(piece, viba_ast.Constant) and isinstance(piece.value, bool):
+        return piece.value, ""
+    if isinstance(piece, viba_ast.Constant) and isinstance(piece.value, str):
+        return not piece.value, str(piece.value)
+    raise RuntimeError(f"验收条件 {condition} 答的不是 bool、也不是一句话：{piece!r}")
 
 
 def _condition_file(condition: str, workflow, env, acceptance_dir):
@@ -165,35 +172,35 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
                     return False
         return True
 
-    def loads_as_a_norm(env, root):
-        """这份法 rb 读得起来吗：那四个部分都在、那张成员表也读得成。
+    def what_stops_this_norm(env, root):
+        """这份法读不起来的话，是哪一步读不起来；读得起来就是空串。
 
-        "四个部分在不在"是 `files_missing` 的事；这一条问的是更实的一件：把它当一份规范读起来，
-        读得起来才谈得上开一场会。
+        "四个部分在不在"是 `files_missing` 的事；这一条问的是更实的一件：把它当一份规范读起来——
+        那张成员表得是一张表，三个程序目录里得是能跑的程序。读不起来的话就把那句话带回去。
         """
         try:
             _norm_at(_root_of(env, root))
-        except Exception:                      # noqa: BLE001 - 读不起来就是不合格，话不必在这儿说
-            return False
-        return True
+        except Exception as bad:               # noqa: BLE001 - 读不起来就是不合格，原因是这一句
+            return f"{type(bad).__name__}: {bad}"
+        return ""
 
-    def the_intake_answers(env, root, sentences):
-        """拿这几句话去问这份法的受理：它答得出"要交的那个名字"吗。
+    def why_the_intake_says_nothing(env, root, sentences):
+        """拿这几句话问这份法的受理：有一句答出"要交的那个名字"就是空串，一句都没有就是那句话。
 
         哪几句是该问的，是验收条件那一侧的事（一份法认哪几种说法，只有它自己知道）；这一处只负责
-        把它读起来、照着它自己的受理跑一遍。有一句答出名来就算答得出。
+        把它读起来、照着它自己的受理跑一遍。
         """
         try:
             workflow = _norm_at(_root_of(env, root))
-        except Exception:                      # noqa: BLE001
-            return False
+        except Exception as bad:               # noqa: BLE001
+            return f"{type(bad).__name__}: {bad}"
         for one in a_list(sentences):
             try:
                 if what_to_make(workflow, str(one)):
-                    return True
-            except Exception:                  # noqa: BLE001 - 受理跑不起来也是一句都没答出来
-                continue
-        return False
+                    return ""
+            except Exception as bad:           # noqa: BLE001 - 受理跑不起来，原因带回去
+                return f"受理跑不起来：{type(bad).__name__}: {bad}"
+        return "这几句话，它的受理一句都没答出要交的那个名字"
 
     table = dict(the_builtin_table())
     table["under_judgment"] = under_judgment
@@ -201,8 +208,8 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
     table["files_missing"] = files_missing
     table["every_program_is_complete"] = every_program_is_complete
     table["every_operator_is_declared"] = every_operator_is_declared
-    table["loads_as_a_norm"] = loads_as_a_norm
-    table["the_intake_answers"] = the_intake_answers
+    table["what_stops_this_norm"] = what_stops_this_norm
+    table["why_the_intake_says_nothing"] = why_the_intake_says_nothing
     return table
 
 

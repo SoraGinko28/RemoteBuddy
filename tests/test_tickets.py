@@ -799,35 +799,60 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
 
     TABLE = ("actor actor_api agent\ncritic critic_api critic\n"
              "assistant assistant_api assistant\n")
-    LOADS = ("loads_as_a_norm =\n    bool\n  <- $env Env\n  <- $root str\n\n")
-    INTAKE = ("the_intake_answers =\n    bool\n  <- $env Env\n  <- $root str\n"
+    LOADS = ("what_stops_this_norm =\n    str\n  <- $env Env\n  <- $root str\n\n")
+    INTAKE = ("why_the_intake_says_nothing =\n    str\n  <- $env Env\n  <- $root str\n"
               "  <- $sentences list[str]\n\n")
 
     def test_a_law_that_is_a_norm_loads(self):
-        """读得起来才算一份规范：四个部分加那张表。"""
+        """读得起来才算一份规范：四个部分加那张表；读得起来这条答空串。"""
         where = self.a_norm(self.TABLE)
-        self.assertEqual("$ok true", self.a_run(
-            self.LOADS + f'__impl__ = loads_as_a_norm << $env args.env << $root "{where}"'))
+        self.assertEqual('$ok ""', self.a_run(
+            self.LOADS + f'__impl__ = what_stops_this_norm << $env args.env << $root "{where}"'))
 
-    def test_a_members_file_that_is_a_program_is_not_a_table(self):
-        """`members` 写成一份程序就不是那张表了：这一条要把它挡下来。"""
+    def test_a_members_file_that_is_a_program_says_why_it_does_not_load(self):
+        """`members` 写成一份程序就不是那张表了：这一条要把那句话带回去。"""
         where = self.a_norm("__decl__ =\n    bool\n  <- $env Env\n\n__impl__ = true\n")
-        self.assertEqual("$ok false", self.a_run(
-            self.LOADS + f'__impl__ = loads_as_a_norm << $env args.env << $root "{where}"'))
+        said = self.a_run(self.LOADS +
+                          f'__impl__ = what_stops_this_norm << $env args.env << $root "{where}"')
+        self.assertTrue(said.startswith('$ok "'), said)
+        self.assertIn("表项要写成", said)
+
+    def a_condition_answer(self, said: str):
+        """跑一条只会答这句话的验收条件，把那次答复原样拿回来。"""
+        from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
+                                    interpret)
+        from tickets import critic
+
+        (self.case / "the_condition.viba").write_text(
+            "__decl__ =\n    str\n  <- $env Env\n\n"
+            "args = __get_args__ << __decl__\n\n"
+            f'__impl__ = "{said}"\n', encoding="utf-8")
+        table = critic._rule_compute(None)
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: table.get(name)))
+        return interpret(str(self.case / "the_condition.viba"), env)
+
+    def test_a_condition_may_answer_the_reason_it_failed(self):
+        """验收条件答一句话就是"没过，原因是这句"：critic 拿它当不合格的理由。"""
+        from tickets.critic import _verdict
+
+        self.assertEqual((True, ""), _verdict(self.a_condition_answer(""), "one"))
+        self.assertEqual((False, "members 不是一张表"),
+                         _verdict(self.a_condition_answer("members 不是一张表"), "one"))
 
     def test_the_intake_is_asked_the_sentences_the_condition_brings(self):
         """受理答得出名字才算这一条过；问哪几句是验收条件的事。"""
         where = self.a_norm(self.TABLE)
-        self.assertEqual("$ok true", self.a_run(
-            self.INTAKE + '__impl__ = the_intake_answers\n'
+        self.assertEqual('$ok ""', self.a_run(
+            self.INTAKE + '__impl__ = why_the_intake_says_nothing\n'
                           '  << $env args.env\n'
                           f'  << $root "{where}"\n'
                           '  << $sentences ListLiteral["写一个快速排序，放到 quicksort.py"]'))
-        self.assertEqual("$ok false", self.a_run(
-            self.INTAKE + '__impl__ = the_intake_answers\n'
-                          '  << $env args.env\n'
-                          f'  << $root "{where}"\n'
-                          '  << $sentences ListLiteral["今天天气不错"]'))
+        said = self.a_run(self.INTAKE + '__impl__ = why_the_intake_says_nothing\n'
+                                        '  << $env args.env\n'
+                                        f'  << $root "{where}"\n'
+                                        '  << $sentences ListLiteral["今天天气不错"]')
+        self.assertIn("一句都没答出", said)
 
     def test_the_note_may_be_a_sentence_around_the_path(self):
         """单上交过来的常常是一句话：认得出路径就认路径。"""
