@@ -2267,6 +2267,9 @@ class MeetingWebService:
             thread = threading.Thread(target=self._run_tickets,
                                       args=(meeting_id, message, target, case), daemon=True)
             self.ticket_jobs[meeting_id] = thread
+        # 要交的那个东西得在这一场会的工作区里：法是照这一场会写的，交到别处不是这一场会的活
+        # （`/` 那种会把活派到工作区外面去，写起来是权限错，看起来是"这一步没跑起来"）。
+        self._the_target_is_inside_the_workspace(store, target)
         # 这一场是按哪份法开的：别的法下开的会不动（同一份会议目录可能被几个区域看着）。
         self._the_same_norm(store)
         # 谁握着这一场会的租约，谁才动它。另一个服务驱动着的时候这里就拒了。
@@ -2358,6 +2361,21 @@ class MeetingWebService:
             if pending:
                 # 跑这一趟的时候人又说了话：接着跑那一句
                 self._start_tickets(self.load_store(meeting_id), meeting_id, *pending)
+
+    def _the_target_is_inside_the_workspace(self, store: MeetingStore, target: str) -> None:
+        """要交的那个东西在这一场会的工作区里吗；不在就拒了。
+
+        受理答的是人那句话里像路径的那一个词，它可以答出一个跑到工作区外面的路径（`/` 就是最极端的
+        一个）。一场会的活都在它的工作区里：派到外面去的活写起来是权限错、读起来是"这一步没跑起来"，
+        当场说清楚比那样好。
+        """
+        if not str(target).strip():
+            return
+        workspace = Path(store.workspace_path).resolve()
+        where = Path(target)
+        inside = where.resolve() if where.is_absolute() else (workspace / where).resolve()
+        if inside != workspace and workspace not in inside.parents:
+            raise WebError(400, f"要交的东西不在这一场会的工作区里：{target}")
 
     def _the_same_norm(self, store: MeetingStore) -> None:
         """这一场是按哪份法开的：这一台读的是别的法就不动它，把话说清楚。

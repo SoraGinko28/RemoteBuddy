@@ -333,6 +333,14 @@ class MeetingWebServiceTest(unittest.TestCase):
         record = (Path(store.run_dir) / "meeting_record.md").read_text(encoding="utf-8")
         self.assertIn("- critic（critic）答了", record)
 
+    def test_a_target_outside_the_workspace_is_refused(self):
+        """要交的东西跑到工作区外面（比如 `/`）：当场拒，别把活派到外面去。"""
+        service = self.tickets_service(lambda _s, _m, _t: actor_caps(lambda _p: DRAFT_ORDERS))
+        store = service.start({"meeting_id": "orders-outside"})
+        with self.assertRaises(WebError) as refused:
+            service._start_tickets(store, "orders-outside", "把法写到 /", "/")
+        self.assertIn("工作区", str(refused.exception))
+
     def test_the_boot_resume_does_not_take_another_services_meeting(self):
         """服务刚起来时只接自己驱过的会：驱动记录里写着别的服务就不动它（各读各的法）。
 
