@@ -1001,6 +1001,9 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
             env, viba_ast.Constant("echo 坏了 >&2; exit 3"))
         self.assertIn("退出码 3", said)
         self.assertIn("坏了", said)
+        # 跑的时候环境里带着这一侧的解释器：法要跑这个工作区里的测试就用它
+        self.assertEqual("", table["what_stops_this_command"](
+            env, viba_ast.Constant('"$REMOTEBUDDY_PYTHON" -c "import sys; sys.exit(0)"')))
 
     def test_a_program_may_call_the_modules_viba_ships(self):
         """`if` 这种随包发的模块名也算有人认领：程序直接叫它们，解释器自己在包里找。"""

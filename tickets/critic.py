@@ -324,12 +324,17 @@ def _rule_compute(workflow: Workflow = None, workspace=None) -> Dict[str, Callab
 
         在工作区里跑（这一场会的活都在那个目录底下），有时限。跑哪条命令是**验收条件那一侧**写的：
         法是照这一场会写的，它说跑什么就跑什么；这一处只做两件事——跑、把结果说清楚。
+
+        环境里带上 `REMOTEBUDDY_PYTHON`（这一侧的解释器，`sys.executable`）：法要跑这个工作区里的
+        测试就用它，法里不必写死一条解释器的路径。
         """
         line = text_of(env, command)
         where = Path(workspace) if workspace is not None else Path.cwd()
+        environ = dict(os.environ)
+        environ["REMOTEBUDDY_PYTHON"] = sys.executable
         try:
             done = subprocess.run(line, shell=True, cwd=str(where), capture_output=True,
-                                  text=True, timeout=THE_COMMAND_TIMEOUT)
+                                  text=True, timeout=THE_COMMAND_TIMEOUT, env=environ)
         except subprocess.TimeoutExpired:
             return f"「{line}」跑了 {THE_COMMAND_TIMEOUT:g} 秒还没完"
         if done.returncode == 0:
