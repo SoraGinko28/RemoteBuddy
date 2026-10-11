@@ -920,6 +920,50 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
                           EnvironmentCompute(lambda module, name: table.get(name)))
         return interpret(str(self.case / "the_condition.viba"), env)
 
+    def a_law_whose_conditions(self, answers: dict) -> Path:
+        """一份最小规范，验收条件就这几条（名字 → 它答什么）。"""
+        where = self.a_norm(self.TABLE)
+        for name, answer in answers.items():
+            said = "nil" if answer is None else '"' + answer + '"'
+            (where / "acceptance" / f"{name}.viba").write_text(
+                "__decl__ =\n    Any\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+                f"__impl__ = {said}\n", encoding="utf-8")
+        return where
+
+    def a_judgement(self, where: Path, written: str = "交过来的一份") -> tuple:
+        """把一份东西交过去判一遍：答（过没过，理由那篇文章）。"""
+        from viba import viba_ast
+        from viba.interpret import Environment, EnvironmentCompute, EnvironmentStorage
+        from tickets import critic
+        from tickets.workflow import Workflow
+
+        workflow = Workflow.load(where)
+        env = Environment(EnvironmentStorage("", None, str(self.case)),
+                          EnvironmentCompute(lambda module, name: None))
+        passed = critic.critic_caps(workflow)["judge"](env, viba_ast.Constant(written))
+        objection = self.case / "objection.viba"
+        return passed, (objection.read_text(encoding="utf-8") if objection.is_file() else "")
+
+    def test_a_condition_that_does_not_speak_about_this_delivery_is_skipped(self):
+        """一条条件答 `nil` 就是"这一条不管这一份"：跳过它，别的条件照样判。"""
+        where = self.a_law_whose_conditions({"one": None, "two": ""})
+        passed, _said = self.a_judgement(where)
+        self.assertTrue(passed)
+
+    def test_a_delivery_no_condition_speaks_about_is_not_judged(self):
+        """一条都不管这一份：那这一次没有人判过它，算不合格，理由说清楚。"""
+        where = self.a_law_whose_conditions({"one": None})
+        passed, said = self.a_judgement(where)
+        self.assertFalse(passed)
+        self.assertIn("没有哪一条验收条件管这一份", said)
+
+    def test_a_condition_that_does_speak_and_fails_still_objects(self):
+        """有一条管而且还说不合格：那就是不合格，理由是它说的那句。"""
+        where = self.a_law_whose_conditions({"one": None, "two": "这份里一段 viba 都没有"})
+        passed, said = self.a_judgement(where)
+        self.assertFalse(passed)
+        self.assertIn("这份里一段 viba 都没有", said)
+
     def test_a_condition_may_answer_the_reason_it_failed(self):
         """验收条件答一句话就是"没过，原因是这句"：critic 拿它当不合格的理由。"""
         from tickets.critic import _verdict

@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from . import _viba  # noqa: F401
 
@@ -74,13 +74,21 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
                            env.viba_path)
         put_snapshot(case, written, UNDER_JUDGMENT)
         objections: List[str] = []
+        spoke = False
         for condition in workflow.conditions():
             answer = interpret(str(_condition_file(condition, workflow, env, acceptance_dir)), case)
             if not finished(answer):
                 raise RuntimeError(f"验收条件 {condition} 没跑完：{failure_in(answer)}")
-            passed, why = _verdict(answer, condition)
+            verdict = _verdict(answer, condition)
+            if verdict is None:
+                continue                     # 这一条不管这一份：它说的不是这一种交付
+            spoke = True
+            passed, why = verdict
             if not passed:
                 objections.append(why or _objection(condition))
+        if not spoke:
+            # 一条都不管这一份：那这一次就没有人判过它，不能算过
+            objections.append("没有哪一条验收条件管这一份")
         put_snapshot(env, "；".join(objections), "objection")
         return not objections
 
@@ -89,14 +97,19 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
     return caps
 
 
-def _verdict(answer, condition: str) -> Tuple[bool, str]:
-    """这条验收条件过了没有；没过的话，它说的那句是什么。
+def _verdict(answer, condition: str) -> Optional[Tuple[bool, str]]:
+    """这条验收条件过了没有；没过的话，它说的那句是什么；不管这一份就是 None。
 
-    两种答法：答 `bool` 就是"过了没有"；答一句话就是"没过，原因是这句"——答空串是过了。答一句话
-    的那种，是为了让不合格的理由回到做活的人手里（只说一句"某某条件说不合格"，他没法改）。
+    三种答法：答 `bool` 就是"过了没有"；答一句话就是"没过，原因是这句"——答空串是过了（答一句话
+    的那种，是为了让不合格的理由回到做活的人手里：只说一句"某某条件说不合格"，他没法改）；答 `nil`
+    就是"这一条不管这一份"——一份法可以同时管几种交付，每条验收条件自己说清它管哪几种。
+
+    一份交付要有人管：一条都不管的那些（`judge` 那一处）算不合格，不能让"谁也不说话"混成"都过了"。
     """
     said = answer_of(answer)
     piece = None if said is None else getattr(said, "data", None)
+    if piece is None or isinstance(piece, viba_ast.Nil):
+        return None
     if isinstance(piece, viba_ast.Constant) and isinstance(piece.value, bool):
         return piece.value, ""
     if isinstance(piece, viba_ast.Constant) and isinstance(piece.value, str):
