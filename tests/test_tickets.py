@@ -777,6 +777,58 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
 
         self.assertIn("a_path_in", decision_caps("写到 /a/b"))
 
+    def a_norm(self, members: str, intake: str = "a_file_in") -> Path:
+        """一个最小能读起来的规范：四个部分都在，成员表是一张表，受理答一个文件名。"""
+        where = self.where / "a_norm"
+        for part in ("intake", "ticket_programs", "acceptance"):
+            (where / part).mkdir(parents=True, exist_ok=True)
+        (where / "members").write_text(members, encoding="utf-8")
+        (where / "intake" / "what_to_make.viba").write_text(
+            "__decl__ =\n    str\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+            "the_words =\n    str\n  <- $env Env\n\n"
+            "a_file_in =\n    str\n  <- $env Env\n  <- $words str\n\n"
+            "__impl__ = a_file_in << $env args.env << $words (the_words << $env args.env)\n"
+            if intake == "a_file_in" else
+            "__decl__ =\n    str\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+            "__impl__ = \"true\"\n", encoding="utf-8")
+        for name in ("ticket_programs/one.viba", "acceptance/one.viba"):
+            (where / name).write_text(
+                "__decl__ =\n    Any\n  <- $env Env\n\nargs = __get_args__ << __decl__\n\n"
+                "__impl__ = true\n", encoding="utf-8")
+        return where
+
+    TABLE = ("actor actor_api agent\ncritic critic_api critic\n"
+             "assistant assistant_api assistant\n")
+    LOADS = ("loads_as_a_norm =\n    bool\n  <- $env Env\n  <- $root str\n\n")
+    INTAKE = ("the_intake_answers =\n    bool\n  <- $env Env\n  <- $root str\n"
+              "  <- $sentences list[str]\n\n")
+
+    def test_a_law_that_is_a_norm_loads(self):
+        """读得起来才算一份规范：四个部分加那张表。"""
+        where = self.a_norm(self.TABLE)
+        self.assertEqual("$ok true", self.a_run(
+            self.LOADS + f'__impl__ = loads_as_a_norm << $env args.env << $root "{where}"'))
+
+    def test_a_members_file_that_is_a_program_is_not_a_table(self):
+        """`members` 写成一份程序就不是那张表了：这一条要把它挡下来。"""
+        where = self.a_norm("__decl__ =\n    bool\n  <- $env Env\n\n__impl__ = true\n")
+        self.assertEqual("$ok false", self.a_run(
+            self.LOADS + f'__impl__ = loads_as_a_norm << $env args.env << $root "{where}"'))
+
+    def test_the_intake_is_asked_the_sentences_the_condition_brings(self):
+        """受理答得出名字才算这一条过；问哪几句是验收条件的事。"""
+        where = self.a_norm(self.TABLE)
+        self.assertEqual("$ok true", self.a_run(
+            self.INTAKE + '__impl__ = the_intake_answers\n'
+                          '  << $env args.env\n'
+                          f'  << $root "{where}"\n'
+                          '  << $sentences ListLiteral["写一个快速排序，放到 quicksort.py"]'))
+        self.assertEqual("$ok false", self.a_run(
+            self.INTAKE + '__impl__ = the_intake_answers\n'
+                          '  << $env args.env\n'
+                          f'  << $root "{where}"\n'
+                          '  << $sentences ListLiteral["今天天气不错"]'))
+
     def test_the_note_may_be_a_sentence_around_the_path(self):
         """单上交过来的常常是一句话：认得出路径就认路径。"""
         self.assertEqual('$ok ListLiteral["README.md"]',

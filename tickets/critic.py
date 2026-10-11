@@ -25,8 +25,10 @@ from viba.interpret import (Environment, EnvironmentCompute, interpret, get_snap
 
 from .binding import answer_of, failure_in, finished, text_of
 from .builtins import _a_list, the_table as the_builtin_table
+from .assistant import what_to_make
 from .handler import Handler, program_caps
 from .meeting import a_path_in
+from .table import members_of
 from .ticket import a_list
 from .workflow import ACCEPTANCE_DIR, INTAKE_DIR, TICKET_PROGRAMS_DIR, Workflow
 
@@ -163,13 +165,55 @@ def _rule_compute(workflow: Workflow = None) -> Dict[str, Callable]:
                     return False
         return True
 
+    def loads_as_a_norm(env, root):
+        """这份法 rb 读得起来吗：那四个部分都在、那张成员表也读得成。
+
+        "四个部分在不在"是 `files_missing` 的事；这一条问的是更实的一件：把它当一份规范读起来，
+        读得起来才谈得上开一场会。
+        """
+        try:
+            _norm_at(_root_of(env, root))
+        except Exception:                      # noqa: BLE001 - 读不起来就是不合格，话不必在这儿说
+            return False
+        return True
+
+    def the_intake_answers(env, root, sentences):
+        """拿这几句话去问这份法的受理：它答得出"要交的那个名字"吗。
+
+        哪几句是该问的，是验收条件那一侧的事（一份法认哪几种说法，只有它自己知道）；这一处只负责
+        把它读起来、照着它自己的受理跑一遍。有一句答出名来就算答得出。
+        """
+        try:
+            workflow = _norm_at(_root_of(env, root))
+        except Exception:                      # noqa: BLE001
+            return False
+        for one in a_list(sentences):
+            try:
+                if what_to_make(workflow, str(one)):
+                    return True
+            except Exception:                  # noqa: BLE001 - 受理跑不起来也是一句都没答出来
+                continue
+        return False
+
     table = dict(the_builtin_table())
     table["under_judgment"] = under_judgment
     table["widest_parameters"] = widest_parameters
     table["files_missing"] = files_missing
     table["every_program_is_complete"] = every_program_is_complete
     table["every_operator_is_declared"] = every_operator_is_declared
+    table["loads_as_a_norm"] = loads_as_a_norm
+    table["the_intake_answers"] = the_intake_answers
     return table
+
+
+def _norm_at(root: Path) -> Workflow:
+    """把这个目录当成一份规范读起来：四个部分、那张成员表。
+
+    读不起来就让它抛——调用的人自己决定那算不算不合格。
+    """
+    workflow = Workflow.load(root)
+    members_of(workflow)
+    return workflow
 
 
 def _root_of(env, root) -> Path:
