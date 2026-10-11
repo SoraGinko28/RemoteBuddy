@@ -213,7 +213,9 @@ class AgentChannel:
         path = self.file(target)
         tree = self.is_a_tree(target)
         before = since if since is not None else self.stamp(target)
-        if force or before is None:
+        # 一棵树是"在那儿"这件事说明不了这一趟干完没有（它可能早就长在那儿了），所以每一趟都等
+        # 这一轮干完；一份文件不一样：它已经在那儿、又没有人说要改版，就是上一趟交的那一份。
+        if force or before is None or tree:
             chats = len(self.chats())
             if force or not self.turn_in_flight():
                 self.say(instruction)

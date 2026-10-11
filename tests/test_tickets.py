@@ -969,6 +969,15 @@ class WhatTheActorHandsOverTest(unittest.TestCase):
         self.assertEqual(str(self.workspace / "rb_norm"),
                          channel.ensure_work("写这一份", "rb_norm/"))
 
+    def test_a_tree_that_is_already_there_still_waits_for_the_turn(self):
+        """一棵树"已经在那儿"说明不了这一趟干完没有：每一趟都等这一轮干完。"""
+        channel = self.AChannel(self.workspace)
+        (self.workspace / "rb_norm").mkdir()
+        (self.workspace / "rb_norm" / "members").write_text("actor actor_api agent\n",
+                                                            encoding="utf-8")
+        channel.ensure_work("写这一份", "rb_norm/")
+        self.assertEqual(1, len(channel.said))          # 等这一轮，就得先把题面说出去
+
     def test_a_file_still_comes_back_as_its_text(self):
         channel = self.AChannel(self.workspace)
         (self.workspace / "words.py").write_text("def words(text):\n    return text.split()\n",
