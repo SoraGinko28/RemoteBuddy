@@ -341,6 +341,36 @@ class MeetingWebServiceTest(unittest.TestCase):
             service._start_tickets(store, "orders-outside", "把法写到 /", "/")
         self.assertIn("工作区", str(refused.exception))
 
+    def test_a_failed_judgement_starts_another_pass_that_carries_the_objection(self):
+        """判不合格：法扣着不收尾，那就带着上一版的判语再起一趟；原样重跑是白跑。"""
+        from tickets.session import passes_so_far
+        too_many = ("def quick_sort(items, key=None, reverse=False, bounds=(0, None), extra=1):\n"
+                    "    return items\n")
+        seen = []
+
+        def write(prompt):
+            seen.append(prompt)
+            return too_many
+
+        import web as web_module
+
+        with mock.patch.object(web_module, "TICKET_PAUSE", 0.0):
+            service = self.tickets_service(
+                lambda _store, meeting_id, _target: scripted_actor(service, meeting_id, write=write))
+            store = service.start({"message": "写一个快速排序，放到 quicksort.py",
+                                   "meeting_id": "orders-retry"})
+            self.wait_for_tickets(service, "orders-retry")
+            deadline = time.time() + 30
+            while time.time() < deadline and passes_so_far(Path(store.run_dir)) < 2:
+                time.sleep(0.02)
+            # 等第二趟也收尾：不然它会在临时目录删掉之后还在跑
+            deadline = time.time() + 30
+            while time.time() < deadline and service.ticket_jobs.get("orders-retry") is not None \
+                    and service.ticket_jobs["orders-retry"].is_alive():
+                time.sleep(0.02)
+        self.assertGreaterEqual(passes_so_far(Path(store.run_dir)), 2)   # 又起了一趟
+        self.assertTrue(any("判语" in one for one in seen), seen[:4])     # 那一趟带着判语
+
     def test_the_boot_resume_does_not_take_another_services_meeting(self):
         """服务刚起来时只接自己驱过的会：驱动记录里写着别的服务就不动它（各读各的法）。
 

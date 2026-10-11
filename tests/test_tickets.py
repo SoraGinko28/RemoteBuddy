@@ -36,7 +36,8 @@ from tickets.plan import due, next_ticket, ticket_named  # noqa: E402
 from tickets.progress import (a_stage, answered, progress_node, read_stages,  # noqa: E402
                              the_state, unfinished, write_stage)
 from tickets.session import (BROKEN, OK, STUCK, Session, open_work,  # noqa: E402
-                             remember_the_norm, the_norm_of, worth_another_round)
+                             passes_so_far, remember_the_norm, the_last_objection,
+                             the_norm_of, worth_another_round)
 from tickets.table import (Process, Row, members_for, members_of, read_table, row_of,  # noqa: E402
                            write_table)
 from tickets.ticket import read_ticket, ticket_uids, tickets  # noqa: E402
@@ -530,6 +531,43 @@ class WhatTheLawSaysAboutWhenATicketIsDueTest(unittest.TestCase):
         outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _line: None)
         self.assertEqual(STUCK, outcome.outcome)
         self.assertIn("还没到点", outcome.failure)
+
+
+class ThePassesOfAMeetingTest(unittest.TestCase):
+    """一句话起了几趟、上一版为什么不合格：这两样读盘上那些案子。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.meeting = Path(self.temporary.name) / "meeting"
+
+    def a_case(self, name: str, when: float, objection: str = "", revision: str = "") -> None:
+        root = case_root(self.meeting, f"case/{name}")
+        root.mkdir(parents=True)
+        values = Store(root)
+        if objection:
+            values.write("judged", "objection", objection)
+        if revision:
+            values.write("judged_revision", "objection", revision)
+        os.utime(root, (when, when))
+
+    def test_it_counts_the_cases_on_disk(self):
+        """起了几趟：数案子（一趟一个案子）。"""
+        self.assertEqual(0, passes_so_far(self.meeting))
+        self.a_case("one", 1000.0)
+        self.a_case("two", 2000.0)
+        self.assertEqual(2, passes_so_far(self.meeting))
+
+    def test_the_last_objection_is_the_newest_cases_final_verdict(self):
+        """上一版为什么不合格：看最新那个案子最后那次判决。"""
+        self.a_case("one", 1000.0, objection="第一版：参数太多")
+        self.a_case("two", 2000.0, objection="第一版：参数太多", revision="改完还是：参数太多")
+        self.assertEqual("改完还是：参数太多", the_last_objection(self.meeting))
+
+    def test_a_verdict_that_passed_says_nothing(self):
+        """判过了就没有那句话：这一趟不该再原样起一遍。"""
+        self.a_case("one", 1000.0)
+        self.assertEqual("", the_last_objection(self.meeting))
 
 
 class AWholeMeetingTest(unittest.TestCase):

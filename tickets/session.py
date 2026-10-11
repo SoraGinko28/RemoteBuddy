@@ -24,7 +24,7 @@ from . import issue as issuing
 from . import plan
 from .binding import Binding
 from .handler import Handler
-from .layout import case_root, case_of, record_path
+from .layout import CASE_PREFIX, STORE_DIR, case_root, case_of, record_path
 from .progress import Stage, finished, read_stages, unfinished
 from .values import Store
 from .workflow import Workflow
@@ -260,6 +260,36 @@ def remember_the_norm(meeting_dir, case: str, root: str) -> None:
         NORM_ROOT_PATH, NORM_ROOT_NAME, root)
 
 
+def passes_so_far(meeting_dir) -> int:
+    """这一场会起过几趟：数盘上已经有的那些案子（一趟一个案子，第一趟是 `case/<名字>`）。"""
+    where = Path(meeting_dir) / STORE_DIR / CASE_PREFIX
+    if not where.is_dir():
+        return 0
+    return len([one for one in where.iterdir() if one.is_dir()])
+
+
+def the_last_objection(meeting_dir) -> str:
+    """最新那个案子里，最后一次判下来"不合格"的那句话；没有就是空串。
+
+    判决有两处：改完之后那一次（`judged_revision`）与第一版那一次（`judged`）。先看改完那次——
+    那是这一趟最后的判语。有了它，下一趟才知道要改什么；同一句话原样再跑一遍是白跑。
+    """
+    where = Path(meeting_dir) / STORE_DIR / CASE_PREFIX
+    if not where.is_dir():
+        return ""
+    cases = [one for one in where.iterdir() if one.is_dir()]
+    if not cases:
+        return ""
+    latest = max(cases, key=lambda one: one.stat().st_mtime)
+    values = Store(latest, record_path(meeting_dir))
+    # 看的是"那一处答过没有"，不是"那句话空不空"：答过一句空话就是"判过了"（判决合格），
+    # 那不算不合格——所以不能拿空串当成"没找到"往更早那一次退。
+    for module_path, name in (("judged_revision", "objection"), ("judged", "objection")):
+        if values.answered(module_path, name):
+            return "" if values.value(module_path, name) is None else str(values.value(module_path, name))
+    return ""
+
+
 def open_work(meeting_dir) -> Optional[Tuple[str, str, str]]:
     """这场会有没有没跑完的一趟：`(案子, 人类那句话, 要交的那个名字)`，没有就是 None。
 
@@ -290,5 +320,5 @@ def _say(out: Optional[Callable[[str], None]], line: str) -> None:
 
 
 __all__ = ["Session", "Outcome", "open_work", "worth_another_round", "the_norm_of",
-           "remember_the_norm", "OK", "STUCK",
+           "remember_the_norm", "passes_so_far", "the_last_objection", "OK", "STUCK",
            "UNFINISHED", "BROKEN"]

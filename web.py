@@ -88,8 +88,8 @@ from tickets.meeting import a_file_in
 from tickets.meeting import case_for_pass, cases_of, run_for_meeting
 from tickets.plan import due as due_ticket, ticket_named
 from tickets.progress import the_state
-from tickets.session import (OK, open_work, remember_the_norm, the_norm_of,
-                             worth_another_round)
+from tickets.session import (OK, open_work, passes_so_far, remember_the_norm,
+                             the_last_objection, the_norm_of, worth_another_round)
 from tickets.table import members_for, members_of
 from tickets.ticket import read_ticket, ticket_uids
 from tickets.values import Store as ValueStore
@@ -113,6 +113,9 @@ DRIVER_HEARTBEAT_SECONDS = 20.0
 # 就不试了（`tickets.session.worth_another_round`）；两趟之间隔这么久。
 TICKET_TRIES = int(os.environ.get("REMOTEBUDDY_TICKET_TRIES", "3"))
 TICKET_PAUSE = float(os.environ.get("REMOTEBUDDY_TICKET_PAUSE", "20"))
+# 一句话最多起几趟：法扣着不收尾（判决没过）的时候，带着上一版的判语再起一趟——同一句话原样再跑
+# 一遍是白跑，判语才是下一趟要改的东西。起够这么多趟就停，交给人。
+TICKET_PASSES = int(os.environ.get("REMOTEBUDDY_TICKET_PASSES", "2"))
 # 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
 CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
@@ -2339,10 +2342,18 @@ class MeetingWebService:
                 store.update(status="running", phase="api_error", control_owner="none",
                              failure=f"工单没跑完：{outcome.outcome}（{outcome.failure}）",
                              recovery_required=True)
-                # 还欠着的单没人接、或者哪一手没跑起来：不用人来叫醒，自己接着起一趟。同一句话
-                # 连着说了这么多遍还是它，就停在这儿——再跑一遍是同一句，等人（或等法）改。
-                if worth_another_round(_tickets_home(store), TICKET_TRIES):
-                    self._another_ticket_round(meeting_id, message, target, case)
+            home = _tickets_home(store)
+            objection = the_last_objection(home)
+            if objection and passes_so_far(home) < TICKET_PASSES:
+                # 最后一次判决没过：带着上一版的判语再起一趟，别原样重跑（那一趟只会再撞同一堵墙）。
+                # 起够 TICKET_PASSES 趟就停，交给人。
+                self._another_ticket_round(
+                    meeting_id, f"{message}\n（上一版的判语：{objection}）".strip(),
+                    target, None)
+            elif outcome.outcome != OK and worth_another_round(home, TICKET_TRIES):
+                # 还欠着的单没人接、或者哪一手没跑起来：自己接着起一趟。同一句话连着说了这么多遍
+                # 还是它，就停在这儿——再跑一遍是同一句，等人（或等法）改。
+                self._another_ticket_round(meeting_id, message, target, case)
         except Exception as exc:                    # noqa: BLE001 - 后台线程：写进 journal 才算有人知道
             try:
                 self.load_store(meeting_id).append_event(
@@ -2406,12 +2417,19 @@ class MeetingWebService:
         留出时间——急着起下一趟会把刚起的一轮打断。到点的时候要是已经有人在跑（比如人又说了一句），
         这一趟就不起了：那一句才是该跑的那一句。
         """
+        # 到点的时候要是已经有人在跑，这一趟就不起了：那一句才是该跑的那一句。比的不是"有没有人跑"，
+        # 而是"跑的是不是还是起这一趟的那个线程"——就是它自己的话，说明这一趟刚收尾，该接着起。
+        maker = threading.current_thread()
+
         def again() -> None:
-            with self.lock:
-                running = self.ticket_jobs.get(meeting_id)
-            if running is not None:
+            try:
+                with self.lock:
+                    running = self.ticket_jobs.get(meeting_id)
+                if running is not None and running is not maker:
+                    return
+                self._start_tickets(self.load_store(meeting_id), meeting_id, message, target, case)
+            except Exception:                  # noqa: BLE001 - 后台定时器：这一场会已经不在了就算了
                 return
-            self._start_tickets(self.load_store(meeting_id), meeting_id, message, target, case)
 
         timer = threading.Timer(TICKET_PAUSE, again)
         timer.daemon = True
