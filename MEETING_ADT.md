@@ -35,9 +35,17 @@ MeetingData =
   * Assert[{ keys($agent_name2role) ⊆ user_names(this record) }]
   * Hint[{
       reply reminder: ∀ chat message m in the chat stream, if m carries
-                 $at_user_name == P and role(P) == $critic,
+                 $at_user_name == P and role(P) ∈ {$tech_critic, $mgmt_critic},
                  then ∃ a later record r (a chat produced by P)
                    : r carries an mc.ContentReference that resolves to m
+    }]
+  * Hint[{
+      closing check: before the meeting ends the assistant asks its $mgmt_critic two
+                 things — whether the process is complete, and whether the actor
+                 finished the work; the mgmt_critic answers after that question, and
+                 when its answer is "not complete" it names at least one concrete
+                 problem (a step nobody answered, work that never landed, a judgement
+                 that never happened)
     }]
   * Appendix[{
       owner_at(t) = the TerminalControl.user_name of the control interval
@@ -254,7 +262,8 @@ AgentRole =
     Oneof
   | $actor nil                          # holds the terminal
   | $assistant nil                      # comments at will
-  | $critic nil                         # comments when summoned
+  | $tech_critic nil                    # judges the work: whether the code delivered is acceptable
+  | $mgmt_critic nil                    # judges the process: whether the work was done and the flow is complete
 
 UserName =
     Oneof
@@ -823,7 +832,7 @@ ApplyDiff = $ret AgentCmdResult <- $appliable_diff str <- {
 	ret.stdout 和 ret.stderr 相应地填。
 
 	再新写一个 diff -> tmux vim 操作序列的脚本，由 harness 逐个执行这些 tmux vim 序列。注意，这个过程中
-	一定要允许打断，不要一气呵成执行完 —— 人类或者 critic 有时会直接提出疑问，harness 要能暂停这些活、
+	一定要允许打断，不要一气呵成执行完 —— 人类或者评委有时会直接提出疑问，harness 要能暂停这些活、
 	响应其他人的疑问；而且是否继续执行需要再询问 actor。
 
 	编辑完了之后，把代码同步到 worktree 那边，从 worktree 那边取这次编辑对文件系统造成的新 diff。

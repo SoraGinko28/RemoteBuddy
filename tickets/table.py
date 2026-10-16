@@ -5,20 +5,25 @@
 
 ```
 # 名字       它实现哪份 api         怎么找到它
-actor       actor_api             agent
-critic      critic_api            critic
-assistant   assistant_api         assistant
+actor        actor_api             agent
+tech_critic  tech_critic_api       tech_critic
+mgmt_critic  mgmt_critic_api       mgmt_critic
+assistant    assistant_api         assistant
 checker     static_code_api       process python -m static_check
 ```
 
 **加一个成员不用改 Python**：写一份 `<角色>_api.viba` 放进规范目录（它声明这个角色会哪些算子），再往
-这张表里加一行。基础那三个角色（actor、critic、assistant）的声明不在这儿，在 `RbApiDeclare` 那个仓库
-里，程序和规范两边都读它（见 `declare.py`）；规范里另写一份同名的是不行的。`怎么找到它` 有五种写法：
+这张表里加一行。基础那几个角色（actor、tech_critic、mgmt_critic、assistant）的声明不在这儿，在 `RbApiDeclare` 那个仓库
+里，程序和规范两边都读它（见 `declare.py`）；规范里另写一份同名的是不行的。`怎么找到它` 有六种写法：
 
 * `agent` —— 会议里那个 agent（真会议是 `channel.AgentChannel`，演练和测试里塞一份脚本化的能力表）；
-* `critic` —— 在本地跑验收条件的那张 critic 能力表；
+* `tech_critic` —— 在本地跑验收条件的那张表：判的是交上来的代码（`tickets/critic.py`）；
+* `mgmt_critic` —— 在本地看流程的那张表：该发的单发过没有、actor 交的东西落了没有
+  （`tickets/mgmt_critic.py`）；
 * `assistant` —— 收消息、发单的那张 assistant 能力表；
 * `scripted <模块>:<函数>` —— 本进程里一张能力表，做那一步是 `do(prompt) -> 成果`；
+* `dummy_actor` —— 装作干活的替身（`tickets/dummy.py`）：答一句成品文字，工作区里什么都不写；
+* `dummy_tech_critic` —— 装作判过的替身：一律合格，验收条件一条都不跑；
 * `process <命令…>` —— 另起一个进程。宿主每一次把它跑一遍，接上 `--meeting / --case / --name`；那个
   进程自己照单算、自己写进度（`tickets.actor` 就是这个约定的一份实现）。`python` 这个词换成当前
   解释器。
@@ -39,16 +44,18 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 from . import _viba  # noqa: F401
 
-from .handler import Handler, line_of, program_caps
+from .handler import (Handler, answered_said_of, line_of, program_caps, said_of)
 from .progress import Stage, read_stages, unfinished
 from .workflow import is_api_file, role_of_api
 
 TABLE_NAME = "members"
 COMMENT = "#"
-KINDS = ("agent", "critic", "assistant", "scripted", "process")
-# 表里没写、规范目录里也没有那份表时用的：这场会就是这三个成员。
+KINDS = ("agent", "tech_critic", "mgmt_critic", "assistant", "scripted", "process",
+         "dummy_actor", "dummy_tech_critic")
+# 表里没写、规范目录里也没有那份表时用的：这场会就是这四个成员。
 FALLBACK_ROWS = ("actor actor_api agent",
-                 "critic critic_api critic",
+                 "tech_critic tech_critic_api tech_critic",
+                 "mgmt_critic mgmt_critic_api mgmt_critic",
                  "assistant assistant_api assistant")
 
 
@@ -92,7 +99,8 @@ def row_of(text: str) -> Row:
         raise ValueError(f"{name!r} 那一行说不知道怎么找到它：{kind!r}（只有 {'、'.join(KINDS)}）")
     if not is_api_file(api):
         raise ValueError(f"{name!r} 那一行写的不是一份 api：{api!r}（要写成 <角色>_api）")
-    if kind in ("agent", "critic", "assistant") and len(words) > 3:
+    if kind in ("agent", "tech_critic", "mgmt_critic", "assistant",
+                "dummy_actor", "dummy_tech_critic") and len(words) > 3:
         raise ValueError(f"{name!r} 那一行是 {kind}，后面不该再有别的：{text!r}")
     if kind in ("scripted", "process") and len(words) < 4:
         raise ValueError(f"{name!r} 那一行是 {kind}，后面得写上怎么起：{text!r}")
@@ -197,25 +205,40 @@ class Process:
         """一篇进度写成一句话。"""
         return line_of(self.name, self.role, stage)
 
-    def answered_line(self, module_path: str, func_name: str) -> str:
-        """答下的一步写成一句话，给人看，也记进这场会的记录。"""
-        where = module_path or "这个案子"
-        return f"- {self.name}（{self.role}）答了 {where} + {func_name}"
+    def said(self, stage: Stage) -> str:
+        """这一手，这个成员在会议里说的那一句；轮给别人那一种答空串。"""
+        return said_of(stage)
+
+    def answered_said(self, module_path: str, func_name: str, said: str = "") -> str:
+        """答下的一步，这个成员在会议里说的那一句（名字不在里面）。"""
+        return answered_said_of(module_path, func_name, said)
+
+    def answered_line(self, module_path: str, func_name: str, said: str = "") -> str:
+        """答下的一步写成一句话，给人看，也记进这场会的记录。
+
+        `said` 是这一步自己留下的那句话；另起进程那种成员只把"答了哪几步"印回来（没印判语），
+        所以这一处接得下、用不上。
+        """
+        return f"- {self.name}（{self.role}）{answered_said_of(module_path, func_name, said)}"
 
 
 def members_for(rows: Sequence[Row], *, workflow, meeting_dir, case: str,
                 agent_caps: Optional[Dict[str, Callable]] = None,
                 agent_name: Optional[str] = None,
-                assistant_say: Optional[Callable[[str], None]] = None,
+                say: Optional[Callable[[str, str], None]] = None,
                 cwd=None) -> List[Any]:
     """照这张表把这一趟接单的成员装配出来。
 
     `agent_caps` 是 `agent` 那一行用的那张能力表（真会议里是会议里那个 agent，演练和测试里是脚本化的
     写手）；`agent_name` 是它在会议里的名字——表里写的是角色位，真名字以会议为准。
+
+    `say(谁, 说了什么)` 是一个成员在会议里说话的地方；不给就是它不说（只落进这场会的记录）。哪几个
+    成员有话说、说的是哪一句，是各个角色自己的事（`assistant_caps` 的 `say` 就是它那两句话）。
     """
     from .actor import actor_caps, writer_from
     from .assistant import assistant_caps
     from .critic import critic_caps
+    from .mgmt_critic import mgmt_critic_caps
 
     # （`assistant_caps` 在收尾那一处也用到：表里没写 assistant 时补一个，见函数末尾。）
 
@@ -232,13 +255,30 @@ def members_for(rows: Sequence[Row], *, workflow, meeting_dir, case: str,
             name = agent_name or row.name
             one: Any = Handler(name, role, {**program_caps(workflow), **caps}, meeting_dir,
                                programs=workflow.tickets())
-        elif row.kind == "critic":
+        elif row.kind == "tech_critic":
             one = Handler(row.name, role,
                           {**program_caps(workflow), **critic_caps(workflow, workspace=cwd)},
                           meeting_dir, programs=workflow.tickets())
+        elif row.kind == "mgmt_critic":
+            one = Handler(row.name, role,
+                          {**program_caps(workflow),
+                           **mgmt_critic_caps(workflow, meeting_dir, case, workspace=cwd)},
+                          meeting_dir, programs=workflow.tickets())
         elif row.kind == "assistant":
             one = Handler(row.name, role,
-                          {**program_caps(workflow), **assistant_caps(assistant_say)},
+                          {**program_caps(workflow), **assistant_caps(_speaking(say, row.name))},
+                          meeting_dir, programs=workflow.tickets())
+        elif row.kind == "dummy_actor":
+            from .dummy import dummy_actor_caps
+
+            one = Handler(row.name, role,
+                          {**program_caps(workflow), **dummy_actor_caps()},
+                          meeting_dir, programs=workflow.tickets())
+        elif row.kind == "dummy_tech_critic":
+            from .dummy import dummy_tech_critic_caps
+
+            one = Handler(row.name, role,
+                          {**program_caps(workflow), **dummy_tech_critic_caps()},
                           meeting_dir, programs=workflow.tickets())
         elif row.kind == "scripted":
             one = Handler(row.name, role,
@@ -251,9 +291,15 @@ def members_for(rows: Sequence[Row], *, workflow, meeting_dir, case: str,
         # 表里没写 assistant 也一定有它：人类那句话总得有人收、单总得有人发。
         # 它做哪两件事写在规范里那份 `assistant_api.viba` 上，不由这一处说。
         members.append(Handler("assistant", "assistant",
-                               {**program_caps(workflow), **assistant_caps(assistant_say)},
+                               {**program_caps(workflow),
+                                **assistant_caps(_speaking(say, "assistant"))},
                                meeting_dir, programs=workflow.tickets()))
     return members
+
+
+def _speaking(say: Optional[Callable[[str, str], None]], name: str):
+    """这个成员在会议里怎么说话：把它的名字接上去（它自己只说那句话）。"""
+    return None if say is None else (lambda line: say(name, line))
 
 
 def command_for(row: Row) -> List[str]:

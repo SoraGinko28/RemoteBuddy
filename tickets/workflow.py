@@ -47,7 +47,7 @@ from viba import viba_ast
 
 from .declare import declared_apis
 
-ROLES = ("actor_api", "assistant_api", "critic_api")
+ROLES = ("actor_api", "assistant_api", "tech_critic_api", "mgmt_critic_api")
 API_SUFFIX = "_api"
 
 

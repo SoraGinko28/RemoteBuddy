@@ -273,11 +273,26 @@ def meeting_title(store: MeetingStore) -> str:
 
 def _public_manifest(store: MeetingStore) -> Dict[str, Any]:
     payload = store.meeting.to_dict()
+    payload["failure"] = _the_page_failure(store.meeting.failure)
     payload["run_path"] = str(store.run_dir)
     payload["event_count"] = store.event_count()
     payload["workspace_root"] = store.meeting.workspace_root or ""
     payload["title"] = meeting_title(store)
     return payload
+
+
+# 工单没跑完（规范扣着不收尾、哪张单没人接、哪一步没跑起来）是这一场自己的事，不是这一台服务的毛病：
+# 那句话由 `rb cli` 说（退出码和标准错误），页面上边栏只留这一侧自己的错。新跑的会不再把它写进
+# `failure`（`_run_tickets` 那一处），早先跑的那几场写进去了——这一处照那句话的开头认出来，不往页面递。
+# 数据照旧留着：那是那场会自己的记录，改的是页面读到的东西。
+MEETING_LEVEL_FAILURE = "工单没跑完："
+
+
+def _the_page_failure(failure: Any) -> Any:
+    """页面拿到的 `failure`：这一侧自己的错照旧，工单那一侧的话不回给页面。"""
+    if isinstance(failure, str) and failure.startswith(MEETING_LEVEL_FAILURE):
+        return None
+    return failure
 
 
 def _as_workspace(asked: Any, base: Path) -> Path:
@@ -2295,7 +2310,7 @@ class MeetingWebService:
             return self.tickets_caps_factory(store, meeting_id, target)
         scripted = os.environ.get("REMOTEBUDDY_TICKETS_WRITER")
         if scripted:
-            return actor_caps(writer_from(scripted))
+            return actor_caps(writer_from(scripted, workspace=store.workspace_path))
         channel = LoopbackChannel(self, meeting_id, store.workspace_path,
                                   speaking=lambda: self.tickets_speaking(meeting_id),
                                   agent_name=store.meeting.actor_name() or "actor")
@@ -2303,8 +2318,26 @@ class MeetingWebService:
 
         return meeting_actor_caps(channel, target)
 
+    def _a_member_says(self, store: MeetingStore):
+        """一个成员在这场会里说了一句：记成它说的话（页面上的对话读的就是这个）。
+
+        名字在这场会的成员表里（`agent_name2role`）就记成一条 `chat`——人、actor、tech_critic、mgmt_critic、assistant
+        说的是同一份对话。认不出来的名字（规范里的成员和会议表对不上）只记一条 `state`：谁也不该因为
+        名字对不上就丢一句话。
+        """
+        def said(who: str, line: str) -> None:
+            text = str(line).strip()
+            if not text:
+                return
+            try:
+                store.append_chat(str(who), text, "progress")
+            except MeetingError:
+                store.append_event("state", "tickets", "round",
+                                   data={"who": str(who), "line": text})
+        return said
+
     def _ticket_handlers(self, store: MeetingStore, meeting_id: str, target: str,
-                         workflow, case: str) -> List[Any]:
+                         workflow, case: str, say=None) -> List[Any]:
         """这一场有哪几个成员：读规范里那张表（`<规范>/members`，见 `tickets/table.py`）。
 
         表里 `agent` 那一行用的就是会议里那个 agent：真会议是 `MeetingChannel`，
@@ -2315,33 +2348,42 @@ class MeetingWebService:
                            meeting_dir=_tickets_home(store), case=case,
                            agent_caps=self._the_agent_caps(store, meeting_id, target),
                            agent_name=store.meeting.actor_name() or "actor",
-                           cwd=store.workspace_path)
+                           say=say, cwd=store.workspace_path)
 
     def _run_tickets(self, meeting_id: str, message: str, target: str,
                      case: Optional[str] = None) -> None:
-        """跑一趟：消息给 assistant，它读值发单，成员接单，跑到每一张单都做完。"""
+        """跑一趟：消息给 assistant，它读值发单，成员接单，跑到每一张单都做完。
+
+        成员说的话都进这场会的对话：谁说的、说了哪一句，由接单那一侧一起交出来（`tickets.session`），
+        这一处照记。发单、答了哪一步、判下来什么，因此和人类那句话、actor 的回话在同一栏里。
+        """
         try:
             store = self.load_store(meeting_id)
             if case is None:
                 # 这一趟该用哪个案子：数盘上已经有的那些（不是数这个进程起过几趟）
                 case = case_for_pass(_tickets_home(store), target, fallback=meeting_id)
             workflow = load_workflow(project_root=self.project_root)
-            handlers = self._ticket_handlers(store, meeting_id, target, workflow, case)
+            speak = self._a_member_says(store)
+            handlers = self._ticket_handlers(store, meeting_id, target, workflow, case,
+                                             say=speak)
             store.append_event("state", "assistant", "tickets_started",
                                data={"case": case, "target": target})
             outcome = run_for_meeting(_tickets_home(store), case=case, words=message,
                                       workflow=workflow, handlers=handlers, target=target,
-                                      out=lambda line: store.append_event(
-                                          "state", "tickets", "round", data={"line": line}))
+                                      out=speak)
             store.append_event("state", "assistant", "tickets_finished",
                                data={"outcome": outcome.outcome, "rounds": outcome.rounds})
             if outcome.outcome == OK:
                 store.update(status="running", phase="completion_proposed",
                              control_owner="none", recovery_required=False, failure=None)
             else:
+                # 工单没跑完（规范扣着不收尾、哪一张单没人接、哪一步没跑起来）是**这一场自己的事**，
+                # 不是这一台服务的毛病：写进 journal 给 `rb cli` 和记录看（它照着定退出码、印那句话），
+                # 不写成页面上边栏那条"服务出错"的提示——那里只留这一侧自己的错（上面那支 `except`）。
+                store.append_event("state", "tickets", "incomplete",
+                                   data={"outcome": outcome.outcome, "why": outcome.failure})
                 store.update(status="running", phase="api_error", control_owner="none",
-                             failure=f"工单没跑完：{outcome.outcome}（{outcome.failure}）",
-                             recovery_required=True)
+                             recovery_required=True, failure=None)
             home = _tickets_home(store)
             objection = the_last_objection(home)
             if objection and passes_so_far(home) < TICKET_PASSES:

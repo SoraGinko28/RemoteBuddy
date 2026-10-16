@@ -1,4 +1,6 @@
-"""critic 这一侧：判案。判的是哪一份由单上那次调用给；**哪些验收条件可能不过，由它自己找**。
+"""tech_critic 这一侧：判活（代码）。判的是哪一份由单上那次调用给；**哪些验收条件可能不过，由它自己找**。
+
+流程那一侧是 mgmt_critic（`tickets/mgmt_critic.py`）：它不看代码好不好，只看这场会走完没有。
 
 能力表（`critic_caps`）就是 api 里那一件事 `judge`，加上跑验收条件要用的那几个算子。验收条件是 viba
 程序（`acceptance/*.viba`），用 `interpret` 跑——它自己给门槛、自己答 bool，这里不替它判。
@@ -39,6 +41,11 @@ from .workflow import (ACCEPTANCE_DIR, DUE_DIR, INTAKE_DIR, TICKET_PROGRAMS_DIR,
 
 JUDGMENT_DIR = "judgment"
 UNDER_JUDGMENT = "under_judgment"
+# 判完那一步的算子，和它留下的那句话：写下来的是这一处，取出来给人看的也是这一处。
+JUDGED = "judge"
+REASON = "objection"
+# mgmt_critic 那一步的名字（`tickets/mgmt_critic.py`）：它留下的那句话也照同一条路取回来。
+CHECKED = "check"
 
 # 解释器自己回答的那几个名字（`viba-primitives.md` 第 4 节，加上 `viba/builtin.viba` 里 `Environment`
 # 的成员）：一份程序调到它们，不用谁去声明——解释器自己有。名字按不带 `$` 的写法比。
@@ -97,12 +104,24 @@ def critic_caps(workflow: Workflow, judgment: str = JUDGMENT_DIR,
         if not spoke:
             # 一条都不管这一份：那这一次就没有人判过它，不能算过
             objections.append("没有哪一条验收条件管这一份")
-        put_snapshot(env, "；".join(objections), "objection")
+        put_snapshot(env, "；".join(objections), REASON)
         return not objections
 
     caps = {"judge": judge}
     caps.update(_rule_compute(workflow, workspace))
     return caps
+
+
+def the_reason(values, module_path: str, func_name: str) -> str:
+    """判完那一步留下的那句话；不是判决、或者它没留下话，就是空串。
+
+    谁写它、叫什么名字，是这一处的事（`judge` 那个算子写完 bool 顺手写下的 `REASON`）。
+    要把它写进这场会那句"谁答了哪一步"里的（`session.py`），照这一处取，别自己去猜名字。
+    """
+    if func_name not in (JUDGED, CHECKED):
+        return ""
+    said, answered = values.read(module_path, REASON)
+    return str(said) if answered and said else ""
 
 
 def _verdict(answer, condition: str) -> Optional[Tuple[bool, str]]:
@@ -596,21 +615,21 @@ def _count_parameters(inside: str) -> int:
     return count
 
 
-def critic_handler(meeting_dir, workflow, *, name: str = "critic") -> Handler:
-    """一个 critic 处理者：`judge`、规则那几个算子，加上规范里那几张单的程序。"""
-    return Handler(name, "critic", {**program_caps(workflow), **critic_caps(workflow)},
+def critic_handler(meeting_dir, workflow, *, name: str = "tech_critic") -> Handler:
+    """一个 tech_critic 处理者：`judge`、规则那几个算子，加上规范里那几张单的程序。"""
+    return Handler(name, "tech_critic", {**program_caps(workflow), **critic_caps(workflow)},
                    meeting_dir, programs=workflow.tickets())
 
 
 def main(argv=None) -> int:
-    """critic 的进程：接一轮单，把这一手印成一行 JSON。"""
+    """tech_critic 的进程：接一轮单，把这一手印成一行 JSON。"""
     from .member import member_main
 
     def caps_for(_args, workflow):
         return critic_caps(workflow)
 
-    return member_main("critic", caps_for, argv,
-                       description="critic 的进程：拿单给的那一份，自己找规则判")
+    return member_main("tech_critic", caps_for, argv,
+                       description="tech_critic 的进程：拿单给的那一份，自己找规则判")
 
 
 if __name__ == "__main__":

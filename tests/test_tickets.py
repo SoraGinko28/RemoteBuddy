@@ -3,7 +3,7 @@
 这里验的是几件真东西：工单就是那次调用本身（`__dyn_call__ << "<整名>"`，环境留空）、进度一次尝试
 一个文件且"有 `$ok` 就算做完"只增不退、该发哪一张是读案子里的值算出来的、assistant 收下人类那句话
 之后单真的落在 `<会议目录>/tickets/<工单号>/ticket.viba`、值落在 `<会议目录>/store/<案子>/` 下、
-一场会五张单一路走到 `ok`。跑的是真解释器、真文件、真进程。
+一场会六张单一路走到 `ok`。跑的是真解释器、真文件、真进程。
 """
 
 from __future__ import annotations
@@ -26,15 +26,17 @@ from tickets.assistant import assistant_handler, what_to_make  # noqa: E402
 from tickets.binding import Binding, finished, unimplemented_step  # noqa: E402
 from tickets.channel import AgentChannel  # noqa: E402
 from tickets.critic import critic_handler  # noqa: E402
+from tickets.mgmt_critic import mgmt_critic_handler  # noqa: E402
 from tickets import declare  # noqa: E402
 from tickets.declare import (DECLARE_ENV, DEFINITIONS_HOME, declare_home,  # noqa: E402
                              progress_definition, stage_definition, ticket_definition)
 from tickets.handler import Handler, program_caps  # noqa: E402
 from tickets.issue import ticket_uid  # noqa: E402
-from tickets.layout import case_root, progress_root, tickets_root  # noqa: E402
+from tickets.layout import case_root, progress_root, record_path, tickets_root  # noqa: E402
 from tickets.plan import due, next_ticket, ticket_named  # noqa: E402
 from tickets.progress import (a_stage, answered, progress_node, read_stages,  # noqa: E402
                              the_state, unfinished, write_stage)
+from tickets.mgmt_critic import the_flow_verdict
 from tickets.session import (BROKEN, OK, STUCK, Session, open_work,  # noqa: E402
                              passes_so_far, remember_the_norm, the_last_objection,
                              the_norm_of, worth_another_round)
@@ -65,9 +67,10 @@ def a_session(meeting, case: str = CASE):
 
 
 def the_handlers(meeting, workflow):
-    """三个成员：assistant、critic、脚本化的 actor。顺序就是它们接单的次序。"""
+    """四个成员：assistant、tech_critic、mgmt_critic、脚本化的 actor。顺序就是它们接单的次序。"""
     return [assistant_handler(meeting, workflow),
             critic_handler(meeting, workflow),
+            mgmt_critic_handler(meeting, workflow, case=CASE, workspace=meeting),
             Handler("actor", "actor",
                     {**program_caps(workflow), **actor_caps(a_writer)}, meeting,
                     programs=workflow.tickets())]
@@ -193,11 +196,11 @@ class TheApiDeclareTest(unittest.TestCase):
         point_the_at(self, where)
 
     def test_the_ticket_says_which_version_of_the_interface_it_reads(self):
-        """单上按处理者记着接口那一版：actor、critic、assistant 各自一条，就是规范说的那一版。"""
+        """单上按处理者记着接口那一版：actor、tech_critic、mgmt_critic、assistant 各自一条，就是规范说的那一版。"""
         ticket = a_session(self.meeting).issue("write_a_draft")
         said = ticket.handler_name2api_declare_repo_commit_id
         self.assertEqual(self.workflow.declares(), said)
-        self.assertEqual({"actor", "critic", "assistant"}, set(said))
+        self.assertEqual({"actor", "tech_critic", "mgmt_critic", "assistant"}, set(said))
         self.assertEqual(self.workflow.declare_commit, said["actor"])
         self.assertRegex(said["actor"], r"^[0-9a-f]{40}$")
         back = read_ticket(self.meeting, ticket.uid)
@@ -232,7 +235,7 @@ class TheApiDeclareTest(unittest.TestCase):
             "  <- $code ($module_path str * $func_name str)\n"
             "  <- { 拿 $code 那份代码做静态检查 }\n", encoding="utf-8")
         own = load_workflow(norm)
-        self.assertEqual({"actor", "critic", "assistant"}, set(own.declares()))
+        self.assertEqual({"actor", "tech_critic", "mgmt_critic", "assistant"}, set(own.declares()))
         self.assertIn("static_code_api", own.apis())
         ticket = Session(self.meeting, CASE, workflow=own).issue("write_a_draft")
         self.assertEqual(own.declares(), ticket.handler_name2api_declare_repo_commit_id)
@@ -265,8 +268,8 @@ class TheApiDeclareTest(unittest.TestCase):
         self.assertEqual(git(ours, "rev-parse", "HEAD"), load_workflow(norm).declare_commit)
 
         # 程序这一份底下有没提交的改动：也不行
-        (ours / "rb_api" / "critic_api.viba").write_text(
-            (ours / "rb_api" / "critic_api.viba").read_text(encoding="utf-8") + "# 还没提交\n",
+        (ours / "rb_api" / "tech_critic_api.viba").write_text(
+            (ours / "rb_api" / "tech_critic_api.viba").read_text(encoding="utf-8") + "# 还没提交\n",
             encoding="utf-8")
         with self.assertRaises(ValueError):
             load_workflow(norm)
@@ -341,7 +344,7 @@ class TheProgressTest(unittest.TestCase):
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
         handlers = the_handlers(self.meeting, self.workflow)
         handlers[0].tick()                       # assistant：不是它的事
-        handlers[2].tick()                       # actor：做完了
+        handlers[3].tick()                       # actor：做完了
         where = progress_root(self.meeting) / "write_a_draft-quicksort"
         names = sorted(one.name for one in where.glob("*.viba"))
         self.assertEqual(2, len(names))
@@ -357,16 +360,16 @@ class TheProgressTest(unittest.TestCase):
         handlers = the_handlers(self.meeting, self.workflow)
         uid = "write_a_draft-quicksort"
         stopped = handlers[0].attempt(read_ticket(self.meeting, uid))
-        handlers[2].tick()                       # actor 把它做完了
+        handlers[3].tick()                       # actor 把它做完了
         # 做完之后才落下来的那一篇停下的（两个人同时在跑时躲不掉的那一下）
-        write_stage(self.meeting, a_stage(uid, "critic", stopped.result))
+        write_stage(self.meeting, a_stage(uid, "tech_critic", stopped.result))
         stages = read_stages(self.meeting, uid)
         self.assertEqual(3, len(stages))
         self.assertFalse(stages[0].answered())
         self.assertTrue(stages[1].answered())
         self.assertFalse(stages[2].answered())
         self.assertTrue(answered(self.meeting, uid))     # 那一条 `$ok` 顶不掉
-        self.assertEqual("critic", the_state(self.meeting)[0]["last_who"])
+        self.assertEqual("tech_critic", the_state(self.meeting)[0]["last_who"])
         self.assertIn("不是它的事", the_state(self.meeting)[0]["last_stop"])
 
     def test_an_attempt_says_which_step_was_not_its_business(self):
@@ -408,11 +411,12 @@ class ThePlanTest(unittest.TestCase):
         """前一张做完，后一张才该发（次序不是写死的，是读出来的）。"""
         session = a_session(self.meeting)
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
-        session.run(the_handlers(self.meeting, self.workflow), out=lambda _line: None)
-        # 五张单都发过、都做完，没有下一张
-        self.assertEqual(["close_the_meeting-quicksort", "judge_the_draft-quicksort",
-                          "judge_the_revision-quicksort", "revise_the_draft-quicksort",
-                          "write_a_draft-quicksort"], ticket_uids(self.meeting))
+        session.run(the_handlers(self.meeting, self.workflow), out=lambda _who, _line: None)
+        # 六张单都发过，没有下一张
+        self.assertEqual(["check_the_flow-quicksort", "close_the_meeting-quicksort",
+                          "judge_the_draft-quicksort", "judge_the_revision-quicksort",
+                          "revise_the_draft-quicksort", "write_a_draft-quicksort"],
+                         ticket_uids(self.meeting))
         self.assertIsNone(next_ticket(self.workflow, session.values))
 
     def test_a_ticket_already_issued_is_found_by_its_name(self):
@@ -430,9 +434,9 @@ class ThePlanTest(unittest.TestCase):
         handlers = the_handlers(self.meeting, self.workflow)
         session.stated_task(WORDS, handlers[0])
         first = []
-        session.run([handlers[0]], out=first.append)
+        session.run([handlers[0]], out=lambda _who, line: first.append(line))
         again = []
-        session.run([handlers[0]], out=again.append)
+        session.run([handlers[0]], out=lambda _who, line: again.append(line))
         self.assertEqual(1, len([one for one in first if "发了一张单" in one]))
         self.assertEqual([], [one for one in again if "发了一张单" in one])
 
@@ -496,7 +500,7 @@ class WhatTheLawSaysAboutWhenATicketIsDueTest(unittest.TestCase):
         self.a_law_that_says("close_the_meeting", '__impl__ = false\n')
         workflow = self.a_workflow()
         session = self.a_ready_case()
-        outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _line: None)
+        outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _who, _line: None)
         self.assertEqual(STUCK, outcome.outcome)
         self.assertIn("close_the_meeting", outcome.failure)
         self.assertIn("还不是它的时候", outcome.failure)
@@ -528,7 +532,7 @@ class WhatTheLawSaysAboutWhenATicketIsDueTest(unittest.TestCase):
         self.a_law_that_says("write_a_draft", '__impl__ = "还没到点"\n')
         workflow = self.a_workflow()
         session = self.a_ready_case()
-        outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _line: None)
+        outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _who, _line: None)
         self.assertEqual(STUCK, outcome.outcome)
         self.assertIn("还没到点", outcome.failure)
 
@@ -571,7 +575,7 @@ class ThePassesOfAMeetingTest(unittest.TestCase):
 
 
 class AWholeMeetingTest(unittest.TestCase):
-    """一场会：一句话进来，五张单一路走到 ok。"""
+    """一场会：一句话进来，六张单一路走到 ok。"""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -583,7 +587,7 @@ class AWholeMeetingTest(unittest.TestCase):
         session = a_session(self.meeting)
         handlers = the_handlers(self.meeting, self.workflow)
         session.stated_task(words, handlers[0])
-        return session.run(handlers, out=lambda _line: None)
+        return session.run(handlers, out=lambda _who, _line: None)
 
     def test_the_assistant_issues_a_ticket_for_the_human_message(self):
         """消息先到 assistant：它把话放进案子，接着单真的写在会议目录下面。"""
@@ -597,11 +601,11 @@ class AWholeMeetingTest(unittest.TestCase):
         self.assertEqual([], list(progress_root(self.meeting).glob("*")))
 
     def test_a_whole_meeting_ends_ok(self):
-        """五张单一张一张发、一张一张接：到 `ok`，每一张的进度里都有一条 `$ok`。"""
+        """六张单一张一张发、一张一张接：到 `ok`，每一张的进度里都有一条 `$ok`。"""
         outcome = self.a_run()
         self.assertEqual(OK, outcome.outcome)
         state = the_state(self.meeting)
-        self.assertEqual(5, len(state))
+        self.assertEqual(6, len(state))
         self.assertTrue(all(one["answered"] for one in state))
         # 每一次尝试都落在会议目录下的 ticket_progress 里
         self.assertTrue(all((progress_root(self.meeting) / one["ticket"]).is_dir()
@@ -624,8 +628,48 @@ class AWholeMeetingTest(unittest.TestCase):
         self.assertIn(f"- 人类说了一句：{WORDS}", record)
         self.assertIn("- 发了一张单 write_a_draft-quicksort", record)
         self.assertIn("- actor（actor）答了 drafted + do_step", record)
-        self.assertIn("- critic（critic）答了 judged + judge", record)
+        self.assertIn("- tech_critic（tech_critic）答了 judged + judge", record)
+        self.assertIn("- mgmt_critic（mgmt_critic）答了 flow + check", record)
         self.assertIn("- assistant（assistant）答了 closing + closing_note", record)
+
+    def test_every_line_handed_out_says_who_said_it(self):
+        """接单那一侧交出来的每一句都带着说话的人：发单是 assistant，判案是 tech_critic 与
+        mgmt_critic，做活是 actor。
+
+        会议那一侧照这一份把话记在那个成员名下（`web.py`），所以少了名字就少一个人说话。
+        """
+        session = a_session(self.meeting)
+        handlers = the_handlers(self.meeting, self.workflow)
+        session.stated_task(WORDS, handlers[0])
+        said = []
+        outcome = session.run(handlers, out=lambda who, line: said.append((who, line)))
+        self.assertEqual(OK, outcome.outcome)
+        self.assertIn(("assistant", "发了一张单：write_a_draft-quicksort"), said)
+        self.assertIn(("assistant", "发了一张单：judge_the_draft-quicksort"), said)
+        self.assertIn(("actor", "答了 drafted + do_step"), said)
+        self.assertIn(("tech_critic", "答了 judged + judge"), said)
+        self.assertIn(("mgmt_critic", "答了 flow + check"), said)
+        # 一张单交到别人手上（"这一步不是它的事"）不是谁说的话：记录里有，说话这一路没有
+        self.assertFalse([one for one in said if "不是它的事" in one[1]])
+
+    def test_a_failed_judgement_does_not_close_the_meeting(self):
+        """判下来不合格：收尾那一张发不出去（规范里 `due/close_the_meeting.viba` 说的），别说完事了。
+
+        不改那一处的话，六张单照发，assistant 会对着一个不合格的活说"这场会做完了"。
+        """
+        too_many = ("def quick_sort(items, key=None, reverse=False, bounds=(0, None), extra=1):\n"
+                    "    return items\n")
+        session = a_session(self.meeting)
+        handlers = the_handlers(self.meeting, self.workflow)
+        handlers[3].caps.update(actor_caps(lambda _prompt: too_many))
+        session.stated_task(WORDS, handlers[0])
+        outcome = session.run(handlers, out=lambda _who, _line: None)
+        self.assertEqual(STUCK, outcome.outcome)
+        self.assertIn("close_the_meeting", outcome.failure)
+        self.assertIn("还不是它的时候", outcome.failure)
+        values = Store(case_root(self.meeting, CASE))
+        self.assertFalse(values.value("judged_revision", "judge"))        # 改完那一版也不合格
+        self.assertFalse(values.answered("closing", "closing_note"))      # 没有说完事
 
     def test_a_second_attempt_replays_the_first_answers(self):
         """同一张单再试一次：案子里已有值的那几步回放，不重做（写只做了一次）。"""
@@ -637,12 +681,12 @@ class AWholeMeetingTest(unittest.TestCase):
 
         session = a_session(self.meeting)
         handlers = the_handlers(self.meeting, self.workflow)
-        handlers[2].caps.update(actor_caps(counting))
+        handlers[3].caps.update(actor_caps(counting))
         session.stated_task(WORDS, handlers[0])
-        session.run(handlers, out=lambda _line: None)
+        session.run(handlers, out=lambda _who, _line: None)
         self.assertEqual(1, len(writes))              # 它说合格，没有第二版要改
         # 同一张单再跑一遍：案子里已有值的那几步回放，写那一步不再做
-        again = handlers[2].attempt(read_ticket(self.meeting, "write_a_draft-quicksort"))
+        again = handlers[3].attempt(read_ticket(self.meeting, "write_a_draft-quicksort"))
         self.assertTrue(again.answered())
         self.assertEqual(1, len(writes))
 
@@ -651,7 +695,7 @@ class AWholeMeetingTest(unittest.TestCase):
         session = a_session(self.meeting)
         assistant = assistant_handler(self.meeting, self.workflow)
         session.stated_task(WORDS, assistant)
-        outcome = session.run([assistant], out=lambda _line: None)
+        outcome = session.run([assistant], out=lambda _who, _line: None)
         self.assertEqual(STUCK, outcome.outcome)
         self.assertIn("write_a_draft-quicksort", outcome.failure)
         self.assertFalse(answered(self.meeting, "write_a_draft-quicksort"))
@@ -670,9 +714,9 @@ class AWholeMeetingTest(unittest.TestCase):
             raise RuntimeError("验收条件跑不起来：没有 args.env")
 
         handlers[1].caps["judge"] = broke
-        outcome = session.run(handlers, out=lambda _line: None)
+        outcome = session.run(handlers, out=lambda _who, _line: None)
         self.assertEqual(BROKEN, outcome.outcome)
-        self.assertIn("critic", outcome.failure)
+        self.assertIn("tech_critic", outcome.failure)
         self.assertIn("judge_the_draft-quicksort", outcome.failure)
         self.assertIn("没有 args.env", outcome.failure)
 
@@ -684,8 +728,8 @@ class AWholeMeetingTest(unittest.TestCase):
         session.issue("write_a_draft")                                    # 发了一张，还没人试过
         self.assertTrue(worth_another_round(self.meeting, tries=3))
         for _round in range(3):
-            # 只有 assistant 和 critic：谁都不会 actor 那一步，轮着说同一句话
-            session.run(handlers[:2], out=lambda _line: None)
+            # 只有 assistant 和 tech_critic：谁都不会 actor 那一步，轮着说同一句话
+            session.run(handlers[:2], out=lambda _who, _line: None)
         self.assertFalse(worth_another_round(self.meeting, tries=3))
 
     def test_each_pass_gets_its_own_case_counted_from_disk(self):
@@ -713,13 +757,13 @@ class AWholeMeetingTest(unittest.TestCase):
         session = a_session(self.meeting)
         handlers = the_handlers(self.meeting, self.workflow)
         session.stated_task(WORDS, handlers[0])
-        session.run([handlers[0]], out=lambda _line: None)                 # 没人接：不是它的事
+        session.run([handlers[0]], out=lambda _who, _line: None)                 # 没人接：不是它的事
 
         def broke(_env, *_given):
             raise RuntimeError("这一轮断了")
 
-        handlers[2].caps["do_step"] = broke
-        session.run(handlers, out=lambda _line: None)                      # actor 那一步没跑起来
+        handlers[3].caps["do_step"] = broke
+        session.run(handlers, out=lambda _who, _line: None)                      # actor 那一步没跑起来
         self.assertTrue(worth_another_round(self.meeting, tries=2))
 
     def test_an_unfinished_meeting_says_where_it_stopped(self):
@@ -727,7 +771,7 @@ class AWholeMeetingTest(unittest.TestCase):
         session = a_session(self.meeting)
         assistant = assistant_handler(self.meeting, self.workflow)
         session.stated_task(WORDS, assistant, "quicksort.py")
-        session.run([assistant], out=lambda _line: None)
+        session.run([assistant], out=lambda _who, _line: None)
         self.assertEqual((CASE, WORDS, "quicksort.py"), open_work(self.meeting))
 
 
@@ -777,12 +821,15 @@ class TheMembersTest(unittest.TestCase):
         shutil.copytree(norm_home(), self.norm)
         self.workflow = load_workflow(self.norm)
 
-    def test_the_table_the_norm_ships_names_three_members(self):
-        """规范自己那张表：actor（会议里那个 agent）、critic、assistant。"""
+    def test_the_table_the_norm_ships_names_four_members(self):
+        """规范自己那张表：actor（会议里那个 agent）、tech_critic、mgmt_critic、assistant。"""
         rows = members_of(self.workflow)
-        self.assertEqual(["actor", "critic", "assistant"], [one.name for one in rows])
-        self.assertEqual(["agent", "critic", "assistant"], [one.kind for one in rows])
-        self.assertEqual(["actor", "critic", "assistant"], [one.role for one in rows])
+        self.assertEqual(["actor", "tech_critic", "mgmt_critic", "assistant"],
+                         [one.name for one in rows])
+        self.assertEqual(["agent", "tech_critic", "mgmt_critic", "assistant"],
+                         [one.kind for one in rows])
+        self.assertEqual(["actor", "tech_critic", "mgmt_critic", "assistant"],
+                         [one.role for one in rows])
 
     def test_a_row_that_says_nothing_about_where_to_find_it_is_refused(self):
         """表项写得不成话：当场说清楚，不留到跑的时候才发现没人接单。"""
@@ -818,10 +865,13 @@ class TheMembersTest(unittest.TestCase):
 
     def test_a_table_without_an_assistant_still_has_one(self):
         """表里没写 assistant 也有它一个：人类那句话总得有人收、单总得有人发。"""
-        rows = [row_of("actor actor_api agent"), row_of("critic critic_api critic")]
+        rows = [row_of("actor actor_api agent"),
+                row_of("tech_critic tech_critic_api tech_critic"),
+                row_of("mgmt_critic mgmt_critic_api mgmt_critic")]
         members = members_for(rows, workflow=self.workflow, meeting_dir=self.root / "meeting",
                               case=CASE, agent_caps=actor_caps(a_writer))
-        self.assertEqual(["actor", "critic", "assistant"], [one.role for one in members])
+        self.assertEqual(["actor", "tech_critic", "mgmt_critic", "assistant"],
+                         [one.role for one in members])
 
     def test_a_process_member_answers_its_own_way(self):
         """一个成员是另一个进程：宿主把它跑一遍，它自己接单、自己写进度。"""
@@ -944,7 +994,7 @@ UNDER = '''under_judgment =
 class WhatACriticCanReadInALawTest(unittest.TestCase):
     """判一份法要用的那几个算子：单上交过来的那一份、读目录、读程序、算名字。
 
-    一份法要判的不是代码而是一整份规范（受理、组织、流程、验收四个部分），所以 critic 那一边多几个
+    一份法要判的不是代码而是一整份规范（受理、组织、流程、验收四个部分），所以 tech_critic 那一边多几个
     算子：`under_judgment` 是单上交过来的那一份，`files_missing` 数缺哪几条，两个 `every_...` 把它
     底下的程序逐份看一遍。
     """
@@ -1019,7 +1069,9 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
                 "__impl__ = true\n", encoding="utf-8")
         return where
 
-    TABLE = ("actor actor_api agent\ncritic critic_api critic\n"
+    TABLE = ("actor actor_api agent\n"
+             "tech_critic tech_critic_api tech_critic\n"
+             "mgmt_critic mgmt_critic_api mgmt_critic\n"
              "assistant assistant_api assistant\n")
     LOADS = ("what_stops_this_norm =\n    str\n  <- $env Env\n  <- $root str\n\n")
     INTAKE = ("why_the_intake_says_nothing =\n    str\n  <- $env Env\n  <- $root str\n"
@@ -1150,7 +1202,7 @@ class WhatACriticCanReadInALawTest(unittest.TestCase):
         self.assertIn("这份里一段 viba 都没有", said)
 
     def test_a_condition_may_answer_the_reason_it_failed(self):
-        """验收条件答一句话就是"没过，原因是这句"：critic 拿它当不合格的理由。"""
+        """验收条件答一句话就是"没过，原因是这句"：tech_critic 拿它当不合格的理由。"""
         from tickets.critic import _verdict
 
         self.assertEqual((True, ""), _verdict(self.a_condition_answer(""), "one"))
@@ -1601,3 +1653,44 @@ class TheHandlerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheFlowVerdictTest(unittest.TestCase):
+    """流程那一关判下来的是什么：`(过了没有, 哪里不完整)`；还没判过就是 None。
+
+    取它的人拿它当自己的结论（`rb cli` 的退出码就是它），所以读法在这儿钉死：答 true 的那一趟是
+    `(True, "")`，答 false 的那一趟带着它点出的问题，一次都没判过的会议是 `None`（不是 False——
+    "没判过"和"判下来没过"是两回事）。
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.meeting = Path(self.temporary.name) / "meeting"
+        self.workflow = a_workflow()
+
+    def a_verdict(self, passed: bool, problems: str = "") -> None:
+        values = Store(case_root(self.meeting, CASE), record_path(self.meeting))
+        values.write("flow", "check", passed)
+        values.write("flow", "objection", problems)
+
+    def test_nothing_judged_yet(self):
+        self.assertIsNone(the_flow_verdict(self.meeting))
+
+    def test_a_flow_that_passed(self):
+        self.a_verdict(True)
+        self.assertEqual((True, ""), the_flow_verdict(self.meeting))
+
+    def test_a_flow_that_did_not_pass_keeps_the_problems(self):
+        self.a_verdict(False, "要交的东西不在工作区里：quicksort.py")
+        passed, problems = the_flow_verdict(self.meeting)
+        self.assertFalse(passed)
+        self.assertEqual("要交的东西不在工作区里：quicksort.py", problems)
+
+    def test_the_newest_case_speaks(self):
+        """一个案子一趟；取的是最新那一趟判下来的那一次。"""
+        self.a_verdict(False, "第一趟没过")
+        later = Store(case_root(self.meeting, f"{CASE}-2"), record_path(self.meeting))
+        later.write("flow", "check", True)
+        later.write("flow", "objection", "")
+        self.assertEqual((True, ""), the_flow_verdict(self.meeting))

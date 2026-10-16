@@ -146,15 +146,31 @@ def _read_or(env, address):
         return address
 
 
-def writer_from(spec: str) -> Callable[[str], str]:
-    """`模块:函数` 里的那个 `do(prompt) -> 成果`。"""
+def writer_from(spec: str, workspace=None) -> Callable[[str], str]:
+    """`模块:函数` 里的那个 `do(prompt) -> 成果`。
+
+    那个函数也可以写成 `do(prompt, workspace)`：给它工作区，它就能像真 actor 一样把东西落成文件
+    （工单要交的往往是一个文件，不只是一段文字）。给了 `workspace`、而那个函数只收一个实参的，
+    就照只收一个那么调。
+    """
     import importlib
+    import inspect
 
     module_name, _, attribute = spec.partition(":")
     if not module_name or not attribute:
         raise SystemExit(f"--doer 要写成 模块:函数，收到的是 {spec!r}")
     module = importlib.import_module(module_name)
-    return getattr(module, attribute)
+    writer = getattr(module, attribute)
+    if workspace is None:
+        return writer
+    try:
+        wanted = len([one for one in inspect.signature(writer).parameters.values()
+                      if one.kind in (one.POSITIONAL_ONLY, one.POSITIONAL_OR_KEYWORD)])
+    except (TypeError, ValueError):
+        return writer
+    if wanted < 2:
+        return writer
+    return lambda prompt: writer(prompt, workspace)
 
 
 def scripted_handler(meeting_dir, workflow, spec: str, *, name: str = "actor") -> Handler:

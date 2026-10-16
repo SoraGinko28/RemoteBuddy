@@ -1,4 +1,4 @@
-"""接口那几个声明：actor、critic、assistant 会哪些算子，写在另一个仓库里。
+"""接口那几个声明：actor、tech_critic、mgmt_critic、assistant 会哪些算子，写在另一个仓库里。
 
 那一份接口两边都要：规范里工单和规则 `import` 它，程序把它实现出来。所以它既不放在规范那个仓库里，
 也不放在程序这个仓库里，单独一个仓库（`RbApiDeclare`），**两边都以 submodule 依赖它**：

@@ -68,6 +68,8 @@ _EXPORTS = {
     "assistant_handler": "assistant",
     "critic_caps": "critic",
     "critic_handler": "critic",
+    "mgmt_critic_caps": "mgmt_critic",
+    "mgmt_critic_handler": "mgmt_critic",
     "AgentChannel": "channel",
 }
 

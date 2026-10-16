@@ -104,8 +104,11 @@ def the_assistant(handlers: Sequence[Handler], issuer: Optional[Handler] = None)
 def run_for_meeting(meeting_dir, *, case: str, words: str, workflow,
                     handlers: Sequence[Handler], issuer: Optional[Handler] = None,
                     target: str = "", max_rounds: int = 64, record=None,
-                    out: Optional[Callable[[str], None]] = None) -> Outcome:
-    """一条人类的消息进来，在这个会议目录里跑一趟（`target` 是这一趟要交的那个名字）。"""
+                    out: Optional[Callable[[str, str], None]] = None) -> Outcome:
+    """一条人类的消息进来，在这个会议目录里跑一趟（`target` 是这一趟要交的那个名字）。
+
+    `out(谁, 说了什么)` 给一行一行看的人（见 `session.Session.run`）。
+    """
     handlers = list(handlers)
     session = Session(meeting_dir, case, workflow=workflow, record=record)
     session.stated_task(words, the_assistant(handlers, issuer), target)

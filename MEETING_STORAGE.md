@@ -64,7 +64,7 @@ ContentReference 单键信封：
 ```json
 {
   "meeting_uid": "...", "meeting_name": "...",
-  "agent_name2role": {"alice": "$actor", "bob": "$critic"},
+  "agent_name2role": {"alice": "$actor", "bob": "$tech_critic"},
   "sorted_stream_chunks": [ {chunk json}, ... ]
 }
 ```

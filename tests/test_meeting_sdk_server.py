@@ -113,7 +113,7 @@ def prepare_meeting_data_as_ctx():
         meeting_uid="m1",
         meeting_name="case",
         agent_name2role={_ALICE: adt.AgentRole.ACTOR,
-                         _BOB: adt.AgentRole.CRITIC},
+                         _BOB: adt.AgentRole.TECH_CRITIC},
         sorted_stream_chunks=[screens, chats, later_chat, controls_chunk],
         file_kv_store=store,
         file_desktop=desktop,
@@ -381,7 +381,8 @@ def test_case_participants(ctx, sdk, reflect):
 def test_case_roles(ctx, sdk, reflect):
     roster = _ok_node(sdk.roles(ctx), reflect).data
     assert _node(roster["alice"], "AgentRole", reflect).has_actor() is True
-    assert _node(roster["bob"], "AgentRole", reflect).has_critic() is True
+    assert _node(roster["bob"], "AgentRole", reflect).has_tech_critic() is True
+    assert _node(roster["bob"], "AgentRole", reflect).has_mgmt_critic() is False
 
 
 def test_case_owner_at_reads_the_control_intervals(ctx, sdk, reflect):

@@ -232,7 +232,7 @@ def test_the_make_group_is_local_and_identical() -> None:
 
 
 def test_the_contract_is_the_same_30() -> None:
-    """screen_times arrived for the critic: it needs the screen stream's
+    """screen_times arrived for the judge: it needs the screen stream's
     moments, not just the first one."""
     assert remote.__all__ == server.__all__
     assert len(remote.__all__) == 30

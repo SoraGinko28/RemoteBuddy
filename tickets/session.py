@@ -130,18 +130,21 @@ class Session:
     # ------------------------------------------------------------------
 
     def run(self, handlers: Sequence[Handler], max_rounds: int = 64,
-            out: Optional[Callable[[str], None]] = None) -> Outcome:
+            out: Optional[Callable[[str, str], None]] = None) -> Outcome:
         """一轮一轮：发单、接单，直到每一张单都做完、也没有该发的下一张。
 
-        `out` 给一行一行看的人：每接一手一行，最后结局一行。
+        `out` 给一行一行看的人：**谁说了什么**，一行一次（`out(谁, 那句话)`）。发单那句记在派单的
+        那一个名下（表里那个 assistant）；接单那几句记在接单的那个人名下。谁拿它去干什么（写进
+        对话、印在终端上、什么都不做）是接单那一侧的事。
         """
         handlers = list(handlers)
+        issuer = _the_issuer(handlers)
         stages: List[Tuple[str, Stage]] = []
         for index in range(1, max_rounds + 1):
             due = self.due()
             if due is not None and self.ticket_of(due) is None:
                 ticket = self.issue(due)
-                _say(out, f"- 发了一张单：{ticket.uid}")
+                _say(out, issuer, f"发了一张单：{ticket.uid}")
             issued = bool(plan.issued(self.meeting_dir))
             before = set(self.values.stored())
             written: List[Tuple[str, Stage]] = []
@@ -149,14 +152,19 @@ class Session:
             for handler in handlers:
                 for stage in handler.tick():
                     written.append((handler.name, stage))
-                    _say(out, handler.line(stage))
+                    _say(out, handler.name, handler.said(stage))
                     broken_line = _broke(handler, stage)
                     if broken_line:
                         broken = broken_line
                 for module_path, func_name in getattr(handler, "did", ()):
-                    line = handler.answered_line(module_path, func_name)
+                    # 判完那一步留下的判语跟着这一句一起记：谁答了哪一步、为什么这么答，
+                    # 一句话里都看得见（页面读的就是这份记录）。
+                    from .critic import the_reason
+
+                    said = the_reason(self.values, module_path, func_name)
+                    line = handler.answered_line(module_path, func_name, said)
                     self.values.record(line)
-                    _say(out, line)
+                    _say(out, handler.name, handler.answered_said(module_path, func_name, said))
             stages.extend(written)
             if broken:
                 return Outcome(BROKEN, index, case=self.case, stages=stages, failure=broken)
@@ -314,9 +322,21 @@ def open_work(meeting_dir) -> Optional[Tuple[str, str, str]]:
             str(target) if target is not None else "")
 
 
-def _say(out: Optional[Callable[[str], None]], line: str) -> None:
-    if out is not None:
-        out(line)
+def _the_issuer(handlers: Sequence[Handler]) -> str:
+    """这一趟派单的那一个叫什么（表里那个 assistant）；没有就是空串。
+
+    发单是 assistant 的事（`issue.py`），所以"发了一张单"这句话记在它名下。
+    """
+    for one in handlers:
+        if getattr(one, "role", "") == "assistant":
+            return one.name
+    return ""
+
+
+def _say(out: Optional[Callable[[str, str], None]], who: str, line: str) -> None:
+    """一个成员说了什么，交给看的人；没话可说就不说。"""
+    if out is not None and line:
+        out(who, line)
 
 
 __all__ = ["Session", "Outcome", "open_work", "worth_another_round", "the_norm_of",

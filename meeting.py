@@ -47,7 +47,7 @@ VALID_OWNERS = {"agent", "human", "none"}
 # and never appears as an agent name. A meeting always has exactly one
 # actor agent that owns the shared terminal (multi-agent slices keep
 # this invariant; additional agents join as reviewers).
-VALID_AGENT_ROLES = {"actor", "assistant", "critic"}
+VALID_AGENT_ROLES = {"actor", "assistant", "tech_critic", "mgmt_critic"}
 HUMAN_USER = "human"
 
 
@@ -88,17 +88,21 @@ def fill_terminal_control_lines(events: List[Dict[str, Any]]) -> None:
         previous = owner
 # New meetings default their single actor to this readable name.
 DEFAULT_AGENT_NAME = "actor"
-# A new meeting already has its reviewer on the member list. The reviewer is
-# lazy (it only runs when someone @-mentions it) and can never own the shared
-# terminal, so the second participant costs nothing until it is asked for.
-DEFAULT_REVIEWER_NAME = "critic"
+# A new meeting already has its two judges on the member list. Both are lazy (they
+# only run when someone @-mentions them or a work order calls them) and can never
+# own the shared terminal, so neither costs anything until it is asked for.
+#   tech_critic  judges the work: whether the code that was delivered is acceptable
+#   mgmt_critic  judges the process: whether the work was done and the flow is complete
+DEFAULT_TECH_CRITIC_NAME = "tech_critic"
+DEFAULT_MGMT_CRITIC_NAME = "mgmt_critic"
 # The assistant is the human's delegate: it never acts on the terminal and never
-# judges the work, it looks while the actor works and decides whether the critic
-# should be woken. One assistant per meeting.
+# judges the work, it looks while the actor works and decides who should be asked.
+# One assistant per meeting.
 DEFAULT_ASSISTANT_NAME = "assistant"
 DEFAULT_AGENT_ROLE_MAP = {
     DEFAULT_AGENT_NAME: "actor",
-    DEFAULT_REVIEWER_NAME: "critic",
+    DEFAULT_TECH_CRITIC_NAME: "tech_critic",
+    DEFAULT_MGMT_CRITIC_NAME: "mgmt_critic",
     DEFAULT_ASSISTANT_NAME: "assistant",
 }
 # Pre-identity manifests recorded the lone agent as "agent"; loading them
@@ -153,8 +157,9 @@ def normalize_agent_role_map(
     - values must be a member of VALID_AGENT_ROLES;
     - a meeting keeps at least one ``actor`` (the shared-terminal owner).
     An empty/None map falls back to the default team: the ``actor`` actor
-    plus the lazy ``critic`` reviewer. Pre-identity manifests never reach this
-    path — the loader pins them to the legacy single agent ``agent``.
+    plus the two lazy judges (``tech_critic``, ``mgmt_critic``). Pre-identity
+    manifests never reach this path — the loader pins them to the legacy single
+    agent ``agent``.
     """
     if not role_map:
         return dict(DEFAULT_AGENT_ROLE_MAP)

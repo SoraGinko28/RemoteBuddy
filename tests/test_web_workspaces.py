@@ -70,7 +70,7 @@ class WorkspaceWebServiceTest(unittest.TestCase):
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
             tickets_caps_factory=lambda _store, meeting_id, _target: scripted_actor(
-                self.service, meeting_id),
+                self.service, meeting_id, _target),
         )
 
     def tearDown(self):
@@ -125,7 +125,7 @@ class WorkspaceWebServiceTest(unittest.TestCase):
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
             tickets_caps_factory=lambda _store, meeting_id, _target: scripted_actor(
-                self.service, meeting_id),
+                self.service, meeting_id, _target),
         )
         listing = restarted.list_meetings()
         self.assertEqual([], listing["warnings"])
@@ -182,7 +182,7 @@ class WorkspaceWebServiceTest(unittest.TestCase):
             client_factory=lambda _config: FakeClient(),
             transport_factory=lambda _binary: self.transport,
             tickets_caps_factory=lambda _store, meeting_id, _target: scripted_actor(
-                self.service, meeting_id),
+                self.service, meeting_id, _target),
         )
         self.assertIn(str(self.other.resolve()), restarted.list_meetings()["workspaces"])
 

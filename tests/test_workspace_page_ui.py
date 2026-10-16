@@ -984,5 +984,29 @@ class TerminalTakeoverTest(_PageTestCase):
         self.assertTrue(result["tailRight"] <= result["boxRight"] + 1, result)
 
 
+class EveryMemberInTheConversationTest(_PageTestCase):
+    """对话那一栏画的是这场会里每个人说的话：actor、tech_critic、mgmt_critic、assistant 各是一句，
+    各自署名。"""
+
+    def test_the_members_lines_are_drawn_under_their_own_names(self):
+        store = self._store()
+        for who, line in (("assistant", "发了一张单：judge_the_draft-fib"),
+                          ("actor", "答了 drafted + do_step"),
+                          ("tech_critic", "答了 judged + judge：quicksort.py 的圈复杂度是 8，上限 5"),
+                          ("mgmt_critic", "答了 flow + check")):
+            store.append_chat(who, line, "progress")
+        self.page.wait_for(
+            "document.body.innerText.includes('圈复杂度是 8')", 20,
+            what="tech_critic 说的那句话画在页面上")
+        body = self.page.js("document.body.innerText")
+        self.assertIn("发了一张单：judge_the_draft-fib", body)
+        self.assertIn("答了 drafted + do_step", body)
+        speakers = self.page.js(
+            "[...document.querySelectorAll('#chat-list .message-head strong')]"
+            ".map(one => one.textContent)")
+        for who in ("assistant", "actor", "tech_critic", "mgmt_critic"):
+            self.assertIn(who, speakers)
+
+
 if __name__ == "__main__":
     unittest.main()
