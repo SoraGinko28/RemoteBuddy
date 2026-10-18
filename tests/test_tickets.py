@@ -3,7 +3,7 @@
 这里验的是几件真东西：工单就是那次调用本身（`__dyn_call__ << "<整名>"`，环境留空）、进度一次尝试
 一个文件且"有 `$ok` 就算做完"只增不退、该发哪一张是读案子里的值算出来的、assistant 收下人类那句话
 之后单真的落在 `<会议目录>/tickets/<工单号>/ticket.viba`、值落在 `<会议目录>/store/<案子>/` 下、
-一场会六张单一路走到 `ok`。跑的是真解释器、真文件、真进程。
+一场会一张单（`do_the_work`）一路走到 `ok`。跑的是真解释器、真文件、真进程。
 """
 
 from __future__ import annotations
@@ -76,6 +76,78 @@ def the_handlers(meeting, workflow):
                     programs=workflow.tickets())]
 
 
+class APoisonedNormTest(unittest.TestCase):
+    """毒规范：干活的和判代码的都换成替身（`tickets/dummy.py`）。流程那一关要看得出来。
+
+    这一份规范是仓库里的用例文件（`tests/data/poison_norm/`），不是把默认规范改两行拼出来的。
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.work = self.root / "work"
+        self.work.mkdir()
+
+    def a_norm(self, name: str, actor: str = "dummy_actor",
+               tech_critic: str = "dummy_tech_critic") -> Path:
+        where = self.root / name
+        shutil.copytree(Path(__file__).resolve().parent / "data" / "poison_norm", where)
+        members = where / "rb_norm" / "members"
+        members.write_text(members.read_text(encoding="utf-8")
+                           .replace("actor actor_api dummy_actor", f"actor actor_api {actor}")
+                           .replace("tech_critic tech_critic_api dummy_tech_critic",
+                                    f"tech_critic tech_critic_api {tech_critic}"),
+                           encoding="utf-8")
+        return where / "rb_norm"
+
+    def a_run(self, norm: Path):
+        workflow = load_workflow(norm)
+        meeting = self.root / "meeting"
+        rows = members_of(workflow)
+
+        def writing(_prompt):
+            (self.work / "quicksort.py").write_text(CODE, encoding="utf-8")
+            return CODE
+
+        agent = (actor_caps(writing) if any(one.kind == "agent" for one in rows) else None)
+        members = members_for(rows, workflow=workflow, meeting_dir=meeting,
+                              case=CASE, cwd=self.work, agent_caps=agent)
+        assistant = next(one for one in members if one.role == "assistant")
+        session = Session(meeting, CASE, workflow=workflow)
+        session.stated_task(WORDS, assistant, "quicksort.py")
+        outcome = session.run(members, out=lambda _who, _line: None)
+        return meeting, outcome
+
+    def test_the_process_check_catches_the_stand_ins(self):
+        """替身答了一路"合格"、工作区里什么都没有：流程那一关两样都点出来，收尾那句话说不出口。"""
+        meeting, outcome = self.a_run(self.a_norm("poison"))
+        self.assertEqual(BROKEN, outcome.outcome)
+        self.assertIn("这一场还没走完", outcome.failure)
+        values = Store(case_root(meeting, CASE), record_path(meeting))
+        passed, answered = values.read("flow", "check")
+        self.assertTrue(answered)
+        self.assertFalse(passed)                                  # 流程那一关没过
+        problems = str(values.value("flow", "objection"))
+        self.assertIn("judged 判过了，却没留下判的是哪一份", problems)
+        self.assertIn("judged_revision 判过了，却没留下判的是哪一份", problems)
+        self.assertIn("要交的东西不在工作区里：quicksort.py", problems)
+        self.assertFalse(values.answered("closing", "closing_note"))   # 没有说完事
+
+    def test_the_same_program_without_stand_ins_closes(self):
+        """同一段程序、同一份规范，只把那两行换回真的：一路判下来、收得了尾。
+
+        也就是"毒"在那两行上：替身才让流程那一关有话说；换成真的 actor 和真的 tech_critic，
+        这一张单做完了、收尾那句话也说得出。
+        """
+        meeting, outcome = self.a_run(self.a_norm("real", actor="agent", tech_critic="tech_critic"))
+        self.assertEqual(OK, outcome.outcome)
+        values = Store(case_root(meeting, CASE), record_path(meeting))
+        passed, answered = values.read("flow", "check")
+        self.assertTrue(answered and passed)
+        self.assertTrue(values.answered("closing", "closing_note"))
+
+
 class ATicketTest(unittest.TestCase):
     """一张单：它写在哪、写成什么、读回来是什么。"""
 
@@ -88,23 +160,23 @@ class ATicketTest(unittest.TestCase):
     def test_the_ticket_is_the_call_itself(self):
         """单上就是那次调用：`__dyn_call__ << "<整名>"`，环境留空。"""
         session = a_session(self.meeting)
-        ticket = session.issue("write_a_draft")
-        self.assertEqual("write_a_draft-quicksort", ticket.uid)
+        ticket = session.issue("do_the_work")
+        self.assertEqual("do_the_work-quicksort", ticket.uid)
         path = tickets_root(self.meeting) / ticket.uid / "ticket.viba"
         self.assertTrue(path.is_file())
         text = path.read_text(encoding="utf-8")
-        self.assertIn("$ticket_name \"write_a_draft\"", text)
-        self.assertIn('$call (__dyn_call__ << "write_a_draft")', text)
+        self.assertIn("$ticket_name \"do_the_work\"", text)
+        self.assertIn('$call (__dyn_call__ << "do_the_work")', text)
         self.assertIn(str(case_root(self.meeting, CASE)), text)
         self.assertNotIn("$storage_path \"\"", text)
 
     def test_it_reads_back_as_the_same_ticket(self):
         """读回来是同一张单：号、名字、那次调用、案子、找模块的路、时刻，一样不少。"""
         session = a_session(self.meeting)
-        written = session.issue("judge_the_draft")
+        written = session.issue("do_the_work")
         back = read_ticket(self.meeting, written.uid)
         self.assertEqual(written.uid, back.uid)
-        self.assertEqual("judge_the_draft", back.name)
+        self.assertEqual("do_the_work", back.name)
         self.assertEqual(str(case_root(self.meeting, CASE)), back.storage_path)
         self.assertEqual(self.workflow.search_dirs(), list(back.viba_path))
         self.assertEqual(written.time, back.time)
@@ -112,16 +184,16 @@ class ATicketTest(unittest.TestCase):
 
     def test_the_uid_says_which_ticket_and_which_case(self):
         """号一眼看得出是哪张单、哪个案子。"""
-        self.assertEqual("write_a_draft-quicksort",
-                         ticket_uid("write_a_draft", "/x/store/case/quicksort"))
-        self.assertEqual("write_a_draft-quicksort-2",
-                         ticket_uid("write_a_draft", "/x/store/case/quicksort-2"))
-        self.assertEqual("write_a_draft", ticket_uid("write_a_draft", "/x/nothing"))
+        self.assertEqual("do_the_work-quicksort",
+                         ticket_uid("do_the_work", "/x/store/case/quicksort"))
+        self.assertEqual("do_the_work-quicksort-2",
+                         ticket_uid("do_the_work", "/x/store/case/quicksort-2"))
+        self.assertEqual("do_the_work", ticket_uid("do_the_work", "/x/nothing"))
 
     def test_the_ticket_is_a_value_like_every_other(self):
         """单是一份值：和别处一样写得下、读得回（容器成员也照样）。"""
         session = a_session(self.meeting)
-        ticket = session.issue("close_the_meeting")
+        ticket = session.issue("do_the_work")
         self.assertIn("/rb_norm/ticket_programs", read_ticket(self.meeting, ticket.uid).viba_path[0])
 
 
@@ -197,7 +269,7 @@ class TheApiDeclareTest(unittest.TestCase):
 
     def test_the_ticket_says_which_version_of_the_interface_it_reads(self):
         """单上按处理者记着接口那一版：actor、tech_critic、mgmt_critic、assistant 各自一条，就是规范说的那一版。"""
-        ticket = a_session(self.meeting).issue("write_a_draft")
+        ticket = a_session(self.meeting).issue("do_the_work")
         said = ticket.handler_name2api_declare_repo_commit_id
         self.assertEqual(self.workflow.declares(), said)
         self.assertEqual({"actor", "tech_critic", "mgmt_critic", "assistant"}, set(said))
@@ -208,7 +280,7 @@ class TheApiDeclareTest(unittest.TestCase):
 
     def test_a_ticket_written_before_this_member_existed_still_reads(self):
         """早先发的单上没有这一项（那时候接口还在规范里）：读回来就是空的那一项，不是读不出来。"""
-        ticket = a_session(self.meeting).issue("write_a_draft")
+        ticket = a_session(self.meeting).issue("do_the_work")
         path = tickets_root(self.meeting) / ticket.uid / "ticket.viba"
         kept = [line for line in path.read_text(encoding="utf-8").splitlines()
                 if "$handler_name2api_declare_repo_commit_id" not in line]
@@ -219,7 +291,7 @@ class TheApiDeclareTest(unittest.TestCase):
 
     def test_the_interface_repo_is_on_the_ticket_viba_path(self):
         """那三份基础角色不在规范目录里：单上找模块的路得把接口仓库也带上，跑的时候才找得到。"""
-        back = read_ticket(self.meeting, a_session(self.meeting).issue("write_a_draft").uid)
+        back = read_ticket(self.meeting, a_session(self.meeting).issue("do_the_work").uid)
         self.assertIn(str(self.workflow.declare_dir), back.viba_path)
         self.assertTrue((self.workflow.declare_dir / "actor_api.viba").is_file())
         self.assertEqual([], list(Path(self.workflow.root).glob("*_api.viba")))
@@ -237,7 +309,7 @@ class TheApiDeclareTest(unittest.TestCase):
         own = load_workflow(norm)
         self.assertEqual({"actor", "tech_critic", "mgmt_critic", "assistant"}, set(own.declares()))
         self.assertIn("static_code_api", own.apis())
-        ticket = Session(self.meeting, CASE, workflow=own).issue("write_a_draft")
+        ticket = Session(self.meeting, CASE, workflow=own).issue("do_the_work")
         self.assertEqual(own.declares(), ticket.handler_name2api_declare_repo_commit_id)
 
     def test_a_base_role_written_again_in_the_norm_is_refused(self):
@@ -297,13 +369,13 @@ class WhatIsWrittenTest(unittest.TestCase):
 
     def test_a_written_ticket_is_what_that_definition_says(self):
         """盘上那张单照 `Ticket` 核一遍：成员一个不少、类型一个不错。"""
-        ticket = a_session(self.meeting).issue("write_a_draft")
+        ticket = a_session(self.meeting).issue("do_the_work")
         ticket_definition().check(the_written_ticket(self.meeting, ticket.uid))
 
     def test_a_written_stage_and_the_whole_progress_fit_their_definitions(self):
         """一次尝试是 `TicketStage` 那种；那一列文件读成一份数据就是 `TicketProgress` 那种。"""
         session = a_session(self.meeting)
-        session.issue("write_a_draft")
+        session.issue("do_the_work")
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
         stage = the_handlers(self.meeting, self.workflow)[0].tick()[0]
         stage_definition().check(stage.as_node())
@@ -319,7 +391,7 @@ class WhatIsWrittenTest(unittest.TestCase):
                 "  * $time datetime", "  * $time datetime\n  * $nobody str"), encoding="utf-8")
         with mock.patch.object(declare, "DEFINITIONS_HOME", home):
             with self.assertRaises(ValueError) as refused:
-                a_session(self.meeting).issue("write_a_draft")
+                a_session(self.meeting).issue("do_the_work")
         self.assertIn("$nobody", str(refused.exception))
 
     def test_a_definition_that_is_not_there_is_refused(self):
@@ -340,34 +412,38 @@ class TheProgressTest(unittest.TestCase):
     def test_one_file_per_attempt_under_ticket_progress(self):
         """两个成员各试一次：两个文件，名字带写它的时刻和是谁写的。"""
         session = a_session(self.meeting)
-        session.issue("write_a_draft")
+        session.issue("do_the_work")
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
         handlers = the_handlers(self.meeting, self.workflow)
-        handlers[0].tick()                       # assistant：不是它的事
-        handlers[3].tick()                       # actor：做完了
-        where = progress_root(self.meeting) / "write_a_draft-quicksort"
+        handlers[0].tick()                       # assistant：整段程序不是它的
+        handlers[3].tick()                       # actor：做前几步，到判那一步停下
+        where = progress_root(self.meeting) / "do_the_work-quicksort"
         names = sorted(one.name for one in where.glob("*.viba"))
         self.assertEqual(2, len(names))
         self.assertTrue(any(one.endswith("-assistant.viba") for one in names))
         self.assertTrue(any(one.endswith("-actor.viba") for one in names))
-        self.assertTrue(answered(self.meeting, "write_a_draft-quicksort"))
+        self.assertFalse(answered(self.meeting, "do_the_work-quicksort"))   # 判那一步还没人接
+        # 四边都试过一遍，这一张单才有一条 `$ok`
+        session.run(handlers, out=lambda _who, _line: None)
+        self.assertTrue(answered(self.meeting, "do_the_work-quicksort"))
 
     def test_a_stop_written_after_the_answer_cannot_take_it_back(self):
         """做完了之后又有人写下一篇停下的：那张单还是做完了（`$ok` 是只涨不退的那一条）。"""
         session = a_session(self.meeting)
-        session.issue("write_a_draft")
+        session.issue("do_the_work")
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
         handlers = the_handlers(self.meeting, self.workflow)
-        uid = "write_a_draft-quicksort"
-        stopped = handlers[0].attempt(read_ticket(self.meeting, uid))
-        handlers[3].tick()                       # actor 把它做完了
+        uid = "do_the_work-quicksort"
+        stopped = handlers[0].attempt(read_ticket(self.meeting, uid))    # assistant 停下的那一篇
+        outcome = session.run(handlers, out=lambda _who, _line: None)    # 一路走到头
+        self.assertEqual(OK, outcome.outcome)
+        before = len(read_stages(self.meeting, uid))
         # 做完之后才落下来的那一篇停下的（两个人同时在跑时躲不掉的那一下）
         write_stage(self.meeting, a_stage(uid, "tech_critic", stopped.result))
         stages = read_stages(self.meeting, uid)
-        self.assertEqual(3, len(stages))
-        self.assertFalse(stages[0].answered())
-        self.assertTrue(stages[1].answered())
-        self.assertFalse(stages[2].answered())
+        self.assertEqual(before + 1, len(stages))
+        self.assertTrue(any(one.answered() for one in stages[:-1]))
+        self.assertFalse(stages[-1].answered())
         self.assertTrue(answered(self.meeting, uid))     # 那一条 `$ok` 顶不掉
         self.assertEqual("tech_critic", the_state(self.meeting)[0]["last_who"])
         self.assertIn("不是它的事", the_state(self.meeting)[0]["last_stop"])
@@ -375,16 +451,17 @@ class TheProgressTest(unittest.TestCase):
     def test_an_attempt_says_which_step_was_not_its_business(self):
         """停下那一篇说的是"停在哪一步"：那一步的整名和那次调用都在里面。"""
         session = a_session(self.meeting)
-        session.issue("write_a_draft")
+        session.issue("do_the_work")
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
-        stage = assistant_handler(self.meeting, self.workflow).tick()[0]
+        handlers = the_handlers(self.meeting, self.workflow)
+        stage = handlers[3].tick()[0]            # actor：做前几步，停在判那一步
         self.assertFalse(finished(stage.result))
         step = unimplemented_step(stage.result)
-        self.assertEqual("actor_api.acknowledge", step[1])
+        self.assertEqual("tech_critic_api.judge", step[1])
         # 那一次调用也在里面：环境留空、实参是当时写下的那些（这是盘上那一篇的原文）
         text = "".join(one.read_text(encoding="utf-8")
                        for one in (progress_root(self.meeting) / stage.uid).glob("*.viba"))
-        self.assertIn('__dyn_call__ << "actor_api.acknowledge"', text)
+        self.assertIn('__dyn_call__ << "tech_critic_api.judge"', text)
 
 
 class ThePlanTest(unittest.TestCase):
@@ -397,36 +474,37 @@ class ThePlanTest(unittest.TestCase):
         self.workflow = a_workflow()
 
     def test_the_first_ticket_is_the_one_whose_readings_are_there(self):
-        """一开始只有一张发得出去：它要读的那一步（人说的话）在，别的都还缺着。"""
+        """一开始一张都发不出去：它要读的那一步（人说的话）还缺着。"""
         session = a_session(self.meeting)
         self.assertIsNone(next_ticket(self.workflow, session.values))
-        # 人说了一句：`stated_task` 落在案子自己的数据路径下
-        session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
-        self.assertEqual("write_a_draft", next_ticket(self.workflow, session.values))
-        wanted, why = due(self.workflow, session.values, "judge_the_draft")
+        wanted, why = due(self.workflow, session.values, "do_the_work")
         self.assertFalse(wanted)
         self.assertIn("还缺", why)
+        # 人说了一句：`stated_task` 落在案子自己的数据路径下
+        session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
+        self.assertEqual("do_the_work", next_ticket(self.workflow, session.values))
+        wanted, why = due(self.workflow, session.values, "do_the_work")
+        self.assertTrue(wanted)
+        self.assertEqual("要读的都在，自己还没做过", why)
 
     def test_the_next_one_is_due_once_the_one_before_it_answered(self):
-        """前一张做完，后一张才该发（次序不是写死的，是读出来的）。"""
+        """这一张没做完就轮到它，做完了就没有下一张（次序不是写死的，是读出来的）。"""
         session = a_session(self.meeting)
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
+        self.assertEqual("do_the_work", next_ticket(self.workflow, session.values))
         session.run(the_handlers(self.meeting, self.workflow), out=lambda _who, _line: None)
-        # 六张单都发过，没有下一张
-        self.assertEqual(["check_the_flow-quicksort", "close_the_meeting-quicksort",
-                          "judge_the_draft-quicksort", "judge_the_revision-quicksort",
-                          "revise_the_draft-quicksort", "write_a_draft-quicksort"],
-                         ticket_uids(self.meeting))
+        # 只有这一张单，做完了就没有下一张
+        self.assertEqual(["do_the_work-quicksort"], ticket_uids(self.meeting))
         self.assertIsNone(next_ticket(self.workflow, session.values))
 
     def test_a_ticket_already_issued_is_found_by_its_name(self):
         """发过的单按名字找得到：号是 `<名字>-<案子>`，名字在前头。"""
         session = a_session(self.meeting)
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
-        session.issue("write_a_draft")
-        self.assertEqual("write_a_draft-quicksort",
-                         ticket_named(self.meeting, "write_a_draft"))
-        self.assertIsNone(ticket_named(self.meeting, "judge_the_draft"))
+        self.assertIsNone(ticket_named(self.meeting, "do_the_work"))
+        session.issue("do_the_work")
+        self.assertEqual("do_the_work-quicksort",
+                         ticket_named(self.meeting, "do_the_work"))
 
     def test_a_ticket_already_issued_is_not_issued_again(self):
         """发过就不再发第二张：再跑一趟（被叫醒接着跑就是这一种）一张都不新发。"""
@@ -472,64 +550,63 @@ class WhatTheLawSaysAboutWhenATicketIsDueTest(unittest.TestCase):
         return session
 
     def test_a_law_holds_a_ticket_back_until_the_value_says_so(self):
-        """法说"判决是 true 才收尾"：判决是 false 的时候，收尾这一张不该发；改成 true 就发。"""
+        """法说"某个值是 true 才发这一张"：值是 false 时不发；改成 true 就发。"""
         self.a_law_that_says(
-            "close_the_meeting",
+            "do_the_work",
             "the_value =\n    Any\n  <- $env Env\n  <- $module_path str\n  <- $func_name str\n\n"
             "eq_bool =\n    bool\n  <- $env Env\n  <- $x Any\n  <- $y Any\n\n"
             '__impl__ = eq_bool << $env args.env\n'
-            '  << $x (the_value << $env args.env << $module_path "judged_revision"'
-            ' << $func_name "judge")\n'
+            '  << $x (the_value << $env args.env << $module_path "gate"'
+            ' << $func_name "open")\n'
             '  << $y true\n')
         workflow = self.a_workflow()
         session = self.a_ready_case()
-        # 收尾要读的那两步都答过了，判决说"不合格"
-        session.values.write("revised", "redo_step", "改过的那一版")
-        session.values.write("judged_revision", "judge", False)
-        wanted, why = due(workflow, session.values, "close_the_meeting")
+        # 门还关着
+        session.values.write("gate", "open", False)
+        wanted, why = due(workflow, session.values, "do_the_work")
         self.assertFalse(wanted)
         self.assertIn("还不是它的时候", why)
-        # 判决改成"合格"：这一张就该发了
-        session.values.write("judged_revision", "judge", True)
-        wanted, why = due(workflow, session.values, "close_the_meeting")
+        # 门开了：这一张就该发了
+        session.values.write("gate", "open", True)
+        wanted, why = due(workflow, session.values, "do_the_work")
         self.assertTrue(wanted)
         self.assertIn("就是它的时候", why)
 
     def test_a_meeting_the_law_will_not_let_close_is_not_a_finished_meeting(self):
-        """前面的单都做完了，法却扣着最后一张：这一趟不算"算完"，是走不动。"""
-        self.a_law_that_says("close_the_meeting", '__impl__ = false\n')
+        """法扣着这一张不发：这一趟不算"算完"，是走不动。"""
+        self.a_law_that_says("do_the_work", '__impl__ = false\n')
         workflow = self.a_workflow()
         session = self.a_ready_case()
         outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _who, _line: None)
         self.assertEqual(STUCK, outcome.outcome)
-        self.assertIn("close_the_meeting", outcome.failure)
+        self.assertIn("do_the_work", outcome.failure)
         self.assertIn("还不是它的时候", outcome.failure)
-        # 最后那一张根本没发出去（法不让它发）
-        self.assertNotIn("close_the_meeting-quicksort", ticket_uids(self.meeting))
+        # 这一张根本没发出去（法不让它发）
+        self.assertNotIn("do_the_work-quicksort", ticket_uids(self.meeting))
 
     def test_a_law_that_says_nothing_keeps_the_old_rule(self):
         """没写这一条的单照旧：要读的都在、自己还没做过，就该发了。"""
-        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "write_a_draft")
+        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "do_the_work")
         self.assertTrue(wanted)
         self.assertEqual("要读的都在，自己还没做过", why)
 
     def test_a_law_may_hold_a_step_back_with_a_sentence(self):
         """法答一句话就是"还不该发，原因是这句"。"""
-        self.a_law_that_says("write_a_draft", '__impl__ = "还没到点"\n')
-        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "write_a_draft")
+        self.a_law_that_says("do_the_work", '__impl__ = "还没到点"\n')
+        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "do_the_work")
         self.assertFalse(wanted)
         self.assertEqual("还没到点", why)
 
     def test_a_law_that_says_nil_keeps_the_old_rule(self):
         """法答 `nil` 就是"这一条不管"：照旧按那两条算。"""
-        self.a_law_that_says("write_a_draft", "__impl__ = nil\n")
-        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "write_a_draft")
+        self.a_law_that_says("do_the_work", "__impl__ = nil\n")
+        wanted, why = due(self.a_workflow(), self.a_ready_case().values, "do_the_work")
         self.assertTrue(wanted)
         self.assertEqual("要读的都在，自己还没做过", why)
 
     def test_a_step_held_back_by_the_law_is_said_so_when_the_meeting_stops(self):
         """法扣着不发的那一张，走不动时要说清是法说什么，不是含混一句"没人接"。"""
-        self.a_law_that_says("write_a_draft", '__impl__ = "还没到点"\n')
+        self.a_law_that_says("do_the_work", '__impl__ = "还没到点"\n')
         workflow = self.a_workflow()
         session = self.a_ready_case()
         outcome = session.run(the_handlers(self.meeting, workflow), out=lambda _who, _line: None)
@@ -575,7 +652,7 @@ class ThePassesOfAMeetingTest(unittest.TestCase):
 
 
 class AWholeMeetingTest(unittest.TestCase):
-    """一场会：一句话进来，六张单一路走到 ok。"""
+    """一场会：一句话进来，一张单一路走到 ok。"""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -595,18 +672,37 @@ class AWholeMeetingTest(unittest.TestCase):
         assistant = assistant_handler(self.meeting, self.workflow)
         session.stated_task(WORDS, assistant)
         self.assertEqual(WORDS, session.values.value("", "stated_task"))
-        session.issue("write_a_draft")
-        self.assertTrue((tickets_root(self.meeting) / "write_a_draft-quicksort"
+        session.issue("do_the_work")
+        self.assertTrue((tickets_root(self.meeting) / "do_the_work-quicksort"
                          / "ticket.viba").is_file())
         self.assertEqual([], list(progress_root(self.meeting).glob("*")))
 
     def test_a_whole_meeting_ends_ok(self):
-        """六张单一张一张发、一张一张接：到 `ok`，每一张的进度里都有一条 `$ok`。"""
+        """一张单从头走到尾：到 `ok`，它的每一步都答过，进度里有一条 `$ok`。
+
+        程序里那两步 `report_done`（`drafted_done` / `revised_done`）是写下来了、却没人要的：
+        viba 只算 `__impl__` 要的那几步，所以它们从没跑过，记录里也没有。除此之外每一步都答过，
+        次序就是程序里写下来的次序。
+        """
         outcome = self.a_run()
         self.assertEqual(OK, outcome.outcome)
         state = the_state(self.meeting)
-        self.assertEqual(6, len(state))
+        self.assertEqual(1, len(state))
+        self.assertEqual(["do_the_work-quicksort"], [one["ticket"] for one in state])
         self.assertTrue(all(one["answered"] for one in state))
+        # 这一步到那儿真答下的是这些：每一步都在案子里，次序和程序里写的一样
+        wanted = [("greeted", "acknowledge"), ("drafted", "do_step"), ("judged", "judge"),
+                  ("revised", "redo_step"), ("judged_revision", "judge"), ("flow", "check"),
+                  ("closing", "closing_note")]
+        program = [(step.env, step.op) for step in self.workflow.steps_of("do_the_work")]
+        self.assertEqual(wanted, [one for one in program if one in wanted])
+        values = Store(case_root(self.meeting, CASE))
+        for env, op in wanted:
+            self.assertTrue(values.answered(env, op), f"{env} + {op} 还没答")
+        record = (self.meeting / "meeting_record.md").read_text(encoding="utf-8")
+        answered_lines = [line.split("答了 ", 1)[1] for line in record.splitlines()
+                          if "答了 " in line]
+        self.assertEqual([f"{env} + {op}" for env, op in wanted], answered_lines)
         # 每一次尝试都落在会议目录下的 ticket_progress 里
         self.assertTrue(all((progress_root(self.meeting) / one["ticket"]).is_dir()
                             for one in state))
@@ -626,9 +722,12 @@ class AWholeMeetingTest(unittest.TestCase):
         self.a_run()
         record = (self.meeting / "meeting_record.md").read_text(encoding="utf-8")
         self.assertIn(f"- 人类说了一句：{WORDS}", record)
-        self.assertIn("- 发了一张单 write_a_draft-quicksort", record)
+        self.assertIn("- 发了一张单 do_the_work-quicksort", record)
+        self.assertIn("- actor（actor）答了 greeted + acknowledge", record)
         self.assertIn("- actor（actor）答了 drafted + do_step", record)
         self.assertIn("- tech_critic（tech_critic）答了 judged + judge", record)
+        self.assertIn("- actor（actor）答了 revised + redo_step", record)
+        self.assertIn("- tech_critic（tech_critic）答了 judged_revision + judge", record)
         self.assertIn("- mgmt_critic（mgmt_critic）答了 flow + check", record)
         self.assertIn("- assistant（assistant）答了 closing + closing_note", record)
 
@@ -644,18 +743,23 @@ class AWholeMeetingTest(unittest.TestCase):
         said = []
         outcome = session.run(handlers, out=lambda who, line: said.append((who, line)))
         self.assertEqual(OK, outcome.outcome)
-        self.assertIn(("assistant", "发了一张单：write_a_draft-quicksort"), said)
-        self.assertIn(("assistant", "发了一张单：judge_the_draft-quicksort"), said)
+        # 一张单只发一次：不是每张单各来一句"发了一张单"
+        self.assertEqual([("assistant", "发了一张单：do_the_work-quicksort")],
+                         [one for one in said if "发了一张单" in one[1]])
+        self.assertIn(("actor", "答了 greeted + acknowledge"), said)
         self.assertIn(("actor", "答了 drafted + do_step"), said)
         self.assertIn(("tech_critic", "答了 judged + judge"), said)
+        self.assertIn(("actor", "答了 revised + redo_step"), said)
+        self.assertIn(("tech_critic", "答了 judged_revision + judge"), said)
         self.assertIn(("mgmt_critic", "答了 flow + check"), said)
+        self.assertIn(("assistant", "答了 closing + closing_note"), said)
         # 一张单交到别人手上（"这一步不是它的事"）不是谁说的话：记录里有，说话这一路没有
         self.assertFalse([one for one in said if "不是它的事" in one[1]])
 
     def test_a_failed_judgement_does_not_close_the_meeting(self):
-        """判下来不合格：收尾那一张发不出去（规范里 `due/close_the_meeting.viba` 说的），别说完事了。
+        """判下来不合格：收尾那一步自己不肯说那句话（`closing_note` 说的），这一趟是 `broken`。
 
-        不改那一处的话，六张单照发，assistant 会对着一个不合格的活说"这场会做完了"。
+        不改那一处的话，assistant 会对着一个不合格的活说"这场会做完了"。
         """
         too_many = ("def quick_sort(items, key=None, reverse=False, bounds=(0, None), extra=1):\n"
                     "    return items\n")
@@ -664,12 +768,14 @@ class AWholeMeetingTest(unittest.TestCase):
         handlers[3].caps.update(actor_caps(lambda _prompt: too_many))
         session.stated_task(WORDS, handlers[0])
         outcome = session.run(handlers, out=lambda _who, _line: None)
-        self.assertEqual(STUCK, outcome.outcome)
-        self.assertIn("close_the_meeting", outcome.failure)
-        self.assertIn("还不是它的时候", outcome.failure)
+        self.assertEqual(BROKEN, outcome.outcome)
+        self.assertIn("do_the_work-quicksort", outcome.failure)
+        self.assertIn("closing_note", outcome.failure)
+        self.assertIn("这一场还没走完", outcome.failure)
         values = Store(case_root(self.meeting, CASE))
         self.assertFalse(values.value("judged_revision", "judge"))        # 改完那一版也不合格
         self.assertFalse(values.answered("closing", "closing_note"))      # 没有说完事
+        self.assertFalse(answered(self.meeting, "do_the_work-quicksort"))
 
     def test_a_second_attempt_replays_the_first_answers(self):
         """同一张单再试一次：案子里已有值的那几步回放，不重做（写只做了一次）。"""
@@ -686,7 +792,7 @@ class AWholeMeetingTest(unittest.TestCase):
         session.run(handlers, out=lambda _who, _line: None)
         self.assertEqual(1, len(writes))              # 它说合格，没有第二版要改
         # 同一张单再跑一遍：案子里已有值的那几步回放，写那一步不再做
-        again = handlers[3].attempt(read_ticket(self.meeting, "write_a_draft-quicksort"))
+        again = handlers[3].attempt(read_ticket(self.meeting, "do_the_work-quicksort"))
         self.assertTrue(again.answered())
         self.assertEqual(1, len(writes))
 
@@ -697,8 +803,8 @@ class AWholeMeetingTest(unittest.TestCase):
         session.stated_task(WORDS, assistant)
         outcome = session.run([assistant], out=lambda _who, _line: None)
         self.assertEqual(STUCK, outcome.outcome)
-        self.assertIn("write_a_draft-quicksort", outcome.failure)
-        self.assertFalse(answered(self.meeting, "write_a_draft-quicksort"))
+        self.assertIn("do_the_work-quicksort", outcome.failure)
+        self.assertFalse(answered(self.meeting, "do_the_work-quicksort"))
 
     def test_a_step_that_broke_says_so_instead_of_nobody_answers(self):
         """哪个实现坏了：那一手是 `$underlying_viba_op_err`，当场说清楚，不写成"没人接"。
@@ -717,7 +823,7 @@ class AWholeMeetingTest(unittest.TestCase):
         outcome = session.run(handlers, out=lambda _who, _line: None)
         self.assertEqual(BROKEN, outcome.outcome)
         self.assertIn("tech_critic", outcome.failure)
-        self.assertIn("judge_the_draft-quicksort", outcome.failure)
+        self.assertIn("do_the_work-quicksort", outcome.failure)
         self.assertIn("没有 args.env", outcome.failure)
 
     def test_a_ticket_that_stops_the_same_way_three_times_is_not_tried_again(self):
@@ -725,7 +831,7 @@ class AWholeMeetingTest(unittest.TestCase):
         session = a_session(self.meeting)
         handlers = the_handlers(self.meeting, self.workflow)
         session.stated_task(WORDS, handlers[0])
-        session.issue("write_a_draft")                                    # 发了一张，还没人试过
+        session.issue("do_the_work")                                    # 发了一张，还没人试过
         self.assertTrue(worth_another_round(self.meeting, tries=3))
         for _round in range(3):
             # 只有 assistant 和 tech_critic：谁都不会 actor 那一步，轮着说同一句话
@@ -888,13 +994,16 @@ class TheMembersTest(unittest.TestCase):
                           self.root / "meeting", CASE, cwd=str(REPO_ROOT))
         session = a_session(self.root / "meeting")
         session.stated_task(WORDS, assistant_handler(self.root / "meeting", self.workflow))
-        session.issue("write_a_draft")
+        session.issue("do_the_work")
         written = process.tick()
         self.assertTrue(written)                      # 它写了一篇进度
         self.assertEqual("actor", written[0].who)
-        self.assertTrue(answered(self.root / "meeting", "write_a_draft-quicksort"))
-        self.assertEqual([("greeted", "acknowledge"), ("drafted", "do_step"),
-                          ("report_done", "report_done")], process.did)
+        # 它自己那几步答下了值，到判那一步停下（那一步归别人）
+        self.assertFalse(written[0].answered())
+        self.assertFalse(answered(self.root / "meeting", "do_the_work-quicksort"))
+        self.assertTrue(Store(case_root(self.root / "meeting", CASE)).answered(
+            "drafted", "do_step"))
+        self.assertEqual([("greeted", "acknowledge"), ("drafted", "do_step")], process.did)
 
 
 class TheHostsBuiltinOperatorsTest(unittest.TestCase):
@@ -1632,17 +1741,17 @@ class TheHandlerTest(unittest.TestCase):
         """没做完、而且最后那一篇不是它写的：这才是它接的那张。"""
         session = a_session(self.meeting)
         session.stated_task(WORDS, assistant_handler(self.meeting, self.workflow))
-        session.issue("write_a_draft")
-        actor = the_handlers(self.meeting, self.workflow)[2]
-        self.assertEqual(["write_a_draft-quicksort"], [one.uid for one in actor.takes()])
-        actor.tick()
-        self.assertEqual([], actor.takes())            # 刚才是它写的：下一手不是它的
+        session.issue("do_the_work")
+        taker = the_handlers(self.meeting, self.workflow)[2]
+        self.assertEqual(["do_the_work-quicksort"], [one.uid for one in taker.takes()])
+        taker.tick()
+        self.assertEqual([], taker.takes())            # 刚才是它写的：下一手不是它的
         self.assertTrue(unfinished(self.meeting) or True)
 
     def test_the_same_value_twice_is_the_same_file(self):
         """一样的东西写两遍是同一份数据：写下来的字一个不差。"""
         session = a_session(self.meeting)
-        first = session.issue("write_a_draft")
+        first = session.issue("do_the_work")
         path = tickets_root(self.meeting) / first.uid / "ticket.viba"
         before = path.read_text(encoding="utf-8")
         again = read_ticket(self.meeting, first.uid)

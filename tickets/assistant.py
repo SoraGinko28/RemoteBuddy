@@ -37,11 +37,19 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
         put_snapshot(env, words, "stated_task")
         return words
 
-    def closing_note(env, result, verdict):
-        """这场会的结果：它判下来合格没有。成果是什么由规范给的那一步定，这一处不假定。"""
+    def closing_note(env, result, verdict, flow=None):
+        """这场会的结果：这一版判下来合格没有、流程那一关过没过。
+
+        两样都过了才说得出口。判不合格、或者流程没走完，这一步答不出那句话（当场说清是哪儿没过）：
+        收尾不是"把话说完"，是"这一场真走完了"。
+        """
         del result                                # 成果长什么样是规范的事，这一处不读它
         judged = value_of(read_stored(env, verdict))
-        note = f"这场会做完了；判下来：{'合格' if judged else '不合格'}"
+        complete = True if flow is None else bool(value_of(read_stored(env, flow)))
+        if not judged or not complete:
+            said = "判下来不合格" if not judged else "流程那一关没过"
+            raise RuntimeError(f"这一场还没走完（{said}），收尾那句话说不出口")
+        note = "这场会做完了；判下来：合格"
         if say is not None:
             say(note)
         return note

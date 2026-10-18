@@ -1,0 +1,195 @@
+# 法怎么立：这一份是定义，不是程序。它跟 intake/、members、ticket_programs/、acceptance/ 摆在一起，
+# 但那四个部分是"这场会怎么开"，这一份是"这些法怎么来的"。
+#
+# 写法是自上而下的：先写这件事本身（Legislation），再一层层拆开。每个类型都在另一个类型的定义里用得上，
+# 没有单独摆着的类型（哪些被用到了，有一个程序逐个走一遍，见 CONSTITUTION.md）。
+# 讲法的文档是 CONSTITUTION.md；阶段和谓词还留在那份文档里，没搬进来。
+
+datetime = str                          # 先把时刻写成字符串。设施那边是 `Object * $microsecond int`，
+                                        # 两份要不要合成一份，见 CONSTITUTION.md 第五节。
+
+Optional[T] = T | nil                   # 没有就是 nil，不是打了个标记
+
+AppendOnlyList[T] = list[T]             # 只增不改：位置就是身份
+
+# 这三样是"附在类型上的话"：值是单位（Object = nil），不占字段，编译的时候要它们有个定义。
+# 写法跟 RemoteBuddy-core 的 MEETING_ADT.md 一样。
+
+Assert[Cond] = Object
+
+Appendix[Note] = Object
+
+Hint[Note] = Object
+
+# ---------------------------------------------------------------- #
+# 一、这件事本身
+# ---------------------------------------------------------------- #
+
+Legislation =
+    Object
+  * $charter Charter                    # 我们那一层定的：目的、谁坐在立法会议里、任务怎么算做完
+  * $regions list[Region]               # 各处地方：每一处有自己的法，和它施行的版本
+  * $meetings list[Meeting]             # 跑过的会：立法会议做行为，执行会议留证据
+  * $hub Hub                            # 旧法连同它们的证据：立法从里面推陈出新
+  * Appendix[{
+      # 每一处的 $in_force 链末一条，就是这一处现在在施行的那一版。
+      # 每一场执行会议的 $under，都是它那处地方、那个时候在施行的那一版。
+      # 这两条还没形式化：话写在这儿，等算子和类型齐了再写成 Assert。
+    }]
+
+Charter =
+    Object
+  * $goal str                           # 目的：什么叫符合人类期待
+  * $who list[Member]                   # 谁坐在立法会议里
+  * $acceptance list[Program]           # 一件任务算不算做完，由这几条验收条件说了算（各处共用）
+  * $tasks TaskSet                      # 固定任务集：章程一份，各处共用
+
+TaskSet =
+    Object
+  * $name str
+  * $revision str                       # 任务集一改就是另一份
+  * $tasks list[Task]
+
+Task =
+    Object
+  * $name str
+  * $class str                          # 这一件属于哪一类活：从历史里比，比的是类
+  * $ask str                            # 人说的那一句
+
+# ---------------------------------------------------------------- #
+# 二、法：一处地方、一份法、它的版本、它由什么组成
+# ---------------------------------------------------------------- #
+
+Region =
+    Object
+  * $name str                           # 一处地方。这一处是什么，见 CONSTITUTION.md 第五节
+  * $norm Norm                          # 这一处在施行的那份法
+  * $in_force AppendOnlyList[InForce]   # 只增不改：某一时刻在施行的是时间不超过它、最后放进去的那条。
+                                        # 一个区域在任一时刻只有一版在施行，没有空着的区域
+
+InForce =
+    Object
+  * $version NormVersion
+  * $from datetime
+
+Norm =
+    Object
+  * $repo str                           # 一份法：一个能取到的仓库
+  * $versions list[NormVersion]         # 这份法有哪几版；一版就是一次 commit
+
+NormVersion =
+    Object
+  * $commit str                         # commit 是这一版的身份
+  * $parts NormParts                    # 这一版由哪四部分组成
+  * $api_declare Checkout               # 它按哪一版接口写的
+
+NormParts =
+    Object
+  * $intake list[Program]               # 受理：人说的哪句话算一份活
+  * $members list[Member]               # 组织：这场会有哪几个成员
+  * $ticket_programs list[Program]      # 流程：工单程序
+  * $acceptance list[Program]           # 验收：tech_critic 判交付物时跑的程序
+
+Program =
+    Object
+  * $name str                           # 比如 write_a_draft
+  * $source str                         # 那份 viba 源码：这一版用了哪些算子，从这儿算得出来
+
+Member =
+    Object
+  * $name str                           # actor / tech_critic / mgmt_critic / assistant / 新加的角色
+  * $api str                            # 它按哪份 api 写，比如 actor_api
+  * $how str                            # 怎么找到它：见 RemoteBuddy-core 的 tickets/table.py
+
+Checkout =
+    Object
+  * $repo str
+  * $commit str                         # submodule 指着的那一版
+
+# ---------------------------------------------------------------- #
+# 三、会：立法会议做的行为，执行会议留的证据
+# ---------------------------------------------------------------- #
+
+Meeting =
+    Object
+  * $id str                             # 会议号就是身份
+  * $region Region
+  * $under NormVersion                  # 跑的时候在施行的是哪一版
+  * $acts list[LegislativeAct]          # 立法会议做的：一次或多次
+  * $evidence list[Evidence]            # 执行会议留下的：一件活一条
+  * $compliance list[Compliance]        # 按哪几版制度查过、有没有违规
+
+ActKind =
+    Oneof
+  | "keep"                              # 现行法够用：这次活不动法
+  | "propose"                           # 提出一版草案
+  | "try"                               # 指定一处地方试这一版
+  | "ratify"                            # 让它生效
+  | "repeal"                            # 废止
+
+LegislativeAct =
+    Object
+  * $kind ActKind
+  * $subject NormVersion                # 关于哪一版：keep 是当时在施行的那一版，propose 是从哪一版推出来
+  * $draft Optional[Draft]              # propose / try / ratify 上有
+  * $region Optional[Region]            # try / ratify / repeal 针对哪一处
+  * $time datetime
+
+Draft =
+    Object
+  * $version NormVersion                # 提出来的那一版
+  * $father NormVersion                 # 从哪一版推出来；没有父亲的不算提案
+  * $trials list[Trial]                 # 试过哪几处
+
+Trial =
+    Object
+  * $region Region
+  * $tasks TaskSet
+  * $state TrialState
+                                        # 身份是三样一起：草案、地点、任务集
+
+TrialState =
+    Oneof
+  | "trying"
+  | "done"
+  | "abandoned"
+
+Evidence =
+    Object
+  * $class str                          # 哪一类活：真活和任务集里的活都归到类上
+  * $task Optional[Task]                # 出自固定任务集里的哪一件；真活是 nil
+  * $attempts int                       # 试了几次
+  * $judged list[Judgment]              # 按哪几版法判过：跑完判一次，后来换法可以再判
+  * $time datetime
+                                        # 这里记的是这次跑发生过什么。判它合不合某一版法，
+                                        # 是 $judged 里那些 Judgment 的事
+
+Judgment =
+    Object
+  * $by NormVersion                     # 按哪一版法判的
+  * $outcome Outcome
+  * $time datetime
+
+Outcome =
+    Oneof
+  | $ok nil                             # 这一件做完了
+  | $not_ok nil                         # 没做完
+  | $err str                            # 这条法自己没跑起来：算子的 bug、类型对不上。
+                                        # 这是法坏了，不是"认出了问题"，两者不许混着数
+
+Compliance =
+    Object
+  * $by NormVersion                     # 按哪一版制度查的（流程、组织那一半）
+  * $violations list[str]               # 违反了哪几条；空就是没违规
+  * $time datetime
+
+# ---------------------------------------------------------------- #
+# 四、Hub：旧法连同它们的证据
+# ---------------------------------------------------------------- #
+
+HubEntry =
+    Object
+  * $version NormVersion
+  * $evidence list[Evidence]            # 在这一版下跑过的那些，含在哪些区域跑的
+
+Hub = list[HubEntry]

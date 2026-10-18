@@ -67,7 +67,9 @@ def the_law_holds_it_back(workflow: Workflow, values: Store, ticket: str) -> boo
 
 
 def _reads_and_answers(workflow: Workflow, values: Store, ticket: str) -> Tuple[bool, str]:
-    """那两条老规矩：要读的都在、自己还没答过。"""
+    """那两条老规矩：要读的都在、自己还没答过。
+
+    """
     for module_path, name in workflow.addresses_in(ticket):
         if not values.answered(module_path, name):
             return False, f"还缺 {module_path or '这个案子'} + {name}"

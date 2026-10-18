@@ -696,14 +696,14 @@ class RbTest(unittest.TestCase):
         工作区里一个文件都没有。流程那一关该把这两样都点出来，退出码就是它那一个数（3），
         点出的问题印在标准错误上，标准输出照旧只有那一行。
         """
-        (self.norm / "members").write_text(
-            "actor actor_api dummy_actor\n"
-            "tech_critic tech_critic_api dummy_tech_critic\n"
-            "mgmt_critic mgmt_critic_api mgmt_critic\n"
-            "assistant assistant_api assistant\n", encoding="utf-8")
+        poison = self.root / "poison_norm"
+        shutil.copytree(Path(__file__).resolve().parent / "data" / "poison_norm", poison)
+        self.addCleanup(shutil.rmtree, poison, ignore_errors=True)
         factory = self.service_with()
         errors = io.StringIO()
-        with mock.patch.object(sys, "stderr", errors):
+        # 这一场换毒规范那一份（`with` 收得住：跑完环境就回原样，别漏给后面的 test）
+        with mock.patch.dict(os.environ, {"REMOTEBUDDY_NORM": str(poison / "rb_norm")}), \
+                mock.patch.object(sys, "stderr", errors):
             result, out = self.run_cli(["--workspace", str(self.workspace), PROMPT],
                                        factory=factory)
         self.assertNotEqual(0, result["code"])          # 毒规范的返回值必须非 0

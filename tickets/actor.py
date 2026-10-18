@@ -22,9 +22,11 @@ from typing import Any, Callable, Dict, Optional
 
 from . import _viba  # noqa: F401
 
-from .binding import read_stored, text_of
+from .binding import read_stored, step_address, step_of, text_of
 from .channel import AgentChannel
 from .handler import Handler, program_caps
+from viba.interpret import get_snapshot
+from .binding import environment_at
 
 
 def actor_caps(do: Callable[[str], str],
@@ -42,7 +44,7 @@ def actor_caps(do: Callable[[str], str],
 
     def redo_step(env, result, objection):
         previous = text_of(env, result)
-        what = text_of(env, objection)
+        what = _the_objection(env, objection)
         if not what:
             return previous                      # 它没说不合格：照原样，不必再做一版
         return do(_revision_prompt(previous, what))
@@ -81,7 +83,7 @@ def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable
 
     def redo_step(env, result, objection):
         previous = text_of(env, result)
-        what = text_of(env, objection)
+        what = _the_objection(env, objection)
         if not what:
             return previous                      # 它没说不合格：照原样，不必再叫一次 agent
         return channel.ensure_work(_revising_prompt(previous, what, target), target,
@@ -101,6 +103,21 @@ def actor_handler(meeting_dir, workflow, *, caps: Dict[str, Callable],
 # ----------------------------------------------------------------------
 # 那几句话，和几个小工具
 # ----------------------------------------------------------------------
+
+
+def _the_objection(env, objection) -> str:
+    """判那一步说的那句话。
+
+    `$objection` 给的是**判那一步的地址**（判完答回去的就是它）：它说的那句话写在同一条数据路径
+    下的 `objection` 里。直接给那句话的地址也认（早些时候的单就是这么写的）。
+    """
+    module_path, name = step_of(objection)
+    if name != "objection":
+        address = step_address(module_path, "objection")
+        if get_snapshot(environment_at(env, module_path), "objection") is None:
+            return ""
+        return text_of(env, address)
+    return text_of(env, objection)
 
 
 def _first_prompt(task: str) -> str:

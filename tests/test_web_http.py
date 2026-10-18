@@ -311,15 +311,14 @@ class MeetingWebServiceTest(unittest.TestCase):
         self.assertEqual(board["case"], "case/quicksort")
         self.assertEqual(board["target"], "quicksort.py")
         self.assertTrue(board["ran"])
-        self.assertEqual([one["ticket"] for one in board["tickets"]],
-                         ["write_a_draft", "judge_the_draft", "revise_the_draft",
-                          "judge_the_revision", "check_the_flow", "close_the_meeting"])
+        self.assertEqual([one["ticket"] for one in board["tickets"]], ["do_the_work"])
         self.assertTrue(all(one["issued"] for one in board["tickets"]))
-        judged = next(one for one in board["tickets"] if one["ticket"] == "judge_the_draft")
-        answer = judged["answers"][0]
-        # 这一版是 4 个参数，规则的上限是 4：它说合格（true）
-        self.assertEqual((answer["op"], answer["role"], answer["answered"], answer["value"]),
-                         ("judge", "tech_critic", True, True))
+        answers = [one for one in board["tickets"][0]["answers"] if one["op"] == "judge"]
+        self.assertEqual(len(answers), 2)                       # 判第一版、判改完那版
+        for answer in answers:
+            # 这一版是 4 个参数，规则的上限是 4：它说合格（true）
+            self.assertEqual((answer["op"], answer["role"], answer["answered"], answer["value"]),
+                             ("judge", "tech_critic", True, True))
         self.assertTrue(any("- 人类说了一句" in line for line in board["record"]))
 
     def test_a_flow_that_did_not_finish_is_not_a_service_failure(self):
@@ -329,13 +328,8 @@ class MeetingWebServiceTest(unittest.TestCase):
         都不是这一台坏了：`rb cli` 照 journal 说话、照它定退出码。这一场拿替身触发（`tickets/dummy.py`）：
         一路"合格"、工作区里什么都没有，流程那一关说没过，收尾发不出去。
         """
-        norm = self.root / "norm-incomplete"
-        shutil.copytree(norm_home(), norm)
-        (norm / "members").write_text(
-            "actor actor_api dummy_actor\n"
-            "tech_critic tech_critic_api dummy_tech_critic\n"
-            "mgmt_critic mgmt_critic_api mgmt_critic\n"
-            "assistant assistant_api assistant\n", encoding="utf-8")
+        norm = self.root / "poison_norm"
+        shutil.copytree(REPO_ROOT / "tests" / "data" / "poison_norm", norm)
         service = self.tickets_service(lambda _s, _m, _t: actor_caps(lambda _p: DRAFT_ORDERS))
         with mock.patch.dict(os.environ, {"REMOTEBUDDY_NORM": str(norm)}):
             service.start({"message": "写一个快速排序，放到 quicksort.py",
@@ -348,8 +342,8 @@ class MeetingWebServiceTest(unittest.TestCase):
         said = [one for one in service.events("orders-incomplete", 0)["events"]
                 if one.get("phase") == "incomplete"]
         self.assertTrue(said, "没跑完这件事没记进 journal")
-        self.assertEqual("stuck", said[-1]["data"]["outcome"])
-        self.assertIn("走不动了", said[-1]["data"]["why"])
+        self.assertEqual("broken", said[-1]["data"]["outcome"])
+        self.assertIn("这一场还没走完", said[-1]["data"]["why"])
 
     def test_the_page_only_gets_this_sides_own_failures(self):
         """上边栏的提示只给这一侧自己的错：早先那几场把"工单没跑完：…"写进了 failure，
@@ -386,8 +380,7 @@ class MeetingWebServiceTest(unittest.TestCase):
         said = [(one["actor"], one["content"])
                 for one in service.events("orders-talk", 0)["events"]
                 if one.get("kind") == "chat"]
-        self.assertIn(("assistant", "发了一张单：write_a_draft-quicksort"), said)
-        self.assertIn(("assistant", "发了一张单：judge_the_draft-quicksort"), said)
+        self.assertIn(("assistant", "发了一张单：do_the_work-quicksort"), said)
         self.assertIn(("actor", "答了 drafted + do_step"), said)
         self.assertIn(("tech_critic", "答了 judged + judge"), said)
         self.assertIn(("mgmt_critic", "答了 flow + check"), said)
