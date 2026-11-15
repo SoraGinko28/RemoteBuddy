@@ -1,0 +1,60 @@
+__decl__ =
+    ($module_path str * $func_name str)
+  <- $env Env
+
+args = __get_args__ << __decl__
+
+# ticket_programs/do_the_work.viba
+#
+# 一个 prompt 就是这一张单：从"知道了"到收尾那句话，全写在这一段程序里，按写下来的次序走。
+# 派单那一侧只做一件事——把这一张单交给接得上的人；谁接得上由每一步调的是谁的算子说了算
+# （actor 做活、tech_critic 判代码、mgmt_critic 查流程、assistant 收尾）。
+#
+# 收尾那一步读两样：改完那一版判过没有（tech_critic 最后那次判决），流程那一关过没过
+# （mgmt_critic 的 check）。两样都过了，那句话才说得出口。
+import actor_api as actor
+import tech_critic_api as tech_critic
+import mgmt_critic_api as mgmt_critic
+import assistant_api as assistant
+
+greeted = actor.acknowledge
+  << $env ($sub_env << args.env << "greeted")
+  << $about ($module_path "" * $func_name "stated_task")
+
+drafted = actor.do_step
+  << $env ($sub_env << args.env << "drafted")
+  << $task ($module_path "" * $func_name "stated_task")
+  << $after greeted
+
+drafted_done = actor.report_done
+  << $env ($sub_env << args.env << "report_done")
+  << $result drafted
+  << $after drafted
+
+judged = tech_critic.judge
+  << $env ($sub_env << args.env << "judged")
+  << $under_judgment drafted
+
+revised = actor.redo_step
+  << $env ($sub_env << args.env << "revised")
+  << $result drafted
+  << $objection judged
+
+revised_done = actor.report_done
+  << $env ($sub_env << args.env << "revised_done")
+  << $result revised
+  << $after revised
+
+judged_revision = tech_critic.judge
+  << $env ($sub_env << args.env << "judged_revision")
+  << $under_judgment revised
+
+flow = mgmt_critic.check
+  << $env ($sub_env << args.env << "flow")
+  << $judged judged_revision
+
+__impl__ = assistant.closing_note
+  << $env ($sub_env << args.env << "closing")
+  << $result revised
+  << $verdict judged_revision
+  << $flow flow

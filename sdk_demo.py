@@ -34,7 +34,7 @@ import meeting_sdk_viba as viba_sdk
 from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,
                          at_key as viba_at_key, by_field_index as viba_by_field_index,
                          by_tag as viba_by_tag)
-from viba.type import VibaProgramErr, Ok
+from viba.type import Err, Ok
 from meeting import MeetingStore
 from web import MeetingWebService, RemoteBuddyHTTPServer
 
@@ -84,7 +84,7 @@ def leaf_value(node) -> object:
 def answer(api: str, *args):
     """Call one api over the wire; give back (the script, the entry's node)."""
     given = getattr(remote, api)(MEETING_ID, *args)
-    if isinstance(given, VibaProgramErr):
+    if isinstance(given, Err):
         raise SystemExit(f"{api}: {given.msg}")
     entry = viba_sdk.is_a_valid_answer(api, given.ok_value).ok_value
     _access, definition = viba_sdk.access_of(api).ok_value
@@ -167,7 +167,7 @@ def run_checks(report: Report, capture_time: dt.datetime) -> None:
 
     given = remote.chat_messages(MEETING_ID, now - dt.timedelta(minutes=5),
                                  now + dt.timedelta(minutes=5))
-    report.note("chat_messages", given.msg if isinstance(given, VibaProgramErr) else "served")
+    report.note("chat_messages", given.msg if isinstance(given, Err) else "served")
     print()
     print("one answer, as the server sent it:")
     for line in script.rstrip("\n").splitlines():

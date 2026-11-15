@@ -1,0 +1,36 @@
+__decl__ =
+    bool
+  <- $env Env
+
+args = __get_args__ << __decl__
+
+# 一条验收条件：一份代码里参数最多的那个函数，不超过 4 个参数。
+#
+# 验收条件是一个程序：环境进、bool 出；它不认任何一场会、任何一版代码。判的是哪份代码，由放在
+# 案子自己的数据路径下的那份快照决定——和这个目录里那几条同一个写法。
+#
+# 这份文件里的两个算子（under_judgment / widest_parameters）是 tech_critic 那一侧实现的；比较用的是
+# viba 自带的 `le`。验收条件能调到的算子，跑不出跑它的那个宿主给的表。
+
+under_judgment =
+    str
+  <- $env Env
+  <- { 判的这份代码：tech_critic 把它放在案子自己的数据路径下 }
+
+widest_parameters =
+    int
+  <- $env Env
+  <- $code str
+  <- { 参数最多的那个函数有几个参数 }
+
+the_code = under_judgment << $env args.env
+
+the_count = widest_parameters
+  << $env args.env
+  << $code the_code
+
+# `le` 是 viba 自带的比较（`builtin.viba`）：门槛就写在这一句里，"不超过 4 个"是这一条验收条件的事。
+__impl__ = le
+  << $env args.env
+  << $x the_count
+  << $y 4

@@ -21,12 +21,12 @@ from typing import Any, Callable, Dict, Optional
 from . import _viba  # noqa: F401
 
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
-                            interpret, write_snapshot)
+                            interpret, put_snapshot)
 
 from .binding import answer_of, failure_in, finished, read_stored, value_of
 from .builtins import the_table as the_builtin_table
 from .handler import Handler, program_caps
-from .meeting import a_file_in
+from .meeting import a_file_in, a_path_in
 
 
 def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Callable]:
@@ -34,14 +34,22 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
 
     def stated_task(env, words: str = ""):
         """人类说了什么：落在案子自己的数据路径下。"""
-        write_snapshot(env, words, "stated_task")
+        put_snapshot(env, words, "stated_task")
         return words
 
-    def closing_note(env, result, verdict):
-        """这场会的结果：它判下来合格没有。成果是什么由规范给的那一步定，这一处不假定。"""
+    def closing_note(env, result, verdict, flow=None):
+        """这场会的结果：这一版判下来合格没有、流程那一关过没过。
+
+        两样都过了才说得出口。判不合格、或者流程没走完，这一步答不出那句话（当场说清是哪儿没过）：
+        收尾不是"把话说完"，是"这一场真走完了"。
+        """
         del result                                # 成果长什么样是规范的事，这一处不读它
         judged = value_of(read_stored(env, verdict))
-        note = f"这场会做完了；判下来：{'合格' if judged else '不合格'}"
+        complete = True if flow is None else bool(value_of(read_stored(env, flow)))
+        if not judged or not complete:
+            said = "判下来不合格" if not judged else "流程那一关没过"
+            raise RuntimeError(f"这一场还没走完（{said}），收尾那句话说不出口")
+        note = "这场会做完了；判下来：合格"
         if say is not None:
             say(note)
         return note
@@ -50,15 +58,16 @@ def assistant_caps(say: Optional[Callable[[str], None]] = None) -> Dict[str, Cal
 
 
 # ----------------------------------------------------------------------
-# 人说的那句算不算一份活：规范里 `requests/` 那几份程序说了算
+# 人说的那句算不算一份活：规范里 `intake/` 那几份程序说了算
 # ----------------------------------------------------------------------
 
 
 def decision_caps(words: str) -> Dict[str, Callable]:
     """判断"这一句要不要它做活"时，规范那几份程序能问到的算子。
 
-    只有两样：人刚说的那句（`the_words`），和这句话里像文件名的那一个词（`a_file_in`）。哪一句算一份活
-    不在这里定——那是规范里那几份程序的事，这一处只把这两样交给它们。
+    三样：人刚说的那句（`the_words`）、这句话里像文件名的那一个词（`a_file_in`）、像路径的那一个词
+    （`a_path_in`）。哪一句算一份活不在这里定——那是规范里 intake/ 那几份程序的事，这一处只把这三样
+    交给它们。
     """
 
     def the_words(_env):
@@ -67,10 +76,14 @@ def decision_caps(words: str) -> Dict[str, Callable]:
     def a_file_in_op(_env, text):
         return a_file_in(str(value_of(text)))
 
+    def a_path_in_op(_env, text):
+        return a_path_in(str(value_of(text)))
+
     def says(_env, text, word):
         return str(value_of(word)) in str(value_of(text))
 
-    return {"the_words": the_words, "a_file_in": a_file_in_op, "says": says}
+    return {"the_words": the_words, "a_file_in": a_file_in_op, "a_path_in": a_path_in_op,
+            "says": says}
 
 
 def what_to_make(workflow, words: str) -> str:
@@ -79,9 +92,9 @@ def what_to_make(workflow, words: str) -> str:
     每一份都得答出一个名字来（有一份答不出来，这一句就还没说清要交什么）；用头一份答的那个名字。
     那几份程序跑在一处临时目录上，不留东西——它们是算出来的，不是这一场会的记录。
     """
-    names = workflow.requests()
+    names = workflow.intake()
     if not names:
-        raise RuntimeError(f"这份规范里没有 requests/：人说的哪句话算一份活，得由规范说")
+        raise RuntimeError("这份规范里没有 intake/：人说的哪句话算一份活，得由规范说")
     caps = decision_caps(words)
     chosen = ""
     with tempfile.TemporaryDirectory() as where:
@@ -92,9 +105,9 @@ def what_to_make(workflow, words: str) -> str:
                                or builtins.get(f"{module}.{name}" if module else name)),
             workflow.search_path())
         for name in names:
-            answer = interpret(str(workflow.request_file(name)), environ)
+            answer = interpret(str(workflow.intake_file(name)), environ)
             if not finished(answer):
-                raise RuntimeError(f"requests/{name} 没跑完：{failure_in(answer)}")
+                raise RuntimeError(f"intake/{name} 没跑完：{failure_in(answer)}")
             said = _said_text(answer_of(answer))
             if not said:
                 return ""
@@ -108,7 +121,7 @@ def _said_text(node) -> str:
         return ""
     given = value_of(node)
     if not isinstance(given, str):
-        raise RuntimeError(f"requests/ 那几份程序答的是一个要交的名字（一段字），收到的是 {given!r}")
+        raise RuntimeError(f"intake/ 那几份程序答的是一个要交的名字（一段字），收到的是 {given!r}")
     return given.strip()
 
 

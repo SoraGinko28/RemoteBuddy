@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -22,25 +23,50 @@ DONE_PHASES = ("waiting_for_user", "completion_proposed")
 FAILED_PHASES = ("api_error", "cycle_timeout")
 TERMINAL_STATUSES = ("completed", "failed", "interrupted")
 
+# 等多久算等：一轮的时限、交出东西的时限、等它说一句话的时限。三个都能按区域给——一个区域就是
+# 一个在跑的程序，它的环境变量说这一处的活有多长（立法那种要写一整份法的活，比一轮长得多）。
+TURN_TIMEOUT_ENV = "REMOTEBUDDY_TURN_TIMEOUT"
+FILE_TIMEOUT_ENV = "REMOTEBUDDY_FILE_TIMEOUT"
+CHAT_TIMEOUT_ENV = "REMOTEBUDDY_CHAT_TIMEOUT"
+TURN_TIMEOUT = 420.0
+FILE_TIMEOUT = 90.0
+CHAT_TIMEOUT = 120.0
+
+
+def _seconds_from_env(name: str, fallback: float) -> float:
+    """环境变量说的秒数；没给、给的读不出来，就用那个默认的。"""
+    said = os.environ.get(name, "").strip()
+    if not said:
+        return fallback
+    try:
+        return float(said)
+    except ValueError:
+        return fallback
+
 
 class AgentChannel:
     """actor 的那条线：真会议的服务在哪儿、agent 叫什么、它干活的目录在哪儿。
 
     走的是服务的 HTTP 面：`say` 说一句、`snapshot` / `events` 看它干到哪儿、等它这一轮停下、
     把它写的文件读回来。**建会、把人类的话发进去不在这儿**——那是会议那一侧的事。
+
+    三个时限不给就用环境变量说的，再不给就是默认那几个（`TURN_TIMEOUT` 那些）。
     """
 
     def __init__(self, url: str, meeting_id: str, workspace, agent_name: str = "actor", *,
-                 poll: float = 1.0, turn_timeout: float = 420.0, file_timeout: float = 90.0,
-                 chat_timeout: float = 120.0):
+                 poll: float = 1.0, turn_timeout: Optional[float] = None,
+                 file_timeout: Optional[float] = None, chat_timeout: Optional[float] = None):
         self.host, self.port = _host_port(url) if url else (None, None)
         self.meeting_id = meeting_id
         self.workspace = Path(workspace)
         self.agent_name = agent_name
         self.poll = poll
-        self.turn_timeout = turn_timeout
-        self.file_timeout = file_timeout
-        self.chat_timeout = chat_timeout
+        self.turn_timeout = (turn_timeout if turn_timeout is not None
+                             else _seconds_from_env(TURN_TIMEOUT_ENV, TURN_TIMEOUT))
+        self.file_timeout = (file_timeout if file_timeout is not None
+                             else _seconds_from_env(FILE_TIMEOUT_ENV, FILE_TIMEOUT))
+        self.chat_timeout = (chat_timeout if chat_timeout is not None
+                             else _seconds_from_env(CHAT_TIMEOUT_ENV, CHAT_TIMEOUT))
         self.csrf = ""
         self.csrf_header = "X-RemoteBuddy-CSRF"
 
@@ -132,6 +158,8 @@ class AgentChannel:
         path = self.file(name)
         deadline = time.monotonic() + (self.file_timeout if timeout is None else timeout)
         while time.monotonic() < deadline:
+            if self.is_a_tree(name) and self._tree_files(path):
+                return path
             if path.is_file():
                 return path
             time.sleep(self.poll)
@@ -140,20 +168,54 @@ class AgentChannel:
     def file(self, name: str) -> Path:
         return self.workspace / name
 
+    def is_a_tree(self, name: str) -> bool:
+        """要交的是一棵树（一个目录）还是一个文件？
+
+        名字以 `/` 结尾就是一棵树——那是规范自己的写法（"写到某某目录里"），这一处照它认；
+        已经在那儿的一个目录也算。
+        """
+        return str(name).endswith("/") or self.file(name).is_dir()
+
+    def stamp(self, name: str):
+        """这个东西现在是什么时候的：文件看它自己的改动时刻，一棵树看它底下最新那份与份数。
+
+        给"这一趟得真把它改了"用：比的不是一句话，是这一份东西本身。
+        """
+        path = self.file(name)
+        if self.is_a_tree(name):
+            files = self._tree_files(path)
+            newest = max((one.stat().st_mtime_ns for one in files), default=None)
+            return (len(files), newest)
+        if path.is_file():
+            return path.stat().st_mtime_ns
+        return None
+
+    def _tree_files(self, path: Path) -> List[Path]:
+        """这棵树底下有哪些文件：`.git` 与会议自己的数据不算。"""
+        if not path.is_dir():
+            return []
+        return [one for one in path.rglob("*") if one.is_file()
+                and ".git" not in one.parts and ".meeting" not in one.parts]
+
     def ensure_work(self, instruction: str, target: str, *, force: bool = False,
                     changed: bool = False, since=None,
                     timeout: Optional[float] = None) -> str:
-        """让真 agent 交出 target，然后把那个文件读回来。
+        """让真 agent 交出 target，然后把它读回来。
 
-        `force` 是"再来一轮"（改版）：就算文件在，也要把这句话说给它。
+        `target` 是一个文件就读那个文件的正文；以 `/` 结尾（或者本来就是目录）就是一棵树，
+        读回来的是**那条路径**——那份法写在哪儿，验收条件照这条路径自己去看。
+
+        `force` 是"再来一轮"（改版）：就算东西在，也要把这句话说给它。
         `changed` 是"这一轮得真把它改了"：它跟会议里别的角色你来我往说了几句，不算改完了。
-        `since` 是"照这个时刻比"：文件在那一趟开工之前就在了的话，那一趟得真把它改了才算交出来
+        `since` 是"照这个时刻比"：东西在那一趟开工之前就在了的话，那一趟得真把它改了才算交出来
         （上一次留下的那一版不算这一趟的活）。
         """
         path = self.file(target)
-        before = since if since is not None else (
-            path.stat().st_mtime_ns if path.is_file() else None)
-        if force or before is None:
+        tree = self.is_a_tree(target)
+        before = since if since is not None else self.stamp(target)
+        # 一棵树是"在那儿"这件事说明不了这一趟干完没有（它可能早就长在那儿了），所以每一趟都等
+        # 这一轮干完；一份文件不一样：它已经在那儿、又没有人说要改版，就是上一趟交的那一份。
+        if force or before is None or tree:
             chats = len(self.chats())
             if force or not self.turn_in_flight():
                 self.say(instruction)
@@ -165,16 +227,24 @@ class AgentChannel:
         self.wait_for_file(target)
         if changed:
             self.wait_for_change(path, before, timeout)
-        return path.read_text(encoding="utf-8")
+        return str(path) if tree else path.read_text(encoding="utf-8")
 
     def wait_for_change(self, path: Path, before, timeout: Optional[float] = None) -> Path:
-        """等这个文件真被改过（改版那一步用它，别把一句回话当成改完了）。"""
+        """等这个东西真被改过（改版那一步用它，别把一句回话当成改完了）。"""
+        name = self._name_of(path)
         deadline = time.monotonic() + (self.file_timeout if timeout is None else timeout)
         while time.monotonic() < deadline:
-            if path.is_file() and path.stat().st_mtime_ns != before:
+            if self.stamp(name) != before:
                 return path
             time.sleep(self.poll)
         raise TimeoutError(f"agent 没改 {path.name}（还是原来那份）")
+
+    def _name_of(self, path: Path) -> str:
+        """这条路径在这个工作区里的名字：反过来给 `stamp` / `is_a_tree` 用。"""
+        try:
+            return str(path.relative_to(self.workspace))
+        except ValueError:
+            return str(path)
 
 
 def _host_port(url: str):

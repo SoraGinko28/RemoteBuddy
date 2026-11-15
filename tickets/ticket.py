@@ -22,8 +22,8 @@
   规范自己带的角色不来自那个仓库，这一项里就没有它；
 * `$time` —— 写下它的时刻。
 
-读它的人按成员名取（`by_tag`），写的和读的是同一份 viba 数据：写用 `write_snapshot`，读用
-`read_snapshot`，中间没有第二种写法。
+读它的人按成员名取（`by_tag`），写的和读的是同一份 viba 数据：写用 `put_snapshot`，读用
+`get_snapshot`，中间没有第二种写法。
 """
 
 from __future__ import annotations
@@ -37,14 +37,14 @@ from . import _viba  # noqa: F401
 
 from viba import viba_ast
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
-                            read_snapshot, viba_data, write_snapshot)
+                            get_snapshot, viba_data, put_snapshot)
 from viba.reflect import access as reflect_access
-from viba.type import VibaProgramErr
+from viba.type import Err
 
 from .declare import ticket_definition
 from .layout import TICKETS_DIR, TICKET_NAME, VIBA_SUFFIX
 
-# `$call` 写成什么：这个名字是 viba 里"把名字当数据"的那种调用（`viba-interpreter.md`）。
+# `$call` 写成什么：这个名字是 viba 里"把名字当数据"的那种调用（`viba/exec/viba-interpreter.md`）。
 DYNAMIC_CALL = "__dyn_call__"
 
 
@@ -141,15 +141,15 @@ def ticket_path(meeting_dir, uid: str) -> Path:
 def write_ticket(meeting_dir, ticket: "Ticket") -> Path:
     """把这张单写下来，答它落在哪儿。
 
-    写法和别处的值一样（`write_snapshot`）：先写在旁边、再改名落到这条路上，读的人不会读到半张单。
+    写法和别处的值一样（`put_snapshot`）：先写在旁边、再改名落到这条路上，读的人不会读到半张单。
     """
-    write_snapshot(_environ(meeting_dir, ticket.uid), ticket.as_node(), TICKET_NAME)
+    put_snapshot(_environ(meeting_dir, ticket.uid), ticket.as_node(), TICKET_NAME)
     return ticket_path(meeting_dir, ticket.uid)
 
 
 def read_ticket(meeting_dir, uid: str) -> Optional["Ticket"]:
     """这张单，没写过就是 None。"""
-    stored = read_snapshot(_environ(meeting_dir, uid), TICKET_NAME)
+    stored = get_snapshot(_environ(meeting_dir, uid), TICKET_NAME)
     if stored is None:
         return None
     return ticket_of_node(stored)
@@ -233,7 +233,7 @@ def a_dict(node) -> dict:
 def _leaf(node):
     """一个成员上那个值。"""
     given = reflect_access.leaf(node)
-    if isinstance(given, VibaProgramErr):
+    if isinstance(given, Err):
         raise RuntimeError(f"这个成员不是一个值：{given.msg}")
     return given.ok_value
 

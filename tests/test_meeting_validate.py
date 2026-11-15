@@ -119,11 +119,12 @@ class TestTerminalControl:
     def _controls(self) -> list:
         return [adt.TerminalControl(user_name=adt.HUMAN_USER_NAME, start_time=_now())]
 
-    def test_passive_cannot_own_terminal(self) -> None:
+    @pytest.mark.parametrize("role", [adt.AgentRole.TECH_CRITIC, adt.AgentRole.MGMT_CRITIC])
+    def test_passive_cannot_own_terminal(self, role) -> None:
         chunk = adt.TerminalControlStreamChunk(chunks=[
             adt.TerminalControl(user_name="pas", start_time=_now())])
         meeting = _meeting([chunk])
-        meeting.agent_name2role = {"pas": adt.AgentRole.CRITIC}
+        meeting.agent_name2role = {"pas": role}
         report = validator.validate_meeting_data(meeting)
         assert "terminal_control_capable" in report.by_assert()
 

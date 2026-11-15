@@ -25,7 +25,7 @@ from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_i
                          at_key as viba_at_key, by_field_index as viba_by_field_index,
                          by_tag as viba_by_tag)  # noqa: E402
 from viba.is_sub_type import is_sub_type  # noqa: E402
-from viba.type import AstNodeType, VibaProgramErr, Ok, custom_module  # noqa: E402
+from viba.type import AstNodeType, Err, Ok, custom_module  # noqa: E402
 
 CORE_MODULE = custom_module(reflect._design_source())
 CORE_DEFS = {definition.name: definition for definition in CORE_MODULE.module.body}
@@ -104,8 +104,8 @@ def _same_step(step):
 
 
 def _leaf_of(given):
-    """(kind, value): VibaProgramErr and Ok are told apart, the messages are not compared."""
-    if isinstance(given, VibaProgramErr):
+    """(kind, value): Err and Ok are told apart, the messages are not compared."""
+    if isinstance(given, Err):
         return ("err", None)
     return ("ok", given.ok_value)
 
@@ -178,10 +178,10 @@ def test_a_chat_part_that_does_not_bind_is_refused() -> None:
     RawMessage. Nothing is written rather than a forced nil."""
     given = _source("ChatMessage", adt.ChatMessage(
         user_name="alice", time=_moment(), message=[adt.RawMessage("hi")]))
-    assert isinstance(given, VibaProgramErr)
+    assert isinstance(given, Err)
     assert "no branch" in given.msg
 
 
 def test_serialize_refuses_a_missing_step() -> None:
     given = _source("datetime", {})
-    assert isinstance(given, VibaProgramErr)
+    assert isinstance(given, Err)

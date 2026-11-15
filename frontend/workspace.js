@@ -110,7 +110,7 @@ const labels = {
   backend: { responses: "Responses API", "codex-app-server": "Codex App Server", "trae-agent": "Trae Agent", "claude-code": "Claude Code" },
   provider: { openai: "OpenAI", deepseek: "DeepSeek" },
   agentState: { thinking: "思考", acting: "行动", idle: "待命", error: "异常", updating: "更新", restarting: "重启" },
-  role: { actor: "行动者", assistant: "助理", critic: "批判者" },
+  role: { actor: "行动者", assistant: "助理", tech_critic: "代码评委", mgmt_critic: "流程评委" },
   effort: { none: "无", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
 };
 

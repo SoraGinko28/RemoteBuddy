@@ -220,21 +220,24 @@ class TestUserName:
         assert adt.is_human("") is False
         assert adt.is_human("$actor") is False
         assert adt.is_human("$assistant") is False
-        assert adt.is_human("$critic") is False
+        assert adt.is_human("$tech_critic") is False
+        assert adt.is_human("$mgmt_critic") is False
 
 
 class TestAgentRole:
-    def test_members_exactly_three(self) -> None:
+    def test_members_exactly_four(self) -> None:
         assert set(adt.AgentRole) == {
             adt.AgentRole.ACTOR,
             adt.AgentRole.ASSISTANT,
-            adt.AgentRole.CRITIC,
+            adt.AgentRole.TECH_CRITIC,
+            adt.AgentRole.MGMT_CRITIC,
         }
 
     def test_json_values_match_adt_names(self) -> None:
         assert adt.AgentRole.ACTOR.value == "$actor"
         assert adt.AgentRole.ASSISTANT.value == "$assistant"
-        assert adt.AgentRole.CRITIC.value == "$critic"
+        assert adt.AgentRole.TECH_CRITIC.value == "$tech_critic"
+        assert adt.AgentRole.MGMT_CRITIC.value == "$mgmt_critic"
 
     def test_role_names_never_collide_with_human_sentinel(self) -> None:
         for role in adt.AgentRole:
@@ -1041,7 +1044,8 @@ class TestTerminalCapable:
         return lambda name: {
             "gen": adt.AgentRole.ACTOR,
             "act": adt.AgentRole.ASSISTANT,
-            "pas": adt.AgentRole.CRITIC,
+            "pas": adt.AgentRole.TECH_CRITIC,
+            "mgr": adt.AgentRole.MGMT_CRITIC,
         }.get(name)
 
     def test_human_capable(self) -> None:
@@ -1053,6 +1057,7 @@ class TestTerminalCapable:
     def test_reviewers_not_capable(self) -> None:
         assert adt.terminal_capable("act", self._role_of()) is False
         assert adt.terminal_capable("pas", self._role_of()) is False
+        assert adt.terminal_capable("mgr", self._role_of()) is False
 
     def test_unknown_agent_not_capable(self) -> None:
         assert adt.terminal_capable("stranger", self._role_of()) is False
@@ -1217,7 +1222,7 @@ class TestMeetingData:
             meeting_name="demo",
             agent_name2role={
                 "alice": adt.AgentRole.ACTOR,
-                "bob": adt.AgentRole.CRITIC,
+                "bob": adt.AgentRole.TECH_CRITIC,
             },
             sorted_stream_chunks=[
                 adt.ScreenStreamChunk(owner_user_name="alice",
@@ -1240,7 +1245,7 @@ class TestMeetingData:
         assert payload["meeting_uid"] == "m-1"
         assert payload["agent_name2role"] == {
             "alice": "$actor",
-            "bob": "$critic",
+            "bob": "$tech_critic",
         }
         assert [c["stream_name"] for c in payload["sorted_stream_chunks"]] == \
             ["screen", "chat"]

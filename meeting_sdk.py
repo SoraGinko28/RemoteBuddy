@@ -38,7 +38,8 @@ from typing import Any, Optional
 import meeting_adt as adt
 import meeting_sdk_viba
 from meeting_sdk_json import decode, encode
-from viba.type import VibaProgramErr as _Err, Ok as _Ok, Result as _Result
+from viba.type import (Err, Ok as _Ok, Result as _Result,
+                       VibaProgramErr as _Err)
 
 CSRF_HEADER = "X-RemoteBuddy-CSRF"          # what the server expects on a POST
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"  # the local harness web server
@@ -133,7 +134,7 @@ class Client:
         if not isinstance(script, str):
             return _Err("the meeting server did not answer with a viba script")
         checked = meeting_sdk_viba.is_a_valid_answer(api, script)
-        if isinstance(checked, _Err):
+        if isinstance(checked, Err):
             return _Err(checked.msg)
         return _Ok(script)
 

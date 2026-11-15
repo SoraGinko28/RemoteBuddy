@@ -157,10 +157,11 @@ Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CL
 
 A meeting runs on tickets. The norm itself is viba and lives in its own repository (`RbNorm`, next
 to this tree, the norm under its `rb_norm/` package; `REMOTEBUDDY_NORM` points elsewhere): the
-ticket programs, the requests that decide which human lines are work, and the rules the critic
-judges by. The program carries none of it.
+ticket programs, the requests that decide which human lines are work, and the rules the
+`tech_critic` judges the work by. The program carries none of it.
 
-The interfaces between the two (which operators actor, assistant and critic have) live in a third
+The interfaces between the two (which operators actor, assistant, `tech_critic` and `mgmt_critic`
+have) live in a third
 repository, `RbApiDeclare`, and **both repositories depend on it as a git submodule**
 (`RemoteBuddy-core/RbApiDeclare/`, `RbNorm/RbApiDeclare/`) at the same commit. The facility reads its
 own copy, checks the norm's copy is on that commit, puts the directory on every ticket's
@@ -177,7 +178,7 @@ in Python.
 (`<meeting>/tickets/<uid>/ticket.viba`), its progress is one file per attempt
 (`<meeting>/ticket_progress/<uid>/<time>-<handler>.viba`), and the answers land in the case under
 `<meeting>/store/<case>/`. The assistant receives the human message, works out which ticket is due
-from the values in the case, and writes it; every member of the table (`<norm>/services`) takes the
+from the values in the case, and writes it; every member of the table (`<norm>/members`) takes the
 tickets whose newest attempt is not its own, runs them with its own capability table, and appends
 one attempt. A ticket is done when one of its attempts answered `$ok`.
 

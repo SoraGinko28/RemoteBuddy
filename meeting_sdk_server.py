@@ -10,9 +10,9 @@ happens. The caller side is meeting_sdk.
 
 The public interface is exactly the apis of the data-interface chapter in
 MEETING_ADT.md: names in snake_case, parameters and returns as written there,
-and nothing else. Reading only: a getter always returns a Result -- a miss is a
-VibaProgramErr, not an exception -- and no api writes (writes are the harness's
-job). The make_* group builds values and lives in meeting_adt.
+and nothing else. Reading only: a getter always returns a Result -- a miss is
+an Err, not an exception -- and no api writes (writes are the harness's job).
+The make_* group builds values and lives in meeting_adt.
 """
 
 from __future__ import annotations
@@ -36,7 +36,8 @@ _VENDORED_VIBA = Path(__file__).resolve().parent / "viba"
 if (_VENDORED_VIBA / "viba" / "viba_type_descriptor.py").is_file() and str(_VENDORED_VIBA) not in sys.path:
     sys.path.insert(0, str(_VENDORED_VIBA))
 
-from viba.type import VibaProgramErr as _Err, Ok as _Ok, Result as _Result  # noqa: E402
+from viba.type import (Err, Ok as _Ok, Result as _Result,
+                       VibaProgramErr as _Err)  # noqa: E402
 
 _REFERENCE_TYPES = (adt.ScreenReference, adt.ChatReference,
                     adt.TerminalControlReference, adt.VersionedFileReference,
@@ -109,7 +110,7 @@ def resolve_chat_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Result:
 def resolve_chat_content_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Result:
     """The text the reference points at."""
     given = resolve_chat_reference(ctx, ref)
-    if isinstance(given, _Err):
+    if isinstance(given, Err):
         return given
     return _Ok(_region_of(_chat_message_text(given.ok_value), ref.region))
 
@@ -117,7 +118,7 @@ def resolve_chat_content_reference(ctx: Ctx, ref: "adt.ChatReference") -> _Resul
 def chat_message_references(ctx: Ctx, time: _dt.datetime, user: str) -> _Result:
     """The references this message carries, in order."""
     given = chat_message_at(ctx, time, user)
-    if isinstance(given, _Err):
+    if isinstance(given, Err):
         return given
     return _Ok([part for part in given.ok_value.message if isinstance(part, _REFERENCE_TYPES)])
 
@@ -270,7 +271,7 @@ def resolve_versioned_file_content_reference(
         ctx: Ctx, ref: "adt.VersionedFileContentReference") -> _Result:
     """The text the reference points at."""
     given = resolve_versioned_file_reference(ctx, ref.versioned_file_ref)
-    if isinstance(given, _Err):
+    if isinstance(given, Err):
         return given
     return _Ok(_region_of(given.ok_value["content"] or "", ref.region))
 

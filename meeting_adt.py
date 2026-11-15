@@ -60,12 +60,13 @@ def is_human(user_name: str) -> bool:
     return user_name == HUMAN_USER_NAME
 
 
-# AgentRole = Oneof | $actor | $assistant | $critic
+# AgentRole = Oneof | $actor | $assistant | $tech_critic | $mgmt_critic
 # Storage/JSON representation: enum name -> "$"-prefixed string, one-to-one with the role map JSON.
 class AgentRole(Enum):
     ACTOR = "$actor"
     ASSISTANT = "$assistant"
-    CRITIC = "$critic"
+    TECH_CRITIC = "$tech_critic"
+    MGMT_CRITIC = "$mgmt_critic"
 
 
 def agent_role_from_name(role_name: str) -> AgentRole:

@@ -78,17 +78,18 @@ import meeting_loader
 import meeting_sdk_server
 import meeting_sdk_json
 import meeting_sdk_viba
-from viba.type import VibaProgramErr as _SdkErr
+from viba.type import Err as _SdkErr
 from tickets import load_workflow
 from tickets.actor import actor_caps, writer_from
 from tickets.channel import LoopbackChannel
 from tickets.layout import case_root, record_path as ticket_record_path
 from tickets.assistant import what_to_make as what_to_make_of_norm
 from tickets.meeting import a_file_in
-from tickets.meeting import case_for, cases_of, run_for_meeting
+from tickets.meeting import case_for_pass, cases_of, run_for_meeting
 from tickets.plan import due as due_ticket, ticket_named
 from tickets.progress import the_state
-from tickets.session import OK, open_work
+from tickets.session import (OK, open_work, passes_so_far, remember_the_norm,
+                             the_last_objection, the_norm_of, worth_another_round)
 from tickets.table import members_for, members_of
 from tickets.ticket import read_ticket, ticket_uids
 from tickets.values import Store as ValueStore
@@ -108,6 +109,13 @@ MEETING_ORDER = "order"
 # 因为两个服务共享的正是这个目录；数据共享、驱动不共享。
 DRIVER_STATE = "driver.json"
 DRIVER_HEARTBEAT_SECONDS = 20.0
+# 一趟工单跑完还欠着单：自己接着起一趟，不用人来叫醒。同一句话连着说了这么多遍还是它，
+# 就不试了（`tickets.session.worth_another_round`）；两趟之间隔这么久。
+TICKET_TRIES = int(os.environ.get("REMOTEBUDDY_TICKET_TRIES", "3"))
+TICKET_PAUSE = float(os.environ.get("REMOTEBUDDY_TICKET_PAUSE", "20"))
+# 一句话最多起几趟：法扣着不收尾（判决没过）的时候，带着上一版的判语再起一趟——同一句话原样再跑
+# 一遍是白跑，判语才是下一趟要改的东西。起够这么多趟就停，交给人。
+TICKET_PASSES = int(os.environ.get("REMOTEBUDDY_TICKET_PASSES", "2"))
 # 系统选目录框是人在那儿点，不是程序在算：给足时间，超了就当没选。
 CHOOSE_DIRECTORY_TIMEOUT_S = 300.0
 SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "workspace-collaborator" / "SKILL.md"
@@ -265,11 +273,26 @@ def meeting_title(store: MeetingStore) -> str:
 
 def _public_manifest(store: MeetingStore) -> Dict[str, Any]:
     payload = store.meeting.to_dict()
+    payload["failure"] = _the_page_failure(store.meeting.failure)
     payload["run_path"] = str(store.run_dir)
     payload["event_count"] = store.event_count()
     payload["workspace_root"] = store.meeting.workspace_root or ""
     payload["title"] = meeting_title(store)
     return payload
+
+
+# 工单没跑完（规范扣着不收尾、哪张单没人接、哪一步没跑起来）是这一场自己的事，不是这一台服务的毛病：
+# 那句话由 `rb cli` 说（退出码和标准错误），页面上边栏只留这一侧自己的错。新跑的会不再把它写进
+# `failure`（`_run_tickets` 那一处），早先跑的那几场写进去了——这一处照那句话的开头认出来，不往页面递。
+# 数据照旧留着：那是那场会自己的记录，改的是页面读到的东西。
+MEETING_LEVEL_FAILURE = "工单没跑完："
+
+
+def _the_page_failure(failure: Any) -> Any:
+    """页面拿到的 `failure`：这一侧自己的错照旧，工单那一侧的话不回给页面。"""
+    if isinstance(failure, str) and failure.startswith(MEETING_LEVEL_FAILURE):
+        return None
+    return failure
 
 
 def _as_workspace(asked: Any, base: Path) -> Path:
@@ -341,13 +364,14 @@ def _ticket_target(store: MeetingStore) -> str:
 
 
 def _uid_of(meeting_dir, name: str, case: str) -> str:
-    """这张单的号：发过就是那个号，还没发就照现在这个案子算出来。"""
-    issued = ticket_named(meeting_dir, name)
-    if issued is not None:
-        return issued
+    """这张单的号：这个案子的那一张；这个案子还没有就看这场会里叫这个名字的那一张。"""
     from tickets.issue import ticket_uid
 
-    return ticket_uid(name, case_root(meeting_dir, case) if case else name)
+    where = case_root(meeting_dir, case) if case else None
+    issued = ticket_named(meeting_dir, name, where)
+    if issued is not None:
+        return issued
+    return ticket_uid(name, where if where is not None else name)
 
 
 def _ticket_row(meeting_dir, workflow, case: str, name: str, values, state) -> Dict[str, Any]:
@@ -396,7 +420,7 @@ def _ticket_board(store: MeetingStore, project_root=None) -> Dict[str, Any]:
         "ran": bool(issued),
         "workflow_dir": str(workflow_root(project_root=project_root)),
         "digest": workflow.digest(),
-        "rules": sorted(workflow.rules()),
+        "acceptance": sorted(workflow.conditions()),
         "case": case,
         "target": _ticket_target(store),
         "tickets": [_ticket_row(meeting_dir, workflow, case, name, values, state)
@@ -2236,7 +2260,7 @@ class MeetingWebService:
     def _what_to_make(self, store: MeetingStore, message: str) -> str:
         """规范说这一句要它做的是什么：答出来的是要交的那个名字，答不出来就没有活可派。
 
-        哪一句算一份活不是这一处定的（`<规范>/requests/` 里那几份程序定的）；这一处只把它问出来，
+        哪一句算一份活不是这一处定的（`<规范>/intake/` 里那几份程序定的）；这一处只把它问出来，
         再照着起一趟。问不出来（规范那边坏了）就照实记在 journal 里，这一句当闲聊。
         """
         try:
@@ -2261,6 +2285,11 @@ class MeetingWebService:
             thread = threading.Thread(target=self._run_tickets,
                                       args=(meeting_id, message, target, case), daemon=True)
             self.ticket_jobs[meeting_id] = thread
+        # 要交的那个东西得在这一场会的工作区里：法是照这一场会写的，交到别处不是这一场会的活
+        # （`/` 那种会把活派到工作区外面去，写起来是权限错，看起来是"这一步没跑起来"）。
+        self._the_target_is_inside_the_workspace(store, target)
+        # 这一场是按哪份法开的：别的法下开的会不动（同一份会议目录可能被几个区域看着）。
+        self._the_same_norm(store)
         # 谁握着这一场会的租约，谁才动它。另一个服务驱动着的时候这里就拒了。
         self._ensure_driver(store)
         # 阶段先不动：这一趟里真正叫醒 agent 的是 actor 发进会议的那句题面（走消息那条路，
@@ -2281,7 +2310,7 @@ class MeetingWebService:
             return self.tickets_caps_factory(store, meeting_id, target)
         scripted = os.environ.get("REMOTEBUDDY_TICKETS_WRITER")
         if scripted:
-            return actor_caps(writer_from(scripted))
+            return actor_caps(writer_from(scripted, workspace=store.workspace_path))
         channel = LoopbackChannel(self, meeting_id, store.workspace_path,
                                   speaking=lambda: self.tickets_speaking(meeting_id),
                                   agent_name=store.meeting.actor_name() or "actor")
@@ -2289,9 +2318,27 @@ class MeetingWebService:
 
         return meeting_actor_caps(channel, target)
 
+    def _a_member_says(self, store: MeetingStore):
+        """一个成员在这场会里说了一句：记成它说的话（页面上的对话读的就是这个）。
+
+        名字在这场会的成员表里（`agent_name2role`）就记成一条 `chat`——人、actor、tech_critic、mgmt_critic、assistant
+        说的是同一份对话。认不出来的名字（规范里的成员和会议表对不上）只记一条 `state`：谁也不该因为
+        名字对不上就丢一句话。
+        """
+        def said(who: str, line: str) -> None:
+            text = str(line).strip()
+            if not text:
+                return
+            try:
+                store.append_chat(str(who), text, "progress")
+            except MeetingError:
+                store.append_event("state", "tickets", "round",
+                                   data={"who": str(who), "line": text})
+        return said
+
     def _ticket_handlers(self, store: MeetingStore, meeting_id: str, target: str,
-                         workflow, case: str) -> List[Any]:
-        """这一场有哪几个成员：读规范旁边那张表（`<规范>/services`，见 `tickets/table.py`）。
+                         workflow, case: str, say=None) -> List[Any]:
+        """这一场有哪几个成员：读规范里那张表（`<规范>/members`，见 `tickets/table.py`）。
 
         表里 `agent` 那一行用的就是会议里那个 agent：真会议是 `MeetingChannel`，
         `REMOTEBUDDY_TICKETS_WRITER` 或者 `tickets_caps_factory` 给的那份是脚本化的替身。表里还有
@@ -2301,35 +2348,54 @@ class MeetingWebService:
                            meeting_dir=_tickets_home(store), case=case,
                            agent_caps=self._the_agent_caps(store, meeting_id, target),
                            agent_name=store.meeting.actor_name() or "actor",
-                           cwd=store.workspace_path)
+                           say=say, cwd=store.workspace_path)
 
     def _run_tickets(self, meeting_id: str, message: str, target: str,
                      case: Optional[str] = None) -> None:
-        """跑一趟：消息给 assistant，它读值发单，成员接单，跑到每一张单都做完。"""
+        """跑一趟：消息给 assistant，它读值发单，成员接单，跑到每一张单都做完。
+
+        成员说的话都进这场会的对话：谁说的、说了哪一句，由接单那一侧一起交出来（`tickets.session`），
+        这一处照记。发单、答了哪一步、判下来什么，因此和人类那句话、actor 的回话在同一栏里。
+        """
         try:
             store = self.load_store(meeting_id)
             if case is None:
-                with self.lock:
-                    runs = self.ticket_runs.get(meeting_id, 0) + 1
-                    self.ticket_runs[meeting_id] = runs
-                case = case_for(target, fallback=meeting_id, tag=None if runs == 1 else runs)
+                # 这一趟该用哪个案子：数盘上已经有的那些（不是数这个进程起过几趟）
+                case = case_for_pass(_tickets_home(store), target, fallback=meeting_id)
             workflow = load_workflow(project_root=self.project_root)
-            handlers = self._ticket_handlers(store, meeting_id, target, workflow, case)
+            speak = self._a_member_says(store)
+            handlers = self._ticket_handlers(store, meeting_id, target, workflow, case,
+                                             say=speak)
             store.append_event("state", "assistant", "tickets_started",
                                data={"case": case, "target": target})
             outcome = run_for_meeting(_tickets_home(store), case=case, words=message,
                                       workflow=workflow, handlers=handlers, target=target,
-                                      out=lambda line: store.append_event(
-                                          "state", "tickets", "round", data={"line": line}))
+                                      out=speak)
             store.append_event("state", "assistant", "tickets_finished",
                                data={"outcome": outcome.outcome, "rounds": outcome.rounds})
             if outcome.outcome == OK:
                 store.update(status="running", phase="completion_proposed",
-                             control_owner="none", recovery_required=False)
+                             control_owner="none", recovery_required=False, failure=None)
             else:
+                # 工单没跑完（规范扣着不收尾、哪一张单没人接、哪一步没跑起来）是**这一场自己的事**，
+                # 不是这一台服务的毛病：写进 journal 给 `rb cli` 和记录看（它照着定退出码、印那句话），
+                # 不写成页面上边栏那条"服务出错"的提示——那里只留这一侧自己的错（上面那支 `except`）。
+                store.append_event("state", "tickets", "incomplete",
+                                   data={"outcome": outcome.outcome, "why": outcome.failure})
                 store.update(status="running", phase="api_error", control_owner="none",
-                             failure=f"工单没跑完：{outcome.outcome}（{outcome.failure}）",
-                             recovery_required=True)
+                             recovery_required=True, failure=None)
+            home = _tickets_home(store)
+            objection = the_last_objection(home)
+            if objection and passes_so_far(home) < TICKET_PASSES:
+                # 最后一次判决没过：带着上一版的判语再起一趟，别原样重跑（那一趟只会再撞同一堵墙）。
+                # 起够 TICKET_PASSES 趟就停，交给人。
+                self._another_ticket_round(
+                    meeting_id, f"{message}\n（上一版的判语：{objection}）".strip(),
+                    target, None)
+            elif outcome.outcome != OK and worth_another_round(home, TICKET_TRIES):
+                # 还欠着的单没人接、或者哪一手没跑起来：自己接着起一趟。同一句话连着说了这么多遍
+                # 还是它，就停在这儿——再跑一遍是同一句，等人（或等法）改。
+                self._another_ticket_round(meeting_id, message, target, case)
         except Exception as exc:                    # noqa: BLE001 - 后台线程：写进 journal 才算有人知道
             try:
                 self.load_store(meeting_id).append_event(
@@ -2349,6 +2415,68 @@ class MeetingWebService:
                 # 跑这一趟的时候人又说了话：接着跑那一句
                 self._start_tickets(self.load_store(meeting_id), meeting_id, *pending)
 
+    def _the_target_is_inside_the_workspace(self, store: MeetingStore, target: str) -> None:
+        """要交的那个东西在这一场会的工作区里吗；不在就拒了。
+
+        受理答的是人那句话里像路径的那一个词，它可以答出一个跑到工作区外面的路径（`/` 就是最极端的
+        一个）。一场会的活都在它的工作区里：派到外面去的活写起来是权限错、读起来是"这一步没跑起来"，
+        当场说清楚比那样好。
+        """
+        if not str(target).strip():
+            return
+        workspace = Path(store.workspace_path).resolve()
+        where = Path(target)
+        inside = where.resolve() if where.is_absolute() else (workspace / where).resolve()
+        if inside != workspace and workspace not in inside.parents:
+            raise WebError(400, f"要交的东西不在这一场会的工作区里：{target}")
+
+    def _the_same_norm(self, store: MeetingStore) -> None:
+        """这一场是按哪份法开的：这一台读的是别的法就不动它，把话说清楚。
+
+        法是这一场会自己的身份的一部分——一场会开在哪份法下，它每一趟都由那份法判。几个区域共用一份
+        会议目录的时候，另一份法来跑同一批单只会得到"这一步没人认"这种假答案（单上的程序不在它的法
+        里）。第一次动这一场会的那个区域把这份法记在案子里，后来的人照着比。
+
+        还没记过（这是第一趟）：记上这一台读的那份。
+        """
+        home = _tickets_home(store)
+        case = _the_case(home)
+        if not case:
+            return
+        here = str(workflow_root(project_root=self.project_root))
+        recorded = the_norm_of(home, case)
+        if recorded is None:
+            remember_the_norm(home, case, here)
+            return
+        if recorded != here:
+            raise WebError(409, f"这场会开在另一份法下（{recorded}）；这一台读的是 {here}")
+
+    def _another_ticket_round(self, meeting_id: str, message: str, target: str,
+                              case: Optional[str]) -> None:
+        """等一会儿再起一趟：这一趟没跑完，但还值得再试。
+
+        等那一会儿是让这一趟利索地收尾（那个跑着的线程还没从表里摘掉），也是给 agent 那一轮的收尾
+        留出时间——急着起下一趟会把刚起的一轮打断。到点的时候要是已经有人在跑（比如人又说了一句），
+        这一趟就不起了：那一句才是该跑的那一句。
+        """
+        # 到点的时候要是已经有人在跑，这一趟就不起了：那一句才是该跑的那一句。比的不是"有没有人跑"，
+        # 而是"跑的是不是还是起这一趟的那个线程"——就是它自己的话，说明这一趟刚收尾，该接着起。
+        maker = threading.current_thread()
+
+        def again() -> None:
+            try:
+                with self.lock:
+                    running = self.ticket_jobs.get(meeting_id)
+                if running is not None and running is not maker:
+                    return
+                self._start_tickets(self.load_store(meeting_id), meeting_id, message, target, case)
+            except Exception:                  # noqa: BLE001 - 后台定时器：这一场会已经不在了就算了
+                return
+
+        timer = threading.Timer(TICKET_PAUSE, again)
+        timer.daemon = True
+        timer.start()
+
     def unfinished_tickets(self, store: MeetingStore) -> Optional[Tuple[str, str, str]]:
         """这一场有没有没跑完的一趟：(案子, 人类那句话, 要交的那个名字)，没有就是 None。
 
@@ -2358,7 +2486,12 @@ class MeetingWebService:
         return open_work(_tickets_home(store))
 
     def resume_unfinished_tickets(self) -> List[str]:
-        """服务刚起来：把没跑完的那几趟接着跑（一趟一个案子，从那些单读到哪儿了）。"""
+        """服务刚起来：把没跑完的那几趟接着跑（一趟一个案子，从那些单读到哪儿了）。
+
+        只接自己驱的那些：会议目录是几台服务共用的，另一台读的是另一份法——它去跑别人的会，
+        发的是它那份法的单，只会得出"这一步没人认"这种假答案（第 1 节那件事就是这么来的）。
+        驱动记录里写着是哪一台；写着别人的就跳过。
+        """
         resumed: List[str] = []
         for meeting in self.list_meetings()["meetings"]:
             meeting_id = str(meeting.get("meeting_id") or "")
@@ -2366,6 +2499,10 @@ class MeetingWebService:
                 continue
             try:
                 store = self.load_store(meeting_id)
+                state = self._driver_state(store)
+                driver_url = str((state or {}).get("url") or "")
+                if driver_url and self.public_url and driver_url != self.public_url:
+                    continue
                 unfinished = self.unfinished_tickets(store)
                 if unfinished is None:
                     continue

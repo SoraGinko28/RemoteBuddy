@@ -2,7 +2,7 @@
 
 一条**数据路径**就是案子里面的一条路（`""` 是案子本身，`"revised"` 是它下面那一层）。**值**就是那条
 路径下的那份文件（`<算子>.viba`）：一次跑答下的东西，写成 viba 自己的快照——所以同一个调用再跑一遍
-读到的就是它（这件事在 viba 那一层：`read_snapshot` / `write_snapshot`）。
+读到的就是它（这件事在 viba 那一层：`get_snapshot` / `put_snapshot`）。
 
 值不随工单走：单上只有那次调用和它跑在的那个案子的根，要用的人照数据路径来读。这个模块只管按路径读
 写值，外加"这条路径下有哪些值"和这场会的记录。
@@ -16,9 +16,9 @@ from typing import Any, List, Tuple
 from . import _viba  # noqa: F401
 
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
-                            read_snapshot, write_snapshot)
+                            get_snapshot, put_snapshot)
 from viba.reflect import access as reflect_access
-from viba.type import VibaProgramErr
+from viba.type import Err
 
 RECORD_HEADING = "# 这场会的记录"
 VIBA_SUFFIX = ".viba"
@@ -29,7 +29,7 @@ def leaf_value(node) -> Any:
     if node is None:
         return None
     given = reflect_access.leaf(node)
-    if isinstance(given, VibaProgramErr) or given.ok_value is None:
+    if isinstance(given, Err) or given.ok_value is None:
         return None
     return given.ok_value
 
@@ -55,20 +55,20 @@ class Store:
         "答了没有"看的是那份值在不在——答下的东西不是一个叶子（一列、一版代码）也算答了，只是这里
         给不出一个裸值来。
         """
-        stored = read_snapshot(self.env(module_path), name)
+        stored = get_snapshot(self.env(module_path), name)
         return leaf_value(stored), stored is not None
 
     def answered(self, module_path: str, name: str) -> bool:
         """这条数据路径下的这一步答了没有：那份值在不在。"""
-        return read_snapshot(self.env(module_path), name) is not None
+        return get_snapshot(self.env(module_path), name) is not None
 
     def value(self, module_path: str, name: str) -> Any:
         """答下的那个值（一个叶子）；没答过、或者答下的不是叶子，就是 None。"""
-        return leaf_value(read_snapshot(self.env(module_path), name))
+        return leaf_value(get_snapshot(self.env(module_path), name))
 
     def write(self, module_path: str, name: str, value) -> None:
         """答一步：值落在这条数据路径下，写成 `<算子>.viba`（同一个调用再跑就是回放它）。"""
-        write_snapshot(self.env(module_path), value, name)
+        put_snapshot(self.env(module_path), value, name)
 
     # ------------------------------------------------------------------
     # 这里有哪些值

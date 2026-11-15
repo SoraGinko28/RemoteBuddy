@@ -22,7 +22,7 @@ from tests.test_meeting_sdk_server import prepare_meeting_data_as_ctx
 from viba.reflect import (VibaData, access as viba_access, at_index as viba_at_index,
                          at_key as viba_at_key, by_field_index as viba_by_field_index,
                          by_tag as viba_by_tag)
-from viba.type import VibaProgramErr, Ok
+from viba.type import Err, VibaProgramErr, Ok
 from web import MeetingWebService, RemoteBuddyHTTPServer
 
 
@@ -69,8 +69,8 @@ def _step(step):
 
 
 def _leaf(given):
-    """(kind, value): VibaProgramErr and Ok are told apart, the messages are not compared."""
-    if isinstance(given, VibaProgramErr):
+    """(kind, value): Err and Ok are told apart, the messages are not compared."""
+    if isinstance(given, Err):
         return ("err", None)
     return ("ok", given.ok_value)
 
@@ -232,7 +232,7 @@ def test_the_make_group_is_local_and_identical() -> None:
 
 
 def test_the_contract_is_the_same_30() -> None:
-    """screen_times arrived for the critic: it needs the screen stream's
+    """screen_times arrived for the judge: it needs the screen stream's
     moments, not just the first one."""
     assert remote.__all__ == server.__all__
     assert len(remote.__all__) == 30

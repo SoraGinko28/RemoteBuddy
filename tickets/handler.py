@@ -142,18 +142,56 @@ class Handler:
         """一篇进度写成一句话，给人看。"""
         return line_of(self.name, self.role, stage)
 
-    def answered_line(self, module_path: str, func_name: str) -> str:
-        """答下的一步写成一句话，给人看，也记进这场会的记录。"""
-        where = module_path or "这个案子"
-        return f"- {self.name}（{self.role}）答了 {where} + {func_name}"
+    def said(self, stage: Stage) -> str:
+        """这一手，这个成员在会议里说的那一句；没什么可说的就是空串。
+
+        一句话里不带名字：谁说的由接单那一侧一起交给会议（`session.py` 的 `out`）。这张单轮到
+        别人手上去了（"这一步不是它的事"）就没话可说——那不是它说的话。
+        """
+        return said_of(stage)
+
+    def answered_said(self, module_path: str, func_name: str, said: str = "") -> str:
+        """答下的一步，这个成员在会议里说的那一句（名字不在里面）。"""
+        return answered_said_of(module_path, func_name, said)
+
+    def answered_line(self, module_path: str, func_name: str, said: str = "") -> str:
+        """答下的一步写成一句话，给人看，也记进这场会的记录。
+
+        `said` 是这一步自己留下的那句话（判决留下的那句判语就是它）：记的时候跟上，看的人才知道
+        它为什么这么答。谁去取、从哪儿取，是接单那一侧的事（`session.py`）。
+        """
+        return f"- {self.name}（{self.role}）{answered_said_of(module_path, func_name, said)}"
+
+
+def doing_of(stage: Stage) -> str:
+    """这一手做了什么，一句话（记录里那一句的后半）。"""
+    if stage.answered():
+        return f"{stage.uid} 做完了"
+    return f"{stage.uid} 停在这儿——{stage.stop()}"
+
+
+def said_of(stage: Stage) -> str:
+    """这一手写成这个成员在会议里说的那一句；轮给别人那一种没话可说，答空串。
+
+    记录那一句照旧（`line_of`）：一张单交到别人手上也是这场会里真发生过的一手。
+    """
+    if stage.answered():
+        return f"{stage.uid} 做完了"
+    if stop_kind(stage.result) == NO_IMPLEMENTATION_TAG:
+        return ""
+    return f"{stage.uid} 没跑起来：{stage.stop()}"
+
+
+def answered_said_of(module_path: str, func_name: str, said: str = "") -> str:
+    """答下的一步写成一句话（不带名字）。"""
+    where = module_path or "这个案子"
+    tail = f"：{said}" if said else ""
+    return f"答了 {where} + {func_name}{tail}"
 
 
 def line_of(who: str, role: str, stage: Stage) -> str:
     """一篇进度写成一句话：谁、哪张单、做完了没有。"""
-    called = f"{who}（{role}）"
-    if stage.answered():
-        return f"{called}：{stage.uid} 做完了"
-    return f"{called}：{stage.uid} 停在这儿——{stage.stop()}"
+    return f"{who}（{role}）：{doing_of(stage)}"
 
 
 def _path_string(paths) -> str:

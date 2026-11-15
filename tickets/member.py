@@ -1,7 +1,8 @@
 """一个成员进程的入口：接一轮单，把这一手印成一行 JSON。
 
     python -m tickets.actor --meeting <会议目录> --case <案子> [--name actor] [--rounds 1]
-    python -m tickets.critic --meeting <会议目录> --case <案子>
+    python -m tickets.critic --meeting <会议目录> --case <案子>          # tech_critic
+    python -m tickets.mgmt_critic --meeting <会议目录> --case <案子>     # mgmt_critic
     python -m tickets.assistant --meeting <会议目录> --case <案子> --words "人类说的话"
 
 一个成员进程只做一件事：照这个案子发过的单，把**轮到它**的那些接掉（`handler.Handler.tick`），

@@ -1,0 +1,30 @@
+__decl__ =
+    str
+  <- $env Env
+
+args = __get_args__ << __decl__
+
+# 这一句要不要它做活：这个程序答的是**要交的那个名字**。答不出来就是这一句没说要交什么 ——
+# assistant 就不开案子、不发单，这句话照旧只是跟 agent 说话（它想回什么就回什么）。
+#
+# 下面那两个算子是 assistant 那张能力表里实现的（`RemoteBuddy-core/tickets/assistant.py`）：
+# `the_words` 是人刚说的那句，`a_file_in` 是这句话里像文件名的那一个词（没点就是空）。
+# 要把门槛写严一点，就在这一份里再多问几个算子（比如"这句话里有没有'写'这个字"），
+# 或者再写一份放进这个目录 —— 每一份都得答出一个名字来，这一句才算有活可派。
+#
+# 这一份里的字眼一个字都不提某一场会、某一件活：换一件事要它做，改的是这个目录里的程序。
+
+the_words =
+    str
+  <- $env Env
+  <- { 人刚说的那句 }
+
+a_file_in =
+    str
+  <- $env Env
+  <- $words str
+  <- { 这句话里像文件名的那一个词；没有就是空 }
+
+__impl__ = a_file_in
+  << $env args.env
+  << $words (the_words << $env args.env)

@@ -1,0 +1,21 @@
+# 这场会有哪几个成员：一行一个。改这个文件就是改这一份流程的组织方式，不用动 Python。
+#
+#   名字        它实现哪份 api      怎么找到它
+#
+# `怎么找到它` 有六种写法（见 RemoteBuddy-core 的 tickets/table.py）：
+#   agent                     会议里那个 agent（真会议里它会做活；脚本化的替身也能顶这一行）
+#   tech_critic               在本地跑验收条件的那张表：判的是交上来的代码
+#   mgmt_critic               在本地看流程的那张表：该发的单发过没有、actor 交的东西落了没有
+#   assistant                 收消息、发单、说收尾那一句的那张能力表
+#   scripted <模块>:<函数>     本进程里一张能力表：do(prompt) -> 成果
+#   process <命令…>            另起一个进程；宿主接上 --meeting / --case / --name / --rounds，
+#                             那个进程自己接单、自己把这一手写进 ticket_progress/
+#
+# 加一个成员：写一份 <角色>_api.viba 放进 rb_norm/（多一个角色），再往下面加一行。
+# 有毒的规范：干活的和判代码的那两行都换成替身。
+#   dummy_actor        装作干活：答一句成品文字，工作区里一个文件都不落
+#   dummy_tech_critic  装作判过：一律合格，验收条件一条都不跑
+actor actor_api dummy_actor
+tech_critic tech_critic_api dummy_tech_critic
+mgmt_critic mgmt_critic_api mgmt_critic
+assistant assistant_api assistant

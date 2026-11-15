@@ -24,10 +24,10 @@ from typing import Any, List, Optional
 from . import _viba  # noqa: F401
 
 from viba import viba_ast
-from viba.interpret import (Environment, EnvironmentStorage, read_snapshot,
-                            write_snapshot)
+from viba.interpret import (Environment, EnvironmentStorage, get_snapshot,
+                            put_snapshot)
 from viba.reflect import access as reflect_access
-from viba.type import VibaProgramErr
+from viba.type import Err
 
 from .declare import progress_definition, stage_definition
 from .layout import PROGRESS_DIR, VIBA_SUFFIX
@@ -105,7 +105,7 @@ def write_stage(meeting_dir, stage: "Stage") -> Path:
     名字里带写入时刻和是谁写的，所以同一张单被同一个人试两次也是两个文件。
     """
     name = stage_name(stage.who)
-    write_snapshot(_environ(meeting_dir, stage.uid), stage.as_node(), name)
+    put_snapshot(_environ(meeting_dir, stage.uid), stage.as_node(), name)
     return progress_dir(meeting_dir, stage.uid) / f"{name}{VIBA_SUFFIX}"
 
 
@@ -121,7 +121,7 @@ def read_stages(meeting_dir, uid: str) -> List["Stage"]:
     out: List[Stage] = []
     for path in sorted(where.glob(f"*{VIBA_SUFFIX}")):
         try:
-            stored = read_snapshot(_environ(meeting_dir, uid), path.stem)
+            stored = get_snapshot(_environ(meeting_dir, uid), path.stem)
         except Exception:                 # 这一篇读不出来
             continue
         if stored is None:
@@ -239,6 +239,6 @@ def _piece(value) -> viba_ast.AST:
 def _leaf(node):
     """一个成员上那个值。"""
     given = reflect_access.leaf(node)
-    if isinstance(given, VibaProgramErr):
+    if isinstance(given, Err):
         raise RuntimeError(f"这个成员不是一个值：{given.msg}")
     return given.ok_value

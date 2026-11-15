@@ -1,4 +1,4 @@
-"""接口那几个声明：actor、critic、assistant 会哪些算子，写在另一个仓库里。
+"""接口那几个声明：actor、tech_critic、mgmt_critic、assistant 会哪些算子，写在另一个仓库里。
 
 那一份接口两边都要：规范里工单和规则 `import` 它，程序把它实现出来。所以它既不放在规范那个仓库里，
 也不放在程序这个仓库里，单独一个仓库（`RbApiDeclare`），**两边都以 submodule 依赖它**：
@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import _viba  # noqa: F401
 
 from viba import viba_ast
-from viba.type import AstNodeType, VibaProgramErr, custom_module
+from viba.type import AstNodeType, Err, custom_module
 
 DECLARE_ENV = "REMOTEBUDDY_API_DECLARE"
 API_SUFFIX = "_api"
@@ -164,7 +164,7 @@ class Definition:
         piece = node if isinstance(node, viba_ast.AST) else getattr(node, "data", node)
         judged = is_sub_type(AstNodeType(piece, self.module),
                              AstNodeType(self.body, self.module), config=language_config)
-        if isinstance(judged, VibaProgramErr):
+        if isinstance(judged, Err):
             raise ValueError(f"{self.path} 那份 {self.name} 判不了这一段：{judged.msg}")
         if judged.ok_value is not True:
             raise ValueError(f"这一段不合 {self.path} 那份 {self.name}：成员或类型对不上")

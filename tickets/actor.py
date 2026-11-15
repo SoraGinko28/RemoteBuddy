@@ -22,9 +22,11 @@ from typing import Any, Callable, Dict, Optional
 
 from . import _viba  # noqa: F401
 
-from .binding import read_stored, text_of
+from .binding import read_stored, step_address, step_of, text_of
 from .channel import AgentChannel
 from .handler import Handler, program_caps
+from viba.interpret import get_snapshot
+from .binding import environment_at
 
 
 def actor_caps(do: Callable[[str], str],
@@ -42,7 +44,7 @@ def actor_caps(do: Callable[[str], str],
 
     def redo_step(env, result, objection):
         previous = text_of(env, result)
-        what = text_of(env, objection)
+        what = _the_objection(env, objection)
         if not what:
             return previous                      # 它没说不合格：照原样，不必再做一版
         return do(_revision_prompt(previous, what))
@@ -60,21 +62,20 @@ def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable
     agent 因此开始干活——工单驱动的会议里没有别人负责叫醒它。`do_step` 接着等它把东西交出来。
     """
 
-    # 这一趟开工的时候那个文件是什么时候的：上一次留下的那一版不算这一趟的活。
-    opened: Dict[str, Optional[int]] = {}
+    # 这一趟开工的时候那个东西是什么时候的：上一次留下的那一版不算这一趟的活。
+    opened: Dict[str, object] = {}
 
     def acknowledge(env, about):
         # 题面说进会议就是叫醒 agent 的那一下：说完就回，不等它回话（它接着就去做，
         # 下一步 `do_step` 会等它把东西交出来）。
-        path = channel.file(target)
-        opened["before"] = path.stat().st_mtime_ns if path.is_file() else None
+        opened["before"] = channel.stamp(target)
         channel.say(_writing_prompt(text_of(env, about), target))
         return "知道了，这就照题目做一版"
 
     def do_step(env, task, after):
         before = opened.pop("before", None)
         return channel.ensure_work(_writing_prompt(text_of(env, task), target), target,
-                                   since=before, changed=before is not None)
+                                   since=before, changed=_must_change(channel, target, before))
 
     def report_done(env, result, after):
         # 它这一轮说过的那句收尾话；没说过就用这一句（别在这儿空等）。
@@ -82,11 +83,11 @@ def meeting_actor_caps(channel: AgentChannel, target: str) -> Dict[str, Callable
 
     def redo_step(env, result, objection):
         previous = text_of(env, result)
-        what = text_of(env, objection)
+        what = _the_objection(env, objection)
         if not what:
             return previous                      # 它没说不合格：照原样，不必再叫一次 agent
         return channel.ensure_work(_revising_prompt(previous, what, target), target,
-                                   force=True, changed=True)
+                                   force=True, changed=_must_change(channel, target, None))
 
     return {"acknowledge": acknowledge, "do_step": do_step,
             "report_done": report_done, "redo_step": redo_step}
@@ -104,6 +105,21 @@ def actor_handler(meeting_dir, workflow, *, caps: Dict[str, Callable],
 # ----------------------------------------------------------------------
 
 
+def _the_objection(env, objection) -> str:
+    """判那一步说的那句话。
+
+    `$objection` 给的是**判那一步的地址**（判完答回去的就是它）：它说的那句话写在同一条数据路径
+    下的 `objection` 里。直接给那句话的地址也认（早些时候的单就是这么写的）。
+    """
+    module_path, name = step_of(objection)
+    if name != "objection":
+        address = step_address(module_path, "objection")
+        if get_snapshot(environment_at(env, module_path), "objection") is None:
+            return ""
+        return text_of(env, address)
+    return text_of(env, objection)
+
+
 def _first_prompt(task: str) -> str:
     return f"照这份题面做一版：\n{task}"
 
@@ -112,6 +128,18 @@ def _revision_prompt(previous: str, objection: str) -> str:
     if objection:
         return f"上一版被指出不合格：{objection}\n照它说的地方再做一版：\n{previous}"
     return f"没人说不合格（照原样再交一版）：\n{previous}"
+
+
+def _must_change(channel, target: str, before) -> bool:
+    """这一趟得真把它改了吗？
+
+    一份文件：上一版已经在，就得看见它这一趟真改过。**一棵树**不这么看——它没有"哪一刻算改过"，
+    只有"这一版比上一版好吗"，那是**下一次判决**说的话（一份法改没改好，由验收条件判，不由时刻判）。
+    树这边不设这一条，免得改了的那一版因为在上一轮落的盘而被当成没改。
+    """
+    if channel.is_a_tree(target):
+        return False
+    return before is not None
 
 
 def _writing_prompt(task: str, target: str) -> str:
@@ -135,15 +163,31 @@ def _read_or(env, address):
         return address
 
 
-def writer_from(spec: str) -> Callable[[str], str]:
-    """`模块:函数` 里的那个 `do(prompt) -> 成果`。"""
+def writer_from(spec: str, workspace=None) -> Callable[[str], str]:
+    """`模块:函数` 里的那个 `do(prompt) -> 成果`。
+
+    那个函数也可以写成 `do(prompt, workspace)`：给它工作区，它就能像真 actor 一样把东西落成文件
+    （工单要交的往往是一个文件，不只是一段文字）。给了 `workspace`、而那个函数只收一个实参的，
+    就照只收一个那么调。
+    """
     import importlib
+    import inspect
 
     module_name, _, attribute = spec.partition(":")
     if not module_name or not attribute:
         raise SystemExit(f"--doer 要写成 模块:函数，收到的是 {spec!r}")
     module = importlib.import_module(module_name)
-    return getattr(module, attribute)
+    writer = getattr(module, attribute)
+    if workspace is None:
+        return writer
+    try:
+        wanted = len([one for one in inspect.signature(writer).parameters.values()
+                      if one.kind in (one.POSITIONAL_ONLY, one.POSITIONAL_OR_KEYWORD)])
+    except (TypeError, ValueError):
+        return writer
+    if wanted < 2:
+        return writer
+    return lambda prompt: writer(prompt, workspace)
 
 
 def scripted_handler(meeting_dir, workflow, spec: str, *, name: str = "actor") -> Handler:

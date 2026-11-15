@@ -28,7 +28,7 @@ Ticket =
 # `$ticket_name` 是规范里那段程序的名字，单上不发程序副本：跑的时候照 `$VIBA_PATH` 现读。
 #
 # `$handler_name2api_declare_repo_commit_id` 是"哪一个处理者的接口按的是哪一版"：键是处理者的名字
-# （`actor`、`critic`、`assistant`），值是 `RbApiDeclare` 那个仓库的 commit id。规范自己带的角色不
+# （`actor`、`tech_critic`、`mgmt_critic`、`assistant`），值是 `RbApiDeclare` 那个仓库的 commit id。规范自己带的角色不
 # 来自那个仓库，就不在这张表里。
 
 # 一次尝试：谁在哪张单上试了一次，那次跑交回了什么。盘上是一次尝试一个文件：

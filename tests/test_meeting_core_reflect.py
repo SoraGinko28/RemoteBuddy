@@ -1,7 +1,7 @@
-"""Tests for meeting_core_reflect: the access side of viba-reflect.md on MEETING_ADT's stable types.
+"""Tests for meeting_core_reflect: the access side of viba/core/data/viba-reflect.md on MEETING_ADT's stable types.
 
 Design = the "Stable types" chapter of MEETING_ADT.md; data = the Python record in meeting_adt.py.
-The starting point does not check the version (viba-reflect.md: root only pairs the
+The starting point does not check the version (viba/core/data/viba-reflect.md: root only pairs the
 descriptor with the data), and this layer provides no checking either.
 """
 
@@ -11,7 +11,7 @@ import pytest
 
 import meeting_adt as adt
 import meeting_core_reflect as reflect
-from viba.type import VibaProgramErr, Ok  # noqa: E402  (Ok / VibaProgramErr in the protocol)
+from viba.type import Err, Ok  # noqa: E402  (Ok / Err in the protocol)
 
 
 from viba.viba_type_descriptor import pool_find_definition  # noqa: E402  (description-side query)
@@ -85,7 +85,7 @@ class TestDesign:
         assert _definition("meeting_core.FileId").full_name == "meeting_core.FileId"
 
     def test_unknown_definition_is_an_err(self) -> None:
-        assert isinstance(_definition_result("FileDesktop"), VibaProgramErr)
+        assert isinstance(_definition_result("FileDesktop"), Err)
 
 
 # =====================================================================
@@ -169,11 +169,17 @@ class TestAddressing:
         assert node.get_file_content().at_index(0).get_data().value == "body"
         assert node.get_file_content().at_index(1).get_data().value == "body\nmore"
 
-    def test_by_field_index_walks_an_untagged_branch(self) -> None:
+    def test_an_optional_branch_is_reached_by_its_tag(self) -> None:
+        """`Optional[T] = $some T | nil`: the present branch is the `$some` one."""
         segment = adt.TerminalTextSegment(text="x", fg=adt.Rgb(1, 2, 3))
         fg = _open(segment, "TerminalTextSegment").get_fg()
-        assert fg.by_field_index(0).by_tag("truecolor").get_r().value == 1
-        assert fg.has_field_0() is True
+        assert fg.by_tag("some").by_tag("truecolor").get_r().value == 1
+        assert fg.has_some() is True
+
+    def test_an_absent_optional_has_no_some_branch(self) -> None:
+        segment = adt.TerminalTextSegment(text="x")
+        fg = _open(segment, "TerminalTextSegment").get_fg()
+        assert fg.has_some() is False
 
     def test_unknown_coordinate_is_an_error(self) -> None:
         node = _open(_file_id(), "FileId")
@@ -199,7 +205,8 @@ class TestSumBranches:
     def test_enum_with_a_dollar_value_matches_its_tag(self) -> None:
         node = _open(adt.AgentRole.ACTOR, "AgentRole")
         assert node.has_actor() is True
-        assert node.has_critic() is False
+        assert node.has_tech_critic() is False
+        assert node.has_mgmt_critic() is False
 
     def test_nil_valued_optional_field_is_present_with_nil(self) -> None:
         """The field is present and the value is nil: has is true, and reading
@@ -283,13 +290,13 @@ class TestConvenience:
 
     def test_a_missing_step_with_more_steps_left_is_an_err(self) -> None:
         """The piece is missing in the data and there are more steps after it:
-        VibaProgramErr, None cannot be carried on with."""
+        Err, None cannot be carried on with."""
         data = {"file_name": [adt.Versioned("a.py", _moment(), "alice")]}
         node = _open(data, "VersionedFile")
         assert node.try_get_file_meta().ok_value is None        # a single step: Ok(nil)
         given = reflect.access.resolve(node, [reflect.by_tag("file_meta"),
                                             reflect.at_index(0)])
-        assert isinstance(given, VibaProgramErr) and given.msg == "this step has no value"
+        assert isinstance(given, Err) and given.msg == "this step has no value"
 
     def test_read_reports_a_missing_step(self) -> None:
         node = _open({"time": _moment(), "author": "alice"}, "Versioned")
@@ -310,12 +317,12 @@ class TestResult:
     """Result is a stable type too: $ok / $err match by class name."""
 
     def test_ok_and_err_branches_match(self) -> None:
-        from viba.type import VibaProgramErr, Ok
+        from viba.type import Err, Ok
 
         ok = _open(Ok("body"), "Result")
         assert ok.has_ok() is True
         assert ok.has_err() is False
-        err = _open(VibaProgramErr("boom"), "Result")
+        err = _open(Err("boom"), "Result")
         assert err.has_err() is True
         assert err.has_ok() is False
 
