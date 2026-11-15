@@ -1,201 +1,232 @@
-# RemoteBuddy Workspace Demo
+# RemoteBuddy
 
-RemoteBuddy v2 is a local collaboration workspace for one human and one Agent. Both participants share one tmux pane. The Agent receives new chat events plus the latest visible terminal screen, then returns one structured action at a time.
+One person and one agent share a single terminal pane: the agent sees the conversation and the
+visible screen, and answers one structured action at a time. A **meeting** is what one command
+makes of that arrangement.
 
-The application uses Python 3.12 in the `remotebuddy` Conda environment plus `libtmux` for typed terminal control. Responses remains the default backend. Optional Codex App Server and Claude Code harnesses are managed as isolated child processes without giving either harness a second terminal.
+`rb` is the command. Its two subcommands share the same meeting data (`<workspace>/.meeting/`):
 
-## Configure
+```
+rb cli "写一个快速排序，放到 quicksort.py"    run one meeting from one prompt, then stop
+rb web --workspace ~/work                   serve a page over that workspace's meetings
+```
 
-The quickest path is the deploy script, which creates the conda env, installs
-pinned dependencies, runs the doctor checks, and starts the Web UI:
+What a meeting *does* — which roles are in it, which steps a ticket runs, which conditions the
+critic applies — is not in this repository. It is a **norm**, written in viba, in its own
+repository (`RbNorm`, the norm under its `rb_norm/` package) next to this tree. This repository is
+the facility: it reads the norm, runs its programs, and records every answer.
+
+## Install
+
+The quickest path is the deploy script:
 
 ```bash
-./deploy.sh          # deploy and launch
+./deploy.sh          # conda env, pinned dependencies, doctor checks, then the page
 ./deploy.sh --check  # deploy and verify only
 ```
 
-Or manually: create the project environment once with conda-forge only, install
-the pinned Python dependency, then activate it:
+By hand: create the environment, install the pinned dependencies, then write the two ignored
+configuration files from their examples.
 
 ```bash
-~/miniconda3/bin/conda create -n remotebuddy --override-channels -c conda-forge python=3.12 pip
-~/miniconda3/envs/remotebuddy/bin/python -m pip install -r requirements.txt
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate remotebuddy
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cp model_api/config.example.toml model_api/config.toml
+cp model_api/auth.example.json model_api/auth.json
+chmod 600 model_api/auth.json          # keys live here, one per provider
 ```
 
-Create these two ignored files from the examples in `model_api/`:
-
-```text
-model_api/config.toml
-model_api/auth.json
-```
-
-API keys can also be entered from the Web interface: the New Session dialog accepts an API key and an optional Base URL for the selected provider. The key is written to `model_api/auth.json` (chmod 600) and the Base URL override to the ignored `model_api/overrides.json`; neither value is ever returned to the browser.
-
-`auth.json` accepts dedicated provider keys. The legacy single `api_key` alias is still supported by itself:
-
-```json
-{
-  "OPENAI_API_KEY": "...",
-  "DEEPSEEK_API_KEY": "..."
-}
-```
-
-On macOS or Linux, restrict the auth file:
+Put `rb` on `PATH`:
 
 ```bash
-chmod 600 model_api/auth.json
+cat > ~/.local/bin/rb <<'SH'
+#!/bin/sh
+exec <this tree>/.venv/bin/python <this tree>/rb.py "$@"
+SH
+chmod +x ~/.local/bin/rb
 ```
 
-`config.toml` accepts the original four-field profile, the Codex-style profile, and a provider-aware profile. Existing files require no migration. A provider-aware configuration can make all three supported combinations available:
+Without the entry point, `<this tree>/.venv/bin/python <this tree>/rb.py cli "…"` is the same
+command.
 
-```toml
-default_backend = "responses"
-default_provider = "openai"
-request_timeout_seconds = 120
-reasoning_effort = "low"
+## `rb cli`
 
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-wire_api = "responses"
-auth_key = "OPENAI_API_KEY"
-model = "gpt-5.6-luna"
-
-[providers.deepseek]
-base_url = "https://api.deepseek.com/anthropic"
-wire_api = "anthropic"
-auth_key = "DEEPSEEK_API_KEY"
-model = "deepseek-v4-pro[1m]"
-fast_model = "deepseek-v4-flash"
-
-[harnesses.claude-code]
-binary = "claude"
-```
-
-`codex-app-server` uses `codex app-server --stdio`, the current Codex CLI login, an ephemeral thread, empty execution environments, a private read-only working directory, and the same RemoteBuddy action schema. Any Codex Shell, file, MCP, Web, approval, or sub-Agent event is treated as a protocol violation and is never forwarded to tmux.
-
-The Codex backend authenticates purely through the local CLI login — `codex login` with an API key or a ChatGPT-plan (subscription) account both work, and `model_api/auth.json` is only required for the `responses` backend and the DeepSeek provider. The New Session dialog can also leave the model to the Codex CLI's own default (recommended for ChatGPT-plan logins, which may not have access to a hard-coded model id); such sessions store an empty model and omit the `model` parameter from every Codex turn.
-
-`trae-agent` drives ByteDance's internal TraeCode CLI (`traecli`), which implements the same Codex App Server protocol, so it shares the whole codex-app-server integration: ephemeral threads, the private read-only working directory, and the protocol-violation filter. It authenticates via `traecli login` (Trae account), never needs a stored API key, and also supports leaving the model to the CLI's own default. A custom executable can be set with `[harnesses.trae-agent] binary = "/path/to/traecli"`.
-
-`claude-code/deepseek` requires Claude Code v2.1.248 or newer and the pinned Python MCP dependency. Install or update Claude Code using the [official setup instructions](https://code.claude.com/docs/en/setup), then configure `DEEPSEEK_API_KEY`. When `binary = "claude"`, RemoteBuddy checks `PATH` and also discovers the standard Claude Desktop macOS install locations; a custom executable can be set with an absolute `binary` path. RemoteBuddy starts Claude with restricted and bare modes, disables all built-in tools, loads one explicit local MCP server, and injects the key only into the child environment. The MCP server exposes only `remotebuddy_action`; RemoteBuddy validates and executes that action through the same runner used by the other backends. There is no automatic fallback when Claude Code, MCP, or the DeepSeek key is unavailable.
-
-The Claude integration currently supports macOS and POSIX Linux. Windows support is deferred together with the tmux transport.
-
-Check the environment:
+One prompt, one meeting, run to a stop, then exit. There is no TUI and nothing waits for input.
 
 ```bash
-python3 demo.py doctor
+rb cli "写一个快速排序，放到 quicksort.py"
 ```
 
-## Run
+```
+PROMPT                               the prompt; several words are joined, `-` reads stdin
+--workspace DIR                      where the meeting runs; default: the current directory
+--meeting-id ID                      the meeting's name; default: generated
+--resume MEETING                     carry on the meeting whose data directory this is
+--harness NAME                       default backend for new sessions: claude, responses,
+                                     codex, trae (aliases accepted)
+--norm-repo-path DIR                 the norm repository, or its rb_norm/ package
+--norm-commit-id SHA                 read that version of the norm
+--no-interference-rule-path FILE     the viba program that decides what counts as interference
+--no-interference-rule-commit-id SHA read that version of the rule
+--json                               print the one line as a JSON object
+-h / -V                              help / version
+```
+
+The only line it writes to stdout is the command that shows this meeting:
+
+```
+rb web --workspace /Users/…/work
+```
+
+That command can be run right away, while the meeting is still going. With `--json` the line is
+`{"type":"web","command":…,"meeting_id":…,"workspace":…}`. Errors go to stderr, one sentence; the
+exit code says what happened:
+
+```
+0   the meeting ran and finished
+1   no subcommand (the help was printed)
+2   bad arguments, or the meeting could not start
+3   the flow verdict was false: mgmt_critic says the meeting did not finish, and the problems it
+    named are on stderr
+4   somebody interfered, so the meeting was stopped
+```
+
+Everything a meeting writes stays under `<workspace>/.meeting/<meeting-id>/`: the journal
+(`streams/events.jsonl`), the conversation (`conversation.md`), the case with every answer
+(`store/`), the tickets and their attempts (`tickets/`, `ticket_progress/`), and `rb.json`, this
+driver's own side note — which norm, which version, which rule, who interfered.
+
+`--resume` takes the meeting's data directory and carries it on: with a prompt it says one more
+thing, without one it picks up the tickets that did not finish.
+
+### Which norm, and which version
+
+`--norm-repo-path` names a repository or the norm directory inside it. `--norm-commit-id` pins a
+version: the tree of that commit is exported to a temporary directory, so an edit in the working
+tree cannot change the meeting under it, and the directory is removed afterwards. Without a commit
+the directory as it stands is read and no version is recorded. With neither, the norm is looked
+for at `../RbNorm/rb_norm/`; `REMOTEBUDDY_NORM` points elsewhere.
+
+A directory that does not look like a norm — no `ticket_programs/`, `intake/` or `acceptance/` —
+is refused before the meeting opens.
+
+### What stops a meeting
+
+While the meeting runs, `rb cli` watches the journal and the driver lock. It stops when somebody
+else writes to the meeting: a journal line this run did not write, a line the human typed in
+`rb web`, or another process taking the driver. The rule that decides this is itself a viba program
+(`--no-interference-rule-path`); the built-in one treats everything this run did not do as
+interference, and the rule is a program, so a meeting can be told to tolerate any of it.
+
+## Writing the norm behind `rb cli`
+
+A norm is a directory: one table of members, viba programs in three folders, an optional fourth,
+and the type document they are written against. It holds no task of its own — the prompt arrives
+at the meeting, not in the norm.
+
+```
+rb_norm/
+  members                  who is in the meeting, one line each
+  intake/*.viba            is this prompt work, and what has to be delivered
+  ticket_programs/*.viba   what one ticket runs, step by step
+  acceptance/*.viba        the conditions the tech critic applies to the work
+  constitution.viba        the types the norm is written against; a document, not a program
+  due/*.viba               optional: an extra "is it time for this ticket"
+```
+
+### `members`
+
+One member per line: its name, the api it implements, and how to find it.
+
+```
+actor        actor_api         agent
+tech_critic  tech_critic_api   tech_critic
+mgmt_critic  mgmt_critic_api   mgmt_critic
+assistant    assistant_api     assistant
+```
+
+`agent` is the meeting's agent — in a real meeting it does the work. `tech_critic` runs the
+acceptance conditions locally; `mgmt_critic` checks the flow locally; `assistant` issues tickets
+and says the closing line. `scripted <module>:<function>`, `dummy_actor` and `dummy_tech_critic`
+are stand-ins for tests; `process <command…>` starts another process that takes tickets itself.
+
+### `intake/`
+
+Every program in `intake/` answers one thing: the name of the file this prompt has to end up as. A
+prompt is work when one of them answers a name; when none does, the meeting just talks to the agent
+and no ticket is issued. A norm can hold several, for several kinds of work.
+
+### `ticket_programs/`
+
+One program is one ticket, and its steps are calls on the role apis. `do_the_work.viba` in `RbNorm`
+carries the whole flow in one ticket: greet, draft, report, judge, revise, report again, judge
+again, the flow check, and the closing note.
+
+```viba
+greeted = actor.acknowledge << $env ($sub_env << args.env << "greeted") << $about (...)
+drafted = actor.do_step     << $env ($sub_env << args.env << "drafted") << $task (...) << $after greeted
+...
+
+flow = mgmt_critic.check << $env ($sub_env << args.env << "flow") << $judged judged_revision
+
+__impl__ = assistant.closing_note
+  << $env ($sub_env << args.env << "closing")
+  << $result revised << $verdict judged_revision << $flow flow
+```
+
+Each step writes the address its own name gives, on its own sub-environment. Which member takes a
+step is decided by the role api that step calls — the actor does work, `tech_critic` judges it,
+`mgmt_critic` checks the flow, the assistant closes. A ticket may be handed out when every address
+it reads is answered and none of its own answers is; a program that reads an address it writes
+never runs.
+
+`due/<ticket>.viba`, where present, adds one more condition: it reads the case's values and answers
+whether this ticket is due now.
+
+### `acceptance/`
+
+One program is one condition: an environment in, a bool out. It names no meeting and no version of
+the code — what is under judgement is a snapshot in the case. The operators a condition may call
+belong to the `tech_critic` side.
+
+### The interfaces
+
+Which operators a role has is declared in `RbApiDeclare` — `rb_api/actor_api.viba` and one file per
+role — not in this repository and not in the norm: both take it as a submodule at the same commit.
+A norm may add its own `<role>_api.viba` for a new role; it may not shadow a declared one.
+
+## `rb web`
 
 ```bash
-python3 web.py
+rb web --workspace ~/work [--host 127.0.0.1] [--port 0]
 ```
 
-Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/). The service never binds to a non-loopback address.
+Serves the workspace's page: every meeting in it, running or finished, with the conversation, the
+shared terminal, the ticket board and the record. The workspace defaults to the current directory.
+It binds to loopback only and prints its URL. This is the page `rb cli` tells you to open; the
+meeting runs whether or not the page is up.
 
-New sessions are created from the Web interface. The CLI manages existing v2 sessions:
+## Backends
 
-```bash
-python3 demo.py status <meeting-id>
-python3 demo.py stop <meeting-id>
-python3 demo.py cleanup <meeting-id>
-```
+`model_api/config.toml` selects one backend per meeting:
 
-## Session Model
+- `responses` — `POST /responses` only; needs `OPENAI_API_KEY`.
+- `codex-app-server` — the Codex CLI's own login, one ephemeral session per work cycle.
+- `claude-code` — Claude Code with its built-in tools disabled and one MCP server that exposes
+  `remotebuddy_action`; needs `DEEPSEEK_API_KEY`.
+- `trae-agent` — the TraeCode CLI, which speaks the Codex App Server protocol.
+- `trae-acp` — the same CLI over ACP. Any ACP-speaking agent can sit behind this entry: point
+  `[harnesses.trae-acp] binary` at it, for example a one-line wrapper around `dsh --profile acp`.
 
-A session lives in a **workspace** — one directory, the project being worked on. Every byte of
-meeting data goes under `<workspace>/.meeting/<meeting-id>/` and the Agent's terminal opens in the
-workspace root itself, so several sessions can share one project:
-
-```text
-<workspace>/.meeting/<meeting-id>/
-  meeting.json
-  conversation.md
-  streams/events.jsonl
-  .agents/skills/workspace-collaborator/SKILL.md
-```
-
-The workspace is the project root by default, or whatever `--workspace DIR` names. The new-session
-dialog takes a directory — type it, or press 选择目录… for the macOS folder dialog (Finder), because
-a browser cannot hand back an absolute path from its own directory picker:
-
-```text
-POST /api/choose-directory {"directory": "<current value>"}   the system picker; an empty
-                                                              `directory` back means cancelled
-```
-
-The directories used so far are recorded in `<workspace>/.meeting/workspaces`, so a session opened
-in another project stays on the list across restarts. The page groups the list by workspace and
-names each group by that directory's basename.
-
-`MeetingStore` still reads the older `runs/<meeting-id>/` layout (with a fresh `workspace/` inside
-the meeting directory); the Web service no longer writes it.
-
-Chat takes images: paste into the composer or use the paperclip. The bytes are stored as a file of
-the meeting (`attachments/image-<n>.<ext>`) and the message records only the name and the content
-hash, so the journal stays text. A picture goes to the model as a picture — `input_image` on the
-Responses API, an image block for Claude Code, `localImage` for Codex / Trae — so understanding it is
-the model's own ability rather than something the Agent has to approximate with a command-line tool.
-
-`events.jsonl` is the replay source of truth. It contains globally ordered `chat`, `screen`, `action`, `control`, `state`, and `error` events. `conversation.md` is rebuilt only from chat events.
-
-The default model client uses only `POST /responses`. It does not require a `/conversations` endpoint: the local event log is sent as bounded chat and action history with each request, together with the latest shared terminal screen. This works with Responses-only gateways such as a proxy whose configured base URL is `https://rust.cat`. Stateful Codex and Claude Code backends receive one fresh ephemeral session per active work cycle. The first turn receives reconstructed local history and later turns receive only new events plus the latest screen; vendor transcripts are never used for recovery.
-
-The Agent works only through the shared terminal. Structured `pwd`, `cd`, and `python` commands keep workspace path resolution; beyond those, the Agent may run general bash command lines with two restricted classes. Deletion-class commands (`rm`, `rmdir`, `unlink`, `shred`, `truncate`, `dd`, `mkfs`, `find -delete`, `rsync --delete`, `git clean`/`git rm`) are rejected wherever they appear in a chained or piped line, and so is anything that would leave the shared pane's visible foreground (background `&` jobs, `nohup`, `setsid`, `disown`, `tmux`, `screen`, `open`, `osascript`, `exec`). One keystroke action types into whatever program holds the foreground — the harness keeps no per-program rules, so how to drive an editor is the Agent's own business, guided by the Skill; observation and visible chat messages complete the action set. A `chat` or `done` action may also attach content references that quote earlier `chat` or `screen` events by sequence number and character region — the same immutable reference fields (excerpt plus source hash) that human messages use. Structured command paths are resolved inside the session workspace; general bash commands are not path-confined, so this remains an application policy, not an operating-system sandbox; a person attaching directly to tmux is outside that boundary.
-
-Agent `done` means "wait for the human." Only the human can complete a session. Completion retains tmux for inspection; stop interrupts the session and removes tmux.
-
-Any earlier chat or screen content, including the human's own messages, can be quoted into the conversation as a reference.
-
-Schema v1 meeting files are not changed, migrated, or deleted. The v2 Web and CLI interfaces intentionally hide them.
-
-## Tickets
-
-A meeting runs on tickets. The norm itself is viba and lives in its own repository (`RbNorm`, next
-to this tree, the norm under its `rb_norm/` package; `REMOTEBUDDY_NORM` points elsewhere): the
-ticket programs, the requests that decide which human lines are work, and the rules the
-`tech_critic` judges the work by. The program carries none of it.
-
-The interfaces between the two (which operators actor, assistant, `tech_critic` and `mgmt_critic`
-have) live in a third
-repository, `RbApiDeclare`, and **both repositories depend on it as a git submodule**
-(`RemoteBuddy-core/RbApiDeclare/`, `RbNorm/RbApiDeclare/`) at the same commit. The facility reads its
-own copy, checks the norm's copy is on that commit, puts the directory on every ticket's
-`$VIBA_PATH`, and records the version per handler in the ticket's
-`$handler_name2api_declare_repo_commit_id`.
-
-What the facility writes into a meeting directory is declared in this repository
-(`tickets/ticket.viba`): a ticket (`Ticket`), one attempt at it (`TicketStage`), and a ticket's whole
-progress (`TicketProgress = AppendOnlyList[TicketStage]`). The program fills those in and reads them
-back by that declaration, and refuses on the spot when the two disagree — no member list is written
-in Python.
-
-`tickets/` is the harness: a ticket is one call written on the file system
-(`<meeting>/tickets/<uid>/ticket.viba`), its progress is one file per attempt
-(`<meeting>/ticket_progress/<uid>/<time>-<handler>.viba`), and the answers land in the case under
-`<meeting>/store/<case>/`. The assistant receives the human message, works out which ticket is due
-from the values in the case, and writes it; every member of the table (`<norm>/members`) takes the
-tickets whose newest attempt is not its own, runs them with its own capability table, and appends
-one attempt. A ticket is done when one of its attempts answered `$ok`.
-
-The page shows and drives it:
-
-```text
-GET  /api/meetings/<meeting-id>/tickets           the board: which ticket is due, what each one
-                                                  reads, who answered, every attempt, the record
-```
-
-`tickets/README.md` maps every part.
-
-## Test
+## Tests
 
 ```bash
 .venv/bin/python -m pytest tests -q
 ```
 
-Two tmux tests (`test_creates_one_fixed_size_workspace_pane`, `test_creates_two_horizontal_codex_panes`)
-expect the `remotebuddy` conda environment (`CONDA_DEFAULT_ENV`) and fail without it.
+Two tmux tests expect the `remotebuddy` conda environment (`CONDA_DEFAULT_ENV`) and fail without it.
+
+## More
+
+`RB.md` is the manual for `rb` (Chinese), `tickets/README.md` maps the harness, and
+`MEETING_ADT.md` is the design of the meeting data.

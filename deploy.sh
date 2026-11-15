@@ -44,7 +44,7 @@ done
 [ -f model_api/auth.json ] && chmod 600 model_api/auth.json
 
 step "running doctor"
-"$PY" demo_v2.py doctor || true
+"$PY" demo.py doctor || true
 
 if [ "${1:-}" = "--check" ]; then
     echo
@@ -57,4 +57,4 @@ if [ "$missing" -eq 1 ]; then
 fi
 
 step "starting RemoteBuddy on http://127.0.0.1:$PORT/"
-exec "$PY" web_v2.py --port "$PORT"
+exec "$PY" rb.py web --port "$PORT"
