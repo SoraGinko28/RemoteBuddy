@@ -47,10 +47,10 @@ REASON = "objection"
 # mgmt_critic 那一步的名字（`tickets/mgmt_critic.py`）：它留下的那句话也照同一条路取回来。
 CHECKED = "check"
 
-# 解释器自己回答的那几个名字（`viba-primitives.md` 第 4 节，加上 `viba/builtin.viba` 里 `Environment`
+# 解释器自己回答的那几个名字（`viba/exec/viba-primitives.md` 第 4 节，加上 `viba/builtin.viba` 里 `Environment`
 # 的成员）：一份程序调到它们，不用谁去声明——解释器自己有。名字按不带 `$` 的写法比。
 NATIVE_NAMES = frozenset({
-    "get_attr", "get_item", "in", "len", "keys",
+    "get_attr", "get_item", "in", "len", "keys", "first_case_index",
     "sub_env", "tmp_env", "get_parent", "get_root", "get_relative_path",
     "find_by_relative_path", "compress_env_path", "try_compact",
     "uncompress_relative_path", "viba_path",
@@ -414,7 +414,7 @@ def _what_stops_the_source(source: str, wanted: set, where: str) -> str:
 def _what_differs_from_the_interpreter(definitions, wanted) -> str:
     """根里那些定义声明的成员，和解释器自己回答的那几条一样吗；不一样就说第一处。
 
-    解释器自己回答的那五个成员（`$get_attr` 那五个）实现是定了的，写下来的那条链要与它一样——
+    解释器自己回答的那几个成员（`$get_attr` 那几个）实现是定了的，写下来的那条链要与它一样——
     一份声明的用处就是把实现已经定了的东西写下来。写的是别的成员就不管（它们没有"实现已经定了"
     这一说）。
     """

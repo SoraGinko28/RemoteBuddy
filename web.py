@@ -78,7 +78,7 @@ import meeting_loader
 import meeting_sdk_server
 import meeting_sdk_json
 import meeting_sdk_viba
-from viba.type import VibaProgramErr as _SdkErr
+from viba.type import Err as _SdkErr
 from tickets import load_workflow
 from tickets.actor import actor_caps, writer_from
 from tickets.channel import LoopbackChannel

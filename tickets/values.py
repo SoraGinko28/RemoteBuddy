@@ -18,7 +18,7 @@ from . import _viba  # noqa: F401
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
                             get_snapshot, put_snapshot)
 from viba.reflect import access as reflect_access
-from viba.type import VibaProgramErr
+from viba.type import Err
 
 RECORD_HEADING = "# 这场会的记录"
 VIBA_SUFFIX = ".viba"
@@ -29,7 +29,7 @@ def leaf_value(node) -> Any:
     if node is None:
         return None
     given = reflect_access.leaf(node)
-    if isinstance(given, VibaProgramErr) or given.ok_value is None:
+    if isinstance(given, Err) or given.ok_value is None:
         return None
     return given.ok_value
 

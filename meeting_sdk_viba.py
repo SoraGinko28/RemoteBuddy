@@ -23,7 +23,7 @@ from pathlib import Path
 
 import meeting_core_reflect as _reflect
 from viba import serialize as _serialize
-from viba.type import VibaProgramErr, Ok, Result, custom_module
+from viba.type import Err, Ok, Result, custom_module
 
 DESIGN_CHAPTER = "The data interface"
 API_LINE_WITH_TYPE = re.compile(
@@ -90,11 +90,11 @@ def script_for(api: str, result) -> Result:
     here; viba.serialize writes the source from the node.
     """
     found = access_of(api)
-    if isinstance(found, VibaProgramErr):
+    if isinstance(found, Err):
         return found
     access, definition = found.ok_value
     root = access.root(definition, _reflect._Record(result))
-    if isinstance(root, VibaProgramErr):
+    if isinstance(root, Err):
         return root
     return _serialize.serialize("entry", root.ok_value)
 
@@ -130,16 +130,16 @@ def is_a_valid_answer(api: str, script: str) -> Result:
     try:
         parsed = viba_ast.parse(script)
     except SyntaxError as error:
-        return VibaProgramErr(f"the answer is not viba code: {error}")
+        return Err(f"the answer is not viba code: {error}")
     entries = [definition for definition in parsed.body if definition.name == "entry"]
     if len(entries) != 1:
-        return VibaProgramErr("the answer has no single entry = ... definition")
+        return Err("the answer has no single entry = ... definition")
     module, definition = definition_of(api)
     judged = is_sub_type(AstNodeType(entries[0].body, module),
                          AstNodeType(definition, module),
                          config=language_config)
-    if isinstance(judged, VibaProgramErr):
+    if isinstance(judged, Err):
         return judged
     if judged.ok_value is not True:
-        return VibaProgramErr(f"the entry is not a resident of {return_type(api)}")
+        return Err(f"the entry is not a resident of {return_type(api)}")
     return Ok(entries[0].body)

@@ -27,7 +27,7 @@ from viba import viba_ast
 from viba.interpret import (Environment, EnvironmentStorage, get_snapshot,
                             put_snapshot)
 from viba.reflect import access as reflect_access
-from viba.type import VibaProgramErr
+from viba.type import Err
 
 from .declare import progress_definition, stage_definition
 from .layout import PROGRESS_DIR, VIBA_SUFFIX
@@ -239,6 +239,6 @@ def _piece(value) -> viba_ast.AST:
 def _leaf(node):
     """一个成员上那个值。"""
     given = reflect_access.leaf(node)
-    if isinstance(given, VibaProgramErr):
+    if isinstance(given, Err):
         raise RuntimeError(f"这个成员不是一个值：{given.msg}")
     return given.ok_value

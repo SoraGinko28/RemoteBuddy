@@ -39,12 +39,12 @@ from viba import viba_ast
 from viba.interpret import (Environment, EnvironmentCompute, EnvironmentStorage,
                             get_snapshot, viba_data, put_snapshot)
 from viba.reflect import access as reflect_access
-from viba.type import VibaProgramErr
+from viba.type import Err
 
 from .declare import ticket_definition
 from .layout import TICKETS_DIR, TICKET_NAME, VIBA_SUFFIX
 
-# `$call` 写成什么：这个名字是 viba 里"把名字当数据"的那种调用（`viba-interpreter.md`）。
+# `$call` 写成什么：这个名字是 viba 里"把名字当数据"的那种调用（`viba/exec/viba-interpreter.md`）。
 DYNAMIC_CALL = "__dyn_call__"
 
 
@@ -233,7 +233,7 @@ def a_dict(node) -> dict:
 def _leaf(node):
     """一个成员上那个值。"""
     given = reflect_access.leaf(node)
-    if isinstance(given, VibaProgramErr):
+    if isinstance(given, Err):
         raise RuntimeError(f"这个成员不是一个值：{given.msg}")
     return given.ok_value
 

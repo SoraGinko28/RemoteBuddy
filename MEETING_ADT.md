@@ -244,7 +244,7 @@ datetime =
     Object
   * $microsecond int                    # time identity inside a meeting: microseconds, unique by construction
 
-Optional[T] = T | nil                  # absence is nil; a sum, not a tag
+Optional[T] = $some T | nil            # absence is nil; presence carries $some
 
 AppendOnlyList[T] = list[T]            # append-only: position is identity. A convention, not a structure
 ReadOnlyList[T] = list[T]              # read-only: written once, never changed. Same as above
